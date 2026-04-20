@@ -114,10 +114,6 @@ your `.img` files, or navigate to them using the built-in file browser.
 | PowerShell | Included with Windows. |
 | Internet access | The build script downloads SDL2 automatically. |
 
-The project source is expected to live in WSL at
-`\\wsl.localhost\Ubuntu\home\<user>\midway-imgtool`.  If your path differs,
-pass `-SourceDir` to the PowerShell script.
-
 No MASM patch is required — MASM handles flat-model `.data` sections differently
 from JWasm and the assembly sources were written to be compatible with both.
 
@@ -137,23 +133,24 @@ build.bat
 
 Both scripts:
 
-1. Initialize the VS 2022 x86 build environment via `vcvarsall.bat`
+1. Automatically locate the VS 2022 x86 build environment via `vswhere.exe`
 2. Download the SDL2 VC developer package from GitHub (cached in `%LOCALAPPDATA%\imgtool-build\deps`)
 3. Configure and build with CMake targeting Win32
 
 Output: `%LOCALAPPDATA%\imgtool-build\build\Release\imgtool.exe`
 
-`SDL2.dll` is copied next to the EXE automatically.
+`SDL2.dll` and `it.hlp` are copied next to the EXE automatically.
 
-### Running the Windows build from WSL source
+### Running
 
-If your source is in WSL, build from a Windows PowerShell window
-(not a WSL terminal) so MASM can resolve the UNC path:
+From the output directory:
 
-```powershell
-cd \\wsl.localhost\Ubuntu\home\alex\midway-imgtool
-powershell -ExecutionPolicy Bypass -File build.ps1
+```cmd
+imgtool.exe
 ```
+
+Or copy `imgtool.exe`, `SDL2.dll`, and `it.hlp` to any folder of your choice
+and run from there. There is no installer and no registry use.
 
 ---
 
@@ -164,5 +161,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 - The assembly sources use MASM syntax and are assembled by MASM (Windows) or
   the patched JWasm (Linux).
 - `SDL2.dll` must be in the same directory as `imgtool.exe` on Windows.
+- `it.hlp` must be in the same directory as the executable (it's what the
+  `h` key loads).
 - On Linux the binary links against the i386 SDL2 shared library
   (`/usr/lib/i386-linux-gnu/libSDL2.so`).

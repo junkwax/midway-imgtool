@@ -1,8 +1,34 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-set VCVARSALL=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat
-set SOURCE=\\wsl.localhost\Ubuntu\home\alex\midway-imgtool
+set "VCVARSALL="
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+        if exist "%%i\VC\Auxiliary\Build\vcvarsall.bat" (
+            set "VCVARSALL=%%i\VC\Auxiliary\Build\vcvarsall.bat"
+            goto :vs_found
+        )
+    )
+)
+
+for %%V in (Enterprise Professional Community "BuildTools") do (
+    if exist "C:\Program Files\Microsoft Visual Studio\2022\%%~V\VC\Auxiliary\Build\vcvarsall.bat" (
+        set "VCVARSALL=C:\Program Files\Microsoft Visual Studio\2022\%%~V\VC\Auxiliary\Build\vcvarsall.bat"
+        goto :vs_found
+    )
+    if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\%%~V\VC\Auxiliary\Build\vcvarsall.bat" (
+        set "VCVARSALL=C:\Program Files (x86)\Microsoft Visual Studio\2022\%%~V\VC\Auxiliary\Build\vcvarsall.bat"
+        goto :vs_found
+    )
+)
+if not defined VCVARSALL (
+    echo ERROR: Visual Studio 2022 not found. Please install Desktop development with C++.
+    goto :fail
+)
+:vs_found
+
+set "SOURCE=."
 set BUILDROOT=%LOCALAPPDATA%\imgtool-build
 set BUILDDIR=%BUILDROOT%\build
 set DEPSDIR=%BUILDROOT%\deps
@@ -63,6 +89,7 @@ if errorlevel 1 (echo ERROR: cmake configure failed & goto :fail)
 if errorlevel 1 (echo ERROR: cmake build failed & goto :fail)
 
 copy /Y "%SDL2DIR%\lib\x86\SDL2.dll" "%BUILDDIR%\Release\"
+copy /Y "%SOURCE%\IT\it.hlp" "%BUILDDIR%\Release\"
 
 echo.
 echo *** Build succeeded! ***

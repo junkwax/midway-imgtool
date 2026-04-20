@@ -1,3 +1,31 @@
 
 IT/IT.EXE
 *.OBJ
+
+# Claude Code local config
+.claude/
+
+# Build output / CMake
+build/
+build-*/
+out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj*
+*.sln
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Misc build artifacts
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.map

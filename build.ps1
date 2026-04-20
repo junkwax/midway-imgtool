@@ -6,7 +6,7 @@
 # This script accesses it via \\wsl.localhost\Ubuntu\...
 
 param(
-    [string]$SourceDir  = "\\wsl.localhost\Ubuntu\home\alex\midway-imgtool",
+    [string]$SourceDir  = $PSScriptRoot,
     [string]$BuildRoot  = "$env:LOCALAPPDATA\imgtool-build",
     [string]$SharedDeps = "$env:LOCALAPPDATA\midway-build\deps",
     [string]$Sdl2Ver    = ""          # leave empty to auto-fetch latest SDL2 2.x
@@ -18,13 +18,23 @@ $ErrorActionPreference = "Stop"
 # -----------------------------------------------------------------------
 # 1. Locate VS 2022
 # -----------------------------------------------------------------------
+$vsRoot = $null
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswhere) {
+    $path = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($path -and (Test-Path "$path\VC\Auxiliary\Build\vcvarsall.bat")) {
+        $vsRoot = $path
+    }
+}
 $vsRoots = @(
     "C:\Program Files\Microsoft Visual Studio\2022\Community",
     "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools",
     "C:\Program Files\Microsoft Visual Studio\2022\Professional",
     "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
 )
-$vsRoot = $vsRoots | Where-Object { Test-Path "$_\VC\Auxiliary\Build\vcvarsall.bat" } | Select-Object -First 1
+if (-not $vsRoot) {
+    $vsRoot = $vsRoots | Where-Object { Test-Path "$_\VC\Auxiliary\Build\vcvarsall.bat" } | Select-Object -First 1
+}
 if (-not $vsRoot) { Write-Error "VS 2022 not found"; exit 1 }
 $vcvarsall = "$vsRoot\VC\Auxiliary\Build\vcvarsall.bat"
 $cmakeRel  = "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
@@ -75,7 +85,7 @@ if (-not (Test-Path $sdl2Root)) {
 }
 
 if (-not (Test-Path $sdl2Cmake)) {
-    Write-Error "SDL2 cmake dir not found at $sdl2Cmake — check version/extraction"
+    Write-Error "SDL2 cmake dir not found at $sdl2Cmake - please check extraction"
     exit 1
 }
 
@@ -109,6 +119,12 @@ if ($exitCode -eq 0) {
     if (Test-Path $sdl2Dll) {
         Copy-Item $sdl2Dll (Split-Path $exe) -Force
         Write-Host "Copied SDL2.dll to output folder" -ForegroundColor Green
+    }
+    # it.hlp is loaded by pressing 'h' in the app; it must sit next to the exe
+    $hlp = Join-Path $SourceDir "IT\it.hlp"
+    if (Test-Path $hlp) {
+        Copy-Item $hlp (Split-Path $exe) -Force
+        Write-Host "Copied it.hlp to output folder" -ForegroundColor Green
     }
 } else {
     Write-Host ""
