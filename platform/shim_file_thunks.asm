@@ -37,6 +37,7 @@
     externdef   _shim_i21_delete_impl:near
     externdef   _shim_i21_findfile_impl:near
     externdef   _shim_i21_findnext_impl:near
+    externdef   _shim_filereq_impl:near
 
 ;----- helper macro: set CF from shim_carry, then ret -----
 ; Uses no registers.
@@ -246,5 +247,44 @@ shim_i21_findnext proc near
     pop     edx
     SET_CF_AND_RET
 shim_i21_findnext endp
+
+;*************************************************************
+;* shim_filereq: native OS file-open/save dialog.
+;* Replaces filereq_open at 8 `jmp filereq_open` call sites and
+;* 3 `call filereq_open` sites in itimg.asm.
+;*
+;*   EAX = filter pattern ("*.IMG", "*.BIN", "*.TGA", "*.LBM")
+;*   EBX = callback on OK, or 0 for "just fill fname, then ret"
+;*   ESI = title string ("LOAD" / "APPEND" / "SAVE")
+;*
+;* Jump-variant (EBX != 0):  on OK, tail-jumps into callback.
+;*                           on cancel, rets to dispatcher.
+;* Call-variant (EBX == 0):  on OK, rets with ZF=1 (asm `jnz` skipped).
+;*                           on cancel, rets with ZF=0 (asm `jnz` taken).
+;*
+;* filereq_open's original post-OK contract also sets EAX=0 on OK
+;* (see itos.asm ~2955: "CLR eax ; EAX=0 (CC)"). We preserve that.
+;*************************************************************
+    public shim_filereq
+shim_filereq proc near
+    mov     _shim_eax, eax          ; filter ptr
+    mov     _shim_esi, esi          ; title ptr
+    push    ebx                     ; preserve callback across C call
+    call    _shim_filereq_impl
+    pop     ebx
+    cmp     _shim_carry, 0
+    jnz     sfr_cancel
+    ; --- OK path ---
+    test    ebx, ebx
+    jz      sfr_ok_noebx
+    jmp     ebx                     ; jump-variant: tail-jump into callback
+sfr_ok_noebx:
+    xor     eax, eax                ; call-variant: EAX=0 → ZF=1, caller's jnz skips
+    ret
+sfr_cancel:
+    xor     eax, eax
+    inc     eax                     ; EAX=1 → ZF=0, caller's jnz taken
+    ret
+shim_filereq endp
 
     end

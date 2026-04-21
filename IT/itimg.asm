@@ -34,6 +34,7 @@ SLGAME	equ	0
 	externdef	strbox_open:near
 	externdef	file_renamebkup:near
 	externdef	filereq_open:near
+	externdef	shim_filereq:near
 	externdef	filereq_getnxtmrkd:near
 	externdef	gad_draw:near
 	externdef	gad_drawall:near
@@ -881,7 +882,7 @@ _aim_0042:
 	mov	ebx,offset img_loadnew
 	mov	esi,offset load_s
 	mov	fmode,2
-	jmp	filereq_open
+	jmp	shim_filereq
 
  SUBEND
 
@@ -895,7 +896,7 @@ _aim_0042:
 	mov	ebx,offset img_load
 	mov	esi,offset append_s
 	mov	fmode,2
-	jmp	filereq_open
+	jmp	shim_filereq
 
  SUBEND
 
@@ -908,7 +909,7 @@ _aim_0042:
 	mov	eax,offset fmatchimg_s
 	mov	ebx,offset img_save
 	mov	esi,offset save_s
-	jmp	filereq_open
+	jmp	shim_filereq
 
  SUBEND
 
@@ -926,7 +927,7 @@ _aim_0042:
 	mov	eax,offset fmatchbin_s
 	mov	ebx,offset img_saveraw
 	mov	esi,offset save_s
-	jmp	filereq_open
+	jmp	shim_filereq
 
 
  SUBEND
@@ -4289,7 +4290,7 @@ zero:	add	esi,edx
 	CLR	ebx
 	mov	esi,offset save_s
 	mov	fmode,1
-	call	filereq_open
+	call	shim_filereq
 	jnz	nospc
 
 
@@ -4592,7 +4593,7 @@ x:
 	mov	ebx,offset _aim_0121
 	mov	esi,offset load_s
 	mov	fmode,3
-	jmp	filereq_open
+	jmp	shim_filereq
 
 lp:
 	call	loadlbm
@@ -5008,7 +5009,7 @@ ifftnosup_s	db	"IFF type not supported yet!",0
 	mov	ebx,offset savelbm
 	mov	esi,offset save_s
 	mov	fmode,1
-	jmp	filereq_open
+	jmp	shim_filereq
 
 x:
 	ret
@@ -5026,7 +5027,7 @@ x:
 	CLR	ebx
 	mov	esi,offset save_s
 	mov	fmode,1
-	call	filereq_open
+	call	shim_filereq
 	jnz	x
 
 
@@ -5261,7 +5262,7 @@ x:
 	mov	ebx,offset _aim_0124
 	mov	esi,offset load_s
 	mov	fmode,3
-	jmp	filereq_open
+	jmp	shim_filereq
 
 lp:
 	call	loadtga
@@ -5526,7 +5527,7 @@ x:
 	mov	ebx,offset savetga
 	mov	esi,offset save_s
 	mov	fmode,1
-	jmp	filereq_open
+	jmp	shim_filereq
 
 x:
 	ret
@@ -5662,7 +5663,7 @@ x:
 	CLR	ebx
 	mov	esi,offset save_s
 	mov	fmode,1
-	call	filereq_open
+	call	shim_filereq
 	jnz	draw
 
 ;���������������

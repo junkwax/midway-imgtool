@@ -60,6 +60,7 @@ add_executable(imgtool
     platform/shim_vid.c
     platform/shim_input.c
     platform/shim_file.c
+    platform/shim_dialog.c
 )
 
 target_include_directories(imgtool PRIVATE
@@ -112,6 +113,7 @@ if(NOT WIN32)
         shim_i21_getdrv_impl shim_i21_setdrv_impl shim_i21_setcd_impl
         shim_i21_getcwd_impl shim_i21_rename_impl shim_i21_delete_impl
         shim_i21_findfile_impl shim_i21_findnext_impl
+        shim_filereq_impl
         vga_base_p
     )
     set(_ELF_DEFSYMS "")
