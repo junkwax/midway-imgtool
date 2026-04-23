@@ -92,6 +92,20 @@ static int point_editor_dragging = -1;  /* -1=none, 0=anix/y, 1=anix2/y2 */
 static bool show_anim_points = true;
 static int point_nudge_amount = 1;  /* Pixels to move with arrow keys */
 
+/* Undo/redo system */
+#define UNDO_STACK_SIZE 64
+struct EditSnapshot {
+    int image_idx;
+    unsigned short anix, aniy;      /* Primary animation point */
+    unsigned short anix2, aniy2;    /* Secondary animation point */
+    unsigned short w, h;            /* Image dimensions */
+    unsigned short palnum;          /* Palette index */
+    unsigned short flags;           /* Flags (marked, etc.) */
+};
+static EditSnapshot undo_stack[UNDO_STACK_SIZE];
+static int undo_stack_idx = -1;     /* Current position in undo stack (-1 = empty) */
+static int undo_stack_count = 0;    /* Number of valid undo entries */
+
 extern "C" {
     /* Relay globals from shim_input.c and shim_vid.c */
     extern unsigned int shim_ebx, shim_ecx, shim_edx;
@@ -154,6 +168,64 @@ static PAL *get_palette_by_index(int idx) {
     return p;
 }
 
+/* Take snapshot of current image state for undo */
+static void undo_snapshot(void) {
+    IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
+    if (!current_img) return;
+
+    /* Only save if this is a new change (not just moving through history) */
+    if (undo_stack_idx >= 0 && undo_stack_idx < UNDO_STACK_SIZE - 1) {
+        /* Check if the next snapshot is identical (same point, same state) */
+        EditSnapshot *last = &undo_stack[undo_stack_idx];
+        if (last->image_idx == ilselected &&
+            last->anix == current_img->anix && last->aniy == current_img->aniy &&
+            last->anix2 == current_img->anix2 && last->aniy2 == current_img->aniy2) {
+            return;  /* No change, don't snapshot */
+        }
+    }
+
+    /* Add new snapshot and advance stack pointer */
+    if (undo_stack_idx < UNDO_STACK_SIZE - 1) {
+        undo_stack_idx++;
+    } else {
+        /* Shift stack left to make room at end */
+        for (int i = 0; i < UNDO_STACK_SIZE - 1; i++) {
+            undo_stack[i] = undo_stack[i + 1];
+        }
+    }
+
+    EditSnapshot *snap = &undo_stack[undo_stack_idx];
+    snap->image_idx = ilselected;
+    snap->anix = current_img->anix;
+    snap->aniy = current_img->aniy;
+    snap->anix2 = current_img->anix2;
+    snap->aniy2 = current_img->aniy2;
+    snap->w = current_img->w;
+    snap->h = current_img->h;
+    snap->palnum = current_img->palnum;
+    snap->flags = current_img->flags;
+
+    undo_stack_count = undo_stack_idx + 1;
+}
+
+/* Restore image state from snapshot */
+static void undo_restore(int snap_idx) {
+    if (snap_idx < 0 || snap_idx >= undo_stack_count) return;
+
+    EditSnapshot *snap = &undo_stack[snap_idx];
+    IMG *img = get_image_by_index(snap->image_idx);
+    if (!img) return;
+
+    img->anix = snap->anix;
+    img->aniy = snap->aniy;
+    img->anix2 = snap->anix2;
+    img->aniy2 = snap->aniy2;
+    img->w = snap->w;
+    img->h = snap->h;
+    img->palnum = snap->palnum;
+    img->flags = snap->flags;
+}
+
 void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *canvas_texture)
 {
     g_imgui_window = window;
@@ -210,6 +282,28 @@ void imgui_overlay_render(void)
         }
 
         if (ImGui::BeginMenu("Edit")) {
+            bool can_undo = (undo_stack_idx > 0);
+            bool can_redo = (undo_stack_idx < undo_stack_count - 1);
+
+            if (!can_undo) ImGui::BeginDisabled();
+            if (ImGui::MenuItem("Undo", "Ctrl+Z")) {
+                if (can_undo) {
+                    undo_stack_idx--;
+                    undo_restore(undo_stack_idx);
+                }
+            }
+            if (!can_undo) ImGui::EndDisabled();
+
+            if (!can_redo) ImGui::BeginDisabled();
+            if (ImGui::MenuItem("Redo", "Ctrl+Y")) {
+                if (can_redo) {
+                    undo_stack_idx++;
+                    undo_restore(undo_stack_idx);
+                }
+            }
+            if (!can_redo) ImGui::EndDisabled();
+
+            ImGui::Separator();
             if (ImGui::MenuItem("Rename", "Ctrl+R")) {
                 imgui_overlay_inject_key(0x12);  /* Ctrl+R */
             }
@@ -293,8 +387,11 @@ void imgui_overlay_render(void)
 
                 /* Handle point dragging */
                 static bool dragging_pt1 = false;
+                static bool dragging_pt1_started = false;
                 if (hovering_pt1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                     dragging_pt1 = true;
+                    dragging_pt1_started = true;
+                    undo_snapshot();  /* Save state before starting drag */
                 }
                 if (dragging_pt1 && mouse_down) {
                     /* Update point position while dragging */
@@ -306,8 +403,12 @@ void imgui_overlay_render(void)
                     if (new_y < 0) new_y = 0; else if (new_y > 399) new_y = 399;
                     current_img->anix = (unsigned short)new_x;
                     current_img->aniy = (unsigned short)new_y;
-                } else if (!mouse_down) {
+                } else if (!mouse_down && dragging_pt1) {
                     dragging_pt1 = false;
+                    if (dragging_pt1_started) {
+                        undo_snapshot();  /* Save state after drag complete */
+                        dragging_pt1_started = false;
+                    }
                 }
 
                 /* Draw secondary animation point (anix2, aniy2) if exists */
@@ -324,8 +425,11 @@ void imgui_overlay_render(void)
 
                     /* Handle second point dragging */
                     static bool dragging_pt2 = false;
+                    static bool dragging_pt2_started = false;
                     if (hovering_pt2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         dragging_pt2 = true;
+                        dragging_pt2_started = true;
+                        undo_snapshot();  /* Save state before starting drag */
                     }
                     if (dragging_pt2 && mouse_down) {
                         ImVec2 relative = mouse_pos - canvas_pos;
@@ -335,8 +439,12 @@ void imgui_overlay_render(void)
                         if (new_y < 0) new_y = 0; else if (new_y > 399) new_y = 399;
                         current_img->anix2 = (unsigned short)new_x;
                         current_img->aniy2 = (unsigned short)new_y;
-                    } else if (!mouse_down) {
+                    } else if (!mouse_down && dragging_pt2) {
                         dragging_pt2 = false;
+                        if (dragging_pt2_started) {
+                            undo_snapshot();  /* Save state after drag complete */
+                            dragging_pt2_started = false;
+                        }
                     }
 
                     /* Draw line between points */
