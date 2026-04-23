@@ -90,6 +90,7 @@ static int palette_merge_target = -1;
 static bool show_point_editor = false;
 static int point_editor_dragging = -1;  /* -1=none, 0=anix/y, 1=anix2/y2 */
 static bool show_anim_points = true;
+static int point_nudge_amount = 1;  /* Pixels to move with arrow keys */
 
 extern "C" {
     /* Relay globals from shim_input.c and shim_vid.c */
@@ -235,6 +236,7 @@ void imgui_overlay_render(void)
             ImGui::MenuItem("Palette Swatches", NULL, &show_palette_swatches);
             ImGui::Separator();
             ImGui::MenuItem("Animation Points", NULL, &show_anim_points);
+            ImGui::MenuItem("Point Editor", NULL, &show_point_editor);
             ImGui::EndMenu();
         }
 
@@ -626,6 +628,35 @@ void imgui_overlay_render(void)
                 }
             }
             ImGui::EndPopup();
+        }
+    }
+
+    /* Point Editor Panel */
+    if (show_point_editor) {
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.65f, menu_height), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(right_w * 0.5f, 200), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Point Editor", &show_point_editor)) {
+            IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
+            if (current_img) {
+                ImGui::Text("Primary Point (Anipt 1):");
+                ImGui::Text("  X: %d   Y: %d", current_img->anix, current_img->aniy);
+                ImGui::SliderInt("##anix", (int *)&current_img->anix, 0, 639);
+                ImGui::SliderInt("##aniy", (int *)&current_img->aniy, 0, 399);
+                ImGui::Separator();
+
+                ImGui::Text("Secondary Point (Anipt 2):");
+                ImGui::Text("  X: %d   Y: %d", current_img->anix2, current_img->aniy2);
+                ImGui::SliderInt("##anix2", (int *)&current_img->anix2, 0, 639);
+                ImGui::SliderInt("##aniy2", (int *)&current_img->aniy2, 0, 399);
+                ImGui::Separator();
+
+                ImGui::SliderInt("Arrow Nudge Pixels", &point_nudge_amount, 1, 10);
+                ImGui::TextDisabled("(Drag points on canvas or use sliders)");
+                ImGui::TextDisabled("(Arrow keys: hold Shift+Ctrl, press arrow)");
+            } else {
+                ImGui::Text("Select an image to edit points.");
+            }
+            ImGui::End();
         }
     }
 
