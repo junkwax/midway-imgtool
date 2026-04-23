@@ -7,6 +7,7 @@
 #include "shim_input.h"
 #include "imgui_overlay.h"
 
+
 /* ---- relay globals (extern declared in shim_file.h too) ---- */
 /* These are defined in shim_file.c; see shim_file.h for the authoritative decl */
 extern DWORD shim_eax;
@@ -235,6 +236,13 @@ static void pump_events(void)
             win_to_vga(e.motion.x, e.motion.y, &cx, &cy);
             shim_ecx = (DWORD)(cx * 4);
             shim_edx = (DWORD)(cy * 4);
+
+            /* Suppress asm right-click menu when ImGui is active.
+               The asm checks mousey==0 to trigger the menu. If ImGui wants input,
+               offset mousey to prevent the menu from appearing. */
+            if (imgui_overlay_wants_input() && ((int)(shim_edx / 4)) == 0) {
+                shim_edx = 4;  /* Set mousey to 1 (4/4), suppresses menu trigger */
+            }
             break;
         }
         case SDL_MOUSEBUTTONDOWN:

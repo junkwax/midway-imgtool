@@ -458,3 +458,9 @@ extern "C" int imgui_overlay_get_injected_key(unsigned short *keycode)
     }
     return 0;
 }
+
+extern "C" int imgui_overlay_wants_input(void)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    return io.WantCaptureMouse || io.WantCaptureKeyboard;
+}

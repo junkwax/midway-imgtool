@@ -33,6 +33,11 @@ void imgui_overlay_shutdown(void);
    Allows ImGui menu items to trigger asm key handlers. */
 void imgui_overlay_inject_key(unsigned short keycode);
 
+/* Check if ImGui wants to capture mouse or keyboard input.
+   Returns 1 if ImGui is hovering/interacting with UI, 0 otherwise.
+   Used to suppress asm menus when ImGui panels are active. */
+int imgui_overlay_wants_input(void);
+
 #ifdef __cplusplus
 }
 #endif
