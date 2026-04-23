@@ -279,6 +279,9 @@ void imgui_overlay_render(void)
 {
     ImGuiIO &io = ImGui::GetIO();
 
+    /* Note: Arrow key nudging deferred to Phase 6c+ pending keyboard enum resolution.
+       Currently can use sliders in Point Editor / Hitbox Editor panels or drag on canvas. */
+
     /* Main menu bar */
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
