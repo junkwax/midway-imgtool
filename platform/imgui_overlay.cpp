@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <cstdio>
 #include "imgui_overlay.h"
 
 /* Link asm-side symbols (COFF has no leading underscore from asm) */
@@ -47,10 +48,10 @@ struct PAL {
     void          *nxt_p;
     char           n_s[10];
     unsigned char  flags;
-    unsigned char  bitspix;
-    unsigned short numc;
+    unsigned char  bitspix;   /* bits per pixel — 8 for 256-color */
+    unsigned short numc;      /* number of colors */
     unsigned short pad;
-    void          *data_p;
+    void          *data_p;    /* pointer to packed RGB triplets (3 bytes each, 0-63 range) */
     void          *temp;
 };
 #pragma pack(pop)
@@ -60,7 +61,7 @@ static SDL_Window   *g_imgui_window   = NULL;
 static SDL_Renderer *g_imgui_renderer = NULL;
 static SDL_Texture  *g_canvas_texture = NULL;  /* VGA plane tex — kept for init compat, not displayed */
 
-/* Per-image render texture — rebuilt when selected image changes */
+/* Per-image render texture — rebuilt when selected image or palette changes */
 static SDL_Texture  *g_img_texture    = NULL;
 static int           g_img_tex_w      = 0;
 static int           g_img_tex_h      = 0;
@@ -82,12 +83,12 @@ extern "C" {
 }
 
 /* ---- Layout constants ---- */
-static const float TOOLBAR_W   = 40.0f;   /* left toolbar width */
-static const float PANEL_W     = 220.0f;  /* right panel strip width */
-static const float PALETTE_H   = 110.0f;  /* bottom palette bar height */
+static const float TOOLBAR_W   = 40.0f;
+static const float PANEL_W     = 220.0f;
+static const float PALETTE_H   = 110.0f;
 
 /* ---- Undo system ---- */
-#define UNDO_STACK_SIZE 64
+#define UNDO_STACK_SIZE 32
 struct EditSnapshot {
     int            image_idx;
     unsigned short anix, aniy;
@@ -106,12 +107,38 @@ static int  g_sel_color   = 0;
 static bool g_show_points = true;
 static bool g_show_hitbox = false;
 static int  g_hitbox_x = 0, g_hitbox_y = 0, g_hitbox_w = 32, g_hitbox_h = 32;
-static int  g_hitbox_drag_corner = -1;  /* -1=none, 0=TL,1=TR,2=BR,3=BL */
+static int  g_hitbox_drag_corner = -1;
 
 /* Palette rename dialog */
 static bool g_show_rename = false;
 static int  g_rename_pal_idx = -1;
 static char g_rename_buf[10] = {0};
+
+/* Help modal */
+static bool g_show_help = false;
+static const char *g_help_text =
+    "IMAGE TOOL HELP\n\n"
+    "Escape - Aborts a function           Enter - Accepts a function\n"
+    "h - Shows this help                  f - Redraws screen\n\n"
+    "l / s - IMG load/save                m - clear all marks\n"
+    "Alt+l/s - LBM load/save              M - set all marks\n"
+    "Ctrl+l/s - TGA load/save             Space - mark/unmark image\n\n"
+    "Ctrl+B - Build TGA from marked       Ctrl+D - Delete image\n"
+    "; - Least-squares size reduce        Ctrl+R - Rename image\n\n"
+    "D - Halve view size                  d - Double view size\n"
+    "F11 - Decrease view size             F12 - Increase view size\n\n"
+    "Tab - Swap image lists               i - Set ID from 2nd list\n"
+    "t - Show true palette colors         T - Toggle anim points\n\n"
+    "' / - Move up/down in palette list   \" ? - Page up/down palette\n"
+    "] - Set palette for image            [ - Set palette for marked\n"
+    "* - Merge marked palettes            Shift+R - Rename palette\n\n"
+    "Up/Dn - Move in image list           PgUp/Dn - Page up/down\n"
+    "Alt U/D/L/R - Move anim point        Ctrl U/D/L/R - Move 2nd anim point\n"
+    "Alt PgUp/Dn - Move image in list\n\n"
+    "Ctrl+Del - Clear 2nd anim XYZ        Ctrl+Y - Clear 2nd anim Y\n"
+    "Ctrl+Z - Clear 2nd anim Z            Ctrl+P - Point table change\n"
+    "Alt+C - Clear extra data of all      F7/8 - Add/sub line from top\n"
+    "Shift - Quarter scroll sensitivity";
 
 /* ---- Linked list helpers ---- */
 static IMG *get_img(int idx)
@@ -142,6 +169,23 @@ static int count_pals(void)
     return n;
 }
 
+/* ---- Palette persistence ----
+   The asm stores palette colors as packed 6-bit-per-channel RGB triplets in pal->data_p.
+   When the user edits g_palette[] via the sliders, write the change back so the
+   in-memory PAL struct reflects it and a subsequent Save will persist it. */
+static void palette_writeback(int color_idx)
+{
+    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    if (!pal || !pal->data_p) return;
+    if (color_idx < 0 || color_idx >= (int)pal->numc) return;
+
+    SDL_Color &c = g_palette[color_idx];
+    unsigned char *dst = (unsigned char *)pal->data_p + color_idx * 3;
+    dst[0] = (unsigned char)(c.r >> 2);  /* 8-bit → 6-bit */
+    dst[1] = (unsigned char)(c.g >> 2);
+    dst[2] = (unsigned char)(c.b >> 2);
+}
+
 /* ---- Image texture renderer ---- */
 static void rebuild_img_texture(IMG *img)
 {
@@ -151,7 +195,7 @@ static void rebuild_img_texture(IMG *img)
         return;
     }
     int w = img->w, h = img->h;
-    int stride = (w + 3) & ~3;  /* row stride padded to 4-byte boundary */
+    int stride = (w + 3) & ~3;
 
     if (!g_img_texture || g_img_tex_w != w || g_img_tex_h != h) {
         if (g_img_texture) SDL_DestroyTexture(g_img_texture);
@@ -186,7 +230,9 @@ static void undo_push(void)
         EditSnapshot *last = &g_undo[g_undo_idx];
         if (last->image_idx == ilselected &&
             last->anix == img->anix && last->aniy == img->aniy &&
-            last->anix2 == img->anix2 && last->aniy2 == img->aniy2)
+            last->anix2 == img->anix2 && last->aniy2 == img->aniy2 &&
+            last->hitbox_x == g_hitbox_x && last->hitbox_y == g_hitbox_y &&
+            last->hitbox_w == g_hitbox_w && last->hitbox_h == g_hitbox_h)
             return;
     }
 
@@ -236,7 +282,6 @@ void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture 
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
     ImGui::StyleColorsDark();
-    /* Tighten up the style to feel more like a pro tool */
     ImGuiStyle &style = ImGui::GetStyle();
     style.WindowPadding    = ImVec2(4, 4);
     style.FramePadding     = ImVec2(4, 3);
@@ -269,7 +314,6 @@ int imgui_overlay_wants_input(void)
     return (io.WantCaptureMouse || io.WantCaptureKeyboard) ? 1 : 0;
 }
 
-/* ---- Inject key into asm queue ---- */
 void imgui_overlay_inject_key(unsigned short code)
 {
     shim_key_inject(code);
@@ -284,19 +328,36 @@ void imgui_overlay_render(void)
     float sw = io.DisplaySize.x;
     float sh = io.DisplaySize.y;
 
+    /* ---- Global keyboard shortcuts (only when ImGui is not eating keys for text input) ---- */
+    if (!io.WantTextInput) {
+        bool ctrl = io.KeyCtrl;
+        /* Ctrl+Z — undo within ImGui editor state */
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+            if (g_undo_idx > 0) { g_undo_idx--; undo_apply(g_undo_idx); }
+        }
+        /* Ctrl+Y — redo */
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+            if (g_undo_idx < g_undo_count - 1) { g_undo_idx++; undo_apply(g_undo_idx); }
+        }
+        /* h — help */
+        if (ImGui::IsKeyPressed(ImGuiKey_H, false)) g_show_help = true;
+    }
+
     /* ---- Menu bar ---- */
     if (ImGui::BeginMainMenuBar()) {
-        /* File — key bindings from itimg.asm key_t table:
-           'l'=load IMG  's'=save IMG  'a'=append  27=Esc/quit */
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open...",  "l"))   imgui_overlay_inject_key('l');
             if (ImGui::MenuItem("Save",     "s"))   imgui_overlay_inject_key('s');
-            if (ImGui::MenuItem("Append"))          imgui_overlay_inject_key('a');
+            if (ImGui::MenuItem("Append",   "a"))   imgui_overlay_inject_key('a');
             ImGui::Separator();
-            if (ImGui::MenuItem("Quit",     "Esc")) imgui_overlay_inject_key(27);
+            if (ImGui::MenuItem("Load LBM", "Alt+L"))   imgui_overlay_inject_key(0x2600);
+            if (ImGui::MenuItem("Save LBM", "Alt+S"))   imgui_overlay_inject_key(0x1f00);
+            if (ImGui::MenuItem("Load TGA", "Ctrl+L"))  imgui_overlay_inject_key(0x000C);
+            if (ImGui::MenuItem("Save TGA", "Ctrl+S"))  imgui_overlay_inject_key(0x0013);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit", "Esc")) imgui_overlay_inject_key(27);
             ImGui::EndMenu();
         }
-        /* Edit */
         if (ImGui::BeginMenu("Edit")) {
             bool can_undo = g_undo_idx > 0;
             bool can_redo = g_undo_idx < g_undo_count - 1;
@@ -307,46 +368,57 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Redo", "Ctrl+Y")) { g_undo_idx++; undo_apply(g_undo_idx); }
             if (!can_redo) ImGui::EndDisabled();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename",    "Ctrl+R"))  imgui_overlay_inject_key(0x12);
-            if (ImGui::MenuItem("Delete",    "Ctrl+D"))  imgui_overlay_inject_key(0x04);
-            if (ImGui::MenuItem("Build TGA", "Ctrl+B"))  imgui_overlay_inject_key(0x02);
+            if (ImGui::MenuItem("Rename Image",  "Ctrl+R"))  imgui_overlay_inject_key(0x12);
+            if (ImGui::MenuItem("Delete Image",  "Ctrl+D"))  imgui_overlay_inject_key(0x04);
+            if (ImGui::MenuItem("Duplicate"))                imgui_overlay_inject_key('a');
+            if (ImGui::MenuItem("Build TGA",     "Ctrl+B"))  imgui_overlay_inject_key(0x02);
             ImGui::EndMenu();
         }
-        /* Image */
         if (ImGui::BeginMenu("Image")) {
-            if (ImGui::MenuItem("Add/Del Point Table",     "Ctrl+P"))  imgui_overlay_inject_key(0x10);
-            if (ImGui::MenuItem("Set ID from 2nd List",    "i"))        imgui_overlay_inject_key('i');
-            if (ImGui::MenuItem("Least-Squares Reduce",    ";"))        imgui_overlay_inject_key(';');
+            if (ImGui::MenuItem("Mark / Unmark",            "Space"))        imgui_overlay_inject_key(' ');
+            if (ImGui::MenuItem("Set All Marks",            "M"))            imgui_overlay_inject_key('M');
+            if (ImGui::MenuItem("Clear All Marks",          "m"))            imgui_overlay_inject_key('m');
+            if (ImGui::MenuItem("Invert All Marks")) {
+                IMG *p=(IMG*)img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;}
+            }
             ImGui::Separator();
-            if (ImGui::MenuItem("Switch Image List",       "Tab"))      imgui_overlay_inject_key(0x09);
-            if (ImGui::MenuItem("Redraw",                  "f"))        imgui_overlay_inject_key('f');
+            if (ImGui::MenuItem("Jump to Prev Marked",      "Left"))         imgui_overlay_inject_key(0x4b00);
+            if (ImGui::MenuItem("Jump to Next Marked",      "Right"))        imgui_overlay_inject_key(0x4d00);
+            if (ImGui::MenuItem("Move Image Up in List",    "Alt+PgUp"))     imgui_overlay_inject_key(0x9900);
+            if (ImGui::MenuItem("Move Image Down in List",  "Alt+PgDn"))     imgui_overlay_inject_key(0xa100);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Rename Image",             "Ctrl+R"))       imgui_overlay_inject_key(0x12);
+            if (ImGui::MenuItem("Add/Del Point Table",      "Ctrl+P"))       imgui_overlay_inject_key(0x10);
+            if (ImGui::MenuItem("Set ID from 2nd List",     "i"))            imgui_overlay_inject_key('i');
+            if (ImGui::MenuItem("Least-Squares Reduce",     ";"))            imgui_overlay_inject_key(';');
+            if (ImGui::MenuItem("Clear Extra Data",         "Alt+C"))        imgui_overlay_inject_key(0x2E00);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Switch Image List",        "Tab"))          imgui_overlay_inject_key(0x09);
+            if (ImGui::MenuItem("Toggle Anim Point Mode",   "a"))            imgui_overlay_inject_key('a');
+            if (ImGui::MenuItem("Show True Palette Colors", "t"))            imgui_overlay_inject_key('t');
+            if (ImGui::MenuItem("Redraw",                   "f"))            imgui_overlay_inject_key('f');
             ImGui::EndMenu();
         }
-        /* In/Out — Alt+L=load LBM, Alt+S=save LBM, Ctrl+L=load TGA, Ctrl+S=save TGA */
-        if (ImGui::BeginMenu("In/Out")) {
-            if (ImGui::MenuItem("Load LBM", "Alt+L"))  imgui_overlay_inject_key(0x2600);
-            if (ImGui::MenuItem("Save LBM", "Alt+S"))  imgui_overlay_inject_key(0x1f00);
-            if (ImGui::MenuItem("Load TGA", "Ctrl+L")) imgui_overlay_inject_key(0x000C);
-            if (ImGui::MenuItem("Save TGA", "Ctrl+S")) imgui_overlay_inject_key(0x0013);
-            ImGui::EndMenu();
-        }
-        /* Palette */
         if (ImGui::BeginMenu("Palette")) {
-            if (ImGui::MenuItem("Merge Marked into Selected", "*"))  imgui_overlay_inject_key('*');
+            if (ImGui::MenuItem("Set Palette for Image",      "]"))       imgui_overlay_inject_key(']');
+            if (ImGui::MenuItem("Set Palette for Marked",     "["))       imgui_overlay_inject_key('[');
             ImGui::Separator();
-            if (ImGui::MenuItem("Set Palette for Image",        "]"))  imgui_overlay_inject_key(']');
-            if (ImGui::MenuItem("Set Palette for Marked",       "["))  imgui_overlay_inject_key('[');
+            if (ImGui::MenuItem("Merge Marked into Selected", "*"))       imgui_overlay_inject_key('*');
+            if (ImGui::MenuItem("Delete Palette",             "Del"))     imgui_overlay_inject_key(0x5300);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Rename Palette",             "Shift+R")) imgui_overlay_inject_key(0x0052);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mark All Palettes")) {
+                PAL *p=(PAL*)pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;}
+            }
+            if (ImGui::MenuItem("Clear All Palette Marks")) {
+                PAL *p=(PAL*)pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;}
+            }
+            if (ImGui::MenuItem("Invert Palette Marks")) {
+                PAL *p=(PAL*)pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;}
+            }
             ImGui::EndMenu();
         }
-        /* Marks — 'm'=ilmrk_clrall(clear), 'M'=ilmrk_setall(set all) */
-        if (ImGui::BeginMenu("Marks")) {
-            if (ImGui::MenuItem("Set All Image Marks",   "M"))  imgui_overlay_inject_key('M');
-            if (ImGui::MenuItem("Clear All Image Marks", "m"))  imgui_overlay_inject_key('m');
-            ImGui::Separator();
-            if (ImGui::MenuItem("Clear Extra Data (Anim2/PTTBL)", "Alt+C"))  imgui_overlay_inject_key(0x2E00);
-            ImGui::EndMenu();
-        }
-        /* View — 'd'=zoom in, 'D'=zoom out, 'T'=toggle, '2'=2nd list, 'p'=iwin */
         if (ImGui::BeginMenu("View")) {
             if (ImGui::MenuItem("Zoom In",  "d"))  imgui_overlay_inject_key('d');
             if (ImGui::MenuItem("Zoom Out", "D"))  imgui_overlay_inject_key('D');
@@ -356,9 +428,8 @@ void imgui_overlay_render(void)
             ImGui::MenuItem("Hitboxes",    NULL, &g_show_hitbox);
             ImGui::EndMenu();
         }
-        /* Help */
         if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem("Help", "h"))  imgui_overlay_inject_key('h');
+            if (ImGui::MenuItem("Show Help", "h")) g_show_help = true;
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -368,7 +439,7 @@ void imgui_overlay_render(void)
     float work_y = menu_h;
     float work_h = sh - work_y;
 
-    /* Rebuild image texture every frame — captures palette changes and live edits */
+    /* Rebuild image texture every frame to pick up palette and data changes */
     {
         IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
         rebuild_img_texture(img);
@@ -384,47 +455,34 @@ void imgui_overlay_render(void)
         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     {
         ImVec2 btn(TOOLBAR_W - 8, TOOLBAR_W - 8);
-        /* Open */
         if (ImGui::Button("Op", btn))  imgui_overlay_inject_key('l');
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open IMG file (l)");
-        /* Save */
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open IMG (l)");
         if (ImGui::Button("Sv", btn))  imgui_overlay_inject_key('s');
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save IMG file (s)");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save IMG (s)");
         ImGui::Spacing();
-        /* Zoom in */
         if (ImGui::Button("Z+", btn))  imgui_overlay_inject_key('d');
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom In");
-        /* Zoom out */
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom In (d)");
         if (ImGui::Button("Z-", btn))  imgui_overlay_inject_key('D');
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom Out");
-        /* Zoom 1:1 */
-        if (ImGui::Button("1:1", btn)) imgui_overlay_inject_key('1');
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom 1:1");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom Out (D)");
         ImGui::Spacing();
-        /* Mark / Unmark */
         if (ImGui::Button("Mk", btn))  imgui_overlay_inject_key(' ');
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark/Unmark");
-        /* Mark All */
-        if (ImGui::Button("MA", btn))  imgui_overlay_inject_key('m');
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark All");
-        /* Clear Marks */
-        if (ImGui::Button("CM", btn))  imgui_overlay_inject_key('M');
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear Marks");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark/Unmark (Space)");
+        if (ImGui::Button("MA", btn))  imgui_overlay_inject_key('M');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set All Marks (M)");
+        if (ImGui::Button("CM", btn))  imgui_overlay_inject_key('m');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear All Marks (m)");
         ImGui::Spacing();
-        /* Toggle anim points */
         ImGui::PushStyleColor(ImGuiCol_Button, g_show_points ?
             ImVec4(0.2f,0.6f,0.2f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
         if (ImGui::Button("Pt", btn)) g_show_points = !g_show_points;
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Anim Points");
-        /* Toggle hitbox */
         ImGui::PushStyleColor(ImGuiCol_Button, g_show_hitbox ?
             ImVec4(0.0f,0.5f,0.6f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
         if (ImGui::Button("Hb", btn)) g_show_hitbox = !g_show_hitbox;
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Hitbox");
         ImGui::Spacing();
-        /* Undo / Redo */
         bool can_undo = g_undo_idx > 0;
         bool can_redo = g_undo_idx < g_undo_count - 1;
         if (!can_undo) ImGui::BeginDisabled();
@@ -465,49 +523,88 @@ void imgui_overlay_render(void)
                     if (marked) snprintf(label, sizeof(label), "* %s", img->n_s);
                     else        snprintf(label, sizeof(label), "  %s", img->n_s);
                     if (ImGui::Selectable(label, selected)) {
+                        /* Navigate to the clicked image via arrow key injection */
                         int delta = i - ilselected;
-                        unsigned short key = delta > 0 ? 0x5000 : 0x4800;
+                        unsigned short nav_key = delta > 0 ? 0x5000 : 0x4800;
                         int steps = delta > 0 ? delta : -delta;
-                        for (int s = 0; s < steps; s++) imgui_overlay_inject_key(key);
-                        if (delta == 0) imgui_overlay_inject_key(0x5000);
+                        for (int s = 0; s < steps; s++) imgui_overlay_inject_key(nav_key);
+                        if (delta == 0) imgui_overlay_inject_key(0x5000);  /* refresh */
                     }
-                    ImGui::PopID();
-                }
-                ImGui::EndListBox();
-            }
-        }
-
-        /* --- Palette List --- */
-        int n_pals = count_pals();
-        if (ImGui::CollapsingHeader("Palettes", ImGuiTreeNodeFlags_DefaultOpen)) {
-            float list_h = panel_h * 0.15f;
-            if (ImGui::BeginListBox("##pallist", ImVec2(-1, list_h))) {
-                for (int i = 0; i < n_pals; i++) {
-                    PAL *pal = get_pal(i);
-                    if (!pal) break;
-                    bool selected = (i == plselected);
-                    ImGui::PushID(1000 + i);
-                    if (ImGui::Selectable(pal->n_s, selected)) {
-                        /* Inject palette nav keys to drive plselected via asm */
-                        int delta = i - plselected;
-                        unsigned short key = delta > 0 ? (unsigned short)'/' : (unsigned short)'\'';
-                        int steps = delta > 0 ? delta : -delta;
-                        for (int s = 0; s < steps; s++) imgui_overlay_inject_key(key);
-                    }
-                    /* Right-click rename */
-                    if (ImGui::BeginPopupContextItem("##palctx")) {
-                        if (ImGui::MenuItem("Rename")) {
-                            g_rename_pal_idx = i;
-                            strncpy(g_rename_buf, pal->n_s, 9);
-                            g_rename_buf[9] = '\0';
-                            g_show_rename = true;
-                        }
+                    /* Right-click context menu on image items */
+                    if (ImGui::BeginPopupContextItem("##imgctx")) {
+                        if (ImGui::MenuItem("Mark / Unmark")) imgui_overlay_inject_key(' ');
+                        if (ImGui::MenuItem("Rename"))        imgui_overlay_inject_key(0x12);
+                        if (ImGui::MenuItem("Delete"))        imgui_overlay_inject_key(0x04);
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Build TGA"))     imgui_overlay_inject_key(0x02);
+                        if (ImGui::MenuItem("Set Palette"))   imgui_overlay_inject_key(']');
                         ImGui::EndPopup();
                     }
                     ImGui::PopID();
                 }
                 ImGui::EndListBox();
             }
+            /* Mark buttons inline below list */
+            if (ImGui::SmallButton("Mk All"))   imgui_overlay_inject_key('M');
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clr All"))  imgui_overlay_inject_key('m');
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Invert"))   { IMG *p=(IMG*)img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Mk"))       imgui_overlay_inject_key(' ');
+        }
+
+        /* --- Palette List --- */
+        int n_pals = count_pals();
+        if (ImGui::CollapsingHeader("Palettes", ImGuiTreeNodeFlags_DefaultOpen)) {
+            float list_h = panel_h * 0.22f;
+            if (ImGui::BeginListBox("##pallist", ImVec2(-1, list_h))) {
+                for (int i = 0; i < n_pals; i++) {
+                    PAL *pal = get_pal(i);
+                    if (!pal) break;
+                    bool sel    = (i == plselected);
+                    bool marked = (pal->flags & 1) != 0;
+                    ImGui::PushID(1000 + i);
+                    char label[16];
+                    if (marked) snprintf(label, sizeof(label), "* %s", pal->n_s);
+                    else        snprintf(label, sizeof(label), "  %s", pal->n_s);
+                    if (ImGui::Selectable(label, sel)) {
+                        int delta = i - plselected;
+                        unsigned short key = delta > 0 ? (unsigned short)'/' : (unsigned short)'\'';
+                        int steps = delta > 0 ? delta : -delta;
+                        for (int s = 0; s < steps; s++) imgui_overlay_inject_key(key);
+                    }
+                    /* Right-click context menu */
+                    if (ImGui::BeginPopupContextItem("##palctx")) {
+                        if (ImGui::MenuItem("Mark / Unmark"))             pal->flags ^= 1;
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Set for Image"))             imgui_overlay_inject_key(']');
+                        if (ImGui::MenuItem("Set for Marked Images"))     imgui_overlay_inject_key('[');
+                        if (ImGui::MenuItem("Merge Marked into Selected")) imgui_overlay_inject_key('*');
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Rename")) {
+                            g_rename_pal_idx = i;
+                            strncpy(g_rename_buf, pal->n_s, 9);
+                            g_rename_buf[9] = '\0';
+                            g_show_rename = true;
+                        }
+                        if (ImGui::MenuItem("Delete")) imgui_overlay_inject_key(0x5300);
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndListBox();
+            }
+            /* Palette mark buttons */
+            if (ImGui::SmallButton("Mk All"))    { PAL *p=(PAL*)pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;} }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clr All"))   { PAL *p=(PAL*)pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;} }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Merge"))     imgui_overlay_inject_key('*');
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Del"))       imgui_overlay_inject_key(0x5300);
         }
 
         /* --- Properties --- */
@@ -521,12 +618,15 @@ void imgui_overlay_render(void)
                 if (img->anix2 || img->aniy2)
                     ImGui::Text("Anipt2: %d, %d", img->anix2, img->aniy2);
                 ImGui::Text("Marked: %s", (img->flags & 1) ? "Yes" : "No");
+                /* Undo/redo history count */
+                ImGui::Spacing();
+                ImGui::TextDisabled("Undo: %d/%d", g_undo_idx + 1, g_undo_count);
             } else {
                 ImGui::TextDisabled("No image selected");
             }
         }
 
-        /* --- Point Editor --- */
+        /* --- Anim Point Editor --- */
         if (ImGui::CollapsingHeader("Anim Points")) {
             IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
             if (img) {
@@ -574,21 +674,18 @@ void imgui_overlay_render(void)
         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar();
     {
-        ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImVec2 avail   = ImGui::GetContentRegionAvail();
         ImVec2 img_pos = ImGui::GetCursorScreenPos();
         ImVec2 img_sz(0, 0);
         float sx = 1.0f, sy = 1.0f;
 
         if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
-            /* Scale image to fit canvas, keeping pixel aspect ratio */
             float tw = avail.x, th = (float)g_img_tex_h * (tw / (float)g_img_tex_w);
             if (th > avail.y) { th = avail.y; tw = (float)g_img_tex_w * (th / (float)g_img_tex_h); }
-            /* Integer-scale snap for crisp pixels */
             float scale = (float)(int)(tw / (float)g_img_tex_w);
             if (scale < 1.0f) scale = 1.0f;
             tw = (float)g_img_tex_w * scale;
             th = (float)g_img_tex_h * scale;
-            /* Centre in available area */
             float off_x = (avail.x - tw) * 0.5f;
             float off_y = (avail.y - th) * 0.5f;
             if (off_x > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + off_x);
@@ -603,25 +700,24 @@ void imgui_overlay_render(void)
             ImDrawList *dl = ImGui::GetWindowDrawList();
             float cs = 8.0f * scale; if (cs < 8.f) cs = 8.f;
             for (float cy = img_pos.y; cy < img_pos.y + th; cy += cs) {
-                for (float cx = img_pos.x; cx < img_pos.x + tw; cx += cs) {
+                for (float cx2 = img_pos.x; cx2 < img_pos.x + tw; cx2 += cs) {
                     int row = (int)((cy - img_pos.y) / cs);
-                    int col = (int)((cx - img_pos.x) / cs);
+                    int col = (int)((cx2 - img_pos.x) / cs);
                     ImU32 col32 = ((row + col) & 1) ? IM_COL32(160,160,160,255) : IM_COL32(100,100,100,255);
-                    float x2 = cx + cs; if (x2 > img_pos.x + tw) x2 = img_pos.x + tw;
-                    float y2 = cy + cs; if (y2 > img_pos.y + th) y2 = img_pos.y + th;
-                    dl->AddRectFilled(ImVec2(cx, cy), ImVec2(x2, y2), col32);
+                    float x2 = cx2 + cs; if (x2 > img_pos.x + tw) x2 = img_pos.x + tw;
+                    float y2 = cy  + cs; if (y2 > img_pos.y + th) y2 = img_pos.y + th;
+                    dl->AddRectFilled(ImVec2(cx2, cy), ImVec2(x2, y2), col32);
                 }
             }
             ImGui::Image((ImTextureID)(intptr_t)g_img_texture, img_sz);
         } else {
-            /* No image selected */
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + avail.y * 0.45f);
             float tw = ImGui::CalcTextSize("No image selected").x;
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail.x - tw) * 0.5f);
             ImGui::TextDisabled("No image selected");
         }
-        ImGuiIO &cio = ImGui::GetIO();
-        ImVec2 mouse = cio.MousePos;
+
+        ImVec2 mouse = io.MousePos;
         bool   mbdn  = ImGui::IsMouseDown(ImGuiMouseButton_Left);
 
         /* --- Anim point overlay + dragging --- */
@@ -630,7 +726,6 @@ void imgui_overlay_render(void)
             if (img && img->w > 0) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
 
-                /* Primary point */
                 ImVec2 s1(img_pos.x + img->anix * sx, img_pos.y + img->aniy * sy);
                 ImVec2 d1 = mouse - s1;
                 bool h1 = (d1.x*d1.x + d1.y*d1.y) < 10*10;
@@ -648,7 +743,6 @@ void imgui_overlay_render(void)
                     img->aniy = (unsigned short)ny;
                 } else if (!mbdn && drag1) { drag1 = false; undo_push(); }
 
-                /* Secondary point */
                 if (img->anix2 || img->aniy2) {
                     ImVec2 s2(img_pos.x + img->anix2 * sx, img_pos.y + img->aniy2 * sy);
                     ImVec2 d2 = mouse - s2;
@@ -704,8 +798,8 @@ void imgui_overlay_render(void)
                 if (my < 0) my = 0; if (my > 399) my = 399;
                 int c = g_hitbox_drag_corner;
                 if (c == 0) { g_hitbox_w += g_hitbox_x - mx; g_hitbox_h += g_hitbox_y - my; g_hitbox_x = mx; g_hitbox_y = my; }
-                if (c == 1) { g_hitbox_w = mx - g_hitbox_x;  g_hitbox_h += g_hitbox_y - my; g_hitbox_y = my; }
-                if (c == 2) { g_hitbox_w = mx - g_hitbox_x;  g_hitbox_h = my - g_hitbox_y; }
+                if (c == 1) { g_hitbox_w = mx - g_hitbox_x; g_hitbox_h += g_hitbox_y - my; g_hitbox_y = my; }
+                if (c == 2) { g_hitbox_w = mx - g_hitbox_x; g_hitbox_h = my - g_hitbox_y; }
                 if (c == 3) { g_hitbox_w += g_hitbox_x - mx; g_hitbox_x = mx; g_hitbox_h = my - g_hitbox_y; }
                 if (g_hitbox_w < 1) g_hitbox_w = 1;
                 if (g_hitbox_h < 1) g_hitbox_h = 1;
@@ -726,12 +820,11 @@ void imgui_overlay_render(void)
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
     {
-        /* 256-color swatch grid */
-        ImDrawList *dl    = ImGui::GetWindowDrawList();
-        ImVec2      pos0  = ImGui::GetCursorScreenPos();
-        float       sw16  = 14.0f;
-        float       sh16  = 14.0f;
-        float       gap   = 1.0f;
+        ImDrawList *dl   = ImGui::GetWindowDrawList();
+        ImVec2      pos0 = ImGui::GetCursorScreenPos();
+        float       sw16 = 14.0f;
+        float       sh16 = 14.0f;
+        float       gap  = 1.0f;
         float       row_h = sh16 + gap;
         float       col_w = sw16 + gap;
 
@@ -740,12 +833,10 @@ void imgui_overlay_render(void)
             ImVec2 p0(pos0.x + col * col_w, pos0.y + row * row_h);
             ImVec2 p1(p0.x + sw16, p0.y + sh16);
             SDL_Color c = g_palette[i];
-            dl->AddRectFilled(p0, p1,
-                IM_COL32(c.r, c.g, c.b, 255));
+            dl->AddRectFilled(p0, p1, IM_COL32(c.r, c.g, c.b, 255));
             if (i == g_sel_color)
                 dl->AddRect(p0, p1, IM_COL32(255,255,255,255), 0, 0, 1.5f);
 
-            /* Hit test */
             ImGui::SetCursorScreenPos(p0);
             ImGui::InvisibleButton(("##sw" + std::to_string(i)).c_str(), ImVec2(sw16, sh16));
             if (ImGui::IsItemClicked()) g_sel_color = i;
@@ -754,18 +845,26 @@ void imgui_overlay_render(void)
         /* Advance cursor past the swatch grid */
         ImGui::SetCursorScreenPos(ImVec2(pos0.x + 16 * col_w + 6, pos0.y));
 
-        /* Color sliders next to the swatches */
         ImGui::BeginGroup();
         {
             SDL_Color &col = g_palette[g_sel_color];
             int r = col.r, g_c = col.g, b = col.b;
             ImGui::Text("Index: %d", g_sel_color);
             ImGui::SetNextItemWidth(160);
-            if (ImGui::SliderInt("R##cr", &r,   0, 255)) col.r = (unsigned char)r;
+            if (ImGui::SliderInt("R##cr", &r,   0, 255)) {
+                col.r = (unsigned char)r;
+                palette_writeback(g_sel_color);
+            }
             ImGui::SetNextItemWidth(160);
-            if (ImGui::SliderInt("G##cg", &g_c, 0, 255)) col.g = (unsigned char)g_c;
+            if (ImGui::SliderInt("G##cg", &g_c, 0, 255)) {
+                col.g = (unsigned char)g_c;
+                palette_writeback(g_sel_color);
+            }
             ImGui::SetNextItemWidth(160);
-            if (ImGui::SliderInt("B##cb", &b,   0, 255)) col.b = (unsigned char)b;
+            if (ImGui::SliderInt("B##cb", &b,   0, 255)) {
+                col.b = (unsigned char)b;
+                palette_writeback(g_sel_color);
+            }
         }
         ImGui::EndGroup();
     }
@@ -793,6 +892,21 @@ void imgui_overlay_render(void)
         ImGui::EndPopup();
     }
 
+    /* ===== HELP MODAL ===== */
+    if (g_show_help) ImGui::OpenPopup("Help");
+    if (ImGui::BeginPopupModal("Help", &g_show_help,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::SetNextWindowSize(ImVec2(580, 400), ImGuiCond_Always);
+        ImGui::TextUnformatted(g_help_text);
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("Close", ImVec2(120, 0))) {
+            g_show_help = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     /* Flush to renderer */
     ImGui::Render();
     ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), g_imgui_renderer);
@@ -800,6 +914,7 @@ void imgui_overlay_render(void)
 
 void imgui_overlay_shutdown(void)
 {
+    if (g_img_texture) { SDL_DestroyTexture(g_img_texture); g_img_texture = NULL; }
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

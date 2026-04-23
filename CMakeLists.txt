@@ -51,6 +51,8 @@ else()
 endif()
 
 # ---- Sources ---------------------------------------------------------------
+set(PLATFORM_RC "")
+
 add_executable(imgtool
     IT/it.c
     IT/itos.asm
@@ -69,6 +71,7 @@ add_executable(imgtool
     imgui/backends/imgui_impl_sdl2.cpp
     imgui/backends/imgui_impl_sdlrenderer2.cpp
     platform/imgui_overlay.cpp
+    ${PLATFORM_RC}
 )
 
 target_include_directories(imgtool PRIVATE

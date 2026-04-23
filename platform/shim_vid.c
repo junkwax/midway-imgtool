@@ -12,6 +12,11 @@
 #include "shim_file.h"   /* relay globals (shim_eax, shim_ecx, shim_esi) */
 #include "imgui_overlay.h"
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 /* ---- shadow buffer ---- */
 /* Each VGA plane is 64 KB on real hardware; the assembly code uses 16-bit DI
    arithmetic that can transiently address offsets 64000..65535 (e.g. when the
