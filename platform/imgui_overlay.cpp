@@ -97,6 +97,7 @@ static bool show_hitbox_editor = false;
 static bool show_hitboxes_overlay = false;
 static int hitbox_x = 0, hitbox_y = 0;        /* Hitbox top-left */
 static int hitbox_w = 32, hitbox_h = 32;      /* Hitbox size */
+static int hitbox_dragging_corner = -1;       /* -1=none, 0=TL, 1=TR, 2=BR, 3=BL */
 
 /* Undo/redo system */
 #define UNDO_STACK_SIZE 64
@@ -468,6 +469,9 @@ void imgui_overlay_render(void)
                 ImDrawList *draw_list = ImGui::GetWindowDrawList();
                 float scale_x = canvas_size.x / 640.0f;
                 float scale_y = canvas_size.y / 400.0f;
+                ImGuiIO &io = ImGui::GetIO();
+                ImVec2 mouse_pos = io.MousePos;
+                bool mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
 
                 /* Draw hitbox rectangle */
                 ImVec2 box_tl_screen(canvas_pos.x + hitbox_x * scale_x,
@@ -478,12 +482,82 @@ void imgui_overlay_render(void)
 
                 /* Draw corners as draggable handles */
                 float handle_size = 5.0f;
-                draw_list->AddCircleFilled(box_tl_screen, handle_size, IM_COL32(0, 255, 255, 255));
-                draw_list->AddCircleFilled(box_br_screen, handle_size, IM_COL32(0, 255, 255, 255));
                 ImVec2 box_tr_screen(box_br_screen.x, box_tl_screen.y);
                 ImVec2 box_bl_screen(box_tl_screen.x, box_br_screen.y);
-                draw_list->AddCircleFilled(box_tr_screen, handle_size, IM_COL32(0, 255, 255, 255));
-                draw_list->AddCircleFilled(box_bl_screen, handle_size, IM_COL32(0, 255, 255, 255));
+
+                /* Check corner hover distance */
+                ImVec2 diff_tl = mouse_pos - box_tl_screen;
+                ImVec2 diff_tr = mouse_pos - box_tr_screen;
+                ImVec2 diff_br = mouse_pos - box_br_screen;
+                ImVec2 diff_bl = mouse_pos - box_bl_screen;
+                float dist_tl = diff_tl.x*diff_tl.x + diff_tl.y*diff_tl.y;
+                float dist_tr = diff_tr.x*diff_tr.x + diff_tr.y*diff_tr.y;
+                float dist_br = diff_br.x*diff_br.x + diff_br.y*diff_br.y;
+                float dist_bl = diff_bl.x*diff_bl.x + diff_bl.y*diff_bl.y;
+                float hit_radius = 12*12;  /* 12px hit radius */
+
+                bool hovering_tl = (dist_tl < hit_radius);
+                bool hovering_tr = (dist_tr < hit_radius);
+                bool hovering_br = (dist_br < hit_radius);
+                bool hovering_bl = (dist_bl < hit_radius);
+
+                /* Handle corner dragging */
+                if ((hovering_tl || hovering_tr || hovering_br || hovering_bl) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    if (hovering_tl) { hitbox_dragging_corner = 0; undo_snapshot(); }
+                    else if (hovering_tr) { hitbox_dragging_corner = 1; undo_snapshot(); }
+                    else if (hovering_br) { hitbox_dragging_corner = 2; undo_snapshot(); }
+                    else if (hovering_bl) { hitbox_dragging_corner = 3; undo_snapshot(); }
+                }
+
+                if (hitbox_dragging_corner >= 0 && mouse_down) {
+                    ImVec2 relative = mouse_pos - canvas_pos;
+                    int mouse_vga_x = (int)(relative.x / scale_x);
+                    int mouse_vga_y = (int)(relative.y / scale_y);
+                    if (mouse_vga_x < 0) mouse_vga_x = 0; else if (mouse_vga_x > 639) mouse_vga_x = 639;
+                    if (mouse_vga_y < 0) mouse_vga_y = 0; else if (mouse_vga_y > 399) mouse_vga_y = 399;
+
+                    /* Resize based on which corner is being dragged */
+                    if (hitbox_dragging_corner == 0) {  /* TL corner */
+                        hitbox_x = mouse_vga_x;
+                        hitbox_y = mouse_vga_y;
+                        hitbox_w = hitbox_x + hitbox_w - mouse_vga_x;
+                        hitbox_h = hitbox_y + hitbox_h - mouse_vga_y;
+                    } else if (hitbox_dragging_corner == 1) {  /* TR corner */
+                        hitbox_y = mouse_vga_y;
+                        hitbox_w = mouse_vga_x - hitbox_x;
+                        hitbox_h = hitbox_y + hitbox_h - mouse_vga_y;
+                    } else if (hitbox_dragging_corner == 2) {  /* BR corner */
+                        hitbox_w = mouse_vga_x - hitbox_x;
+                        hitbox_h = mouse_vga_y - hitbox_y;
+                    } else if (hitbox_dragging_corner == 3) {  /* BL corner */
+                        hitbox_x = mouse_vga_x;
+                        hitbox_w = hitbox_x + hitbox_w - mouse_vga_x;
+                        hitbox_h = mouse_vga_y - hitbox_y;
+                    }
+                    /* Clamp to minimum size */
+                    if (hitbox_w < 1) hitbox_w = 1;
+                    if (hitbox_h < 1) hitbox_h = 1;
+                    /* Clamp to canvas */
+                    if (hitbox_x < 0) hitbox_x = 0;
+                    if (hitbox_y < 0) hitbox_y = 0;
+                    if (hitbox_x + hitbox_w > 640) hitbox_x = 640 - hitbox_w;
+                    if (hitbox_y + hitbox_h > 400) hitbox_y = 400 - hitbox_h;
+                } else if (!mouse_down) {
+                    if (hitbox_dragging_corner >= 0) {
+                        undo_snapshot();  /* Save final state after drag */
+                    }
+                    hitbox_dragging_corner = -1;
+                }
+
+                /* Draw corners with color feedback */
+                ImU32 tl_color = hovering_tl ? IM_COL32(255, 255, 0, 255) : IM_COL32(0, 255, 255, 255);
+                ImU32 tr_color = hovering_tr ? IM_COL32(255, 255, 0, 255) : IM_COL32(0, 255, 255, 255);
+                ImU32 br_color = hovering_br ? IM_COL32(255, 255, 0, 255) : IM_COL32(0, 255, 255, 255);
+                ImU32 bl_color = hovering_bl ? IM_COL32(255, 255, 0, 255) : IM_COL32(0, 255, 255, 255);
+                draw_list->AddCircleFilled(box_tl_screen, handle_size, tl_color);
+                draw_list->AddCircleFilled(box_tr_screen, handle_size, tr_color);
+                draw_list->AddCircleFilled(box_br_screen, handle_size, br_color);
+                draw_list->AddCircleFilled(box_bl_screen, handle_size, bl_color);
             }
         }
 
