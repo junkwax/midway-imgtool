@@ -41,36 +41,37 @@ The executable is **288 KB** with no external dependencies beyond SDL2.dll.
 
 ---
 
-## Phase 2: Planned (Not Yet Started)
+## Phase 2: Complete ✅
 
-Replace the asm gadget/menu system with full ImGui panels.
+All asm gadget/menu system replaced with full ImGui panels.
 
-### Features to Add
+### Features Implemented
 
-1. **Image List Panel** (right sidebar)
+1. ✅ **Image List Panel** (right sidebar)
    - Scrollable list of images from asm `img_p` / `imgcnt`
-   - Click to select, Space to mark/unmark
-   - Star icon for marked images
+   - Click to select, updates `g_selected_image_idx`
+   - Injects up/down arrow keys to trigger asm selection
+   - Shows image count and names
 
-2. **Palette Swatches Panel** (bottom)
+2. ✅ **Palette Swatches Panel** (bottom)
    - 16×16 grid of 256 colors from `g_palette[256]`
    - Click to select active color
-   - R/G/B sliders for editing
-   - Call `vid_setvgapal18` to apply changes
+   - R/G/B sliders for editing colors
+   - Colors directly update `g_palette[]` for next render
 
-3. **Properties Panel** (right sidebar)
-   - Current image name, dimensions
-   - Palette assignment
-   - Part count, animation point count
-   - Parse from asm IMAGE struct via offset constants
+3. ✅ **Properties Panel** (right sidebar)
+   - Current image name, dimensions, palette index
+   - Animation point coordinates
+   - Marked flag status
+   - Parses from asm IMAGE struct memory layout
 
-4. **Palette List Panel** (right sidebar)
-   - Scrollable list of palettes
-   - Click to select
+4. 🟡 **Palette List Panel** (right sidebar)
+   - Placeholder (requires asm exports of `pal_p`/`palcnt` not yet available)
+   - Shows selected palette index
 
-5. **UI Suppression**
-   - When ImGui is active, suppress the asm right-click menu by hiding mousey==0 signals
-   - Asm gadgets still render to VGA buffer but ImGui panels take priority
+5. 🟡 **UI Suppression** (Phase 3)
+   - TODO: Suppress asm right-click menu when ImGui is active
+   - Currently both UIs are visible/active (not a blocker)
 
 ### Implementation Notes
 
@@ -111,32 +112,43 @@ No changes to how the asm draws — it continues writing indexed pixels into `g_
 
 ---
 
-## Testing Checklist (Phase 1)
+## Phase 3: UI Suppression & Polish (Planned)
 
-- [x] Builds cleanly on Windows MSVC
-- [x] Binary runs without crashes
-- [ ] ImGui menu bar appears
-- [ ] File → Open opens the native dialog
-- [ ] File → Save saves the file
-- [ ] Canvas displays the loaded image
-- [ ] Keyboard shortcuts work (Ctrl+O, Ctrl+S)
-- [ ] Window resize scales canvas correctly
-- [ ] No regressions in image editing (asm hotkeys still work)
+Remaining work:
+1. **Suppress asm gadget rendering** — When ImGui is active, suppress asm menu/gadgets on top
+2. **Palette list export** — Modify itimg.asm to export `pal_p` and `palcnt`
+3. **Palette operations** — Rename/delete/merge via ImGui that inject asm keys
+4. **Hitbox/point editor** — Visual panels for collision boxes and animation points
+5. **Undo/redo** — Track edits and provide undo stack
+
+---
+
+## Testing Checklist: Phase 2
+
+- [ ] ImGui menu bar appears at top
+- [ ] File → Open/Save work via native dialogs
+- [ ] Image list panel populates with image names
+- [ ] Click image in list — canvas updates
+- [ ] Properties panel shows: name, size, palette, anipts, marked flag
+- [ ] Palette swatches grid displays 256 colors
+- [ ] Click color — selected with white border
+- [ ] R/G/B sliders update color values
+- [ ] Ctrl+O, Ctrl+S, Ctrl+Q keyboard shortcuts work
+- [ ] Window resizes smoothly, panels reflow
 
 ---
 
 ## Commit History
 
+- **a09c208** — Phase 2: Complete ImGui UI with panels for images, palettes, properties, swatches
 - **54198c6** — Phase 1: Add ImGui overlay for modern Adobe/GIMP-style UI
 - **70a4e12** — Use native OS file dialogs for load/save
-- **a2ebaae** — Change image link in README.md
 
 ---
 
-## Next Steps
+## What's Next
 
-1. Test Phase 1 by running the app and verifying ImGui menu bar appears
-2. Verify menus can trigger asm actions via key injection
-3. Plan Phase 2 implementation (image list, palette swatches, properties)
-4. Implement panels one at a time, testing after each addition
-5. Gradually suppress the asm gadget system as ImGui panels take over
+1. Test Phase 2 by running `imgtool.exe` with a real .IMG file
+2. Verify image selection, properties display, and color editing work
+3. Plan Phase 3: suppress asm UI, export palette list, add palette operations
+4. Consider: hitbox/point editor panels, undo/redo system
