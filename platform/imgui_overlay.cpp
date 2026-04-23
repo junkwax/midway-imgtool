@@ -108,6 +108,8 @@ struct EditSnapshot {
     unsigned short w, h;            /* Image dimensions */
     unsigned short palnum;          /* Palette index */
     unsigned short flags;           /* Flags (marked, etc.) */
+    int hitbox_x, hitbox_y;         /* Hitbox position */
+    int hitbox_w, hitbox_h;         /* Hitbox dimensions */
 };
 static EditSnapshot undo_stack[UNDO_STACK_SIZE];
 static int undo_stack_idx = -1;     /* Current position in undo stack (-1 = empty) */
@@ -211,6 +213,10 @@ static void undo_snapshot(void) {
     snap->h = current_img->h;
     snap->palnum = current_img->palnum;
     snap->flags = current_img->flags;
+    snap->hitbox_x = hitbox_x;
+    snap->hitbox_y = hitbox_y;
+    snap->hitbox_w = hitbox_w;
+    snap->hitbox_h = hitbox_h;
 
     undo_stack_count = undo_stack_idx + 1;
 }
@@ -231,6 +237,10 @@ static void undo_restore(int snap_idx) {
     img->h = snap->h;
     img->palnum = snap->palnum;
     img->flags = snap->flags;
+    hitbox_x = snap->hitbox_x;
+    hitbox_y = snap->hitbox_y;
+    hitbox_w = snap->hitbox_w;
+    hitbox_h = snap->hitbox_h;
 }
 
 void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *canvas_texture)
