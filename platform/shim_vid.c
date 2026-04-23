@@ -116,12 +116,32 @@ void shim_vid_shutdown(void)
     SDL_Quit();
 }
 
+/* ---- suppress gadget region (DOS menu area) ---- */
+/* The asm draws gadgets (canvas frame, status bar, etc.) into the top portion
+   of the VGA plane. Since ImGui now owns the UI, clear these gadgets to avoid
+   rendering stale gadget frames behind the ImGui panels. */
+static void suppress_gadget_region(void)
+{
+    int x, y;
+    /* Clear the top gadget region (y=0..10) which contained DOS menu/gadgets.
+       This is roughly the area the asm uses for status bar and menu strip. */
+    for (y = 0; y < 10; y++) {
+        for (x = 0; x < 640; x++) {
+            /* Write palette index 0 (black/background) to suppress gadgets */
+            g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
+        }
+    }
+}
+
 /* ---- present: deplanarize + palette expand + upload texture ---- */
 
 __attribute__((force_align_arg_pointer))
 void shim_vid_present(void)
 {
     if (!s_renderer || !s_texture) return;
+
+    /* Suppress old DOS gadgets now that ImGui owns the UI */
+    suppress_gadget_region();
 
     /* Deplanarize and convert indexed → ARGB8888 */
     {
