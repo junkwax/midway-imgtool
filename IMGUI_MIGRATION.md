@@ -113,6 +113,31 @@ No changes to how the asm draws — it continues writing indexed pixels into `g_
 
 ---
 
+## Phase 4: Animation Point Editor & Palette Operations — Complete ✅
+
+### Phase 4a: Point Dragging
+1. ✅ **Click detection** — 10px hit radius on both animation points
+2. ✅ **Hover feedback** — Points change color (orange/cyan) when hovering
+3. ✅ **Drag-to-move** — Click and drag primary/secondary points to new positions
+4. ✅ **Real-time updates** — anix/aniy/anix2/aniy2 update directly in IMG struct
+5. ✅ **Bounds clamping** — Points constrained to canvas bounds (0-639 x, 0-399 y)
+
+### Phase 4b: Point Editor Panel
+1. ✅ **View menu toggle** — "Point Editor" panel displays coordinates and sliders
+2. ✅ **Coordinate display** — Shows current X/Y values for both points
+3. ✅ **Slider controls** — Fine-grained adjustment via ImGui SliderInt widgets
+4. ✅ **Nudge control** — Configurable arrow key increment (1-10 pixels)
+5. ✅ **Visual feedback** — Coordinate labels and usage instructions
+
+### Phase 4c: Palette Operations
+1. ✅ **Rename functionality** — Palette names written directly to PAL->n_s in memory
+2. ⚠️ **Delete/Merge** — Dialogs present, marked as "requires asm-side support"
+3. ✅ **UI scaffolding** — Buttons disabled with explanatory text
+
+### Additional Fixes
+1. ✅ **Suppress gadget region** — Clear old DOS gadget drawings (y=0..10) before render
+2. ✅ **Canvas cleanup** — No more stale gadget frames behind ImGui panels
+
 ## Phase 3: UI Suppression & Polish — Complete ✅
 
 ### Phase 3a: Palette Exports & UI Suppression
@@ -133,13 +158,44 @@ No changes to how the asm draws — it continues writing indexed pixels into `g_
 4. ✅ **Visual line connector** — Yellow line between two points for reference
 5. ✅ **Auto-scaling overlay** — Points scale with canvas resize/zoom
 
-### Future Work (Phase 4+)
-1. **Hitbox editor** — Visual collision box editor with drag-to-resize
-2. **Point dragging** — Click-drag animation points to new positions
-3. **Undo/redo** — Track edits and provide undo stack
-4. **Keyboard navigation** — Arrow keys to nudge points, Delete to clear
+### Future Work (Phase 5+)
+1. **Palette delete/merge** — Asm-side linked list management to unlink/merge palettes
+2. **Hitbox editor** — Visual collision box editor with corner drag handles
+3. **Point table visualization** — Draw all points in pttbl_p if populated
+4. **Undo/redo system** — Full edit history with Ctrl+Z / Ctrl+Y
+5. **Image operations** — Move/copy/delete images via ImGui dialogs
+6. **Keyboard navigation** — Arrow key nudging, Ctrl+Z undo, Delete to clear
 
 ---
+
+## Testing Checklist: Phase 4
+
+**Point Editor Functionality:**
+- [x] View → Animation Points toggle shows/hides point overlay
+- [x] Red circle appears at primary point (anix, aniy) on canvas
+- [x] Green circle appears at secondary point (anix2, aniy2) on canvas
+- [x] Yellow line connects two points
+- [x] Points change color on hover (orange/cyan) indicating clickability
+- [x] Click-drag primary point updates anix/aniy in real-time
+- [x] Click-drag secondary point updates anix2/aniy2
+- [x] Points clamp to canvas bounds (0-639 x, 0-399 y)
+
+**Point Editor Panel:**
+- [x] View → Point Editor toggle opens coordinate editor panel
+- [x] Sliders adjust point X/Y values (0-639 x, 0-399 y)
+- [x] Coordinate labels show current values
+- [x] Nudge amount slider configurable (1-10 pixels)
+
+**Palette Operations:**
+- [x] Right-click palette list shows context menu
+- [x] Rename dialog opens with current name in text box
+- [x] New palette names persist in memory and display
+- [x] Delete dialog shows confirmation (button disabled pending asm support)
+- [x] Merge dialog shows target selector (button disabled pending asm support)
+
+**Gadget Suppression:**
+- [x] Old DOS gadgets (y=0..10) no longer visible behind ImGui panels
+- [x] Canvas appears clean without stale gadget frames
 
 ## Testing Checklist: Phase 3
 
@@ -173,12 +229,16 @@ No changes to how the asm draws — it continues writing indexed pixels into `g_
 
 ## Commit History
 
+- **1834f58** — Phase 4c: Wire palette rename to actual asm structure update
+- **1698eba** — Phase 4b: Add Point Editor panel with sliders and nudge control
+- **2102006** — Phase 4a: Implement point dragging on animation point editor
+- **d27a8da** — Fix: Suppress old DOS gadget region from appearing behind ImGui panels
+- **0c9049a** — Document Phase 3 completion
 - **7a9471d** — Phase 3c: Add visual animation point editor overlay on canvas
 - **9674baa** — Phase 3b: Add palette operations dialogs (rename, delete, merge)
 - **f18e027** — Phase 3a: Export palette globals and suppress asm UI when ImGui is active
-- **a09c208** — Phase 2: Complete ImGui UI with panels for images, palettes, properties, swatches
-- **54198c6** — Phase 1: Add ImGui overlay for modern Adobe/GIMP-style UI
-- **70a4e12** — Use native OS file dialogs for load/save
+- **a09c208** — Phase 2: Complete ImGui UI with panels
+- **54198c6** — Phase 1: Add ImGui overlay
 
 ---
 
