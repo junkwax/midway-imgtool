@@ -1,7 +1,7 @@
 /*************************************************************
  * platform/imgui_overlay.cpp
- * ImGui-based UI overlay for modernizing the DOS UI
- * Phase 2: Complete panels for image list, palettes, properties, swatches
+ * Fixed Adobe/GIMP-style ImGui UI overlay
+ * Layout: menu bar + left toolbar + center canvas + right panel strip + bottom palette
  *************************************************************/
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui.h>
@@ -13,7 +13,7 @@
 #include <string>
 #include "imgui_overlay.h"
 
-/* Link asm-side symbols defined in itimg.asm (COFF has no leading underscore from asm) */
+/* Link asm-side symbols (COFF has no leading underscore from asm) */
 #ifdef _MSC_VER
 #pragma comment(linker, "/alternatename:_img_p=img_p")
 #pragma comment(linker, "/alternatename:_imgcnt=imgcnt")
@@ -26,246 +26,194 @@
 /* Structure definitions matching wmpstruc.inc */
 #pragma pack(push, 2)
 struct IMG {
-    void *nxt_p;              /* +0: * next IMG or 0 */
-    char n_s[16];             /* +4: Name (15+1) */
-    unsigned short flags;     /* +20: Flags (B0=Marked) */
-    unsigned short anix;      /* +22: Ani pt X */
-    unsigned short aniy;      /* +24: Ani pt Y */
-    unsigned short w;         /* +26: Width */
-    unsigned short h;         /* +28: Height */
-    unsigned short palnum;    /* +30: Palette index */
-    void *data_p;             /* +32: * to image data */
-    void *pttbl_p;            /* +36: * point table or 0 */
-    unsigned short anix2;     /* +40: 2nd anipt X */
-    unsigned short aniy2;     /* +42: 2nd anipt Y */
-    unsigned short aniz2;     /* +44: 2nd anipt Z */
-    unsigned short opals;     /* +46: * to alternate pal */
-    void *temp;               /* +48: Temp offset */
+    void          *nxt_p;
+    char           n_s[16];
+    unsigned short flags;
+    unsigned short anix;
+    unsigned short aniy;
+    unsigned short w;
+    unsigned short h;
+    unsigned short palnum;
+    void          *data_p;
+    void          *pttbl_p;
+    unsigned short anix2;
+    unsigned short aniy2;
+    unsigned short aniz2;
+    unsigned short opals;
+    void          *temp;
 };
 
 struct PAL {
-    void *nxt_p;              /* +0: * next PAL or 0 */
-    char n_s[10];             /* +4: Name (9+1) */
-    unsigned char flags;      /* +14: Flags (B0=Marked) */
-    unsigned char bitspix;    /* +15: Bits per pixel */
-    unsigned short numc;      /* +16: # of colors */
-    unsigned short pad;       /* +18: padding */
-    void *data_p;             /* +20: * to palette data */
-    void *temp;               /* +24: Temp offset */
+    void          *nxt_p;
+    char           n_s[10];
+    unsigned char  flags;
+    unsigned char  bitspix;
+    unsigned short numc;
+    unsigned short pad;
+    void          *data_p;
+    void          *temp;
 };
 #pragma pack(pop)
 
-/* Global state */
-static SDL_Window *g_imgui_window = NULL;
+/* SDL state */
+static SDL_Window   *g_imgui_window   = NULL;
 static SDL_Renderer *g_imgui_renderer = NULL;
-static SDL_Texture *g_canvas_texture = NULL;
+static SDL_Texture  *g_canvas_texture = NULL;
 
-/* Key injection ring buffer */
-static struct {
-    unsigned short buffer[64];
-    int head;
-    int tail;
-} g_key_inject = { {0}, 0, 0 };
+/* Asm-side symbol externs */
+extern "C" {
+    extern unsigned int   shim_ebx, shim_ecx, shim_edx;
+    extern unsigned short shim_keycode;
+    extern int            shim_zf;
+    extern SDL_Color      g_palette[256];
+    extern void          *img_p;
+    extern unsigned int   imgcnt;
+    extern int            ilselected;
+    extern void          *pal_p;
+    extern unsigned int   palcnt;
+    extern int            plselected;
+    void shim_key_inject(unsigned short keycode);
+}
 
-/* Panel state */
-static bool show_image_list = true;
-static bool show_palette_list = true;
-static bool show_properties = true;
-static bool show_palette_swatches = true;
+/* ---- Layout constants ---- */
+static const float TOOLBAR_W   = 40.0f;   /* left toolbar width */
+static const float PANEL_W     = 220.0f;  /* right panel strip width */
+static const float PALETTE_H   = 110.0f;  /* bottom palette bar height */
 
-/* Cache state */
-static int g_selected_image_idx = -1;
-static int g_selected_palette_idx = -1;
-static int g_selected_color_idx = 0;
-
-/* Dialog state for palette operations */
-static bool show_palette_rename = false;
-static bool show_palette_delete = false;
-static bool show_palette_merge = false;
-static int palette_op_index = -1;
-static char palette_rename_buffer[10] = {0};
-static int palette_merge_target = -1;
-
-/* Point editor state */
-static bool show_point_editor = false;
-static int point_editor_dragging = -1;  /* -1=none, 0=anix/y, 1=anix2/y2 */
-static bool show_anim_points = true;
-static int point_nudge_amount = 1;  /* Pixels to move with arrow keys */
-
-/* Hitbox editor state */
-static bool show_hitbox_editor = false;
-static bool show_hitboxes_overlay = false;
-static int hitbox_x = 0, hitbox_y = 0;        /* Hitbox top-left */
-static int hitbox_w = 32, hitbox_h = 32;      /* Hitbox size */
-static int hitbox_dragging_corner = -1;       /* -1=none, 0=TL, 1=TR, 2=BR, 3=BL */
-
-/* Undo/redo system */
+/* ---- Undo system ---- */
 #define UNDO_STACK_SIZE 64
 struct EditSnapshot {
-    int image_idx;
-    unsigned short anix, aniy;      /* Primary animation point */
-    unsigned short anix2, aniy2;    /* Secondary animation point */
-    unsigned short w, h;            /* Image dimensions */
-    unsigned short palnum;          /* Palette index */
-    unsigned short flags;           /* Flags (marked, etc.) */
-    int hitbox_x, hitbox_y;         /* Hitbox position */
-    int hitbox_w, hitbox_h;         /* Hitbox dimensions */
+    int            image_idx;
+    unsigned short anix, aniy;
+    unsigned short anix2, aniy2;
+    unsigned short w, h;
+    unsigned short palnum;
+    unsigned short flags;
+    int            hitbox_x, hitbox_y, hitbox_w, hitbox_h;
 };
-static EditSnapshot undo_stack[UNDO_STACK_SIZE];
-static int undo_stack_idx = -1;     /* Current position in undo stack (-1 = empty) */
-static int undo_stack_count = 0;    /* Number of valid undo entries */
+static EditSnapshot g_undo[UNDO_STACK_SIZE];
+static int          g_undo_idx   = -1;
+static int          g_undo_count =  0;
 
-extern "C" {
-    /* Relay globals from shim_input.c and shim_vid.c */
-    extern unsigned int shim_ebx, shim_ecx, shim_edx;
-    extern unsigned short shim_keycode;
-    extern int shim_zf;
+/* ---- Editor state ---- */
+static int  g_sel_color   = 0;
+static bool g_show_points = true;
+static bool g_show_hitbox = false;
+static int  g_hitbox_x = 0, g_hitbox_y = 0, g_hitbox_w = 32, g_hitbox_h = 32;
+static int  g_hitbox_drag_corner = -1;  /* -1=none, 0=TL,1=TR,2=BR,3=BL */
 
-    /* VGA palette from shim_vid.c */
-    extern SDL_Color g_palette[256];
+/* Palette rename dialog */
+static bool g_show_rename = false;
+static int  g_rename_pal_idx = -1;
+static char g_rename_buf[10] = {0};
 
-    /* Asm image/palette lists (from itimg.asm) */
-    extern void *img_p;              /* * to first IMG struct or NULL */
-    extern unsigned int imgcnt;      /* Number of images */
-    extern int ilselected;           /* Currently selected image (-1 = none) */
-    extern void *pal_p;              /* * to first PAL struct or NULL */
-    extern unsigned int palcnt;      /* Number of palettes */
-    extern int plselected;           /* Currently selected palette (-1 = none) */
-}
-
-/* Helper: count images in the linked list */
-static int count_images(void) {
-    int count = 0;
+/* ---- Linked list helpers ---- */
+static IMG *get_img(int idx)
+{
     IMG *p = (IMG *)img_p;
-    while (p) {
-        count++;
-        p = (IMG *)p->nxt_p;
-    }
-    return count;
-}
-
-/* Helper: get image by index */
-static IMG *get_image_by_index(int idx) {
-    IMG *p = (IMG *)img_p;
-    int i = 0;
-    while (p && i < idx) {
-        p = (IMG *)p->nxt_p;
-        i++;
-    }
+    for (int i = 0; p && i < idx; i++) p = (IMG *)p->nxt_p;
     return p;
 }
 
-/* Helper: count palettes in the linked list */
-static int count_palettes(void) {
-    int count = 0;
+static PAL *get_pal(int idx)
+{
     PAL *p = (PAL *)pal_p;
-    while (p) {
-        count++;
-        p = (PAL *)p->nxt_p;
-    }
-    return count;
-}
-
-/* Helper: get palette by index */
-static PAL *get_palette_by_index(int idx) {
-    PAL *p = (PAL *)pal_p;
-    int i = 0;
-    while (p && i < idx) {
-        p = (PAL *)p->nxt_p;
-        i++;
-    }
+    for (int i = 0; p && i < idx; i++) p = (PAL *)p->nxt_p;
     return p;
 }
 
-/* Take snapshot of current image state for undo */
-static void undo_snapshot(void) {
-    IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
-    if (!current_img) return;
-
-    /* Only save if this is a new change (not just moving through history) */
-    if (undo_stack_idx >= 0 && undo_stack_idx < UNDO_STACK_SIZE - 1) {
-        /* Check if the next snapshot is identical (same point, same state) */
-        EditSnapshot *last = &undo_stack[undo_stack_idx];
-        if (last->image_idx == ilselected &&
-            last->anix == current_img->anix && last->aniy == current_img->aniy &&
-            last->anix2 == current_img->anix2 && last->aniy2 == current_img->aniy2) {
-            return;  /* No change, don't snapshot */
-        }
-    }
-
-    /* Add new snapshot and advance stack pointer */
-    if (undo_stack_idx < UNDO_STACK_SIZE - 1) {
-        undo_stack_idx++;
-    } else {
-        /* Shift stack left to make room at end */
-        for (int i = 0; i < UNDO_STACK_SIZE - 1; i++) {
-            undo_stack[i] = undo_stack[i + 1];
-        }
-    }
-
-    EditSnapshot *snap = &undo_stack[undo_stack_idx];
-    snap->image_idx = ilselected;
-    snap->anix = current_img->anix;
-    snap->aniy = current_img->aniy;
-    snap->anix2 = current_img->anix2;
-    snap->aniy2 = current_img->aniy2;
-    snap->w = current_img->w;
-    snap->h = current_img->h;
-    snap->palnum = current_img->palnum;
-    snap->flags = current_img->flags;
-    snap->hitbox_x = hitbox_x;
-    snap->hitbox_y = hitbox_y;
-    snap->hitbox_w = hitbox_w;
-    snap->hitbox_h = hitbox_h;
-
-    undo_stack_count = undo_stack_idx + 1;
+static int count_imgs(void)
+{
+    int n = 0;
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) n++;
+    return n;
 }
 
-/* Restore image state from snapshot */
-static void undo_restore(int snap_idx) {
-    if (snap_idx < 0 || snap_idx >= undo_stack_count) return;
+static int count_pals(void)
+{
+    int n = 0;
+    for (PAL *p = (PAL *)pal_p; p; p = (PAL *)p->nxt_p) n++;
+    return n;
+}
 
-    EditSnapshot *snap = &undo_stack[snap_idx];
-    IMG *img = get_image_by_index(snap->image_idx);
+/* ---- Undo helpers ---- */
+static void undo_push(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img) return;
 
-    img->anix = snap->anix;
-    img->aniy = snap->aniy;
-    img->anix2 = snap->anix2;
-    img->aniy2 = snap->aniy2;
-    img->w = snap->w;
-    img->h = snap->h;
-    img->palnum = snap->palnum;
-    img->flags = snap->flags;
-    hitbox_x = snap->hitbox_x;
-    hitbox_y = snap->hitbox_y;
-    hitbox_w = snap->hitbox_w;
-    hitbox_h = snap->hitbox_h;
+    if (g_undo_idx >= 0) {
+        EditSnapshot *last = &g_undo[g_undo_idx];
+        if (last->image_idx == ilselected &&
+            last->anix == img->anix && last->aniy == img->aniy &&
+            last->anix2 == img->anix2 && last->aniy2 == img->aniy2)
+            return;
+    }
+
+    if (g_undo_idx < UNDO_STACK_SIZE - 1) {
+        g_undo_idx++;
+    } else {
+        for (int i = 0; i < UNDO_STACK_SIZE - 1; i++)
+            g_undo[i] = g_undo[i + 1];
+    }
+
+    EditSnapshot *s = &g_undo[g_undo_idx];
+    s->image_idx = ilselected;
+    s->anix  = img->anix;  s->aniy  = img->aniy;
+    s->anix2 = img->anix2; s->aniy2 = img->aniy2;
+    s->w = img->w; s->h = img->h;
+    s->palnum = img->palnum; s->flags = img->flags;
+    s->hitbox_x = g_hitbox_x; s->hitbox_y = g_hitbox_y;
+    s->hitbox_w = g_hitbox_w; s->hitbox_h = g_hitbox_h;
+    g_undo_count = g_undo_idx + 1;
 }
 
-void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *canvas_texture)
+static void undo_apply(int idx)
 {
-    g_imgui_window = window;
+    if (idx < 0 || idx >= g_undo_count) return;
+    EditSnapshot *s = &g_undo[idx];
+    IMG *img = get_img(s->image_idx);
+    if (!img) return;
+    img->anix  = s->anix;  img->aniy  = s->aniy;
+    img->anix2 = s->anix2; img->aniy2 = s->aniy2;
+    img->w = s->w; img->h = s->h;
+    img->palnum = s->palnum; img->flags = s->flags;
+    g_hitbox_x = s->hitbox_x; g_hitbox_y = s->hitbox_y;
+    g_hitbox_w = s->hitbox_w; g_hitbox_h = s->hitbox_h;
+}
+
+/* ---- Public C interface ---- */
+
+void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *canvas_tex)
+{
+    g_imgui_window   = window;
     g_imgui_renderer = renderer;
-    g_canvas_texture = canvas_texture;
+    g_canvas_texture = canvas_tex;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
-
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
     ImGui::StyleColorsDark();
+    /* Tighten up the style to feel more like a pro tool */
+    ImGuiStyle &style = ImGui::GetStyle();
+    style.WindowPadding    = ImVec2(4, 4);
+    style.FramePadding     = ImVec2(4, 3);
+    style.ItemSpacing      = ImVec2(4, 3);
+    style.ScrollbarSize    = 12.0f;
+    style.WindowBorderSize = 0.0f;
+    style.ChildBorderSize  = 1.0f;
+    style.WindowRounding   = 0.0f;
+    style.FrameRounding    = 2.0f;
 
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
-
-    g_key_inject.head = 0;
-    g_key_inject.tail = 0;
 }
 
-void imgui_overlay_process_event(SDL_Event *event)
+void imgui_overlay_process_event(SDL_Event *e)
 {
-    ImGui_ImplSDL2_ProcessEvent(event);
+    ImGui_ImplSDL2_ProcessEvent(e);
 }
 
 void imgui_overlay_newframe(void)
@@ -275,638 +223,502 @@ void imgui_overlay_newframe(void)
     ImGui::NewFrame();
 }
 
+int imgui_overlay_wants_input(void)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    return (io.WantCaptureMouse || io.WantCaptureKeyboard) ? 1 : 0;
+}
+
+/* ---- Inject key into asm queue ---- */
+void imgui_overlay_inject_key(unsigned short code)
+{
+    shim_key_inject(code);
+}
+
+/* =========================================================
+   Main render function — called each frame
+   ========================================================= */
 void imgui_overlay_render(void)
 {
     ImGuiIO &io = ImGui::GetIO();
+    float sw = io.DisplaySize.x;
+    float sh = io.DisplaySize.y;
 
-    /* Note: Arrow key nudging deferred to Phase 6c+ pending keyboard enum resolution.
-       Currently can use sliders in Point Editor / Hitbox Editor panels or drag on canvas. */
-
-    /* Main menu bar */
+    /* ---- Menu bar ---- */
     if (ImGui::BeginMainMenuBar()) {
+        /* File */
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open...", "Ctrl+O")) {
-                imgui_overlay_inject_key(0x0C);  /* Ctrl+O */
-            }
-            if (ImGui::MenuItem("Save", "Ctrl+S")) {
-                imgui_overlay_inject_key(0x13);  /* Ctrl+S */
-            }
-            if (ImGui::MenuItem("Save Raw")) {
-                /* No standard key */
-            }
+            if (ImGui::MenuItem("Open...",    "Ctrl+O")) imgui_overlay_inject_key(0x0C);
+            if (ImGui::MenuItem("Save",       "Ctrl+S")) imgui_overlay_inject_key(0x13);
+            if (ImGui::MenuItem("Save Raw"))              {}
             ImGui::Separator();
-            if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
-                imgui_overlay_inject_key(0x11);  /* Ctrl+Q */
-            }
+            if (ImGui::MenuItem("Append"))                imgui_overlay_inject_key('a');
+            if (ImGui::MenuItem("Clear"))                 imgui_overlay_inject_key(0x0C - 0x0C + 3); /* Ctrl+C */
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit",       "Ctrl+Q")) imgui_overlay_inject_key(0x11);
             ImGui::EndMenu();
         }
-
+        /* Edit */
         if (ImGui::BeginMenu("Edit")) {
-            bool can_undo = (undo_stack_idx > 0);
-            bool can_redo = (undo_stack_idx < undo_stack_count - 1);
-
+            bool can_undo = g_undo_idx > 0;
+            bool can_redo = g_undo_idx < g_undo_count - 1;
             if (!can_undo) ImGui::BeginDisabled();
-            if (ImGui::MenuItem("Undo", "Ctrl+Z")) {
-                if (can_undo) {
-                    undo_stack_idx--;
-                    undo_restore(undo_stack_idx);
-                }
-            }
+            if (ImGui::MenuItem("Undo", "Ctrl+Z")) { g_undo_idx--; undo_apply(g_undo_idx); }
             if (!can_undo) ImGui::EndDisabled();
-
             if (!can_redo) ImGui::BeginDisabled();
-            if (ImGui::MenuItem("Redo", "Ctrl+Y")) {
-                if (can_redo) {
-                    undo_stack_idx++;
-                    undo_restore(undo_stack_idx);
-                }
-            }
+            if (ImGui::MenuItem("Redo", "Ctrl+Y")) { g_undo_idx++; undo_apply(g_undo_idx); }
             if (!can_redo) ImGui::EndDisabled();
-
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename", "Ctrl+R")) {
-                imgui_overlay_inject_key(0x12);  /* Ctrl+R */
-            }
-            if (ImGui::MenuItem("Delete", "Ctrl+D")) {
-                imgui_overlay_inject_key(0x04);  /* Ctrl+D */
-            }
+            if (ImGui::MenuItem("Rename",  "Ctrl+R")) imgui_overlay_inject_key(0x12);
+            if (ImGui::MenuItem("Delete",  "Ctrl+D")) imgui_overlay_inject_key(0x04);
+            if (ImGui::MenuItem("Duplicate"))          {}
             ImGui::EndMenu();
         }
-
+        /* Image */
         if (ImGui::BeginMenu("Image")) {
-            if (ImGui::MenuItem("Duplicate")) {
-                /* TODO */
-            }
-            if (ImGui::MenuItem("Build TGA", "Ctrl+B")) {
-                imgui_overlay_inject_key(0x02);  /* Ctrl+B */
-            }
-            ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Image List", NULL, &show_image_list);
-            ImGui::MenuItem("Palette List", NULL, &show_palette_list);
-            ImGui::MenuItem("Properties", NULL, &show_properties);
-            ImGui::MenuItem("Palette Swatches", NULL, &show_palette_swatches);
+            if (ImGui::MenuItem("Set Palette"))                    imgui_overlay_inject_key('P');
+            if (ImGui::MenuItem("Add/Del Point Table", "Ctrl+P")) imgui_overlay_inject_key(0x10);
+            if (ImGui::MenuItem("Build TGA",           "Ctrl+B")) imgui_overlay_inject_key(0x02);
             ImGui::Separator();
-            ImGui::MenuItem("Animation Points", NULL, &show_anim_points);
-            ImGui::MenuItem("Point Editor", NULL, &show_point_editor);
-            ImGui::MenuItem("Hitboxes", NULL, &show_hitboxes_overlay);
-            ImGui::MenuItem("Hitbox Editor", NULL, &show_hitbox_editor);
+            if (ImGui::MenuItem("Strip Edge"))       imgui_overlay_inject_key('e');
+            if (ImGui::MenuItem("Least Square"))     imgui_overlay_inject_key('l');
+            if (ImGui::MenuItem("Dither Replace"))   imgui_overlay_inject_key('D');
             ImGui::EndMenu();
         }
-
+        /* In/Out */
+        if (ImGui::BeginMenu("In/Out")) {
+            if (ImGui::MenuItem("Load LBM"))             imgui_overlay_inject_key('i');
+            if (ImGui::MenuItem("Save LBM"))             imgui_overlay_inject_key('o');
+            if (ImGui::MenuItem("Load TGA", "Ctrl+L"))  imgui_overlay_inject_key(0x0C);
+            if (ImGui::MenuItem("Save TGA"))             imgui_overlay_inject_key('O');
+            ImGui::EndMenu();
+        }
+        /* Palette */
+        if (ImGui::BeginMenu("Palette")) {
+            if (ImGui::MenuItem("Rename"))          {}
+            if (ImGui::MenuItem("Merge"))           {}
+            if (ImGui::MenuItem("Duplicate"))       {}
+            if (ImGui::MenuItem("Show Histogram"))  imgui_overlay_inject_key('H');
+            if (ImGui::MenuItem("Del Unused"))      imgui_overlay_inject_key('U');
+            if (ImGui::MenuItem("Delete"))          {}
+            ImGui::EndMenu();
+        }
+        /* Marks */
+        if (ImGui::BeginMenu("Marks")) {
+            if (ImGui::MenuItem("Mark All Images"))        imgui_overlay_inject_key('m');
+            if (ImGui::MenuItem("Clear All Image Marks"))  imgui_overlay_inject_key('M');
+            if (ImGui::MenuItem("Invert Image Marks"))     imgui_overlay_inject_key('v');
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mark All Palettes"))      imgui_overlay_inject_key('n');
+            if (ImGui::MenuItem("Clear All Pal Marks"))    imgui_overlay_inject_key('N');
+            ImGui::EndMenu();
+        }
+        /* View */
+        if (ImGui::BeginMenu("View")) {
+            if (ImGui::MenuItem("Zoom In",  "d")) imgui_overlay_inject_key('d');
+            if (ImGui::MenuItem("Zoom Out", "D")) imgui_overlay_inject_key('D');
+            if (ImGui::MenuItem("Zoom 1:1"))      imgui_overlay_inject_key('1');
+            ImGui::Separator();
+            ImGui::MenuItem("Anim Points", NULL, &g_show_points);
+            ImGui::MenuItem("Hitboxes",    NULL, &g_show_hitbox);
+            ImGui::EndMenu();
+        }
+        /* Help */
         if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem("Help", "h")) {
-                imgui_overlay_inject_key('h');
-            }
+            if (ImGui::MenuItem("Help", "h")) imgui_overlay_inject_key('h');
             ImGui::EndMenu();
         }
-
         ImGui::EndMainMenuBar();
     }
 
-    float menu_height = ImGui::GetFrameHeight();
+    float menu_h = ImGui::GetFrameHeight();
+    float work_y = menu_h;
+    float work_h = sh - work_y;
 
-    /* Canvas panel (left/center, resizable) */
-    ImGui::SetNextWindowPos(ImVec2(0, menu_height), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.65f, io.DisplaySize.y - menu_height), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Canvas", NULL, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    /* ===== LEFT TOOLBAR ===== */
+    ImGui::SetNextWindowPos(ImVec2(0, work_y));
+    ImGui::SetNextWindowSize(ImVec2(TOOLBAR_W, work_h - PALETTE_H));
+    ImGui::Begin("##toolbar", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+    {
+        ImVec2 btn(TOOLBAR_W - 8, TOOLBAR_W - 8);
+        /* Open */
+        if (ImGui::Button("Op", btn))  imgui_overlay_inject_key(0x0C);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open (Ctrl+O)");
+        /* Save */
+        if (ImGui::Button("Sv", btn))  imgui_overlay_inject_key(0x13);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save (Ctrl+S)");
+        ImGui::Spacing();
+        /* Zoom in */
+        if (ImGui::Button("Z+", btn))  imgui_overlay_inject_key('d');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom In");
+        /* Zoom out */
+        if (ImGui::Button("Z-", btn))  imgui_overlay_inject_key('D');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom Out");
+        /* Zoom 1:1 */
+        if (ImGui::Button("1:1", btn)) imgui_overlay_inject_key('1');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom 1:1");
+        ImGui::Spacing();
+        /* Mark / Unmark */
+        if (ImGui::Button("Mk", btn))  imgui_overlay_inject_key(' ');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark/Unmark");
+        /* Mark All */
+        if (ImGui::Button("MA", btn))  imgui_overlay_inject_key('m');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark All");
+        /* Clear Marks */
+        if (ImGui::Button("CM", btn))  imgui_overlay_inject_key('M');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear Marks");
+        ImGui::Spacing();
+        /* Toggle anim points */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_show_points ?
+            ImVec4(0.2f,0.6f,0.2f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button("Pt", btn)) g_show_points = !g_show_points;
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Anim Points");
+        /* Toggle hitbox */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_show_hitbox ?
+            ImVec4(0.0f,0.5f,0.6f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button("Hb", btn)) g_show_hitbox = !g_show_hitbox;
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Hitbox");
+        ImGui::Spacing();
+        /* Undo / Redo */
+        bool can_undo = g_undo_idx > 0;
+        bool can_redo = g_undo_idx < g_undo_count - 1;
+        if (!can_undo) ImGui::BeginDisabled();
+        if (ImGui::Button("Uz", btn)) { g_undo_idx--; undo_apply(g_undo_idx); }
+        if (!can_undo) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Undo (Ctrl+Z)");
+        if (!can_redo) ImGui::BeginDisabled();
+        if (ImGui::Button("Ry", btn)) { g_undo_idx++; undo_apply(g_undo_idx); }
+        if (!can_redo) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Redo (Ctrl+Y)");
+    }
+    ImGui::End();
+
+    /* ===== RIGHT PANEL STRIP ===== */
+    float panel_x = sw - PANEL_W;
+    float panel_y = work_y;
+    float panel_h = work_h - PALETTE_H;
+
+    ImGui::SetNextWindowPos(ImVec2(panel_x, panel_y));
+    ImGui::SetNextWindowSize(ImVec2(PANEL_W, panel_h));
+    ImGui::Begin("##panels", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoSavedSettings);
+    {
+        /* --- Image List --- */
+        int n_imgs = count_imgs();
+        if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
+            float list_h = panel_h * 0.30f;
+            if (ImGui::BeginListBox("##imglist", ImVec2(-1, list_h))) {
+                for (int i = 0; i < n_imgs; i++) {
+                    IMG *img = get_img(i);
+                    if (!img) break;
+                    bool marked   = (img->flags & 1) != 0;
+                    bool selected = (i == ilselected);
+                    ImGui::PushID(i);
+                    char label[24];
+                    if (marked) snprintf(label, sizeof(label), "* %s", img->n_s);
+                    else        snprintf(label, sizeof(label), "  %s", img->n_s);
+                    if (ImGui::Selectable(label, selected)) {
+                        int delta = i - ilselected;
+                        unsigned short key = delta > 0 ? 0x5000 : 0x4800;
+                        int steps = delta > 0 ? delta : -delta;
+                        for (int s = 0; s < steps; s++) imgui_overlay_inject_key(key);
+                        if (delta == 0) imgui_overlay_inject_key(0x5000);
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndListBox();
+            }
+        }
+
+        /* --- Palette List --- */
+        int n_pals = count_pals();
+        if (ImGui::CollapsingHeader("Palettes", ImGuiTreeNodeFlags_DefaultOpen)) {
+            float list_h = panel_h * 0.15f;
+            if (ImGui::BeginListBox("##pallist", ImVec2(-1, list_h))) {
+                for (int i = 0; i < n_pals; i++) {
+                    PAL *pal = get_pal(i);
+                    if (!pal) break;
+                    bool selected = (i == plselected);
+                    ImGui::PushID(1000 + i);
+                    if (ImGui::Selectable(pal->n_s, selected)) {}
+                    /* Right-click rename */
+                    if (ImGui::BeginPopupContextItem("##palctx")) {
+                        if (ImGui::MenuItem("Rename")) {
+                            g_rename_pal_idx = i;
+                            strncpy(g_rename_buf, pal->n_s, 9);
+                            g_rename_buf[9] = '\0';
+                            g_show_rename = true;
+                        }
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndListBox();
+            }
+        }
+
+        /* --- Properties --- */
+        if (ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
+            IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            if (img) {
+                ImGui::Text("Name:   %s", img->n_s);
+                ImGui::Text("Size:   %d x %d", img->w, img->h);
+                ImGui::Text("Pal:    %d", img->palnum);
+                ImGui::Text("Anipt:  %d, %d", img->anix, img->aniy);
+                if (img->anix2 || img->aniy2)
+                    ImGui::Text("Anipt2: %d, %d", img->anix2, img->aniy2);
+                ImGui::Text("Marked: %s", (img->flags & 1) ? "Yes" : "No");
+            } else {
+                ImGui::TextDisabled("No image selected");
+            }
+        }
+
+        /* --- Point Editor --- */
+        if (ImGui::CollapsingHeader("Anim Points")) {
+            IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            if (img) {
+                int ax = img->anix, ay = img->aniy;
+                int ax2 = img->anix2, ay2 = img->aniy2;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("X1##ptx",  &ax,  0, 639)) { undo_push(); img->anix  = (unsigned short)ax;  }
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Y1##pty",  &ay,  0, 399)) { undo_push(); img->aniy  = (unsigned short)ay;  }
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("X2##ptx2", &ax2, 0, 639)) { undo_push(); img->anix2 = (unsigned short)ax2; }
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderInt("Y2##pty2", &ay2, 0, 399)) { undo_push(); img->aniy2 = (unsigned short)ay2; }
+            } else {
+                ImGui::TextDisabled("No image selected");
+            }
+        }
+
+        /* --- Hitbox Editor --- */
+        if (ImGui::CollapsingHeader("Hitbox")) {
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("X##hbx",  &g_hitbox_x, 0, 639)) undo_push();
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("Y##hby",  &g_hitbox_y, 0, 399)) undo_push();
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("W##hbw",  &g_hitbox_w, 1, 640)) undo_push();
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("H##hbh",  &g_hitbox_h, 1, 400)) undo_push();
+        }
+    }
+    ImGui::End();
+
+    /* ===== CANVAS ===== */
+    float canvas_x = TOOLBAR_W;
+    float canvas_y = work_y;
+    float canvas_w = sw - TOOLBAR_W - PANEL_W;
+    float canvas_h = work_h - PALETTE_H;
+
+    ImGui::SetNextWindowPos(ImVec2(canvas_x, canvas_y));
+    ImGui::SetNextWindowSize(ImVec2(canvas_w, canvas_h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##canvas", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
+    {
+        /* Scale canvas texture (640x400) to fit, keeping aspect ratio */
         ImVec2 avail = ImGui::GetContentRegionAvail();
         float aspect = 640.0f / 400.0f;
-        float w = avail.x;
-        float h = w / aspect;
-        if (h > avail.y) {
-            h = avail.y;
-            w = h * aspect;
-        }
+        float tw = avail.x, th = tw / aspect;
+        if (th > avail.y) { th = avail.y; tw = th * aspect; }
+        /* Centre inside the available area */
+        float off_x = (avail.x - tw) * 0.5f;
+        float off_y = (avail.y - th) * 0.5f;
+        if (off_x > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + off_x);
+        if (off_y > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + off_y);
 
-        ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-        ImVec2 canvas_size(w, h);
-        ImGui::Image((ImTextureID)(intptr_t)g_canvas_texture, canvas_size);
+        ImVec2 img_pos = ImGui::GetCursorScreenPos();
+        ImVec2 img_sz(tw, th);
+        ImGui::Image((ImTextureID)(intptr_t)g_canvas_texture, img_sz);
 
-        /* Draw animation points overlay if enabled */
-        if (show_anim_points) {
-            IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
-            if (current_img && current_img->w > 0 && current_img->h > 0) {
-                ImDrawList *draw_list = ImGui::GetWindowDrawList();
-                float scale_x = canvas_size.x / 640.0f;
-                float scale_y = canvas_size.y / 400.0f;
-                ImGuiIO &io = ImGui::GetIO();
-                ImVec2 mouse_pos = io.MousePos;
-                bool mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        float sx = tw / 640.0f;
+        float sy = th / 400.0f;
+        ImGuiIO &cio = ImGui::GetIO();
+        ImVec2 mouse = cio.MousePos;
+        bool   mbdn  = ImGui::IsMouseDown(ImGuiMouseButton_Left);
 
-                /* Draw primary animation point (anix, aniy) */
-                ImVec2 pt1_vga((float)current_img->anix, (float)current_img->aniy);
-                ImVec2 pt1_screen(canvas_pos.x + pt1_vga.x * scale_x,
-                                  canvas_pos.y + pt1_vga.y * scale_y);
-                ImVec2 diff1 = mouse_pos - pt1_screen;
-                float dist_to_pt1 = diff1.x*diff1.x + diff1.y*diff1.y;
-                bool hovering_pt1 = (dist_to_pt1 < 10*10);  /* 10px hit radius */
-                ImU32 pt1_color = hovering_pt1 ? IM_COL32(255, 100, 0, 255) : IM_COL32(255, 0, 0, 255);
-                draw_list->AddCircleFilled(pt1_screen, 6.0f, pt1_color);
-                draw_list->AddCircle(pt1_screen, 6.0f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+        /* --- Anim point overlay + dragging --- */
+        if (g_show_points) {
+            IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            if (img && img->w > 0) {
+                ImDrawList *dl = ImGui::GetWindowDrawList();
 
-                /* Handle point dragging */
-                static bool dragging_pt1 = false;
-                static bool dragging_pt1_started = false;
-                if (hovering_pt1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                    dragging_pt1 = true;
-                    dragging_pt1_started = true;
-                    undo_snapshot();  /* Save state before starting drag */
-                }
-                if (dragging_pt1 && mouse_down) {
-                    /* Update point position while dragging */
-                    ImVec2 relative = mouse_pos - canvas_pos;
-                    int new_x = (int)(relative.x / scale_x);
-                    int new_y = (int)(relative.y / scale_y);
-                    /* Clamp to canvas bounds */
-                    if (new_x < 0) new_x = 0; else if (new_x > 639) new_x = 639;
-                    if (new_y < 0) new_y = 0; else if (new_y > 399) new_y = 399;
-                    current_img->anix = (unsigned short)new_x;
-                    current_img->aniy = (unsigned short)new_y;
-                } else if (!mouse_down && dragging_pt1) {
-                    dragging_pt1 = false;
-                    if (dragging_pt1_started) {
-                        undo_snapshot();  /* Save state after drag complete */
-                        dragging_pt1_started = false;
-                    }
-                }
+                /* Primary point */
+                ImVec2 s1(img_pos.x + img->anix * sx, img_pos.y + img->aniy * sy);
+                ImVec2 d1 = mouse - s1;
+                bool h1 = (d1.x*d1.x + d1.y*d1.y) < 10*10;
+                dl->AddCircleFilled(s1, 6.f, h1 ? IM_COL32(255,120,0,255) : IM_COL32(255,0,0,255));
+                dl->AddCircle(s1, 6.f, IM_COL32(255,255,255,255), 0, 1.5f);
 
-                /* Draw secondary animation point (anix2, aniy2) if exists */
-                if (current_img->anix2 > 0 || current_img->aniy2 > 0) {
-                    ImVec2 pt2_vga((float)current_img->anix2, (float)current_img->aniy2);
-                    ImVec2 pt2_screen(canvas_pos.x + pt2_vga.x * scale_x,
-                                      canvas_pos.y + pt2_vga.y * scale_y);
-                    ImVec2 diff2 = mouse_pos - pt2_screen;
-                    float dist_to_pt2 = diff2.x*diff2.x + diff2.y*diff2.y;
-                    bool hovering_pt2 = (dist_to_pt2 < 10*10);
-                    ImU32 pt2_color = hovering_pt2 ? IM_COL32(0, 255, 100, 255) : IM_COL32(0, 255, 0, 255);
-                    draw_list->AddCircleFilled(pt2_screen, 6.0f, pt2_color);
-                    draw_list->AddCircle(pt2_screen, 6.0f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+                static bool drag1 = false;
+                if (h1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { drag1 = true; undo_push(); }
+                if (drag1 && mbdn) {
+                    int nx = (int)((mouse.x - img_pos.x) / sx);
+                    int ny = (int)((mouse.y - img_pos.y) / sy);
+                    if (nx < 0) nx = 0; if (nx > 639) nx = 639;
+                    if (ny < 0) ny = 0; if (ny > 399) ny = 399;
+                    img->anix = (unsigned short)nx;
+                    img->aniy = (unsigned short)ny;
+                } else if (!mbdn && drag1) { drag1 = false; undo_push(); }
 
-                    /* Handle second point dragging */
-                    static bool dragging_pt2 = false;
-                    static bool dragging_pt2_started = false;
-                    if (hovering_pt2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                        dragging_pt2 = true;
-                        dragging_pt2_started = true;
-                        undo_snapshot();  /* Save state before starting drag */
-                    }
-                    if (dragging_pt2 && mouse_down) {
-                        ImVec2 relative = mouse_pos - canvas_pos;
-                        int new_x = (int)(relative.x / scale_x);
-                        int new_y = (int)(relative.y / scale_y);
-                        if (new_x < 0) new_x = 0; else if (new_x > 639) new_x = 639;
-                        if (new_y < 0) new_y = 0; else if (new_y > 399) new_y = 399;
-                        current_img->anix2 = (unsigned short)new_x;
-                        current_img->aniy2 = (unsigned short)new_y;
-                    } else if (!mouse_down && dragging_pt2) {
-                        dragging_pt2 = false;
-                        if (dragging_pt2_started) {
-                            undo_snapshot();  /* Save state after drag complete */
-                            dragging_pt2_started = false;
-                        }
-                    }
+                /* Secondary point */
+                if (img->anix2 || img->aniy2) {
+                    ImVec2 s2(img_pos.x + img->anix2 * sx, img_pos.y + img->aniy2 * sy);
+                    ImVec2 d2 = mouse - s2;
+                    bool h2 = (d2.x*d2.x + d2.y*d2.y) < 10*10;
+                    dl->AddCircleFilled(s2, 6.f, h2 ? IM_COL32(0,255,120,255) : IM_COL32(0,255,0,255));
+                    dl->AddCircle(s2, 6.f, IM_COL32(255,255,255,255), 0, 1.5f);
+                    dl->AddLine(s1, s2, IM_COL32(255,255,0,192), 1.f);
 
-                    /* Draw line between points */
-                    draw_list->AddLine(pt1_screen, pt2_screen, IM_COL32(255, 255, 0, 192), 1.0f);
+                    static bool drag2 = false;
+                    if (h2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { drag2 = true; undo_push(); }
+                    if (drag2 && mbdn) {
+                        int nx = (int)((mouse.x - img_pos.x) / sx);
+                        int ny = (int)((mouse.y - img_pos.y) / sy);
+                        if (nx < 0) nx = 0; if (nx > 639) nx = 639;
+                        if (ny < 0) ny = 0; if (ny > 399) ny = 399;
+                        img->anix2 = (unsigned short)nx;
+                        img->aniy2 = (unsigned short)ny;
+                    } else if (!mbdn && drag2) { drag2 = false; undo_push(); }
                 }
             }
         }
 
-        /* Draw hitbox overlay if enabled */
-        if (show_hitboxes_overlay) {
-            IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
-            if (current_img && current_img->w > 0 && current_img->h > 0) {
-                ImDrawList *draw_list = ImGui::GetWindowDrawList();
-                float scale_x = canvas_size.x / 640.0f;
-                float scale_y = canvas_size.y / 400.0f;
-                ImGuiIO &io = ImGui::GetIO();
-                ImVec2 mouse_pos = io.MousePos;
-                bool mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        /* --- Hitbox overlay + corner dragging --- */
+        if (g_show_hitbox) {
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            ImVec2 tl(img_pos.x + g_hitbox_x * sx, img_pos.y + g_hitbox_y * sy);
+            ImVec2 br(img_pos.x + (g_hitbox_x + g_hitbox_w) * sx,
+                      img_pos.y + (g_hitbox_y + g_hitbox_h) * sy);
+            ImVec2 tr(br.x, tl.y), bl(tl.x, br.y);
+            dl->AddRect(tl, br, IM_COL32(0,255,255,255), 0, 0, 2.f);
 
-                /* Draw hitbox rectangle */
-                ImVec2 box_tl_screen(canvas_pos.x + hitbox_x * scale_x,
-                                     canvas_pos.y + hitbox_y * scale_y);
-                ImVec2 box_br_screen(canvas_pos.x + (hitbox_x + hitbox_w) * scale_x,
-                                     canvas_pos.y + (hitbox_y + hitbox_h) * scale_y);
-                draw_list->AddRect(box_tl_screen, box_br_screen, IM_COL32(0, 255, 255, 255), 0, 0, 2.0f);
-
-                /* Draw corners as draggable handles */
-                float handle_size = 5.0f;
-                ImVec2 box_tr_screen(box_br_screen.x, box_tl_screen.y);
-                ImVec2 box_bl_screen(box_tl_screen.x, box_br_screen.y);
-
-                /* Check corner hover distance */
-                ImVec2 diff_tl = mouse_pos - box_tl_screen;
-                ImVec2 diff_tr = mouse_pos - box_tr_screen;
-                ImVec2 diff_br = mouse_pos - box_br_screen;
-                ImVec2 diff_bl = mouse_pos - box_bl_screen;
-                float dist_tl = diff_tl.x*diff_tl.x + diff_tl.y*diff_tl.y;
-                float dist_tr = diff_tr.x*diff_tr.x + diff_tr.y*diff_tr.y;
-                float dist_br = diff_br.x*diff_br.x + diff_br.y*diff_br.y;
-                float dist_bl = diff_bl.x*diff_bl.x + diff_bl.y*diff_bl.y;
-                float hit_radius = 12*12;  /* 12px hit radius */
-
-                bool hovering_tl = (dist_tl < hit_radius);
-                bool hovering_tr = (dist_tr < hit_radius);
-                bool hovering_br = (dist_br < hit_radius);
-                bool hovering_bl = (dist_bl < hit_radius);
-
-                /* Handle corner dragging */
-                if ((hovering_tl || hovering_tr || hovering_br || hovering_bl) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                    if (hovering_tl) { hitbox_dragging_corner = 0; undo_snapshot(); }
-                    else if (hovering_tr) { hitbox_dragging_corner = 1; undo_snapshot(); }
-                    else if (hovering_br) { hitbox_dragging_corner = 2; undo_snapshot(); }
-                    else if (hovering_bl) { hitbox_dragging_corner = 3; undo_snapshot(); }
-                }
-
-                if (hitbox_dragging_corner >= 0 && mouse_down) {
-                    ImVec2 relative = mouse_pos - canvas_pos;
-                    int mouse_vga_x = (int)(relative.x / scale_x);
-                    int mouse_vga_y = (int)(relative.y / scale_y);
-                    if (mouse_vga_x < 0) mouse_vga_x = 0; else if (mouse_vga_x > 639) mouse_vga_x = 639;
-                    if (mouse_vga_y < 0) mouse_vga_y = 0; else if (mouse_vga_y > 399) mouse_vga_y = 399;
-
-                    /* Resize based on which corner is being dragged */
-                    if (hitbox_dragging_corner == 0) {  /* TL corner */
-                        hitbox_x = mouse_vga_x;
-                        hitbox_y = mouse_vga_y;
-                        hitbox_w = hitbox_x + hitbox_w - mouse_vga_x;
-                        hitbox_h = hitbox_y + hitbox_h - mouse_vga_y;
-                    } else if (hitbox_dragging_corner == 1) {  /* TR corner */
-                        hitbox_y = mouse_vga_y;
-                        hitbox_w = mouse_vga_x - hitbox_x;
-                        hitbox_h = hitbox_y + hitbox_h - mouse_vga_y;
-                    } else if (hitbox_dragging_corner == 2) {  /* BR corner */
-                        hitbox_w = mouse_vga_x - hitbox_x;
-                        hitbox_h = mouse_vga_y - hitbox_y;
-                    } else if (hitbox_dragging_corner == 3) {  /* BL corner */
-                        hitbox_x = mouse_vga_x;
-                        hitbox_w = hitbox_x + hitbox_w - mouse_vga_x;
-                        hitbox_h = mouse_vga_y - hitbox_y;
-                    }
-                    /* Clamp to minimum size */
-                    if (hitbox_w < 1) hitbox_w = 1;
-                    if (hitbox_h < 1) hitbox_h = 1;
-                    /* Clamp to canvas */
-                    if (hitbox_x < 0) hitbox_x = 0;
-                    if (hitbox_y < 0) hitbox_y = 0;
-                    if (hitbox_x + hitbox_w > 640) hitbox_x = 640 - hitbox_w;
-                    if (hitbox_y + hitbox_h > 400) hitbox_y = 400 - hitbox_h;
-                } else if (!mouse_down) {
-                    if (hitbox_dragging_corner >= 0) {
-                        undo_snapshot();  /* Save final state after drag */
-                    }
-                    hitbox_dragging_corner = -1;
-                }
-
-                /* Draw corners with color feedback */
-                ImU32 tl_color = hovering_tl ? IM_COL32(255, 255, 0, 255) : IM_COL32(0, 255, 255, 255);
-                ImU32 tr_color = hovering_tr ? IM_COL32(255, 255, 0, 255) : IM_COL32(0, 255, 255, 255);
-                ImU32 br_color = hovering_br ? IM_COL32(255, 255, 0, 255) : IM_COL32(0, 255, 255, 255);
-                ImU32 bl_color = hovering_bl ? IM_COL32(255, 255, 0, 255) : IM_COL32(0, 255, 255, 255);
-                draw_list->AddCircleFilled(box_tl_screen, handle_size, tl_color);
-                draw_list->AddCircleFilled(box_tr_screen, handle_size, tr_color);
-                draw_list->AddCircleFilled(box_br_screen, handle_size, br_color);
-                draw_list->AddCircleFilled(box_bl_screen, handle_size, bl_color);
+            ImVec2 corners[4] = { tl, tr, br, bl };
+            float hr = 12.f * 12.f;
+            bool hovering[4];
+            for (int c = 0; c < 4; c++) {
+                ImVec2 d = mouse - corners[c];
+                hovering[c] = (d.x*d.x + d.y*d.y < hr);
             }
-        }
-
-        ImGui::End();
-    }
-
-    /* Right sidebar: image list, palette list, properties */
-    float right_x = io.DisplaySize.x * 0.65f;
-    float right_w = io.DisplaySize.x * 0.35f;
-
-    /* Image List Panel */
-    if (show_image_list) {
-        ImGui::SetNextWindowPos(ImVec2(right_x, menu_height), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(right_w, io.DisplaySize.y * 0.35f - menu_height / 2), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Images", &show_image_list)) {
-            int img_count = count_images();
-            if (img_count > 0) {
-                ImGui::Text("Images: %d", img_count);
-                ImGui::Separator();
-
-                if (ImGui::BeginListBox("##image_list", ImVec2(-1, -ImGui::GetFrameHeightWithSpacing()))) {
-                    for (int i = 0; i < img_count; i++) {
-                        IMG *img = get_image_by_index(i);
-                        if (!img) break;
-
-                        bool is_marked = (img->flags & 1) != 0;
-                        bool is_selected = (i == ilselected);
-
-                        ImGui::PushID(i);
-
-                        if (ImGui::Selectable(img->n_s, is_selected)) {
-                            /* Click to select — inject up/down keys to move selection */
-                            if (i > ilselected && ilselected >= 0) {
-                                for (int j = ilselected; j < i; j++) {
-                                    imgui_overlay_inject_key(0x5000);  /* Down arrow */
-                                }
-                            } else if (i < ilselected) {
-                                for (int j = i; j < ilselected; j++) {
-                                    imgui_overlay_inject_key(0x4800);  /* Up arrow */
-                                }
-                            } else {
-                                imgui_overlay_inject_key(0x5000);  /* First down arrow */
-                            }
-                        }
-
-                        /* Right-click context menu */
-                        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-                            /* Set selection first */
-                            if (i != ilselected) {
-                                imgui_overlay_inject_key(0x5000);
-                            }
-                        }
-
-                        ImGui::PopID();
-                    }
-                    ImGui::EndListBox();
-                }
-            } else {
-                ImGui::Text("No images loaded.");
+            for (int c = 0; c < 4; c++) {
+                ImU32 col = hovering[c] ? IM_COL32(255,255,0,255) : IM_COL32(0,255,255,255);
+                dl->AddCircleFilled(corners[c], 5.f, col);
             }
-            ImGui::End();
+            for (int c = 0; c < 4; c++) {
+                if (hovering[c] && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    g_hitbox_drag_corner = c;
+                    undo_push();
+                }
+            }
+            if (g_hitbox_drag_corner >= 0 && mbdn) {
+                int mx = (int)((mouse.x - img_pos.x) / sx);
+                int my = (int)((mouse.y - img_pos.y) / sy);
+                if (mx < 0) mx = 0; if (mx > 639) mx = 639;
+                if (my < 0) my = 0; if (my > 399) my = 399;
+                int c = g_hitbox_drag_corner;
+                if (c == 0) { g_hitbox_w += g_hitbox_x - mx; g_hitbox_h += g_hitbox_y - my; g_hitbox_x = mx; g_hitbox_y = my; }
+                if (c == 1) { g_hitbox_w = mx - g_hitbox_x;  g_hitbox_h += g_hitbox_y - my; g_hitbox_y = my; }
+                if (c == 2) { g_hitbox_w = mx - g_hitbox_x;  g_hitbox_h = my - g_hitbox_y; }
+                if (c == 3) { g_hitbox_w += g_hitbox_x - mx; g_hitbox_x = mx; g_hitbox_h = my - g_hitbox_y; }
+                if (g_hitbox_w < 1) g_hitbox_w = 1;
+                if (g_hitbox_h < 1) g_hitbox_h = 1;
+            } else if (!mbdn && g_hitbox_drag_corner >= 0) {
+                undo_push();
+                g_hitbox_drag_corner = -1;
+            }
         }
     }
+    ImGui::End();
 
-    /* Palette List Panel */
-    if (show_palette_list) {
-        ImGui::SetNextWindowPos(ImVec2(right_x, menu_height + io.DisplaySize.y * 0.35f - menu_height / 2), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(right_w, io.DisplaySize.y * 0.25f), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Palettes", &show_palette_list)) {
-            int pal_count = count_palettes();
-            if (pal_count > 0) {
-                ImGui::Text("Palettes: %d", pal_count);
-                ImGui::Separator();
+    /* ===== BOTTOM PALETTE BAR ===== */
+    float pal_y = sh - PALETTE_H;
+    ImGui::SetNextWindowPos(ImVec2(0, pal_y));
+    ImGui::SetNextWindowSize(ImVec2(sw, PALETTE_H));
+    ImGui::Begin("##palette", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
+    {
+        /* 256-color swatch grid */
+        ImDrawList *dl    = ImGui::GetWindowDrawList();
+        ImVec2      pos0  = ImGui::GetCursorScreenPos();
+        float       sw16  = 14.0f;
+        float       sh16  = 14.0f;
+        float       gap   = 1.0f;
+        float       row_h = sh16 + gap;
+        float       col_w = sw16 + gap;
 
-                if (ImGui::BeginListBox("##palette_list", ImVec2(-1, -ImGui::GetFrameHeightWithSpacing()))) {
-                    for (int i = 0; i < pal_count; i++) {
-                        PAL *pal = get_palette_by_index(i);
-                        if (!pal) break;
+        for (int i = 0; i < 256; i++) {
+            int row = i / 16, col = i % 16;
+            ImVec2 p0(pos0.x + col * col_w, pos0.y + row * row_h);
+            ImVec2 p1(p0.x + sw16, p0.y + sh16);
+            SDL_Color c = g_palette[i];
+            dl->AddRectFilled(p0, p1,
+                IM_COL32(c.r, c.g, c.b, 255));
+            if (i == g_sel_color)
+                dl->AddRect(p0, p1, IM_COL32(255,255,255,255), 0, 0, 1.5f);
 
-                        bool is_selected = (i == plselected);
-
-                        ImGui::PushID(2000 + i);
-
-                        if (ImGui::Selectable(pal->n_s, is_selected)) {
-                            g_selected_palette_idx = i;
-                            /* TODO: inject key to trigger asm palette selection */
-                        }
-
-                        /* Right-click context menu for palette operations */
-                        if (ImGui::BeginPopupContextItem("palette_context")) {
-                            palette_op_index = i;
-                            if (ImGui::MenuItem("Rename")) {
-                                PAL *pal = get_palette_by_index(palette_op_index);
-                                if (pal) {
-                                    strncpy(palette_rename_buffer, pal->n_s, 9);
-                                    palette_rename_buffer[9] = '\0';
-                                }
-                                show_palette_rename = true;
-                            }
-                            if (ImGui::MenuItem("Delete")) {
-                                show_palette_delete = true;
-                            }
-                            if (ImGui::MenuItem("Merge with...")) {
-                                show_palette_merge = true;
-                                palette_merge_target = -1;
-                            }
-                            ImGui::EndPopup();
-                        }
-
-                        ImGui::PopID();
-                    }
-                    ImGui::EndListBox();
-                }
-            } else {
-                ImGui::Text("No palettes loaded.");
-            }
-            ImGui::End();
+            /* Hit test */
+            ImGui::SetCursorScreenPos(p0);
+            ImGui::InvisibleButton(("##sw" + std::to_string(i)).c_str(), ImVec2(sw16, sh16));
+            if (ImGui::IsItemClicked()) g_sel_color = i;
         }
+
+        /* Advance cursor past the swatch grid */
+        ImGui::SetCursorScreenPos(ImVec2(pos0.x + 16 * col_w + 6, pos0.y));
+
+        /* Color sliders next to the swatches */
+        ImGui::BeginGroup();
+        {
+            SDL_Color &col = g_palette[g_sel_color];
+            int r = col.r, g_c = col.g, b = col.b;
+            ImGui::Text("Index: %d", g_sel_color);
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::SliderInt("R##cr", &r,   0, 255)) col.r = (unsigned char)r;
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::SliderInt("G##cg", &g_c, 0, 255)) col.g = (unsigned char)g_c;
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::SliderInt("B##cb", &b,   0, 255)) col.b = (unsigned char)b;
+        }
+        ImGui::EndGroup();
+    }
+    ImGui::End();
+
+    /* ===== PALETTE RENAME DIALOG ===== */
+    if (g_show_rename) ImGui::OpenPopup("Rename Palette");
+    if (ImGui::BeginPopupModal("Rename Palette", &g_show_rename, ImGuiWindowFlags_AlwaysAutoResize)) {
+        PAL *pal = get_pal(g_rename_pal_idx);
+        if (pal) {
+            ImGui::Text("Rename: %s", pal->n_s);
+            ImGui::InputText("##rn", g_rename_buf, sizeof(g_rename_buf));
+            if (ImGui::Button("OK", ImVec2(100, 0))) {
+                strncpy(pal->n_s, g_rename_buf, 9);
+                pal->n_s[9] = '\0';
+                g_show_rename = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+                g_show_rename = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
     }
 
-    /* Properties Panel */
-    if (show_properties) {
-        ImGui::SetNextWindowPos(ImVec2(right_x, menu_height + io.DisplaySize.y * 0.60f - menu_height), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(right_w, io.DisplaySize.y * 0.25f), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Properties", &show_properties)) {
-            IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
-            if (current_img) {
-                ImGui::Text("Name: %s", current_img->n_s);
-                ImGui::Text("Size: %d x %d", current_img->w, current_img->h);
-                ImGui::Text("Palette: %d", current_img->palnum);
-                ImGui::Text("Anipt: (%d, %d)", current_img->anix, current_img->aniy);
-                ImGui::Text("Marked: %s", (current_img->flags & 1) ? "Yes" : "No");
-            } else {
-                ImGui::Text("Select an image to see properties.");
-            }
-            ImGui::End();
-        }
-    }
-
-    /* Palette Swatches Panel (bottom) */
-    if (show_palette_swatches) {
-        ImGui::SetNextWindowPos(ImVec2(0, io.DisplaySize.y * 0.8f), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y * 0.2f), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Palette", &show_palette_swatches)) {
-            ImGui::Text("Color index: %d", g_selected_color_idx);
-            ImGui::Separator();
-
-            /* 16x16 swatch grid */
-            ImDrawList *draw_list = ImGui::GetWindowDrawList();
-            ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-            ImVec2 swatch_size(16.0f, 16.0f);
-            ImVec2 spacing(2.0f, 2.0f);
-
-            for (int row = 0; row < 16; row++) {
-                for (int col = 0; col < 16; col++) {
-                    int color_idx = row * 16 + col;
-                    SDL_Color c = g_palette[color_idx];
-                    ImVec4 color_normalized(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f);
-
-                    ImVec2 pos(canvas_pos.x + col * (swatch_size.x + spacing.x),
-                               canvas_pos.y + row * (swatch_size.y + spacing.y));
-                    ImVec2 pos_max(pos.x + swatch_size.x, pos.y + swatch_size.y);
-
-                    /* Draw swatch */
-                    ImU32 col_u32 = ImGui::GetColorU32(color_normalized);
-                    draw_list->AddRectFilled(pos, pos_max, col_u32);
-
-                    /* Border for selected color */
-                    if (color_idx == g_selected_color_idx) {
-                        draw_list->AddRect(pos, pos_max, IM_COL32(255, 255, 255, 255), 0, 0, 2.0f);
-                    }
-
-                    /* Detect click */
-                    ImGui::SetCursorScreenPos(pos);
-                    ImGui::InvisibleButton(("##swatch_" + std::to_string(color_idx)).c_str(), swatch_size);
-                    if (ImGui::IsItemClicked()) {
-                        g_selected_color_idx = color_idx;
-                    }
-                }
-            }
-
-            ImGui::NewLine();
-            ImGui::Separator();
-
-            /* Color editor sliders */
-            SDL_Color current_color = g_palette[g_selected_color_idx];
-            int r = current_color.r;
-            int g = current_color.g;
-            int b = current_color.b;
-
-            bool changed = false;
-            changed |= ImGui::SliderInt("R##color_r", &r, 0, 255);
-            changed |= ImGui::SliderInt("G##color_g", &g, 0, 255);
-            changed |= ImGui::SliderInt("B##color_b", &b, 0, 255);
-
-            if (changed) {
-                g_palette[g_selected_color_idx] = {(unsigned char)r, (unsigned char)g, (unsigned char)b, 0xFF};
-                /* TODO: Call shim to update asm palette */
-            }
-
-            ImGui::End();
-        }
-    }
-
-    /* Palette Rename Dialog */
-    if (show_palette_rename) {
-        if (ImGui::BeginPopupModal("Rename Palette", &show_palette_rename, ImGuiWindowFlags_AlwaysAutoResize)) {
-            PAL *pal = (palette_op_index >= 0) ? get_palette_by_index(palette_op_index) : NULL;
-            if (pal) {
-                ImGui::Text("Renaming: %s", pal->n_s);
-                ImGui::InputText("##rename_input", palette_rename_buffer, sizeof(palette_rename_buffer));
-                ImGui::Separator();
-                if (ImGui::Button("OK", ImVec2(120, 0))) {
-                    /* Copy new name into pal structure (asm will read on next redraw) */
-                    strncpy(pal->n_s, palette_rename_buffer, 9);
-                    pal->n_s[9] = '\0';
-                    show_palette_rename = false;
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-                    show_palette_rename = false;
-                    ImGui::CloseCurrentPopup();
-                }
-            }
-            ImGui::EndPopup();
-        }
-    }
-
-    /* Palette Delete Dialog */
-    if (show_palette_delete) {
-        if (ImGui::BeginPopupModal("Delete Palette", &show_palette_delete, ImGuiWindowFlags_AlwaysAutoResize)) {
-            PAL *pal = (palette_op_index >= 0) ? get_palette_by_index(palette_op_index) : NULL;
-            if (pal) {
-                ImGui::Text("Delete palette '%s'? This cannot be undone.", pal->n_s);
-                ImGui::TextDisabled("(Requires asm-side support to unlink from pal_p list)");
-                ImGui::Separator();
-                ImGui::BeginDisabled(true);
-                ImGui::Button("Delete", ImVec2(120, 0));
-                ImGui::EndDisabled();
-                ImGui::TextDisabled("Delete not yet implemented");
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-                    show_palette_delete = false;
-                    ImGui::CloseCurrentPopup();
-                }
-            }
-            ImGui::EndPopup();
-        }
-    }
-
-    /* Palette Merge Dialog */
-    if (show_palette_merge) {
-        if (ImGui::BeginPopupModal("Merge Palettes", &show_palette_merge, ImGuiWindowFlags_AlwaysAutoResize)) {
-            PAL *pal = (palette_op_index >= 0) ? get_palette_by_index(palette_op_index) : NULL;
-            if (pal) {
-                ImGui::Text("Merge '%s' with:", pal->n_s);
-                ImGui::TextDisabled("(Requires asm-side support to update image palette references)");
-                ImGui::Separator();
-                if (ImGui::BeginListBox("##merge_target", ImVec2(-1, 200))) {
-                    int pal_count = count_palettes();
-                    for (int i = 0; i < pal_count; i++) {
-                        if (i == palette_op_index) continue;  /* Skip self */
-                        PAL *target = get_palette_by_index(i);
-                        if (!target) break;
-                        bool is_selected = (i == palette_merge_target);
-                        if (ImGui::Selectable(target->n_s, is_selected)) {
-                            palette_merge_target = i;
-                        }
-                    }
-                    ImGui::EndListBox();
-                }
-                ImGui::Separator();
-                bool can_merge = (palette_merge_target >= 0 && palette_merge_target != palette_op_index);
-                if (!can_merge) ImGui::BeginDisabled();
-                ImGui::Button("Merge", ImVec2(120, 0));
-                if (!can_merge) ImGui::EndDisabled();
-                ImGui::TextDisabled("Merge not yet implemented");
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-                    show_palette_merge = false;
-                    ImGui::CloseCurrentPopup();
-                }
-            }
-            ImGui::EndPopup();
-        }
-    }
-
-    /* Point Editor Panel */
-    if (show_point_editor) {
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.65f, menu_height), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(right_w * 0.5f, 200), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Point Editor", &show_point_editor)) {
-            IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
-            if (current_img) {
-                ImGui::Text("Primary Point (Anipt 1):");
-                ImGui::Text("  X: %d   Y: %d", current_img->anix, current_img->aniy);
-                ImGui::SliderInt("##anix", (int *)&current_img->anix, 0, 639);
-                ImGui::SliderInt("##aniy", (int *)&current_img->aniy, 0, 399);
-                ImGui::Separator();
-
-                ImGui::Text("Secondary Point (Anipt 2):");
-                ImGui::Text("  X: %d   Y: %d", current_img->anix2, current_img->aniy2);
-                ImGui::SliderInt("##anix2", (int *)&current_img->anix2, 0, 639);
-                ImGui::SliderInt("##aniy2", (int *)&current_img->aniy2, 0, 399);
-                ImGui::Separator();
-
-                ImGui::SliderInt("Arrow Nudge Pixels", &point_nudge_amount, 1, 10);
-                ImGui::TextDisabled("(Drag points on canvas or use sliders)");
-                ImGui::TextDisabled("(Arrow keys: hold Shift+Ctrl, press arrow)");
-            } else {
-                ImGui::Text("Select an image to edit points.");
-            }
-            ImGui::End();
-        }
-    }
-
-    /* Hitbox Editor Panel */
-    if (show_hitbox_editor) {
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.65f, menu_height + 250), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(right_w * 0.5f, 200), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Hitbox Editor", &show_hitbox_editor)) {
-            ImGui::Text("Collision Box:");
-            ImGui::SliderInt("X##hbx", &hitbox_x, 0, 639);
-            ImGui::SliderInt("Y##hby", &hitbox_y, 0, 399);
-            ImGui::SliderInt("Width##hbw", &hitbox_w, 1, 640);
-            ImGui::SliderInt("Height##hbh", &hitbox_h, 1, 400);
-            ImGui::Separator();
-            ImGui::Text("Box: (%d,%d) %dx%d", hitbox_x, hitbox_y, hitbox_w, hitbox_h);
-            ImGui::TextDisabled("(Cyan box on canvas shows hitbox)");
-            ImGui::TextDisabled("(Check 'Hitboxes' in View menu to display)");
-        }
-        ImGui::End();
-    }
-
-    /* Render ImGui */
+    /* Flush to renderer */
     ImGui::Render();
     ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), g_imgui_renderer);
 }
@@ -916,29 +728,4 @@ void imgui_overlay_shutdown(void)
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
-}
-
-void imgui_overlay_inject_key(unsigned short keycode)
-{
-    int next_head = (g_key_inject.head + 1) % 64;
-    if (next_head != g_key_inject.tail) {
-        g_key_inject.buffer[g_key_inject.head] = keycode;
-        g_key_inject.head = next_head;
-    }
-}
-
-extern "C" int imgui_overlay_get_injected_key(unsigned short *keycode)
-{
-    if (g_key_inject.tail != g_key_inject.head) {
-        *keycode = g_key_inject.buffer[g_key_inject.tail];
-        g_key_inject.tail = (g_key_inject.tail + 1) % 64;
-        return 1;
-    }
-    return 0;
-}
-
-extern "C" int imgui_overlay_wants_input(void)
-{
-    ImGuiIO &io = ImGui::GetIO();
-    return io.WantCaptureMouse || io.WantCaptureKeyboard;
 }

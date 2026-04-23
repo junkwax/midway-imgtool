@@ -32,17 +32,11 @@ extern SDL_Window *g_window;
  * menu strip or outside the logical rect. */
 static int win_to_vga(int wx, int wy, int *out_vgax, int *out_vgay)
 {
-    float lx = 0.0f, ly = 0.0f;
-    SDL_Renderer *r = g_window ? SDL_GetRenderer(g_window) : NULL;
-    if (r) {
-        /* SDL 2.0.18+: map window pixels → logical renderer coords */
-        SDL_RenderWindowToLogical(r, wx, wy, &lx, &ly);
-    } else {
-        lx = (float)wx;
-        ly = (float)wy;
-    }
-    int cx = (int)lx;
-    int cy = (int)ly - 10;            /* subtract menu strip */
+    /* No logical size set — window pixels are renderer pixels.
+     * Clamp to valid VGA range; mouse position is used by asm for
+     * its internal gadget hit-testing (suppressed, but coords still flow). */
+    int cx = wx;
+    int cy = wy;
     int inside = (cx >= 0 && cx < 640 && cy >= 0 && cy < 400);
     if (cx < 0) cx = 0; else if (cx > 632) cx = 632;
     if (cy < 0) cy = 0; else if (cy > 392) cy = 392;

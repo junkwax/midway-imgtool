@@ -70,11 +70,9 @@ void shim_vid_init(void)
         }
     }
 
-    /* Logical-size rendering: 640x410 (10px menu strip + 640x400 VGA).
-     * SDL scales this up to the window, and integer-scale mode clamps
-     * to whole multiples so pixels stay crisp. */
-    SDL_RenderSetLogicalSize(s_renderer, 640, 410);
-    SDL_RenderSetIntegerScale(s_renderer, SDL_TRUE);
+    /* No logical size — ImGui uses the actual window pixel size for layout.
+     * The VGA canvas texture (640x400) is scaled to fit inside the ImGui
+     * canvas panel, maintaining aspect ratio in software. */
 
     s_texture = SDL_CreateTexture(s_renderer,
         SDL_PIXELFORMAT_ARGB8888,
@@ -116,37 +114,14 @@ void shim_vid_shutdown(void)
     SDL_Quit();
 }
 
-/* ---- suppress gadget region (DOS menu/toolbar area) ---- */
-/* The asm draws gadgets (canvas frame, status bar, etc.) into specific regions
-   of the VGA plane. Since ImGui now owns the UI, suppress these gadgets while
-   preserving the image canvas area (roughly y=10..390, x=0..640). */
+/* ---- suppress all DOS gadgets ---- */
+/* ImGui owns the entire UI. Wipe the whole VGA plane so no asm-drawn gadgets
+   (buttons, toolbars, text labels, window frames) appear on the canvas.
+   The asm redraws the selected image into the plane each frame after this call,
+   so image pixel data is always current. */
 static void suppress_gadget_region(void)
 {
-    int x, y;
-    /* Clear top menu strip (y=0..15) */
-    for (y = 0; y < 15; y++) {
-        for (x = 0; x < 640; x++) {
-            g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
-        }
-    }
-    /* Clear left toolbar area (x=0..30, y=15..395) */
-    for (y = 15; y < 395; y++) {
-        for (x = 0; x < 30; x++) {
-            g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
-        }
-    }
-    /* Clear right toolbar area (x=610..640, y=15..395) */
-    for (y = 15; y < 395; y++) {
-        for (x = 610; x < 640; x++) {
-            g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
-        }
-    }
-    /* Clear bottom status bar (y=390..400) */
-    for (y = 390; y < 400; y++) {
-        for (x = 0; x < 640; x++) {
-            g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
-        }
-    }
+    memset(g_vga_plane, 0, sizeof(g_vga_plane));
 }
 
 /* ---- present: deplanarize + palette expand + upload texture ---- */
@@ -180,12 +155,9 @@ void shim_vid_present(void)
      * logical area don't show stale pixels. */
     SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 255);
     SDL_RenderClear(s_renderer);
-    /* Logical coordinate system is 640x410. SDL handles scaling.
-     * Canvas fills entire viewport; ImGui owns the UI layout. */
-    {
-        SDL_Rect dst = { 0, 0, 640, 410 };
-        SDL_RenderCopy(s_renderer, s_texture, NULL, &dst);
-    }
+    /* The VGA texture is uploaded but NOT blit to screen here —
+     * ImGui::Image() in imgui_overlay_render() draws it scaled inside
+     * the canvas panel at the correct position and aspect ratio. */
 
     /* Render ImGui overlay on top of canvas */
     imgui_overlay_newframe();
