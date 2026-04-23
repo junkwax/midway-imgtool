@@ -555,8 +555,9 @@ void imgui_overlay_render(void)
                 ImGui::InputText("##rename_input", palette_rename_buffer, sizeof(palette_rename_buffer));
                 ImGui::Separator();
                 if (ImGui::Button("OK", ImVec2(120, 0))) {
-                    /* TODO: inject key or call shim to update pal->n_s in asm */
-                    strncpy(palette_rename_buffer, pal->n_s, 9);
+                    /* Copy new name into pal structure (asm will read on next redraw) */
+                    strncpy(pal->n_s, palette_rename_buffer, 9);
+                    pal->n_s[9] = '\0';
                     show_palette_rename = false;
                     ImGui::CloseCurrentPopup();
                 }
@@ -576,12 +577,12 @@ void imgui_overlay_render(void)
             PAL *pal = (palette_op_index >= 0) ? get_palette_by_index(palette_op_index) : NULL;
             if (pal) {
                 ImGui::Text("Delete palette '%s'? This cannot be undone.", pal->n_s);
+                ImGui::TextDisabled("(Requires asm-side support to unlink from pal_p list)");
                 ImGui::Separator();
-                if (ImGui::Button("Delete", ImVec2(120, 0))) {
-                    /* TODO: inject key or call shim to delete palette from asm */
-                    show_palette_delete = false;
-                    ImGui::CloseCurrentPopup();
-                }
+                ImGui::BeginDisabled(true);
+                ImGui::Button("Delete", ImVec2(120, 0));
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("Delete not yet implemented");
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel", ImVec2(120, 0))) {
                     show_palette_delete = false;
@@ -598,6 +599,7 @@ void imgui_overlay_render(void)
             PAL *pal = (palette_op_index >= 0) ? get_palette_by_index(palette_op_index) : NULL;
             if (pal) {
                 ImGui::Text("Merge '%s' with:", pal->n_s);
+                ImGui::TextDisabled("(Requires asm-side support to update image palette references)");
                 ImGui::Separator();
                 if (ImGui::BeginListBox("##merge_target", ImVec2(-1, 200))) {
                     int pal_count = count_palettes();
@@ -615,12 +617,9 @@ void imgui_overlay_render(void)
                 ImGui::Separator();
                 bool can_merge = (palette_merge_target >= 0 && palette_merge_target != palette_op_index);
                 if (!can_merge) ImGui::BeginDisabled();
-                if (ImGui::Button("Merge", ImVec2(120, 0))) {
-                    /* TODO: inject key or call shim to merge palettes */
-                    show_palette_merge = false;
-                    ImGui::CloseCurrentPopup();
-                }
+                ImGui::Button("Merge", ImVec2(120, 0));
                 if (!can_merge) ImGui::EndDisabled();
+                ImGui::TextDisabled("Merge not yet implemented");
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel", ImVec2(120, 0))) {
                     show_palette_merge = false;
