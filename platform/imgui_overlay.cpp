@@ -314,9 +314,12 @@ void imgui_overlay_render(void)
         }
         /* Image */
         if (ImGui::BeginMenu("Image")) {
-            if (ImGui::MenuItem("Add/Del Point Table", "Ctrl+P")) imgui_overlay_inject_key(0x10);
+            if (ImGui::MenuItem("Add/Del Point Table",     "Ctrl+P"))  imgui_overlay_inject_key(0x10);
+            if (ImGui::MenuItem("Set ID from 2nd List",    "i"))        imgui_overlay_inject_key('i');
+            if (ImGui::MenuItem("Least-Squares Reduce",    ";"))        imgui_overlay_inject_key(';');
             ImGui::Separator();
-            if (ImGui::MenuItem("Redraw", "f"))  imgui_overlay_inject_key('f');
+            if (ImGui::MenuItem("Switch Image List",       "Tab"))      imgui_overlay_inject_key(0x09);
+            if (ImGui::MenuItem("Redraw",                  "f"))        imgui_overlay_inject_key('f');
             ImGui::EndMenu();
         }
         /* In/Out — Alt+L=load LBM, Alt+S=save LBM, Ctrl+L=load TGA, Ctrl+S=save TGA */
@@ -327,15 +330,20 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Save TGA", "Ctrl+S")) imgui_overlay_inject_key(0x0013);
             ImGui::EndMenu();
         }
-        /* Palette — '*'=merge, plst nav via ' / " ? */
+        /* Palette */
         if (ImGui::BeginMenu("Palette")) {
-            if (ImGui::MenuItem("Merge Selected", "*"))  imgui_overlay_inject_key('*');
+            if (ImGui::MenuItem("Merge Marked into Selected", "*"))  imgui_overlay_inject_key('*');
+            ImGui::Separator();
+            if (ImGui::MenuItem("Set Palette for Image",        "]"))  imgui_overlay_inject_key(']');
+            if (ImGui::MenuItem("Set Palette for Marked",       "["))  imgui_overlay_inject_key('[');
             ImGui::EndMenu();
         }
-        /* Marks — 'm'=clear all, 'M'=set all from key_t */
+        /* Marks — 'm'=ilmrk_clrall(clear), 'M'=ilmrk_setall(set all) */
         if (ImGui::BeginMenu("Marks")) {
-            if (ImGui::MenuItem("Clear All Image Marks", "m"))  imgui_overlay_inject_key('m');
             if (ImGui::MenuItem("Set All Image Marks",   "M"))  imgui_overlay_inject_key('M');
+            if (ImGui::MenuItem("Clear All Image Marks", "m"))  imgui_overlay_inject_key('m');
+            ImGui::Separator();
+            if (ImGui::MenuItem("Clear Extra Data (Anim2/PTTBL)", "Alt+C"))  imgui_overlay_inject_key(0x2E00);
             ImGui::EndMenu();
         }
         /* View — 'd'=zoom in, 'D'=zoom out, 'T'=toggle, '2'=2nd list, 'p'=iwin */
@@ -479,7 +487,13 @@ void imgui_overlay_render(void)
                     if (!pal) break;
                     bool selected = (i == plselected);
                     ImGui::PushID(1000 + i);
-                    if (ImGui::Selectable(pal->n_s, selected)) {}
+                    if (ImGui::Selectable(pal->n_s, selected)) {
+                        /* Inject palette nav keys to drive plselected via asm */
+                        int delta = i - plselected;
+                        unsigned short key = delta > 0 ? (unsigned short)'/' : (unsigned short)'\'';
+                        int steps = delta > 0 ? delta : -delta;
+                        for (int s = 0; s < steps; s++) imgui_overlay_inject_key(key);
+                    }
                     /* Right-click rename */
                     if (ImGui::BeginPopupContextItem("##palctx")) {
                         if (ImGui::MenuItem("Rename")) {
