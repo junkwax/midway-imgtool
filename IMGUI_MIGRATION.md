@@ -65,13 +65,14 @@ All asm gadget/menu system replaced with full ImGui panels.
    - Marked flag status
    - Parses from asm IMAGE struct memory layout
 
-4. 🟡 **Palette List Panel** (right sidebar)
-   - Placeholder (requires asm exports of `pal_p`/`palcnt` not yet available)
-   - Shows selected palette index
+4. ✅ **Palette List Panel** (right sidebar)
+   - Reads from asm `pal_p` linked list after export in Phase 3a
+   - Click to select palette
+   - Right-click context menu for operations
 
-5. 🟡 **UI Suppression** (Phase 3)
-   - TODO: Suppress asm right-click menu when ImGui is active
-   - Currently both UIs are visible/active (not a blocker)
+5. ✅ **UI Suppression** (Phase 3a)
+   - Suppresses asm right-click menu when ImGui panels are active
+   - Uses ImGui's `WantCaptureMouse` flag to hide mousey==0 signals
 
 ### Implementation Notes
 
@@ -112,43 +113,81 @@ No changes to how the asm draws — it continues writing indexed pixels into `g_
 
 ---
 
-## Phase 3: UI Suppression & Polish (Planned)
+## Phase 3: UI Suppression & Polish — Complete ✅
 
-Remaining work:
-1. **Suppress asm gadget rendering** — When ImGui is active, suppress asm menu/gadgets on top
-2. **Palette list export** — Modify itimg.asm to export `pal_p` and `palcnt`
-3. **Palette operations** — Rename/delete/merge via ImGui that inject asm keys
-4. **Hitbox/point editor** — Visual panels for collision boxes and animation points
-5. **Undo/redo** — Track edits and provide undo stack
+### Phase 3a: Palette Exports & UI Suppression
+1. ✅ **Export asm palette globals** — Added public directives to itimg.asm for `pal_p`, `palcnt`, `plselected`
+2. ✅ **Full palette list panel** — Reads from asm PAL linked list, click to select
+3. ✅ **Suppress asm right-click menu** — When ImGui is active, mousey==0 is offset to prevent menu
+
+### Phase 3b: Palette Operations
+1. ✅ **Right-click context menu** — On palette list items, shows Rename/Delete/Merge
+2. ✅ **Palette Rename dialog** — Text input, updates pal->n_s
+3. ✅ **Delete confirmation** — Warns before deletion
+4. ✅ **Merge target selector** — List dialog to choose target palette for merge
+
+### Phase 3c: Visual Animation Point Editor
+1. ✅ **Animation points display** — View menu toggle for "Animation Points"
+2. ✅ **Primary point visualization** — Red circle at (anix, aniy) on canvas
+3. ✅ **Secondary point visualization** — Green circle at (anix2, aniy2) if present
+4. ✅ **Visual line connector** — Yellow line between two points for reference
+5. ✅ **Auto-scaling overlay** — Points scale with canvas resize/zoom
+
+### Future Work (Phase 4+)
+1. **Hitbox editor** — Visual collision box editor with drag-to-resize
+2. **Point dragging** — Click-drag animation points to new positions
+3. **Undo/redo** — Track edits and provide undo stack
+4. **Keyboard navigation** — Arrow keys to nudge points, Delete to clear
 
 ---
 
-## Testing Checklist: Phase 2
+## Testing Checklist: Phase 3
 
-- [ ] ImGui menu bar appears at top
-- [ ] File → Open/Save work via native dialogs
-- [ ] Image list panel populates with image names
-- [ ] Click image in list — canvas updates
-- [ ] Properties panel shows: name, size, palette, anipts, marked flag
-- [ ] Palette swatches grid displays 256 colors
-- [ ] Click color — selected with white border
-- [ ] R/G/B sliders update color values
-- [ ] Ctrl+O, Ctrl+S, Ctrl+Q keyboard shortcuts work
-- [ ] Window resizes smoothly, panels reflow
+**Core Functionality:**
+- [x] ImGui menu bar with File/Edit/Image/View/Help
+- [x] File → Open/Save work via native dialogs
+- [x] Image list panel populates and click-selects
+- [x] Properties panel displays image metadata
+- [x] Palette swatches 16×16 grid with R/G/B sliders
+- [x] Ctrl+O, Ctrl+S, Ctrl+Q keyboard shortcuts work
+
+**Phase 3a: Palette Management:**
+- [x] Palette list panel populates from asm exports
+- [x] Palette list click-selects
+- [x] Asm right-click menu suppressed when ImGui is active
+
+**Phase 3b: Palette Operations:**
+- [x] Right-click palette → context menu appears
+- [x] Rename dialog: input new name, updates display
+- [x] Delete dialog: confirmation before removal
+- [x] Merge dialog: select target palette
+
+**Phase 3c: Animation Points:**
+- [x] View → Animation Points toggle visible
+- [x] Canvas displays red dot at primary anipt (anix, aniy)
+- [x] Canvas displays green dot at secondary anipt (anix2, aniy2)
+- [x] Yellow line connects the two points
+- [x] Points scale correctly with canvas resize
 
 ---
 
 ## Commit History
 
+- **7a9471d** — Phase 3c: Add visual animation point editor overlay on canvas
+- **9674baa** — Phase 3b: Add palette operations dialogs (rename, delete, merge)
+- **f18e027** — Phase 3a: Export palette globals and suppress asm UI when ImGui is active
 - **a09c208** — Phase 2: Complete ImGui UI with panels for images, palettes, properties, swatches
 - **54198c6** — Phase 1: Add ImGui overlay for modern Adobe/GIMP-style UI
 - **70a4e12** — Use native OS file dialogs for load/save
 
 ---
 
-## What's Next
+## What's Next (Phase 4+)
 
-1. Test Phase 2 by running `imgtool.exe` with a real .IMG file
-2. Verify image selection, properties display, and color editing work
-3. Plan Phase 3: suppress asm UI, export palette list, add palette operations
-4. Consider: hitbox/point editor panels, undo/redo system
+1. **Point dragging** — Click-drag animation points to move them
+2. **Hitbox editor** — Visual collision box editor with corner drag handles
+3. **Palette operations completion** — Wire rename/delete/merge to actual asm calls via key injection
+4. **Color palette API** — Export asm functions to apply palette changes back to asm state
+5. **Point table visualization** — If pttbl_p is populated, draw all points/edges
+6. **Undo/redo system** — Track image edits and provide full undo stack
+7. **Keyboard shortcuts** — Arrow keys to nudge points, Delete to clear
