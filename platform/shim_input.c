@@ -5,6 +5,7 @@
 
 #include <SDL.h>
 #include "shim_input.h"
+#include "imgui_overlay.h"
 
 /* ---- relay globals (extern declared in shim_file.h too) ---- */
 /* These are defined in shim_file.c; see shim_file.h for the authoritative decl */
@@ -16,6 +17,38 @@ extern DWORD shim_edx;
 /* keyboard-specific */
 DWORD shim_zf      = 1;   /* 1 = no key */
 WORD  shim_keycode = 0;
+
+/* Window is owned by shim_vid.c — grab it so we can convert pixel coords
+ * to logical (640x410) coords regardless of current window size. */
+extern SDL_Window *g_window;
+
+/* Convert window pixel coords to VGA-content logical coords.
+ * Logical size is 640x410 (10px menu strip + 640x400 VGA).
+ * VGA coords are clamped to 0..632 × 0..392 and output is *4
+ * to match the asm's internal fixed-point mouse convention.
+ *
+ * Returns 1 if the cursor is inside the VGA area, 0 if over the
+ * menu strip or outside the logical rect. */
+static int win_to_vga(int wx, int wy, int *out_vgax, int *out_vgay)
+{
+    float lx = 0.0f, ly = 0.0f;
+    SDL_Renderer *r = g_window ? SDL_GetRenderer(g_window) : NULL;
+    if (r) {
+        /* SDL 2.0.18+: map window pixels → logical renderer coords */
+        SDL_RenderWindowToLogical(r, wx, wy, &lx, &ly);
+    } else {
+        lx = (float)wx;
+        ly = (float)wy;
+    }
+    int cx = (int)lx;
+    int cy = (int)ly - 10;            /* subtract menu strip */
+    int inside = (cx >= 0 && cx < 640 && cy >= 0 && cy < 400);
+    if (cx < 0) cx = 0; else if (cx > 632) cx = 632;
+    if (cy < 0) cy = 0; else if (cy > 392) cy = 392;
+    *out_vgax = cx;
+    *out_vgay = cy;
+    return inside;
+}
 
 /* ---- software key-repeat ----
    SDL2 on Linux/WSLg does not reliably deliver SDL_KEYDOWN repeat events
@@ -173,6 +206,9 @@ static void pump_events(void)
     shim_vid_present();   /* flush shadow buffer before waiting for input */
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+        /* Feed event to ImGui first for UI handling */
+        imgui_overlay_process_event(&e);
+
         switch (e.type) {
         case SDL_QUIT:
             ExitProcess(0);
@@ -195,11 +231,8 @@ static void pump_events(void)
             }
             break;
         case SDL_MOUSEMOTION: {
-            /* Window: 1280x810, VGA content at (0,10,1280,800) — 2x scale, 10px menu strip */
-            int cx = e.motion.x / 2;
-            int cy = (e.motion.y - 10) / 2;
-            if (cx < 0) cx = 0; else if (cx > 632) cx = 632;
-            if (cy < 0) cy = 0; else if (cy > 392) cy = 392;
+            int cx, cy;
+            win_to_vga(e.motion.x, e.motion.y, &cx, &cy);
             shim_ecx = (DWORD)(cx * 4);
             shim_edx = (DWORD)(cy * 4);
             break;
@@ -243,8 +276,7 @@ void shim_mouse_scroll_anchor(void)
 {
     int raw_x, raw_y;
     SDL_GetMouseState(&raw_x, &raw_y);
-    s_scroll_anchor_x = raw_x / 2;
-    s_scroll_anchor_y = (raw_y - 10) / 2;
+    win_to_vga(raw_x, raw_y, &s_scroll_anchor_x, &s_scroll_anchor_y);
     SDL_GetRelativeMouseState(NULL, NULL);
 }
 
@@ -255,10 +287,10 @@ void shim_mouse_read_scroller(void)
     Uint32 state;
     pump_events();
     state = SDL_GetMouseState(&mx, &my);
-    mx = mx / 2;
-    my = (my - 10) / 2;
-    shim_ecx = (DWORD)(((mx - s_scroll_anchor_x) * 4) + SCROLLER_CENTER);
-    shim_edx = (DWORD)(((my - s_scroll_anchor_y) * 4) + SCROLLER_CENTER);
+    int vx, vy;
+    win_to_vga(mx, my, &vx, &vy);
+    shim_ecx = (DWORD)(((vx - s_scroll_anchor_x) * 4) + SCROLLER_CENTER);
+    shim_edx = (DWORD)(((vy - s_scroll_anchor_y) * 4) + SCROLLER_CENTER);
     shim_ebx = 0;
     if (state & SDL_BUTTON(SDL_BUTTON_LEFT))  shim_ebx |= 1;
     if (state & SDL_BUTTON(SDL_BUTTON_RIGHT)) shim_ebx |= 2;
@@ -281,13 +313,10 @@ void shim_mouse_read(void)
     {
         int mx, my;
         Uint32 state = SDL_GetMouseState(&mx, &my);
-        /* Window: 1280x810, VGA content at (0,10,1280,800) — 2x scale, 10px menu strip */
-        mx = mx / 2;
-        my = (my - 10) / 2;
-        if (mx < 0) mx = 0; else if (mx > 632) mx = 632;
-        if (my < 0) my = 0; else if (my > 392) my = 392;
-        shim_ecx = (DWORD)(mx * 4);
-        shim_edx = (DWORD)(my * 4);
+        int vx, vy;
+        win_to_vga(mx, my, &vx, &vy);
+        shim_ecx = (DWORD)(vx * 4);
+        shim_edx = (DWORD)(vy * 4);
         shim_ebx = 0;
         if (state & SDL_BUTTON(SDL_BUTTON_LEFT))  shim_ebx |= 1;
         if (state & SDL_BUTTON(SDL_BUTTON_RIGHT)) shim_ebx |= 2;
@@ -341,4 +370,14 @@ DWORD shim_get_shift_state(void)
     return result;
 }
 
+/* ---- ImGui overlay integration ---- */
+
+__attribute__((force_align_arg_pointer))
+void shim_key_inject(unsigned short keycode)
+{
+    /* Push keycode into the normal key queue so the asm sees it on the next
+       shim_key_check/shim_key_get call. This allows ImGui menu items to
+       trigger asm-side actions via the existing key dispatch table. */
+    keyq_push(keycode);
+}
 

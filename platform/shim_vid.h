@@ -40,6 +40,10 @@ void shim_scr_clr(void);
 void shim_iwin_clr(void);  /* clear 320x200 image window (80 bytes/row, 200 rows, all 4 planes) */
 DWORD shim_gettick(void);  /* replaces ds:[46Ch] BIOS 18.2Hz timer — returns GetTickCount() */
 
+/* ImGui overlay integration */
+SDL_Renderer *shim_get_renderer(void);
+SDL_Texture  *shim_get_canvas_tex(void);
+
 #ifdef __cplusplus
 }
 #endif

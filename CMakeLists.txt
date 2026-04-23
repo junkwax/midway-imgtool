@@ -23,7 +23,7 @@ else()
     set(ASM_LANG ASM)
 endif()
 
-project(imgtool C ${ASM_LANG})
+project(imgtool C CXX ${ASM_LANG})
 
 # SDL2: on Windows pass -DSDL2_DIR=... (handled by build.ps1).
 #       on Linux we build 32-bit, so manually target i386 SDL2.
@@ -61,11 +61,21 @@ add_executable(imgtool
     platform/shim_input.c
     platform/shim_file.c
     platform/shim_dialog.c
+    # ImGui overlay
+    imgui/imgui.cpp
+    imgui/imgui_draw.cpp
+    imgui/imgui_tables.cpp
+    imgui/imgui_widgets.cpp
+    imgui/backends/imgui_impl_sdl2.cpp
+    imgui/backends/imgui_impl_sdlrenderer2.cpp
+    platform/imgui_overlay.cpp
 )
 
 target_include_directories(imgtool PRIVATE
     platform
     IT
+    imgui
+    imgui/backends
 )
 
 target_link_libraries(imgtool PRIVATE
@@ -81,6 +91,13 @@ endif()
 
 if(MSVC)
     target_compile_options(imgtool PRIVATE /W3)
+    # Suppress ImGui warnings by compiling with lower warning level
+    set_source_files_properties(
+        imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp
+        imgui/backends/imgui_impl_sdl2.cpp imgui/backends/imgui_impl_sdlrenderer2.cpp
+        PROPERTIES
+        COMPILE_FLAGS "/W0"
+    )
     # MASM /coff objects carry no SAFESEH records
     target_link_options(imgtool PRIVATE /SAFESEH:NO /MAP)
 endif()

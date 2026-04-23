@@ -32,6 +32,9 @@ void shim_key_check(void);      /* AH=11h peek: sets shim_zf */
 void shim_key_get(void);        /* AH=10h get: sets shim_keycode */
 DWORD shim_get_shift_state(void); /* returns bit0=LShift, bit1=RShift */
 
+/* ImGui overlay integration */
+void shim_key_inject(unsigned short keycode);  /* inject synthetic key for menu commands */
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,6 +10,7 @@
 #include <SDL.h>
 #include "shim_vid.h"
 #include "shim_file.h"   /* relay globals (shim_eax, shim_ecx, shim_esi) */
+#include "imgui_overlay.h"
 
 /* ---- shadow buffer ---- */
 /* Each VGA plane is 64 KB on real hardware; the assembly code uses 16-bit DI
@@ -49,12 +50,14 @@ void shim_vid_init(void)
     g_window = SDL_CreateWindow(
         "Image Tool",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1280, 810,      /* 2x VGA (1280x800) + 10px menu strip */
-        SDL_WINDOW_SHOWN);
+        1280, 820,      /* 2x logical (640x410) at startup */
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!g_window) {
         MessageBoxA(NULL, SDL_GetError(), "SDL_CreateWindow failed", MB_OK|MB_ICONERROR);
         ExitProcess(1);
     }
+    /* Prevent shrinking below 1x logical — smaller than that becomes unreadable. */
+    SDL_SetWindowMinimumSize(g_window, 640, 410);
 
     s_renderer = SDL_CreateRenderer(g_window, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
@@ -66,6 +69,12 @@ void shim_vid_init(void)
             ExitProcess(1);
         }
     }
+
+    /* Logical-size rendering: 640x410 (10px menu strip + 640x400 VGA).
+     * SDL scales this up to the window, and integer-scale mode clamps
+     * to whole multiples so pixels stay crisp. */
+    SDL_RenderSetLogicalSize(s_renderer, 640, 410);
+    SDL_RenderSetIntegerScale(s_renderer, SDL_TRUE);
 
     s_texture = SDL_CreateTexture(s_renderer,
         SDL_PIXELFORMAT_ARGB8888,
@@ -92,11 +101,15 @@ void shim_vid_init(void)
 
     /* clear shadow buffer */
     shim_scr_clr();
+
+    /* Initialize ImGui overlay */
+    imgui_overlay_init(g_window, s_renderer, s_texture);
 }
 
 __attribute__((force_align_arg_pointer))
 void shim_vid_shutdown(void)
 {
+    imgui_overlay_shutdown();
     if (s_texture)  { SDL_DestroyTexture(s_texture);   s_texture  = NULL; }
     if (s_renderer) { SDL_DestroyRenderer(s_renderer); s_renderer = NULL; }
     if (g_window)   { SDL_DestroyWindow(g_window);     g_window   = NULL; }
@@ -127,18 +140,21 @@ void shim_vid_present(void)
     }
 
     SDL_UpdateTexture(s_texture, NULL, s_argb_buf, 640 * sizeof(Uint32));
+    /* Clear to black so letterbox bars outside the integer-scaled
+     * logical area don't show stale pixels. */
+    SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 255);
     SDL_RenderClear(s_renderer);
-    /* 10px menu strip at top */
+    /* Logical coordinate system is 640x410. SDL handles scaling.
+     * Canvas fills entire viewport; ImGui owns the UI layout. */
     {
-        SDL_Rect menu = { 0, 0, 1280, 10 };
-        SDL_SetRenderDrawColor(s_renderer, 40, 40, 40, 255);
-        SDL_RenderFillRect(s_renderer, &menu);
-    }
-    /* VGA content 2x scaled below the menu strip */
-    {
-        SDL_Rect dst = { 0, 10, 1280, 800 };
+        SDL_Rect dst = { 0, 0, 640, 410 };
         SDL_RenderCopy(s_renderer, s_texture, NULL, &dst);
     }
+
+    /* Render ImGui overlay on top of canvas */
+    imgui_overlay_newframe();
+    imgui_overlay_render();
+
     SDL_RenderPresent(s_renderer);
 }
 
@@ -223,4 +239,14 @@ void shim_iwin_clr(void)
             memset(&g_vga_plane[p][y * 160], 0, 80);
 }
 
+/* ---- ImGui overlay access ---- */
 
+SDL_Renderer *shim_get_renderer(void)
+{
+    return s_renderer;
+}
+
+SDL_Texture *shim_get_canvas_tex(void)
+{
+    return s_texture;
+}
