@@ -131,10 +131,8 @@ void shim_vid_present(void)
 {
     if (!s_renderer || !s_texture) return;
 
-    /* Suppress old DOS gadgets now that ImGui owns the UI */
-    suppress_gadget_region();
-
-    /* Deplanarize and convert indexed → ARGB8888 */
+    /* Deplanarize and convert indexed → ARGB8888.
+     * Asm drew the image into the plane last iteration; capture it now. */
     {
         int x, y;
         for (y = 0; y < 400; y++) {
@@ -149,6 +147,11 @@ void shim_vid_present(void)
             }
         }
     }
+
+    /* Wipe plane AFTER deplanarizing so asm gadgets drawn this frame don't
+     * accumulate. Asm will redraw the image into the clean plane before the
+     * next shim_vid_present call. */
+    suppress_gadget_region();
 
     SDL_UpdateTexture(s_texture, NULL, s_argb_buf, 640 * sizeof(Uint32));
     /* Clear to black so letterbox bars outside the integer-scaled
