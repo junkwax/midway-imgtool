@@ -78,6 +78,14 @@ static int g_selected_image_idx = -1;
 static int g_selected_palette_idx = -1;
 static int g_selected_color_idx = 0;
 
+/* Dialog state for palette operations */
+static bool show_palette_rename = false;
+static bool show_palette_delete = false;
+static bool show_palette_merge = false;
+static int palette_op_index = -1;
+static char palette_rename_buffer[10] = {0};
+static int palette_merge_target = -1;
+
 extern "C" {
     /* Relay globals from shim_input.c and shim_vid.c */
     extern unsigned int shim_ebx, shim_ecx, shim_edx;
@@ -333,6 +341,27 @@ void imgui_overlay_render(void)
                             /* TODO: inject key to trigger asm palette selection */
                         }
 
+                        /* Right-click context menu for palette operations */
+                        if (ImGui::BeginPopupContextItem("palette_context")) {
+                            palette_op_index = i;
+                            if (ImGui::MenuItem("Rename")) {
+                                PAL *pal = get_palette_by_index(palette_op_index);
+                                if (pal) {
+                                    strncpy(palette_rename_buffer, pal->n_s, 9);
+                                    palette_rename_buffer[9] = '\0';
+                                }
+                                show_palette_rename = true;
+                            }
+                            if (ImGui::MenuItem("Delete")) {
+                                show_palette_delete = true;
+                            }
+                            if (ImGui::MenuItem("Merge with...")) {
+                                show_palette_merge = true;
+                                palette_merge_target = -1;
+                            }
+                            ImGui::EndPopup();
+                        }
+
                         ImGui::PopID();
                     }
                     ImGui::EndListBox();
@@ -425,6 +454,91 @@ void imgui_overlay_render(void)
             }
 
             ImGui::End();
+        }
+    }
+
+    /* Palette Rename Dialog */
+    if (show_palette_rename) {
+        if (ImGui::BeginPopupModal("Rename Palette", &show_palette_rename, ImGuiWindowFlags_AlwaysAutoResize)) {
+            PAL *pal = (palette_op_index >= 0) ? get_palette_by_index(palette_op_index) : NULL;
+            if (pal) {
+                ImGui::Text("Renaming: %s", pal->n_s);
+                ImGui::InputText("##rename_input", palette_rename_buffer, sizeof(palette_rename_buffer));
+                ImGui::Separator();
+                if (ImGui::Button("OK", ImVec2(120, 0))) {
+                    /* TODO: inject key or call shim to update pal->n_s in asm */
+                    strncpy(palette_rename_buffer, pal->n_s, 9);
+                    show_palette_rename = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                    show_palette_rename = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    /* Palette Delete Dialog */
+    if (show_palette_delete) {
+        if (ImGui::BeginPopupModal("Delete Palette", &show_palette_delete, ImGuiWindowFlags_AlwaysAutoResize)) {
+            PAL *pal = (palette_op_index >= 0) ? get_palette_by_index(palette_op_index) : NULL;
+            if (pal) {
+                ImGui::Text("Delete palette '%s'? This cannot be undone.", pal->n_s);
+                ImGui::Separator();
+                if (ImGui::Button("Delete", ImVec2(120, 0))) {
+                    /* TODO: inject key or call shim to delete palette from asm */
+                    show_palette_delete = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                    show_palette_delete = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    /* Palette Merge Dialog */
+    if (show_palette_merge) {
+        if (ImGui::BeginPopupModal("Merge Palettes", &show_palette_merge, ImGuiWindowFlags_AlwaysAutoResize)) {
+            PAL *pal = (palette_op_index >= 0) ? get_palette_by_index(palette_op_index) : NULL;
+            if (pal) {
+                ImGui::Text("Merge '%s' with:", pal->n_s);
+                ImGui::Separator();
+                if (ImGui::BeginListBox("##merge_target", ImVec2(-1, 200))) {
+                    int pal_count = count_palettes();
+                    for (int i = 0; i < pal_count; i++) {
+                        if (i == palette_op_index) continue;  /* Skip self */
+                        PAL *target = get_palette_by_index(i);
+                        if (!target) break;
+                        bool is_selected = (i == palette_merge_target);
+                        if (ImGui::Selectable(target->n_s, is_selected)) {
+                            palette_merge_target = i;
+                        }
+                    }
+                    ImGui::EndListBox();
+                }
+                ImGui::Separator();
+                bool can_merge = (palette_merge_target >= 0 && palette_merge_target != palette_op_index);
+                if (!can_merge) ImGui::BeginDisabled();
+                if (ImGui::Button("Merge", ImVec2(120, 0))) {
+                    /* TODO: inject key or call shim to merge palettes */
+                    show_palette_merge = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                if (!can_merge) ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                    show_palette_merge = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
         }
     }
 
