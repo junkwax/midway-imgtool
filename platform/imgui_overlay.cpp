@@ -274,21 +274,68 @@ void imgui_overlay_render(void)
                 ImDrawList *draw_list = ImGui::GetWindowDrawList();
                 float scale_x = canvas_size.x / 640.0f;
                 float scale_y = canvas_size.y / 400.0f;
+                ImGuiIO &io = ImGui::GetIO();
+                ImVec2 mouse_pos = io.MousePos;
+                bool mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
 
                 /* Draw primary animation point (anix, aniy) */
                 ImVec2 pt1_vga((float)current_img->anix, (float)current_img->aniy);
                 ImVec2 pt1_screen(canvas_pos.x + pt1_vga.x * scale_x,
                                   canvas_pos.y + pt1_vga.y * scale_y);
-                draw_list->AddCircleFilled(pt1_screen, 6.0f, IM_COL32(255, 0, 0, 255));
+                ImVec2 diff1 = mouse_pos - pt1_screen;
+                float dist_to_pt1 = diff1.x*diff1.x + diff1.y*diff1.y;
+                bool hovering_pt1 = (dist_to_pt1 < 10*10);  /* 10px hit radius */
+                ImU32 pt1_color = hovering_pt1 ? IM_COL32(255, 100, 0, 255) : IM_COL32(255, 0, 0, 255);
+                draw_list->AddCircleFilled(pt1_screen, 6.0f, pt1_color);
                 draw_list->AddCircle(pt1_screen, 6.0f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+
+                /* Handle point dragging */
+                static bool dragging_pt1 = false;
+                if (hovering_pt1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    dragging_pt1 = true;
+                }
+                if (dragging_pt1 && mouse_down) {
+                    /* Update point position while dragging */
+                    ImVec2 relative = mouse_pos - canvas_pos;
+                    int new_x = (int)(relative.x / scale_x);
+                    int new_y = (int)(relative.y / scale_y);
+                    /* Clamp to canvas bounds */
+                    if (new_x < 0) new_x = 0; else if (new_x > 639) new_x = 639;
+                    if (new_y < 0) new_y = 0; else if (new_y > 399) new_y = 399;
+                    current_img->anix = (unsigned short)new_x;
+                    current_img->aniy = (unsigned short)new_y;
+                } else if (!mouse_down) {
+                    dragging_pt1 = false;
+                }
 
                 /* Draw secondary animation point (anix2, aniy2) if exists */
                 if (current_img->anix2 > 0 || current_img->aniy2 > 0) {
                     ImVec2 pt2_vga((float)current_img->anix2, (float)current_img->aniy2);
                     ImVec2 pt2_screen(canvas_pos.x + pt2_vga.x * scale_x,
                                       canvas_pos.y + pt2_vga.y * scale_y);
-                    draw_list->AddCircleFilled(pt2_screen, 6.0f, IM_COL32(0, 255, 0, 255));
+                    ImVec2 diff2 = mouse_pos - pt2_screen;
+                    float dist_to_pt2 = diff2.x*diff2.x + diff2.y*diff2.y;
+                    bool hovering_pt2 = (dist_to_pt2 < 10*10);
+                    ImU32 pt2_color = hovering_pt2 ? IM_COL32(0, 255, 100, 255) : IM_COL32(0, 255, 0, 255);
+                    draw_list->AddCircleFilled(pt2_screen, 6.0f, pt2_color);
                     draw_list->AddCircle(pt2_screen, 6.0f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+
+                    /* Handle second point dragging */
+                    static bool dragging_pt2 = false;
+                    if (hovering_pt2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        dragging_pt2 = true;
+                    }
+                    if (dragging_pt2 && mouse_down) {
+                        ImVec2 relative = mouse_pos - canvas_pos;
+                        int new_x = (int)(relative.x / scale_x);
+                        int new_y = (int)(relative.y / scale_y);
+                        if (new_x < 0) new_x = 0; else if (new_x > 639) new_x = 639;
+                        if (new_y < 0) new_y = 0; else if (new_y > 399) new_y = 399;
+                        current_img->anix2 = (unsigned short)new_x;
+                        current_img->aniy2 = (unsigned short)new_y;
+                    } else if (!mouse_down) {
+                        dragging_pt2 = false;
+                    }
 
                     /* Draw line between points */
                     draw_list->AddLine(pt1_screen, pt2_screen, IM_COL32(255, 255, 0, 192), 1.0f);
