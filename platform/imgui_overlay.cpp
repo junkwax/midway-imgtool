@@ -58,7 +58,13 @@ struct PAL {
 /* SDL state */
 static SDL_Window   *g_imgui_window   = NULL;
 static SDL_Renderer *g_imgui_renderer = NULL;
-static SDL_Texture  *g_canvas_texture = NULL;
+static SDL_Texture  *g_canvas_texture = NULL;  /* VGA plane tex — kept for init compat, not displayed */
+
+/* Per-image render texture — rebuilt when selected image changes */
+static SDL_Texture  *g_img_texture    = NULL;
+static int           g_img_tex_w      = 0;
+static int           g_img_tex_h      = 0;
+static int           g_img_tex_idx    = -2;  /* -2 = never built */
 
 /* Asm-side symbol externs */
 extern "C" {
@@ -134,6 +140,40 @@ static int count_pals(void)
     int n = 0;
     for (PAL *p = (PAL *)pal_p; p; p = (PAL *)p->nxt_p) n++;
     return n;
+}
+
+/* ---- Image texture renderer ---- */
+static void rebuild_img_texture(IMG *img)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) {
+        if (g_img_texture) { SDL_DestroyTexture(g_img_texture); g_img_texture = NULL; }
+        g_img_tex_w = g_img_tex_h = 0;
+        return;
+    }
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;  /* row stride padded to 4-byte boundary */
+
+    if (!g_img_texture || g_img_tex_w != w || g_img_tex_h != h) {
+        if (g_img_texture) SDL_DestroyTexture(g_img_texture);
+        g_img_texture = SDL_CreateTexture(g_imgui_renderer,
+            SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+        SDL_SetTextureBlendMode(g_img_texture, SDL_BLENDMODE_BLEND);
+        g_img_tex_w = w;
+        g_img_tex_h = h;
+    }
+    void *pixels; int pitch;
+    if (SDL_LockTexture(g_img_texture, NULL, &pixels, &pitch) != 0) return;
+    const unsigned char *src = (const unsigned char *)img->data_p;
+    Uint32 *dst = (Uint32 *)pixels;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = src[y * stride + x];
+            SDL_Color c = g_palette[ci];
+            Uint32 a = (ci == 0) ? 0x00u : 0xFFu;
+            dst[y * (pitch / 4) + x] = (a << 24) | ((Uint32)c.r << 16) | ((Uint32)c.g << 8) | c.b;
+        }
+    }
+    SDL_UnlockTexture(g_img_texture);
 }
 
 /* ---- Undo helpers ---- */
@@ -319,6 +359,13 @@ void imgui_overlay_render(void)
     float menu_h = ImGui::GetFrameHeight();
     float work_y = menu_h;
     float work_h = sh - work_y;
+
+    /* Rebuild image texture every frame — captures palette changes and live edits */
+    {
+        IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+        rebuild_img_texture(img);
+        g_img_tex_idx = ilselected;
+    }
 
     /* ===== LEFT TOOLBAR ===== */
     ImGui::SetNextWindowPos(ImVec2(0, work_y));
@@ -506,30 +553,59 @@ void imgui_overlay_render(void)
 
     ImGui::SetNextWindowPos(ImVec2(canvas_x, canvas_y));
     ImGui::SetNextWindowSize(ImVec2(canvas_w, canvas_h));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
     ImGui::Begin("##canvas", NULL,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar();
     {
-        /* Scale canvas texture (640x400) to fit, keeping aspect ratio */
         ImVec2 avail = ImGui::GetContentRegionAvail();
-        float aspect = 640.0f / 400.0f;
-        float tw = avail.x, th = tw / aspect;
-        if (th > avail.y) { th = avail.y; tw = th * aspect; }
-        /* Centre inside the available area */
-        float off_x = (avail.x - tw) * 0.5f;
-        float off_y = (avail.y - th) * 0.5f;
-        if (off_x > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + off_x);
-        if (off_y > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + off_y);
-
         ImVec2 img_pos = ImGui::GetCursorScreenPos();
-        ImVec2 img_sz(tw, th);
-        ImGui::Image((ImTextureID)(intptr_t)g_canvas_texture, img_sz);
+        ImVec2 img_sz(0, 0);
+        float sx = 1.0f, sy = 1.0f;
 
-        float sx = tw / 640.0f;
-        float sy = th / 400.0f;
+        if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+            /* Scale image to fit canvas, keeping pixel aspect ratio */
+            float tw = avail.x, th = (float)g_img_tex_h * (tw / (float)g_img_tex_w);
+            if (th > avail.y) { th = avail.y; tw = (float)g_img_tex_w * (th / (float)g_img_tex_h); }
+            /* Integer-scale snap for crisp pixels */
+            float scale = (float)(int)(tw / (float)g_img_tex_w);
+            if (scale < 1.0f) scale = 1.0f;
+            tw = (float)g_img_tex_w * scale;
+            th = (float)g_img_tex_h * scale;
+            /* Centre in available area */
+            float off_x = (avail.x - tw) * 0.5f;
+            float off_y = (avail.y - th) * 0.5f;
+            if (off_x > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + off_x);
+            if (off_y > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + off_y);
+
+            img_pos = ImGui::GetCursorScreenPos();
+            img_sz  = ImVec2(tw, th);
+            sx = tw / (float)g_img_tex_w;
+            sy = th / (float)g_img_tex_h;
+
+            /* Checkerboard background for transparency */
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            float cs = 8.0f * scale; if (cs < 8.f) cs = 8.f;
+            for (float cy = img_pos.y; cy < img_pos.y + th; cy += cs) {
+                for (float cx = img_pos.x; cx < img_pos.x + tw; cx += cs) {
+                    int row = (int)((cy - img_pos.y) / cs);
+                    int col = (int)((cx - img_pos.x) / cs);
+                    ImU32 col32 = ((row + col) & 1) ? IM_COL32(160,160,160,255) : IM_COL32(100,100,100,255);
+                    float x2 = cx + cs; if (x2 > img_pos.x + tw) x2 = img_pos.x + tw;
+                    float y2 = cy + cs; if (y2 > img_pos.y + th) y2 = img_pos.y + th;
+                    dl->AddRectFilled(ImVec2(cx, cy), ImVec2(x2, y2), col32);
+                }
+            }
+            ImGui::Image((ImTextureID)(intptr_t)g_img_texture, img_sz);
+        } else {
+            /* No image selected */
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + avail.y * 0.45f);
+            float tw = ImGui::CalcTextSize("No image selected").x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail.x - tw) * 0.5f);
+            ImGui::TextDisabled("No image selected");
+        }
         ImGuiIO &cio = ImGui::GetIO();
         ImVec2 mouse = cio.MousePos;
         bool   mbdn  = ImGui::IsMouseDown(ImGuiMouseButton_Left);

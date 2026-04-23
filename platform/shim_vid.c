@@ -131,38 +131,12 @@ void shim_vid_present(void)
 {
     if (!s_renderer || !s_texture) return;
 
-    /* Deplanarize and convert indexed → ARGB8888.
-     * Asm drew the image into the plane last iteration; capture it now. */
-    {
-        int x, y;
-        for (y = 0; y < 400; y++) {
-            for (x = 0; x < 640; x++) {
-                BYTE idx = g_vga_plane[x & 3][y*160 + (x >> 2)];
-                SDL_Color c = g_palette[idx];
-                s_argb_buf[y*640 + x] =
-                    (0xFF000000u) |
-                    ((Uint32)c.r << 16) |
-                    ((Uint32)c.g <<  8) |
-                    ((Uint32)c.b);
-            }
-        }
-    }
-
-    /* Wipe plane AFTER deplanarizing so asm gadgets drawn this frame don't
-     * accumulate. Asm will redraw the image into the clean plane before the
-     * next shim_vid_present call. */
-    suppress_gadget_region();
-
-    SDL_UpdateTexture(s_texture, NULL, s_argb_buf, 640 * sizeof(Uint32));
-    /* Clear to black so letterbox bars outside the integer-scaled
-     * logical area don't show stale pixels. */
-    SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 255);
+    /* ImGui renders the image directly from IMG.data_p — no VGA deplanarization needed.
+     * Clear the renderer and let ImGui draw everything. */
+    SDL_SetRenderDrawColor(s_renderer, 30, 30, 30, 255);
     SDL_RenderClear(s_renderer);
-    /* The VGA texture is uploaded but NOT blit to screen here —
-     * ImGui::Image() in imgui_overlay_render() draws it scaled inside
-     * the canvas panel at the correct position and aspect ratio. */
 
-    /* Render ImGui overlay on top of canvas */
+    /* Render ImGui overlay (includes image texture rebuild + draw) */
     imgui_overlay_newframe();
     imgui_overlay_render();
 
