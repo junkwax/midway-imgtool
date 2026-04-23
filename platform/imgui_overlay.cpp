@@ -92,6 +92,12 @@ static int point_editor_dragging = -1;  /* -1=none, 0=anix/y, 1=anix2/y2 */
 static bool show_anim_points = true;
 static int point_nudge_amount = 1;  /* Pixels to move with arrow keys */
 
+/* Hitbox editor state */
+static bool show_hitbox_editor = false;
+static bool show_hitboxes_overlay = false;
+static int hitbox_x = 0, hitbox_y = 0;        /* Hitbox top-left */
+static int hitbox_w = 32, hitbox_h = 32;      /* Hitbox size */
+
 /* Undo/redo system */
 #define UNDO_STACK_SIZE 64
 struct EditSnapshot {
@@ -331,6 +337,8 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             ImGui::MenuItem("Animation Points", NULL, &show_anim_points);
             ImGui::MenuItem("Point Editor", NULL, &show_point_editor);
+            ImGui::MenuItem("Hitboxes", NULL, &show_hitboxes_overlay);
+            ImGui::MenuItem("Hitbox Editor", NULL, &show_hitbox_editor);
             ImGui::EndMenu();
         }
 
@@ -450,6 +458,32 @@ void imgui_overlay_render(void)
                     /* Draw line between points */
                     draw_list->AddLine(pt1_screen, pt2_screen, IM_COL32(255, 255, 0, 192), 1.0f);
                 }
+            }
+        }
+
+        /* Draw hitbox overlay if enabled */
+        if (show_hitboxes_overlay) {
+            IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
+            if (current_img && current_img->w > 0 && current_img->h > 0) {
+                ImDrawList *draw_list = ImGui::GetWindowDrawList();
+                float scale_x = canvas_size.x / 640.0f;
+                float scale_y = canvas_size.y / 400.0f;
+
+                /* Draw hitbox rectangle */
+                ImVec2 box_tl_screen(canvas_pos.x + hitbox_x * scale_x,
+                                     canvas_pos.y + hitbox_y * scale_y);
+                ImVec2 box_br_screen(canvas_pos.x + (hitbox_x + hitbox_w) * scale_x,
+                                     canvas_pos.y + (hitbox_y + hitbox_h) * scale_y);
+                draw_list->AddRect(box_tl_screen, box_br_screen, IM_COL32(0, 255, 255, 255), 0, 0, 2.0f);
+
+                /* Draw corners as draggable handles */
+                float handle_size = 5.0f;
+                draw_list->AddCircleFilled(box_tl_screen, handle_size, IM_COL32(0, 255, 255, 255));
+                draw_list->AddCircleFilled(box_br_screen, handle_size, IM_COL32(0, 255, 255, 255));
+                ImVec2 box_tr_screen(box_br_screen.x, box_tl_screen.y);
+                ImVec2 box_bl_screen(box_tl_screen.x, box_br_screen.y);
+                draw_list->AddCircleFilled(box_tr_screen, handle_size, IM_COL32(0, 255, 255, 255));
+                draw_list->AddCircleFilled(box_bl_screen, handle_size, IM_COL32(0, 255, 255, 255));
             }
         }
 
@@ -765,6 +799,24 @@ void imgui_overlay_render(void)
             }
             ImGui::End();
         }
+    }
+
+    /* Hitbox Editor Panel */
+    if (show_hitbox_editor) {
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.65f, menu_height + 250), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(right_w * 0.5f, 200), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Hitbox Editor", &show_hitbox_editor)) {
+            ImGui::Text("Collision Box:");
+            ImGui::SliderInt("X##hbx", &hitbox_x, 0, 639);
+            ImGui::SliderInt("Y##hby", &hitbox_y, 0, 399);
+            ImGui::SliderInt("Width##hbw", &hitbox_w, 1, 640);
+            ImGui::SliderInt("Height##hbh", &hitbox_h, 1, 400);
+            ImGui::Separator();
+            ImGui::Text("Box: (%d,%d) %dx%d", hitbox_x, hitbox_y, hitbox_w, hitbox_h);
+            ImGui::TextDisabled("(Cyan box on canvas shows hitbox)");
+            ImGui::TextDisabled("(Check 'Hitboxes' in View menu to display)");
+        }
+        ImGui::End();
     }
 
     /* Render ImGui */
