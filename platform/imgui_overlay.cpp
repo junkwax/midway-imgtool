@@ -246,16 +246,14 @@ void imgui_overlay_render(void)
 
     /* ---- Menu bar ---- */
     if (ImGui::BeginMainMenuBar()) {
-        /* File */
+        /* File — key bindings from itimg.asm key_t table:
+           'l'=load IMG  's'=save IMG  'a'=append  27=Esc/quit */
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open...",    "Ctrl+O")) imgui_overlay_inject_key(0x0C);
-            if (ImGui::MenuItem("Save",       "Ctrl+S")) imgui_overlay_inject_key(0x13);
-            if (ImGui::MenuItem("Save Raw"))              {}
+            if (ImGui::MenuItem("Open...",  "l"))   imgui_overlay_inject_key('l');
+            if (ImGui::MenuItem("Save",     "s"))   imgui_overlay_inject_key('s');
+            if (ImGui::MenuItem("Append"))          imgui_overlay_inject_key('a');
             ImGui::Separator();
-            if (ImGui::MenuItem("Append"))                imgui_overlay_inject_key('a');
-            if (ImGui::MenuItem("Clear"))                 imgui_overlay_inject_key(0x0C - 0x0C + 3); /* Ctrl+C */
-            ImGui::Separator();
-            if (ImGui::MenuItem("Quit",       "Ctrl+Q")) imgui_overlay_inject_key(0x11);
+            if (ImGui::MenuItem("Quit",     "Esc")) imgui_overlay_inject_key(27);
             ImGui::EndMenu();
         }
         /* Edit */
@@ -269,55 +267,42 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Redo", "Ctrl+Y")) { g_undo_idx++; undo_apply(g_undo_idx); }
             if (!can_redo) ImGui::EndDisabled();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename",  "Ctrl+R")) imgui_overlay_inject_key(0x12);
-            if (ImGui::MenuItem("Delete",  "Ctrl+D")) imgui_overlay_inject_key(0x04);
-            if (ImGui::MenuItem("Duplicate"))          {}
+            if (ImGui::MenuItem("Rename",    "Ctrl+R"))  imgui_overlay_inject_key(0x12);
+            if (ImGui::MenuItem("Delete",    "Ctrl+D"))  imgui_overlay_inject_key(0x04);
+            if (ImGui::MenuItem("Build TGA", "Ctrl+B"))  imgui_overlay_inject_key(0x02);
             ImGui::EndMenu();
         }
         /* Image */
         if (ImGui::BeginMenu("Image")) {
-            if (ImGui::MenuItem("Set Palette"))                    imgui_overlay_inject_key('P');
             if (ImGui::MenuItem("Add/Del Point Table", "Ctrl+P")) imgui_overlay_inject_key(0x10);
-            if (ImGui::MenuItem("Build TGA",           "Ctrl+B")) imgui_overlay_inject_key(0x02);
             ImGui::Separator();
-            if (ImGui::MenuItem("Strip Edge"))       imgui_overlay_inject_key('e');
-            if (ImGui::MenuItem("Least Square"))     imgui_overlay_inject_key('l');
-            if (ImGui::MenuItem("Dither Replace"))   imgui_overlay_inject_key('D');
+            if (ImGui::MenuItem("Redraw", "f"))  imgui_overlay_inject_key('f');
             ImGui::EndMenu();
         }
-        /* In/Out */
+        /* In/Out — Alt+L=load LBM, Alt+S=save LBM, Ctrl+L=load TGA, Ctrl+S=save TGA */
         if (ImGui::BeginMenu("In/Out")) {
-            if (ImGui::MenuItem("Load LBM"))             imgui_overlay_inject_key('i');
-            if (ImGui::MenuItem("Save LBM"))             imgui_overlay_inject_key('o');
-            if (ImGui::MenuItem("Load TGA", "Ctrl+L"))  imgui_overlay_inject_key(0x0C);
-            if (ImGui::MenuItem("Save TGA"))             imgui_overlay_inject_key('O');
+            if (ImGui::MenuItem("Load LBM", "Alt+L"))  imgui_overlay_inject_key(0x2600);
+            if (ImGui::MenuItem("Save LBM", "Alt+S"))  imgui_overlay_inject_key(0x1f00);
+            if (ImGui::MenuItem("Load TGA", "Ctrl+L")) imgui_overlay_inject_key(0x000C);
+            if (ImGui::MenuItem("Save TGA", "Ctrl+S")) imgui_overlay_inject_key(0x0013);
             ImGui::EndMenu();
         }
-        /* Palette */
+        /* Palette — '*'=merge, plst nav via ' / " ? */
         if (ImGui::BeginMenu("Palette")) {
-            if (ImGui::MenuItem("Rename"))          {}
-            if (ImGui::MenuItem("Merge"))           {}
-            if (ImGui::MenuItem("Duplicate"))       {}
-            if (ImGui::MenuItem("Show Histogram"))  imgui_overlay_inject_key('H');
-            if (ImGui::MenuItem("Del Unused"))      imgui_overlay_inject_key('U');
-            if (ImGui::MenuItem("Delete"))          {}
+            if (ImGui::MenuItem("Merge Selected", "*"))  imgui_overlay_inject_key('*');
             ImGui::EndMenu();
         }
-        /* Marks */
+        /* Marks — 'm'=clear all, 'M'=set all from key_t */
         if (ImGui::BeginMenu("Marks")) {
-            if (ImGui::MenuItem("Mark All Images"))        imgui_overlay_inject_key('m');
-            if (ImGui::MenuItem("Clear All Image Marks"))  imgui_overlay_inject_key('M');
-            if (ImGui::MenuItem("Invert Image Marks"))     imgui_overlay_inject_key('v');
-            ImGui::Separator();
-            if (ImGui::MenuItem("Mark All Palettes"))      imgui_overlay_inject_key('n');
-            if (ImGui::MenuItem("Clear All Pal Marks"))    imgui_overlay_inject_key('N');
+            if (ImGui::MenuItem("Clear All Image Marks", "m"))  imgui_overlay_inject_key('m');
+            if (ImGui::MenuItem("Set All Image Marks",   "M"))  imgui_overlay_inject_key('M');
             ImGui::EndMenu();
         }
-        /* View */
+        /* View — 'd'=zoom in, 'D'=zoom out, 'T'=toggle, '2'=2nd list, 'p'=iwin */
         if (ImGui::BeginMenu("View")) {
-            if (ImGui::MenuItem("Zoom In",  "d")) imgui_overlay_inject_key('d');
-            if (ImGui::MenuItem("Zoom Out", "D")) imgui_overlay_inject_key('D');
-            if (ImGui::MenuItem("Zoom 1:1"))      imgui_overlay_inject_key('1');
+            if (ImGui::MenuItem("Zoom In",  "d"))  imgui_overlay_inject_key('d');
+            if (ImGui::MenuItem("Zoom Out", "D"))  imgui_overlay_inject_key('D');
+            if (ImGui::MenuItem("Redraw",   "f"))  imgui_overlay_inject_key('f');
             ImGui::Separator();
             ImGui::MenuItem("Anim Points", NULL, &g_show_points);
             ImGui::MenuItem("Hitboxes",    NULL, &g_show_hitbox);
@@ -325,7 +310,7 @@ void imgui_overlay_render(void)
         }
         /* Help */
         if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem("Help", "h")) imgui_overlay_inject_key('h');
+            if (ImGui::MenuItem("Help", "h"))  imgui_overlay_inject_key('h');
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -345,11 +330,11 @@ void imgui_overlay_render(void)
     {
         ImVec2 btn(TOOLBAR_W - 8, TOOLBAR_W - 8);
         /* Open */
-        if (ImGui::Button("Op", btn))  imgui_overlay_inject_key(0x0C);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open (Ctrl+O)");
+        if (ImGui::Button("Op", btn))  imgui_overlay_inject_key('l');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open IMG file (l)");
         /* Save */
-        if (ImGui::Button("Sv", btn))  imgui_overlay_inject_key(0x13);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save (Ctrl+S)");
+        if (ImGui::Button("Sv", btn))  imgui_overlay_inject_key('s');
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save IMG file (s)");
         ImGui::Spacing();
         /* Zoom in */
         if (ImGui::Button("Z+", btn))  imgui_overlay_inject_key('d');
