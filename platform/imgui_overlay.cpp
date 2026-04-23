@@ -17,6 +17,10 @@
 #ifdef _MSC_VER
 #pragma comment(linker, "/alternatename:_img_p=img_p")
 #pragma comment(linker, "/alternatename:_imgcnt=imgcnt")
+#pragma comment(linker, "/alternatename:_ilselected=ilselected")
+#pragma comment(linker, "/alternatename:_pal_p=pal_p")
+#pragma comment(linker, "/alternatename:_palcnt=palcnt")
+#pragma comment(linker, "/alternatename:_plselected=plselected")
 #endif
 
 /* Structure definitions matching wmpstruc.inc */
@@ -84,11 +88,12 @@ extern "C" {
     extern SDL_Color g_palette[256];
 
     /* Asm image/palette lists (from itimg.asm) */
-    extern void *img_p;         /* * to first IMG struct or NULL */
-    extern unsigned int imgcnt; /* Number of images */
-
-    /* Currently selected image/palette in asm - declared in shim_file.h */
-    /* Note: palcnt and pal_p are not exported by asm, so we'll read from file data instead */
+    extern void *img_p;              /* * to first IMG struct or NULL */
+    extern unsigned int imgcnt;      /* Number of images */
+    extern int ilselected;           /* Currently selected image (-1 = none) */
+    extern void *pal_p;              /* * to first PAL struct or NULL */
+    extern unsigned int palcnt;      /* Number of palettes */
+    extern int plselected;           /* Currently selected palette (-1 = none) */
 }
 
 /* Helper: count images in the linked list */
@@ -113,9 +118,27 @@ static IMG *get_image_by_index(int idx) {
     return p;
 }
 
-/* Palette tracking - simplified for Phase 2 */
-static const int MAX_PALETTES = 256;
-static int g_palette_count = 0;
+/* Helper: count palettes in the linked list */
+static int count_palettes(void) {
+    int count = 0;
+    PAL *p = (PAL *)pal_p;
+    while (p) {
+        count++;
+        p = (PAL *)p->nxt_p;
+    }
+    return count;
+}
+
+/* Helper: get palette by index */
+static PAL *get_palette_by_index(int idx) {
+    PAL *p = (PAL *)pal_p;
+    int i = 0;
+    while (p && i < idx) {
+        p = (PAL *)p->nxt_p;
+        i++;
+    }
+    return p;
+}
 
 void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *canvas_texture)
 {
@@ -248,30 +271,29 @@ void imgui_overlay_render(void)
                         if (!img) break;
 
                         bool is_marked = (img->flags & 1) != 0;
-                        bool is_selected = (i == g_selected_image_idx);
+                        bool is_selected = (i == ilselected);
 
                         ImGui::PushID(i);
 
                         if (ImGui::Selectable(img->n_s, is_selected)) {
                             /* Click to select — inject up/down keys to move selection */
-                            if (i > g_selected_image_idx && g_selected_image_idx >= 0) {
-                                for (int j = g_selected_image_idx; j < i; j++) {
+                            if (i > ilselected && ilselected >= 0) {
+                                for (int j = ilselected; j < i; j++) {
                                     imgui_overlay_inject_key(0x5000);  /* Down arrow */
                                 }
-                            } else if (i < g_selected_image_idx) {
-                                for (int j = i; j < g_selected_image_idx; j++) {
+                            } else if (i < ilselected) {
+                                for (int j = i; j < ilselected; j++) {
                                     imgui_overlay_inject_key(0x4800);  /* Up arrow */
                                 }
                             } else {
                                 imgui_overlay_inject_key(0x5000);  /* First down arrow */
                             }
-                            g_selected_image_idx = i;
                         }
 
                         /* Right-click context menu */
                         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
                             /* Set selection first */
-                            if (i != g_selected_image_idx) {
+                            if (i != ilselected) {
                                 imgui_overlay_inject_key(0x5000);
                             }
                         }
@@ -292,10 +314,32 @@ void imgui_overlay_render(void)
         ImGui::SetNextWindowPos(ImVec2(right_x, menu_height + io.DisplaySize.y * 0.35f - menu_height / 2), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(right_w, io.DisplaySize.y * 0.25f), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Palettes", &show_palette_list)) {
-            ImGui::Text("Palettes: Phase 2");
-            ImGui::Text("(Palette list access not yet exposed)");
-            ImGui::Separator();
-            ImGui::Text("Selected palette: %d", g_selected_palette_idx);
+            int pal_count = count_palettes();
+            if (pal_count > 0) {
+                ImGui::Text("Palettes: %d", pal_count);
+                ImGui::Separator();
+
+                if (ImGui::BeginListBox("##palette_list", ImVec2(-1, -ImGui::GetFrameHeightWithSpacing()))) {
+                    for (int i = 0; i < pal_count; i++) {
+                        PAL *pal = get_palette_by_index(i);
+                        if (!pal) break;
+
+                        bool is_selected = (i == plselected);
+
+                        ImGui::PushID(2000 + i);
+
+                        if (ImGui::Selectable(pal->n_s, is_selected)) {
+                            g_selected_palette_idx = i;
+                            /* TODO: inject key to trigger asm palette selection */
+                        }
+
+                        ImGui::PopID();
+                    }
+                    ImGui::EndListBox();
+                }
+            } else {
+                ImGui::Text("No palettes loaded.");
+            }
             ImGui::End();
         }
     }
@@ -305,7 +349,7 @@ void imgui_overlay_render(void)
         ImGui::SetNextWindowPos(ImVec2(right_x, menu_height + io.DisplaySize.y * 0.60f - menu_height), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(right_w, io.DisplaySize.y * 0.25f), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Properties", &show_properties)) {
-            IMG *current_img = (g_selected_image_idx >= 0) ? get_image_by_index(g_selected_image_idx) : NULL;
+            IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
             if (current_img) {
                 ImGui::Text("Name: %s", current_img->n_s);
                 ImGui::Text("Size: %d x %d", current_img->w, current_img->h);

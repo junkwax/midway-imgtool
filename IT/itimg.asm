@@ -20,6 +20,10 @@
 SLGAME	equ	0
 
 	.code
+
+;-- Export image/palette globals for C access (ImGui overlay) --
+	public	img_p, imgcnt, ilselected
+	public	pal_p, palcnt, plselected
 	externdef	_3d_editorinit:near
 
 ;OS functions
