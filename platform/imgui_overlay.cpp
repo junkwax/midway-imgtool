@@ -86,6 +86,11 @@ static int palette_op_index = -1;
 static char palette_rename_buffer[10] = {0};
 static int palette_merge_target = -1;
 
+/* Point editor state */
+static bool show_point_editor = false;
+static int point_editor_dragging = -1;  /* -1=none, 0=anix/y, 1=anix2/y2 */
+static bool show_anim_points = true;
+
 extern "C" {
     /* Relay globals from shim_input.c and shim_vid.c */
     extern unsigned int shim_ebx, shim_ecx, shim_edx;
@@ -228,6 +233,8 @@ void imgui_overlay_render(void)
             ImGui::MenuItem("Palette List", NULL, &show_palette_list);
             ImGui::MenuItem("Properties", NULL, &show_properties);
             ImGui::MenuItem("Palette Swatches", NULL, &show_palette_swatches);
+            ImGui::Separator();
+            ImGui::MenuItem("Animation Points", NULL, &show_anim_points);
             ImGui::EndMenu();
         }
 
@@ -255,7 +262,40 @@ void imgui_overlay_render(void)
             h = avail.y;
             w = h * aspect;
         }
-        ImGui::Image((ImTextureID)(intptr_t)g_canvas_texture, ImVec2(w, h));
+
+        ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+        ImVec2 canvas_size(w, h);
+        ImGui::Image((ImTextureID)(intptr_t)g_canvas_texture, canvas_size);
+
+        /* Draw animation points overlay if enabled */
+        if (show_anim_points) {
+            IMG *current_img = (ilselected >= 0) ? get_image_by_index(ilselected) : NULL;
+            if (current_img && current_img->w > 0 && current_img->h > 0) {
+                ImDrawList *draw_list = ImGui::GetWindowDrawList();
+                float scale_x = canvas_size.x / 640.0f;
+                float scale_y = canvas_size.y / 400.0f;
+
+                /* Draw primary animation point (anix, aniy) */
+                ImVec2 pt1_vga((float)current_img->anix, (float)current_img->aniy);
+                ImVec2 pt1_screen(canvas_pos.x + pt1_vga.x * scale_x,
+                                  canvas_pos.y + pt1_vga.y * scale_y);
+                draw_list->AddCircleFilled(pt1_screen, 6.0f, IM_COL32(255, 0, 0, 255));
+                draw_list->AddCircle(pt1_screen, 6.0f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+
+                /* Draw secondary animation point (anix2, aniy2) if exists */
+                if (current_img->anix2 > 0 || current_img->aniy2 > 0) {
+                    ImVec2 pt2_vga((float)current_img->anix2, (float)current_img->aniy2);
+                    ImVec2 pt2_screen(canvas_pos.x + pt2_vga.x * scale_x,
+                                      canvas_pos.y + pt2_vga.y * scale_y);
+                    draw_list->AddCircleFilled(pt2_screen, 6.0f, IM_COL32(0, 255, 0, 255));
+                    draw_list->AddCircle(pt2_screen, 6.0f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+
+                    /* Draw line between points */
+                    draw_list->AddLine(pt1_screen, pt2_screen, IM_COL32(255, 255, 0, 192), 1.0f);
+                }
+            }
+        }
+
         ImGui::End();
     }
 
