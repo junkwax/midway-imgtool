@@ -132,6 +132,7 @@ if(NOT WIN32)
         shim_i21_findfile_impl shim_i21_findnext_impl
         shim_filereq_impl
         vga_base_p
+        img_p imgcnt pal_p palcnt ilselected
     )
     set(_ELF_DEFSYMS "")
     foreach(_s ${_ELF_SYMS})
