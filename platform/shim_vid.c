@@ -116,18 +116,34 @@ void shim_vid_shutdown(void)
     SDL_Quit();
 }
 
-/* ---- suppress gadget region (DOS UI area) ---- */
-/* The asm draws gadgets (canvas frame, status bar, toolbars, windows) throughout
-   the VGA plane. Since ImGui now owns all UI, suppress DOS gadgets entirely. */
+/* ---- suppress gadget region (DOS menu/toolbar area) ---- */
+/* The asm draws gadgets (canvas frame, status bar, etc.) into specific regions
+   of the VGA plane. Since ImGui now owns the UI, suppress these gadgets while
+   preserving the image canvas area (roughly y=10..390, x=0..640). */
 static void suppress_gadget_region(void)
 {
     int x, y;
-    /* Clear the entire screen to suppress all DOS gadgets, menus, windows, and UI elements.
-       ImGui will draw all necessary UI on top. This prevents stale gadget frames
-       and DOS window decorations from appearing behind ImGui panels. */
-    for (y = 0; y < 400; y++) {
+    /* Clear top menu strip (y=0..15) */
+    for (y = 0; y < 15; y++) {
         for (x = 0; x < 640; x++) {
-            /* Write palette index 0 (black/background) to clear all gadgets */
+            g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
+        }
+    }
+    /* Clear left toolbar area (x=0..30, y=15..395) */
+    for (y = 15; y < 395; y++) {
+        for (x = 0; x < 30; x++) {
+            g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
+        }
+    }
+    /* Clear right toolbar area (x=610..640, y=15..395) */
+    for (y = 15; y < 395; y++) {
+        for (x = 610; x < 640; x++) {
+            g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
+        }
+    }
+    /* Clear bottom status bar (y=390..400) */
+    for (y = 390; y < 400; y++) {
+        for (x = 0; x < 640; x++) {
             g_vga_plane[x & 3][y*160 + (x >> 2)] = 0;
         }
     }
