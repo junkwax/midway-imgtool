@@ -1,10 +1,14 @@
 # Building midway-imgtool
 
 This document covers building `imgtool` from source on both **Linux** (GCC + JWasm)
-and **Windows** (MSVC + MASM, via the included build scripts).
+and **Windows** (MSVC + MASM).
 
 The project is a 32-bit x86 application.  It combines original DOS-era MASM-syntax
 assembly with a thin SDL2 C shim layer.
+
+> **Note:** The `build.bat` and `build.ps1` scripts are provided for convenience but
+> are no longer actively maintained. For current builds, use CMake directly as shown
+> below. See [CLEANUP.md](CLEANUP.md) for details on obsolete files.
 
 ---
 
@@ -117,15 +121,27 @@ your `.img` files, or navigate to them using the built-in file browser.
 No MASM patch is required — MASM handles flat-model `.data` sections differently
 from JWasm and the assembly sources were written to be compatible with both.
 
-### Build
+### Build with CMake (Recommended)
 
-Open a regular PowerShell window and run:
+```cmd
+mkdir build-win32
+cd build-win32
+cmake .. -G "Visual Studio 17 2022" -A Win32
+cmake --build . --config Release
+```
+
+Output: `build-win32\Release\imgtool.exe`
+
+### Build with convenience scripts (Legacy)
+
+Alternatively, you can use the included PowerShell or batch scripts to automate
+the above steps, including SDL2 download:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-Or use the classic batch script:
+Or the classic batch script:
 
 ```cmd
 build.bat

@@ -2,7 +2,7 @@
 
 IMGTOOL for editing and creating IMG container files used by various Midway games.
 
-![imgtool image](https://raw.githubusercontent.com/JUNKWAX/midway-imgtool/sdl-experimental/main.png)
+![imgtool image](https://raw.githubusercontent.com/JUNKWAX/midway-imgtool/sdl-experimental/imgtool.png)
 
 > **Note:** This is an experimental native port for Windows and Linux using SDL2.
 > It no longer requires DOSBox, DOS4GW, or an ET4000 BIOS to run.
