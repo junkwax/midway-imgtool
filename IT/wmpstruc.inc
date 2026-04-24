@@ -218,6 +218,11 @@ ANIY2	dw	?		;^ Y
 ANIZ2	dw	?		;^ Z
 OPALS	dw	?		;* to alternate pal (Wimp V6.29)
 TEMP	dd	?		;Temp used for offset when saving
+;* Debug fields: preserve disk IMAGE record fields for debugging/inspection
+file_oset	dd	?	;Offset in file of this image (from disk IMAGE.OSET)
+file_lib	dw	?	;Library handle index (from disk IMAGE.LIB)
+file_frm	dw	?	;Frame number (from disk IMAGE.FRM)
+file_pttblnum	dw	?	;Point table index (from disk IMAGE.PTTBLNUM)
 IMG	ends
 
 PAL	struct

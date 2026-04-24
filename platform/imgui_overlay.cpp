@@ -53,6 +53,11 @@ struct IMG {
     unsigned short aniz2;
     unsigned short opals;
     void          *temp;        /* temp for offset when saving */
+    /* Debug-only: disk file fields (populated during load, used during save) */
+    unsigned int   file_oset;   /* offset in file of this image */
+    unsigned short file_lib;    /* library handle index */
+    unsigned short file_frm;    /* frame number for anim */
+    unsigned short file_pttblnum; /* point table index or 0xFFFF */
 };
 
 struct PAL {
@@ -1062,6 +1067,12 @@ void imgui_overlay_render(void)
                 ImGui::Text("ANIZ2:    %u",       img->aniz2);
                 ImGui::Text("OPALS:    0x%04X",   img->opals);
                 ImGui::Text("TEMP:     0x%08X",   (unsigned)(uintptr_t)img->temp);
+                ImGui::Separator();
+                ImGui::TextDisabled("--- Disk File Format (IMAGE record) ---");
+                ImGui::Text("OSET: 0x%08X",      img->file_oset);
+                ImGui::Text("LIB:  %u",          img->file_lib);
+                ImGui::Text("FRM:  %u",          img->file_frm);
+                ImGui::Text("PTTBLNUM: %u",      img->file_pttblnum);
             } else {
                 ImGui::TextDisabled("No image selected");
             }

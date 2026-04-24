@@ -1285,6 +1285,16 @@ _aim_0052:	mov	[esi].IMG.W,ax
 	mov	ax,[edi].IMAGE.OPALS
 	mov	[esi].IMG.OPALS,ax
 
+	;* Copy disk file fields for debugging (file_oset, file_lib, file_frm, file_pttblnum)
+	mov	eax,[edi].IMAGE.OSET
+	mov	[esi].IMG.file_oset,eax
+	mov	ax,[edi].IMAGE.LIB
+	mov	[esi].IMG.file_lib,ax
+	mov	ax,[edi].IMAGE.FRM
+	mov	[esi].IMG.file_frm,ax
+	mov	ax,[edi].IMAGE.PTTBLNUM
+	mov	[esi].IMG.file_pttblnum,ax
+
 	lea	eax,[edi].IMAGE.N_s
 	lea	edi,[esi].IMG.N_s
 	call	strcpy
