@@ -46,13 +46,15 @@ struct IMG {
     unsigned short w;
     unsigned short h;
     unsigned short palnum;
-    void          *data_p;
-    void          *pttbl_p;
+    unsigned int   oset;        /* offset in file of image */
+    void          *data_p;      /* pointer to image data */
+    unsigned short lib;         /* library handle index */
     unsigned short anix2;
     unsigned short aniy2;
     unsigned short aniz2;
-    unsigned short opals;
-    void          *temp;
+    unsigned short frm;         /* frame number for anim */
+    unsigned short pttblnum;    /* point table index or 0xFFFF */
+    unsigned short opals;       /* alternate palette or 0xFFFF */
 };
 
 struct PAL {
@@ -61,9 +63,12 @@ struct PAL {
     unsigned char  flags;
     unsigned char  bitspix;   /* bits per pixel — 8 for 256-color */
     unsigned short numc;      /* number of colors */
-    unsigned short pad;
+    unsigned int   oset;      /* offset in file of palette */
     void          *data_p;    /* pointer to packed RGB triplets (3 bytes each, 0-63 range) */
-    void          *temp;
+    unsigned short lib;       /* library handle index */
+    unsigned char  colind;    /* CRAM start color */
+    unsigned char  cmap;      /* color map selection (0-F) */
+    unsigned short spare;
 };
 #pragma pack(pop)
 
@@ -151,6 +156,7 @@ static char g_rename_buf[10] = {0};
 
 /* Help modal */
 static bool g_show_help = false;
+static bool g_show_debug = false;
 static const char *g_help_text =
     "IMAGE TOOL HELP\n\n"
     "Escape - Aborts a function           Enter - Accepts a function\n"
@@ -417,6 +423,8 @@ void imgui_overlay_render(void)
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) paste_image();
         /* h — help */
         if (ImGui::IsKeyPressed(ImGuiKey_H, false)) g_show_help = true;
+        /* F9 — debug info */
+        if (ImGui::IsKeyPressed(ImGuiKey_F9, false)) g_show_debug = !g_show_debug;
     }
 
     /* ---- Menu bar ---- */
@@ -531,6 +539,7 @@ void imgui_overlay_render(void)
         }
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("Show Help", "h")) g_show_help = true;
+            if (ImGui::MenuItem("Debug Info", "F9")) g_show_debug = !g_show_debug;
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -743,8 +752,8 @@ void imgui_overlay_render(void)
                 if (img->opals == 0xFFFF) ImGui::TextDisabled("OPALS:  none");
                 else                      ImGui::Text("OPALS:  0x%04X", img->opals);
 
-                if (img->pttbl_p)   ImGui::Text("PTTBL:  present");
-                else                ImGui::TextDisabled("PTTBL:  none");
+                if (img->pttblnum != 0xFFFF) ImGui::Text("PTTBL:  present (idx %u)", img->pttblnum);
+                else                         ImGui::TextDisabled("PTTBL:  none");
 
                 ImGui::Text("DATA:   0x%08X", (unsigned)(uintptr_t)img->data_p);
 
@@ -1023,6 +1032,77 @@ void imgui_overlay_render(void)
     }
 
     /* ===== HELP MODAL ===== */
+    /* ---- Debug Info popup ---- */
+    if (g_show_debug) ImGui::OpenPopup("Debug Info");
+    if (ImGui::BeginPopupModal("Debug Info", &g_show_debug, ImGuiWindowFlags_NoMove)) {
+        ImGui::SetNextWindowSize(ImVec2(520, 580), ImGuiCond_Always);
+
+        /* --- Library Header --- */
+        if (ImGui::CollapsingHeader("LIB_HDR", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("IMGCNT:  %u",   imgcnt);
+            ImGui::Text("PALCNT:  %u",   palcnt);
+            ImGui::Text("SEQCNT:  %u",   seqcnt);
+            ImGui::Text("SCRCNT:  %u",   scrcnt);
+            ImGui::Text("DAMCNT:  %u",   damcnt);
+            ImGui::Text("VERSION: 0x%04X", fileversion);
+        }
+
+        /* --- Selected IMAGE record --- */
+        IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+        if (ImGui::CollapsingHeader("IMAGE record", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (img) {
+                ImGui::Text("N_s:      %.15s",   img->n_s);
+                ImGui::Text("FLAGS:    0x%04X",   img->flags);
+                ImGui::Text("ANIX:     %u",       img->anix);
+                ImGui::Text("ANIY:     %u",       img->aniy);
+                ImGui::Text("W:        %u",       img->w);
+                ImGui::Text("H:        %u",       img->h);
+                ImGui::Text("PALNUM:   %u",       img->palnum);
+                ImGui::Text("OSET:     0x%08X",   img->oset);
+                ImGui::Text("DATA:     0x%08X",   (unsigned)(uintptr_t)img->data_p);
+                ImGui::Text("LIB:      %u",       img->lib);
+                ImGui::Text("ANIX2:    %u",       img->anix2);
+                ImGui::Text("ANIY2:    %u",       img->aniy2);
+                ImGui::Text("ANIZ2:    %u",       img->aniz2);
+                ImGui::Text("FRM:      %u",       img->frm);
+                if (img->pttblnum == 0xFFFF) ImGui::TextDisabled("PTTBLNUM: 0xFFFF (none)");
+                else ImGui::Text("PTTBLNUM: %u",   img->pttblnum);
+                if (img->opals == 0xFFFF) ImGui::TextDisabled("OPALS:    0xFFFF (none)");
+                else ImGui::Text("OPALS:    0x%04X", img->opals);
+            } else {
+                ImGui::TextDisabled("No image selected");
+            }
+        }
+
+        /* --- Selected PALETTE record --- */
+        PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+        if (ImGui::CollapsingHeader("PALETTE record", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (pal) {
+                ImGui::Text("N_s:     %.9s",     pal->n_s);
+                ImGui::Text("FLAGS:   0x%02X",   pal->flags);
+                ImGui::Text("BITSPIX: %u",       pal->bitspix);
+                ImGui::Text("NUMC:    %u",       pal->numc);
+                ImGui::Text("OSET:    0x%08X",   pal->oset);
+                ImGui::Text("DATA:    0x%08X",   (unsigned)(uintptr_t)pal->data_p);
+                ImGui::Text("LIB:     %u",       pal->lib);
+                ImGui::Text("COLIND:  %u",       pal->colind);
+                ImGui::Text("CMAP:    0x%X",     pal->cmap);
+            } else {
+                ImGui::TextDisabled("No palette selected");
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("Close", ImVec2(120, 0))) {
+            g_show_debug = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("F9 to toggle");
+        ImGui::EndPopup();
+    }
+
     if (g_show_help) ImGui::OpenPopup("Help");
     if (ImGui::BeginPopupModal("Help", &g_show_help,
             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
