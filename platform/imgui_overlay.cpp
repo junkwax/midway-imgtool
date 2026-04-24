@@ -26,6 +26,7 @@
 #pragma comment(linker, "/alternatename:_scrcnt=scrcnt")
 #pragma comment(linker, "/alternatename:_damcnt=damcnt")
 #pragma comment(linker, "/alternatename:_fileversion=fileversion")
+#pragma comment(linker, "/alternatename:_fname_s=fname_s")
 #pragma comment(linker, "/alternatename:_ilst_savelbmmrkd=ilst_savelbmmrkd")
 #pragma comment(linker, "/alternatename:_ilst_renamemrkd=ilst_renamemrkd")
 #pragma comment(linker, "/alternatename:_ilst_deletemrkd=ilst_deletemrkd")
@@ -99,6 +100,7 @@ extern "C" {
     extern unsigned int   scrcnt;
     extern unsigned int   damcnt;
     extern unsigned int   fileversion;
+    extern char           fname_s[256];
     void shim_key_inject(unsigned short keycode);
     void ilst_savelbmmrkd(void);
     void ilst_renamemrkd(void);
@@ -619,6 +621,7 @@ void imgui_overlay_render(void)
 
     ImGui::SetNextWindowPos(ImVec2(panel_x, panel_y));
     ImGui::SetNextWindowSize(ImVec2(PANEL_W, panel_h));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0x06, 0x06, 0x06, 0xFF));
     ImGui::Begin("##panels", NULL,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
@@ -626,7 +629,17 @@ void imgui_overlay_render(void)
     {
         /* --- Image List --- */
         int n_imgs = count_imgs();
-        if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
+        char img_header[280];
+        if (fname_s[0]) {
+            const char *basename = fname_s;
+            for (const char *p = fname_s; *p; p++) {
+                if (*p == '\\' || *p == '/') basename = p + 1;
+            }
+            snprintf(img_header, sizeof(img_header), "%s", basename);
+        } else {
+            snprintf(img_header, sizeof(img_header), "Images");
+        }
+        if (ImGui::CollapsingHeader(img_header, ImGuiTreeNodeFlags_DefaultOpen)) {
             float list_h = panel_h * 0.30f;
             if (ImGui::BeginListBox("##imglist", ImVec2(-1, list_h))) {
                 for (int i = 0; i < n_imgs; i++) {
@@ -726,16 +739,16 @@ void imgui_overlay_render(void)
         if (ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
             IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
             if (img) {
-                ImGui::Text("Name:   %.15s", img->n_s);
-                ImGui::Text("Size:   %d x %d", img->w, img->h);
+                ImGui::Text("Name:        %.15s", img->n_s);
+                ImGui::Text("Size:        %d x %d", img->w, img->h);
 
                 PAL *pal = get_pal(img->palnum);
-                if (pal) ImGui::Text("Pal:    %d  %.9s", img->palnum, pal->n_s);
-                else     ImGui::Text("Pal:    %d", img->palnum);
+                if (pal) ImGui::Text("Pal:         %d  %.9s", img->palnum, pal->n_s);
+                else     ImGui::Text("Pal:         %d", img->palnum);
 
-                ImGui::Text("AX/AY:  %d, %d", img->anix, img->aniy);
-                ImGui::Text("AX2/AY2: %d, %d", img->anix2, img->aniy2);
-                ImGui::Text("AZ2:     %d", img->aniz2);
+                ImGui::Text("AX/AY:       %d, %d", img->anix, img->aniy);
+                ImGui::Text("AX2/AY2:     %d, %d", img->anix2, img->aniy2);
+                ImGui::Text("AZ2:         %d", img->aniz2);
 
                 char flagbuf[48] = {};
                 if (img->flags & 1)  strncat(flagbuf, "Marked ", 47);
@@ -743,23 +756,17 @@ void imgui_overlay_render(void)
                 if (img->flags & 4)  strncat(flagbuf, "Changed ", 47);
                 if (img->flags & 8)  strncat(flagbuf, "Delete ", 47);
                 if (!flagbuf[0])     strncpy(flagbuf, "-", 47);
-                ImGui::Text("Flags:  0x%04X  %s", img->flags, flagbuf);
+                ImGui::Text("Flags:       0x%04X  %s", img->flags, flagbuf);
 
-                if (img->opals == 0xFFFF) ImGui::TextDisabled("OPALS:  none");
-                else                      ImGui::Text("OPALS:  0x%04X", img->opals);
-
-                if (img->pttbl_p) ImGui::Text("PTTBL:  present");
-                else              ImGui::TextDisabled("PTTBL:  none");
-
-                ImGui::Text("DATA:   0x%08X", (unsigned)(uintptr_t)img->data_p);
+                ImGui::Text("DATA:        0x%08X", (unsigned)(uintptr_t)img->data_p);
 
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::TextDisabled("--- Disk File Fields ---");
-                ImGui::Text("OSET:   0x%08X", img->file_oset);
-                ImGui::Text("LIB:    %u", img->file_lib);
-                ImGui::Text("FRM:    %u", img->file_frm);
-                ImGui::Text("PTTBLNUM: %u", img->file_pttblnum);
+                ImGui::Text("OSET:        0x%08X", img->file_oset);
+                ImGui::Text("LIB:         %u", img->file_lib);
+                ImGui::Text("FRM:         %u", img->file_frm);
+                ImGui::Text("PTTBLNUM:    %u", img->file_pttblnum);
 
                 ImGui::Spacing();
                 if (g_clipboard.valid) ImGui::TextDisabled("Clip:   %.15s", g_clipboard.n_s);
@@ -801,6 +808,7 @@ void imgui_overlay_render(void)
         }
     }
     ImGui::End();
+    ImGui::PopStyleColor();
 
     /* ===== CANVAS ===== */
     float canvas_x = TOOLBAR_W;
