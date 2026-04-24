@@ -102,6 +102,19 @@ static EditSnapshot g_undo[UNDO_STACK_SIZE];
 static int          g_undo_idx   = -1;
 static int          g_undo_count =  0;
 
+/* ---- Clipboard (cut/copy/paste) ---- */
+struct CopiedImage {
+    bool           valid;
+    char           n_s[16];
+    unsigned short flags;
+    unsigned short anix, aniy;
+    unsigned short anix2, aniy2, aniz2;
+    unsigned short w, h;
+    unsigned short palnum;
+    unsigned short opals;
+};
+static CopiedImage g_clipboard = {false};
+
 /* ---- Editor state ---- */
 static int  g_sel_color   = 0;
 static bool g_show_points = true;
@@ -268,6 +281,38 @@ static void undo_apply(int idx)
     g_hitbox_w = s->hitbox_w; g_hitbox_h = s->hitbox_h;
 }
 
+/* ---- Copy/Paste helpers ---- */
+static void copy_image(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img) return;
+    memcpy(g_clipboard.n_s, img->n_s, 16);
+    g_clipboard.flags  = img->flags & ~1;
+    g_clipboard.anix   = img->anix;  g_clipboard.aniy  = img->aniy;
+    g_clipboard.anix2  = img->anix2; g_clipboard.aniy2 = img->aniy2;
+    g_clipboard.aniz2  = img->aniz2;
+    g_clipboard.w      = img->w;     g_clipboard.h     = img->h;
+    g_clipboard.palnum = img->palnum;
+    g_clipboard.opals  = img->opals;
+    g_clipboard.valid  = true;
+}
+
+static void paste_image(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img || !g_clipboard.valid) return;
+    undo_push();
+    memcpy(img->n_s, g_clipboard.n_s, 16);
+    img->flags  = (img->flags & 1) | (g_clipboard.flags & ~1);
+    img->anix   = g_clipboard.anix;  img->aniy  = g_clipboard.aniy;
+    img->anix2  = g_clipboard.anix2; img->aniy2 = g_clipboard.aniy2;
+    img->aniz2  = g_clipboard.aniz2;
+    img->w      = g_clipboard.w;     img->h     = g_clipboard.h;
+    img->palnum = g_clipboard.palnum;
+    img->opals  = g_clipboard.opals;
+    g_img_tex_idx = -2;
+}
+
 /* ---- Public C interface ---- */
 
 void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *canvas_tex)
@@ -339,6 +384,15 @@ void imgui_overlay_render(void)
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
             if (g_undo_idx < g_undo_count - 1) { g_undo_idx++; undo_apply(g_undo_idx); }
         }
+        /* Ctrl+C — copy */
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_C, false)) copy_image();
+        /* Ctrl+X — cut */
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_X, false)) {
+            copy_image();
+            imgui_overlay_inject_key(0x04);
+        }
+        /* Ctrl+V — paste */
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) paste_image();
         /* h — help */
         if (ImGui::IsKeyPressed(ImGuiKey_H, false)) g_show_help = true;
     }
@@ -367,6 +421,14 @@ void imgui_overlay_render(void)
             if (!can_redo) ImGui::BeginDisabled();
             if (ImGui::MenuItem("Redo", "Ctrl+Y")) { g_undo_idx++; undo_apply(g_undo_idx); }
             if (!can_redo) ImGui::EndDisabled();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Copy",  "Ctrl+C", false, ilselected >= 0)) copy_image();
+            if (ImGui::MenuItem("Cut",   "Ctrl+X", false, ilselected >= 0)) {
+                copy_image();
+                imgui_overlay_inject_key(0x04);
+            }
+            if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && ilselected >= 0))
+                paste_image();
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",  "Ctrl+R"))  imgui_overlay_inject_key(0x12);
             if (ImGui::MenuItem("Delete Image",  "Ctrl+D"))  imgui_overlay_inject_key(0x04);
@@ -611,16 +673,35 @@ void imgui_overlay_render(void)
         if (ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
             IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
             if (img) {
-                ImGui::Text("Name:   %s", img->n_s);
+                ImGui::Text("Name:   %.15s", img->n_s);
                 ImGui::Text("Size:   %d x %d", img->w, img->h);
-                ImGui::Text("Pal:    %d", img->palnum);
-                ImGui::Text("Anipt:  %d, %d", img->anix, img->aniy);
-                if (img->anix2 || img->aniy2)
-                    ImGui::Text("Anipt2: %d, %d", img->anix2, img->aniy2);
-                ImGui::Text("Marked: %s", (img->flags & 1) ? "Yes" : "No");
-                /* Undo/redo history count */
+
+                PAL *pal = get_pal(img->palnum);
+                if (pal) ImGui::Text("Pal:    %d  %.9s", img->palnum, pal->n_s);
+                else     ImGui::Text("Pal:    %d", img->palnum);
+
+                ImGui::Text("AX/AY:  %d, %d", img->anix, img->aniy);
+                ImGui::Text("AX2/AY2/AZ2: %d, %d, %d", img->anix2, img->aniy2, img->aniz2);
+
+                char flagbuf[48] = {};
+                if (img->flags & 1)  strncat(flagbuf, "Marked ", 47);
+                if (img->flags & 2)  strncat(flagbuf, "Loaded ", 47);
+                if (img->flags & 4)  strncat(flagbuf, "Changed ", 47);
+                if (img->flags & 8)  strncat(flagbuf, "Delete ", 47);
+                if (!flagbuf[0])     strncpy(flagbuf, "-", 47);
+                ImGui::Text("Flags:  0x%04X  %s", img->flags, flagbuf);
+
+                if (img->opals == 0xFFFF) ImGui::TextDisabled("OPALS:  none");
+                else                      ImGui::Text("OPALS:  0x%04X", img->opals);
+
+                if (img->pttbl_p)   ImGui::Text("PTTBL:  present");
+                else                ImGui::TextDisabled("PTTBL:  none");
+
+                ImGui::Text("DATA:   0x%08X", (unsigned)(uintptr_t)img->data_p);
+
                 ImGui::Spacing();
-                ImGui::TextDisabled("Undo: %d/%d", g_undo_idx + 1, g_undo_count);
+                if (g_clipboard.valid) ImGui::TextDisabled("Clip:   %.15s", g_clipboard.n_s);
+                ImGui::TextDisabled("Undo:   %d/%d", g_undo_idx + 1, g_undo_count);
             } else {
                 ImGui::TextDisabled("No image selected");
             }
