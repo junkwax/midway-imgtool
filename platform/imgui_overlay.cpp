@@ -22,6 +22,10 @@
 #pragma comment(linker, "/alternatename:_pal_p=pal_p")
 #pragma comment(linker, "/alternatename:_palcnt=palcnt")
 #pragma comment(linker, "/alternatename:_plselected=plselected")
+#pragma comment(linker, "/alternatename:_seqcnt=seqcnt")
+#pragma comment(linker, "/alternatename:_scrcnt=scrcnt")
+#pragma comment(linker, "/alternatename:_damcnt=damcnt")
+#pragma comment(linker, "/alternatename:_fileversion=fileversion")
 #endif
 
 /* Structure definitions matching wmpstruc.inc */
@@ -79,12 +83,16 @@ extern "C" {
     extern void          *pal_p;
     extern unsigned int   palcnt;
     extern int            plselected;
+    extern unsigned int   seqcnt;
+    extern unsigned int   scrcnt;
+    extern unsigned int   damcnt;
+    extern unsigned int   fileversion;
     void shim_key_inject(unsigned short keycode);
 }
 
 /* ---- Layout constants ---- */
 static const float TOOLBAR_W   = 40.0f;
-static const float PANEL_W     = 220.0f;
+static const float PANEL_W     = 240.0f;
 static const float PALETTE_H   = 110.0f;
 
 /* ---- Undo system ---- */
@@ -570,6 +578,16 @@ void imgui_overlay_render(void)
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoSavedSettings);
     {
+        /* --- Library Info --- */
+        if (ImGui::CollapsingHeader("Library")) {
+            ImGui::Text("Images:  %u", imgcnt);
+            ImGui::Text("Palettes:%u", palcnt);
+            ImGui::Text("Seqs:    %u", seqcnt);
+            ImGui::Text("Scripts: %u", scrcnt);
+            ImGui::Text("DamTbls: %u", damcnt);
+            ImGui::Text("Version: 0x%04X", fileversion);
+        }
+
         /* --- Image List --- */
         int n_imgs = count_imgs();
         if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -657,13 +675,12 @@ void imgui_overlay_render(void)
                 }
                 ImGui::EndListBox();
             }
-            /* Palette mark buttons */
+            /* Palette mark buttons (wrapped to 2 rows) */
             if (ImGui::SmallButton("Mk All"))    { PAL *p=(PAL*)pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Clr All"))   { PAL *p=(PAL*)pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
-            ImGui::SameLine();
             if (ImGui::SmallButton("Merge"))     imgui_overlay_inject_key('*');
             ImGui::SameLine();
             if (ImGui::SmallButton("Del"))       imgui_overlay_inject_key(0x5300);
@@ -681,7 +698,8 @@ void imgui_overlay_render(void)
                 else     ImGui::Text("Pal:    %d", img->palnum);
 
                 ImGui::Text("AX/AY:  %d, %d", img->anix, img->aniy);
-                ImGui::Text("AX2/AY2/AZ2: %d, %d, %d", img->anix2, img->aniy2, img->aniz2);
+                ImGui::Text("AX2/AY2: %d, %d", img->anix2, img->aniy2);
+                ImGui::Text("AZ2:     %d", img->aniz2);
 
                 char flagbuf[48] = {};
                 if (img->flags & 1)  strncat(flagbuf, "Marked ", 47);

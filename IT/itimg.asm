@@ -24,6 +24,7 @@ SLGAME	equ	0
 ;-- Export image/palette globals for C access (ImGui overlay) --
 	public	img_p, imgcnt, ilselected
 	public	pal_p, palcnt, plselected
+	public	seqcnt, scrcnt, damcnt, fileversion
 	externdef	_3d_editorinit:near
 
 ;OS functions
@@ -257,6 +258,7 @@ ssentry_t	ENTRY	16 dup (<>)	;Temp
 	BSSD	scrseqmem_p		;* to scr & seq
 
 	BSSD	damcnt			;# of damage tables (0-?)
+	BSSD	fileversion		;Loaded file version (e.g. 634h)
 	align	4
 
 	BSSD	pal_p			;* 1st PAL structure or 0
@@ -1053,6 +1055,9 @@ bogus:	mov	al,1
 	jmp	x
 
 vok:
+	movzx	eax,lib_hdr.VERSION
+	mov	fileversion,eax
+
 	mov	ax,lib_hdr.IMGCNT
 	dec	ax
 	cmp	ax,MAX_IMG-1
