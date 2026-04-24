@@ -3046,7 +3046,7 @@ x:
 ;********************************
 ;* Rename marked images
 
- SUBRP	ilst_renamemrkd
+ SUBR	ilst_renamemrkd
 
 	local	sbuf[20]:byte
 
@@ -3164,7 +3164,7 @@ draw:
 ;********************************
 ;* Delete marked images
 
- SUBRP	ilst_deletemrkd
+ SUBR	ilst_deletemrkd
 
 	CLR	al
 	mov	esi,offset rusure_s
@@ -3578,7 +3578,7 @@ draw:
 
 ;********************************
 
- SUBRP	ilst_striplowmrkd
+ SUBR	ilst_striplowmrkd
 
 	mov	eax,3
 	CLR	ebx
@@ -3588,7 +3588,7 @@ draw:
 
 ;********************************
 
- SUBRP	ilst_striprngmrkd
+ SUBR	ilst_striprngmrkd
 
 	mov	eax,5
 	mov	bl,palb1stc
@@ -3600,7 +3600,7 @@ draw:
 
 ;********************************
 
- SUBRP	ilst_stripmrkd
+ SUBR	ilst_stripmrkd
 
 	mov	eax,5
 	CLR	ebx
@@ -3893,7 +3893,7 @@ stripo_t	db	-1,-1, 0,-1, 1,-1
 ;* Replace dither pixels on marked images
 ;* Trashes all non seg
 
- SUBRP	ilst_ditherrepmrkd
+ SUBR	ilst_ditherrepmrkd
 
 	local	px:dword,\		;Pixel X
 		py:dword,\		;Pixel Y
@@ -5029,7 +5029,7 @@ x:
 ;********************************
 ;* Open file req for savelbm
 
- SUBRP	ilst_savelbmmrkd
+ SUBR	ilst_savelbmmrkd
 
 
 	mov	eax,offset fmatchlbm_s

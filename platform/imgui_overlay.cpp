@@ -26,6 +26,13 @@
 #pragma comment(linker, "/alternatename:_scrcnt=scrcnt")
 #pragma comment(linker, "/alternatename:_damcnt=damcnt")
 #pragma comment(linker, "/alternatename:_fileversion=fileversion")
+#pragma comment(linker, "/alternatename:_ilst_savelbmmrkd=ilst_savelbmmrkd")
+#pragma comment(linker, "/alternatename:_ilst_renamemrkd=ilst_renamemrkd")
+#pragma comment(linker, "/alternatename:_ilst_deletemrkd=ilst_deletemrkd")
+#pragma comment(linker, "/alternatename:_ilst_stripmrkd=ilst_stripmrkd")
+#pragma comment(linker, "/alternatename:_ilst_striplowmrkd=ilst_striplowmrkd")
+#pragma comment(linker, "/alternatename:_ilst_striprngmrkd=ilst_striprngmrkd")
+#pragma comment(linker, "/alternatename:_ilst_ditherrepmrkd=ilst_ditherrepmrkd")
 #endif
 
 /* Structure definitions matching wmpstruc.inc */
@@ -88,6 +95,13 @@ extern "C" {
     extern unsigned int   damcnt;
     extern unsigned int   fileversion;
     void shim_key_inject(unsigned short keycode);
+    void ilst_savelbmmrkd(void);
+    void ilst_renamemrkd(void);
+    void ilst_deletemrkd(void);
+    void ilst_stripmrkd(void);
+    void ilst_striplowmrkd(void);
+    void ilst_striprngmrkd(void);
+    void ilst_ditherrepmrkd(void);
 }
 
 /* ---- Layout constants ---- */
@@ -413,8 +427,9 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Append",   "a"))   imgui_overlay_inject_key('a');
             ImGui::Separator();
             if (ImGui::MenuItem("Load LBM", "Alt+L"))   imgui_overlay_inject_key(0x2600);
-            if (ImGui::MenuItem("Save LBM", "Alt+S"))   imgui_overlay_inject_key(0x1f00);
-            if (ImGui::MenuItem("Load TGA", "Ctrl+L"))  imgui_overlay_inject_key(0x000C);
+            if (ImGui::MenuItem("Save LBM", "Alt+S"))        imgui_overlay_inject_key(0x1f00);
+            if (ImGui::MenuItem("Save Marked LBM"))          ilst_savelbmmrkd();
+            if (ImGui::MenuItem("Load TGA", "Ctrl+L"))       imgui_overlay_inject_key(0x000C);
             if (ImGui::MenuItem("Save TGA", "Ctrl+S"))  imgui_overlay_inject_key(0x0013);
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Esc")) imgui_overlay_inject_key(27);
@@ -467,6 +482,22 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Toggle Anim Point Mode",   "a"))            imgui_overlay_inject_key('a');
             if (ImGui::MenuItem("Show True Palette Colors", "t"))            imgui_overlay_inject_key('t');
             if (ImGui::MenuItem("Redraw",                   "f"))            imgui_overlay_inject_key('f');
+            ImGui::Separator();
+            if (ImGui::BeginMenu("Marked Images")) {
+                if (ImGui::MenuItem("Rename Marked"))               ilst_renamemrkd();
+                if (ImGui::MenuItem("Delete Marked"))               ilst_deletemrkd();
+                ImGui::Separator();
+                if (ImGui::MenuItem("Set Palette",     "["))        imgui_overlay_inject_key('[');
+                ImGui::Separator();
+                if (ImGui::MenuItem("Strip Edge"))                  ilst_stripmrkd();
+                if (ImGui::MenuItem("Strip Edge Low"))              ilst_striplowmrkd();
+                if (ImGui::MenuItem("Strip Edge Range"))            ilst_striprngmrkd();
+                ImGui::Separator();
+                if (ImGui::MenuItem("Least Squares",   ";"))        imgui_overlay_inject_key(';');
+                if (ImGui::MenuItem("Dither Replace"))              ilst_ditherrepmrkd();
+                if (ImGui::MenuItem("Build TGA",       "Ctrl+B"))   imgui_overlay_inject_key(0x02);
+                ImGui::EndMenu();
+            }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Palette")) {
