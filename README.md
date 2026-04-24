@@ -143,3 +143,7 @@ still lives on `main` if you need it.
 - ✅ Marked Image Operations submenu (rename/delete marked, strip edge variants, dither replace)
 - ✅ Debug Info popup with full file header and record details
 - ✅ All disk file fields preserved and inspectable (OSET, LIB, FRM, PTTBLNUM)
+- ✅ Dark background theme for all panels (#060606)
+- ✅ Filename display in Images dropdown header
+- ✅ Uniform Properties panel spacing and alignment
+- ✅ Directory persistence (remembers last opened folder across restarts)
