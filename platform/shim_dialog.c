@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <stdlib.h>
 
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -26,7 +27,9 @@
 #  include <windows.h>
 #  include <commdlg.h>
 #  include <direct.h>
+#  include <shlobj.h>
 #  pragma comment(lib, "comdlg32.lib")
+#  pragma comment(lib, "shell32.lib")
 #endif
 
 /* asm-side globals (13-byte fname_s, 64-byte fpath_s, fnametmp_s).
@@ -55,6 +58,58 @@ extern unsigned int shim_carry;
  * open-vs-save mode (L/A = open, S = save). */
 extern unsigned int shim_eax;
 extern unsigned int shim_esi;
+
+/* ---- Directory persistence (save/load last opened folder) ---- */
+
+static const char *get_config_path(void)
+{
+    static char path[MAX_PATH] = "";
+    if (!path[0]) {
+#ifdef _WIN32
+        char appdata[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata))) {
+            _snprintf(path, sizeof(path), "%s\\imgtool\\last_dir.txt", appdata);
+        } else {
+            _snprintf(path, sizeof(path), "last_dir.txt");
+        }
+#else
+        _snprintf(path, sizeof(path), "%s/.imgtool_last_dir", getenv("HOME") ? getenv("HOME") : ".");
+#endif
+    }
+    return path;
+}
+
+static void save_last_directory(const char *dir)
+{
+    if (!dir || !*dir) return;
+    const char *config = get_config_path();
+#ifdef _WIN32
+    char parent[MAX_PATH];
+    _snprintf(parent, sizeof(parent), "%s\\imgtool", getenv("APPDATA") ? getenv("APPDATA") : ".");
+    CreateDirectoryA(parent, NULL);  /* create dir if missing */
+#endif
+    FILE *f = fopen(config, "w");
+    if (f) {
+        fprintf(f, "%s", dir);
+        fclose(f);
+    }
+}
+
+static void load_last_directory(char *dir, size_t dirsz)
+{
+    if (!dir || !dirsz) return;
+    dir[0] = '\0';
+    const char *config = get_config_path();
+    FILE *f = fopen(config, "r");
+    if (f) {
+        if (fgets(dir, (int)dirsz, f)) {
+            /* trim trailing newline */
+            size_t len = strlen(dir);
+            if (len > 0 && dir[len - 1] == '\n') dir[len - 1] = '\0';
+        }
+        fclose(f);
+    }
+}
 
 #ifdef _WIN32
 
@@ -150,10 +205,12 @@ void shim_filereq_impl(void)
         _snprintf(full, sizeof(full), "%s", fname_s);
     }
 
-    /* Start the dialog in fpath_s if it looks valid */
+    /* Start the dialog in fpath_s if it looks valid, otherwise load last saved dir */
     char initdir[MAX_PATH] = "";
     if (fpath_s[0]) {
         _snprintf(initdir, sizeof(initdir), "%s", fpath_s);
+    } else {
+        load_last_directory(initdir, sizeof(initdir));
     }
 
     OPENFILENAMEA ofn;
@@ -206,6 +263,9 @@ void shim_filereq_impl(void)
         memcpy(fname_s,    base, n);
         memcpy(fnametmp_s, base, n);
     }
+
+    /* Save the directory for next time */
+    save_last_directory(dir);
 
     /* Chdir into the selected folder so I21OPENR ("fname_s") finds it. */
     _chdir(dir);
