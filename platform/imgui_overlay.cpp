@@ -429,6 +429,7 @@ void imgui_overlay_render(void)
 
     /* ---- Menu bar ---- */
     if (ImGui::BeginMainMenuBar()) {
+        ImGui::Spacing();  /* space before File */
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open...",  "l"))   imgui_overlay_inject_key('l');
             if (ImGui::MenuItem("Save",     "s"))   imgui_overlay_inject_key('s');
@@ -443,6 +444,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Quit", "Esc")) imgui_overlay_inject_key(27);
             ImGui::EndMenu();
         }
+        ImGui::Spacing();  /* space between File and Edit */
         if (ImGui::BeginMenu("Edit")) {
             bool can_undo = g_undo_idx > 0;
             bool can_redo = g_undo_idx < g_undo_count - 1;
@@ -467,6 +469,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Build TGA",     "Ctrl+B"))  imgui_overlay_inject_key(0x02);
             ImGui::EndMenu();
         }
+        ImGui::Spacing();  /* space between Edit and Image */
         if (ImGui::BeginMenu("Image")) {
             if (ImGui::MenuItem("Mark / Unmark",            "Space"))        imgui_overlay_inject_key(' ');
             if (ImGui::MenuItem("Set All Marks",            "M"))            imgui_overlay_inject_key('M');
@@ -508,6 +511,7 @@ void imgui_overlay_render(void)
             }
             ImGui::EndMenu();
         }
+        ImGui::Spacing();  /* space between Image and Palette */
         if (ImGui::BeginMenu("Palette")) {
             if (ImGui::MenuItem("Set Palette for Image",      "]"))       imgui_overlay_inject_key(']');
             if (ImGui::MenuItem("Set Palette for Marked",     "["))       imgui_overlay_inject_key('[');
@@ -528,6 +532,7 @@ void imgui_overlay_render(void)
             }
             ImGui::EndMenu();
         }
+        ImGui::Spacing();  /* space between Palette and View */
         if (ImGui::BeginMenu("View")) {
             if (ImGui::MenuItem("Zoom In",  "d"))  imgui_overlay_inject_key('d');
             if (ImGui::MenuItem("Zoom Out", "D"))  imgui_overlay_inject_key('D');
@@ -537,6 +542,7 @@ void imgui_overlay_render(void)
             ImGui::MenuItem("Hitboxes",    NULL, &g_show_hitbox);
             ImGui::EndMenu();
         }
+        ImGui::Spacing();  /* space between View and Help */
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("Show Help", "h")) g_show_help = true;
             if (ImGui::MenuItem("Debug Info", "F9")) g_show_debug = !g_show_debug;
@@ -618,16 +624,6 @@ void imgui_overlay_render(void)
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoSavedSettings);
     {
-        /* --- Library Info --- */
-        if (ImGui::CollapsingHeader("Library")) {
-            ImGui::Text("Images:  %u", imgcnt);
-            ImGui::Text("Palettes:%u", palcnt);
-            ImGui::Text("Seqs:    %u", seqcnt);
-            ImGui::Text("Scripts: %u", scrcnt);
-            ImGui::Text("DamTbls: %u", damcnt);
-            ImGui::Text("Version: 0x%04X", fileversion);
-        }
-
         /* --- Image List --- */
         int n_imgs = count_imgs();
         if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -756,6 +752,14 @@ void imgui_overlay_render(void)
                 else              ImGui::TextDisabled("PTTBL:  none");
 
                 ImGui::Text("DATA:   0x%08X", (unsigned)(uintptr_t)img->data_p);
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextDisabled("--- Disk File Fields ---");
+                ImGui::Text("OSET:   0x%08X", img->file_oset);
+                ImGui::Text("LIB:    %u", img->file_lib);
+                ImGui::Text("FRM:    %u", img->file_frm);
+                ImGui::Text("PTTBLNUM: %u", img->file_pttblnum);
 
                 ImGui::Spacing();
                 if (g_clipboard.valid) ImGui::TextDisabled("Clip:   %.15s", g_clipboard.n_s);
@@ -1004,6 +1008,20 @@ void imgui_overlay_render(void)
                 col.b = (unsigned char)b;
                 palette_writeback(g_sel_color);
             }
+        }
+        ImGui::EndGroup();
+
+        /* --- Library Info (far right) --- */
+        float right_x = sw - 180.f;
+        ImGui::SetCursorScreenPos(ImVec2(right_x, pos0.y));
+        ImGui::BeginGroup();
+        {
+            ImGui::Text("Images:   %u", imgcnt);
+            ImGui::Text("Palettes: %u", palcnt);
+            ImGui::Text("Seqs:     %u", seqcnt);
+            ImGui::Text("Scripts:  %u", scrcnt);
+            ImGui::Text("DamTbls:  %u", damcnt);
+            ImGui::Text("Version:  0x%04X", fileversion);
         }
         ImGui::EndGroup();
     }
