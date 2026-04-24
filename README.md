@@ -66,6 +66,9 @@ When the window opens you'll see a blank VGA-style canvas. Key commands:
 Press `h` in the app for the full, up-to-date key reference (palette keys,
 hitbox editor, anipts, etc.).
 
+Press `F9` to open the **Debug Info** popup showing complete file header and
+record details (OSET, LIB, FRM, PTTBLNUM, etc.) for troubleshooting.
+
 ---
 
 ## Environment variables
@@ -109,7 +112,34 @@ Two rows of buttons, visible only in default zoom view.
 
 ---
 
+---
+
+## Features
+
+**2D Sprite Editor** (Full Feature Parity with DOS):
+- Load/Save IMG libraries (with auto-conversion of legacy pre-2.x files)
+- View and edit sprites with animation points
+- Palette management (load/save LBM, TGA formats)
+- Hitbox editor (5 collision boxes + center point)
+- Undo/Redo for all edits
+- Marked image batch operations (rename, delete, set palette, strip edge, dither replace)
+- Copy/Cut/Paste sprite properties
+
+**ImGui Native UI** (Windows/Linux):
+- Fixed Adobe/GIMP-style layout: menu bar, toolbar, center canvas, right panel, bottom palette
+- Collapsible sections for Images, Palettes, Animation Points, Properties
+- Synchronized mark/selection across lists
+- File browser with directory history
+- Debug Info popup (F9) showing all binary file data
+
+---
+
 ## Status
 
-This is the `sdl-experimental` branch. The DOS/DOSBox build still lives on
-`main` if you need it.
+This is the `sdl-experimental` branch, actively maintained. The DOS/DOSBox build
+still lives on `main` if you need it.
+
+**Phase 6 Complete (Apr 23, 2026):**
+- ✅ Marked Image Operations submenu (rename/delete marked, strip edge variants, dither replace)
+- ✅ Debug Info popup with full file header and record details
+- ✅ All disk file fields preserved and inspectable (OSET, LIB, FRM, PTTBLNUM)
