@@ -960,7 +960,6 @@ void imgui_overlay_render(void)
     float pal_y = sh - PALETTE_H;
     ImGui::SetNextWindowPos(ImVec2(0, pal_y));
     ImGui::SetNextWindowSize(ImVec2(sw, PALETTE_H));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0x06, 0x06, 0x06, 0xFF));
     ImGui::Begin("##palette", NULL,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
@@ -1029,7 +1028,6 @@ void imgui_overlay_render(void)
         ImGui::EndGroup();
     }
     ImGui::End();
-    ImGui::PopStyleColor();
 
     /* ===== PALETTE RENAME DIALOG ===== */
     if (g_show_rename) ImGui::OpenPopup("Rename Palette");
