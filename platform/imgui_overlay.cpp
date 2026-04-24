@@ -46,15 +46,13 @@ struct IMG {
     unsigned short w;
     unsigned short h;
     unsigned short palnum;
-    unsigned int   oset;        /* offset in file of image */
-    void          *data_p;      /* pointer to image data */
-    unsigned short lib;         /* library handle index */
+    void          *data_p;
+    void          *pttbl_p;     /* point table pointer or NULL */
     unsigned short anix2;
     unsigned short aniy2;
     unsigned short aniz2;
-    unsigned short frm;         /* frame number for anim */
-    unsigned short pttblnum;    /* point table index or 0xFFFF */
-    unsigned short opals;       /* alternate palette or 0xFFFF */
+    unsigned short opals;
+    void          *temp;        /* temp for offset when saving */
 };
 
 struct PAL {
@@ -63,12 +61,9 @@ struct PAL {
     unsigned char  flags;
     unsigned char  bitspix;   /* bits per pixel — 8 for 256-color */
     unsigned short numc;      /* number of colors */
-    unsigned int   oset;      /* offset in file of palette */
+    unsigned short pad;
     void          *data_p;    /* pointer to packed RGB triplets (3 bytes each, 0-63 range) */
-    unsigned short lib;       /* library handle index */
-    unsigned char  colind;    /* CRAM start color */
-    unsigned char  cmap;      /* color map selection (0-F) */
-    unsigned short spare;
+    void          *temp;      /* temp for offset when saving */
 };
 #pragma pack(pop)
 
@@ -752,8 +747,8 @@ void imgui_overlay_render(void)
                 if (img->opals == 0xFFFF) ImGui::TextDisabled("OPALS:  none");
                 else                      ImGui::Text("OPALS:  0x%04X", img->opals);
 
-                if (img->pttblnum != 0xFFFF) ImGui::Text("PTTBL:  present (idx %u)", img->pttblnum);
-                else                         ImGui::TextDisabled("PTTBL:  none");
+                if (img->pttbl_p) ImGui::Text("PTTBL:  present");
+                else              ImGui::TextDisabled("PTTBL:  none");
 
                 ImGui::Text("DATA:   0x%08X", (unsigned)(uintptr_t)img->data_p);
 
@@ -1047,46 +1042,43 @@ void imgui_overlay_render(void)
             ImGui::Text("VERSION: 0x%04X", fileversion);
         }
 
-        /* --- Selected IMAGE record --- */
+        /* --- Selected IMAGE record (runtime) --- */
         IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
-        if (ImGui::CollapsingHeader("IMAGE record", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("IMAGE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (img) {
-                ImGui::Text("N_s:      %.15s",   img->n_s);
+                ImGui::Text("NXT_p:    0x%08X",   (unsigned)(uintptr_t)img->nxt_p);
+                ImGui::Text("N_s:      %.15s",    img->n_s);
                 ImGui::Text("FLAGS:    0x%04X",   img->flags);
                 ImGui::Text("ANIX:     %u",       img->anix);
                 ImGui::Text("ANIY:     %u",       img->aniy);
                 ImGui::Text("W:        %u",       img->w);
                 ImGui::Text("H:        %u",       img->h);
                 ImGui::Text("PALNUM:   %u",       img->palnum);
-                ImGui::Text("OSET:     0x%08X",   img->oset);
-                ImGui::Text("DATA:     0x%08X",   (unsigned)(uintptr_t)img->data_p);
-                ImGui::Text("LIB:      %u",       img->lib);
+                ImGui::Text("DATA_p:   0x%08X",   (unsigned)(uintptr_t)img->data_p);
+                if (img->pttbl_p) ImGui::Text("PTTBL_p:  0x%08X", (unsigned)(uintptr_t)img->pttbl_p);
+                else ImGui::TextDisabled("PTTBL_p:  NULL");
                 ImGui::Text("ANIX2:    %u",       img->anix2);
                 ImGui::Text("ANIY2:    %u",       img->aniy2);
                 ImGui::Text("ANIZ2:    %u",       img->aniz2);
-                ImGui::Text("FRM:      %u",       img->frm);
-                if (img->pttblnum == 0xFFFF) ImGui::TextDisabled("PTTBLNUM: 0xFFFF (none)");
-                else ImGui::Text("PTTBLNUM: %u",   img->pttblnum);
-                if (img->opals == 0xFFFF) ImGui::TextDisabled("OPALS:    0xFFFF (none)");
-                else ImGui::Text("OPALS:    0x%04X", img->opals);
+                ImGui::Text("OPALS:    0x%04X",   img->opals);
+                ImGui::Text("TEMP:     0x%08X",   (unsigned)(uintptr_t)img->temp);
             } else {
                 ImGui::TextDisabled("No image selected");
             }
         }
 
-        /* --- Selected PALETTE record --- */
+        /* --- Selected PALETTE record (runtime) --- */
         PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
-        if (ImGui::CollapsingHeader("PALETTE record", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("PALETTE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (pal) {
-                ImGui::Text("N_s:     %.9s",     pal->n_s);
-                ImGui::Text("FLAGS:   0x%02X",   pal->flags);
-                ImGui::Text("BITSPIX: %u",       pal->bitspix);
-                ImGui::Text("NUMC:    %u",       pal->numc);
-                ImGui::Text("OSET:    0x%08X",   pal->oset);
-                ImGui::Text("DATA:    0x%08X",   (unsigned)(uintptr_t)pal->data_p);
-                ImGui::Text("LIB:     %u",       pal->lib);
-                ImGui::Text("COLIND:  %u",       pal->colind);
-                ImGui::Text("CMAP:    0x%X",     pal->cmap);
+                ImGui::Text("NXT_p:    0x%08X",   (unsigned)(uintptr_t)pal->nxt_p);
+                ImGui::Text("N_s:      %.9s",     pal->n_s);
+                ImGui::Text("FLAGS:    0x%02X",   pal->flags);
+                ImGui::Text("BITSPIX:  %u",       pal->bitspix);
+                ImGui::Text("NUMC:     %u",       pal->numc);
+                ImGui::Text("PAD:      0x%04X",   pal->pad);
+                ImGui::Text("DATA_p:   0x%08X",   (unsigned)(uintptr_t)pal->data_p);
+                ImGui::Text("TEMP:     0x%08X",   (unsigned)(uintptr_t)pal->temp);
             } else {
                 ImGui::TextDisabled("No palette selected");
             }
