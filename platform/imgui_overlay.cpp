@@ -129,6 +129,7 @@ static bool g_icon_font_loaded = false;
 #define ICON_CLEAR    "\xEE\x97\x8D"     /* U+E5CD close */
 #define ICON_POINTS   "\xEE\x95\x9F"     /* U+E55F place */
 #define ICON_HITBOX   "\xEE\x8F\x82"     /* U+E3C2 crop_free */
+#define ICON_MARQUEE  "\xEE\xBD\x92"     /* U+EF52 highlight_alt — dashed-rect marquee */
 #define ICON_UNDO     "\xEE\x85\xA6"     /* U+E166 undo */
 #define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
 
@@ -139,6 +140,7 @@ static bool g_icon_font_loaded = false;
 #define ICON_CLEAR_TXT    "CM"
 #define ICON_POINTS_TXT   "Pt"
 #define ICON_HITBOX_TXT   "Hb"
+#define ICON_MARQUEE_TXT  "[]"
 #define ICON_UNDO_TXT     "Uz"
 #define ICON_REDO_TXT     "Ry"
 
@@ -205,11 +207,16 @@ static bool g_show_new_img_confirm = false;
 
 /* Grid selection tool (for copy/paste) */
 struct GridSelection {
-    bool active;        /* selection is being drawn */
+    bool active;        /* a selection rectangle exists and should be drawn */
+    bool dragging;      /* user is currently click-dragging the rect's far corner */
     int x1, y1;         /* start coords (pixels) */
     int x2, y2;         /* end coords (pixels) */
 };
-static GridSelection g_grid_sel = {false};
+static GridSelection g_grid_sel = {false, false, 0, 0, 0, 0};
+/* Marquee tool gate: when false, click-drag on the sprite never starts a
+   selection. Photoshop-style explicit mode toggle — fixes the green box
+   misfiring on stray clicks. Toggled via the toolbar button or 'R' key. */
+static bool g_marquee_active = false;
 
 /* Pasted image placement (with move feedback) */
 struct PastedImage {
@@ -754,6 +761,71 @@ static void LeastSquaresReduceMarked()
 }
 
 /* ---- Write ANILST (Export Marked Images to Assembly) ---- */
+/* Restore-from-source. The selected image is the "source" (un-chopped); every
+   marked image is treated as a strip cut from it. For each strip pixel that
+   is currently transparent (index 0) but whose corresponding source pixel
+   isn't, copy the source pixel in. Restores artist-erased content (e.g. a
+   logo scrubbed for copyright reasons after the chop) without touching pixels
+   the strip already has its own data for.
+
+   Mapping uses anipoints: source local (sx, sy) corresponds to strip local
+   (sx - source.anix + strip.anix, sy - source.aniy + strip.aniy). Same
+   palette is assumed (no recoloring). Returns the count of pixels written. */
+static int RestoreMarkedFromSource(void)
+{
+    IMG *src = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!src || !src->data_p || src->w == 0 || src->h == 0) return 0;
+
+    /* Sanity check: are there any marked targets that aren't the source itself? */
+    bool any_target = false;
+    for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
+        if ((t->flags & 1) && t != src) { any_target = true; break; }
+    }
+    if (!any_target) return 0;
+
+    undo_push();
+
+    const unsigned char *src_pix = (const unsigned char *)src->data_p;
+    int src_stride = (src->w + 3) & ~3;
+    int total_written = 0;
+
+    for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
+        if (!(t->flags & 1) || t == src || !t->data_p || t->w == 0 || t->h == 0) continue;
+
+        /* Skip if palette differs — restoring across palettes would mis-color. */
+        if (t->palnum != src->palnum) continue;
+
+        unsigned char *dst_pix = (unsigned char *)t->data_p;
+        int dst_stride = (t->w + 3) & ~3;
+
+        /* dx, dy are the src-local coords of the strip's (0,0). */
+        int dx = (int)(short)t->anix - (int)(short)src->anix;
+        int dy = (int)(short)t->aniy - (int)(short)src->aniy;
+
+        for (int y = 0; y < t->h; y++) {
+            int sy = y + dy;
+            if (sy < 0 || sy >= src->h) continue;
+            for (int x = 0; x < t->w; x++) {
+                int sx = x + dx;
+                if (sx < 0 || sx >= src->w) continue;
+                unsigned char dst_p = dst_pix[y * dst_stride + x];
+                if (dst_p != 0) continue;   /* strip already has data here */
+                unsigned char src_p = src_pix[sy * src_stride + sx];
+                if (src_p == 0) continue;    /* source is also transparent */
+                dst_pix[y * dst_stride + x] = src_p;
+                total_written++;
+            }
+        }
+    }
+
+    if (total_written > 0) g_img_tex_idx = -2;
+    return total_written;
+}
+
+/* Status-message state for the next render after restore. */
+static char  g_restore_msg[128] = {0};
+static float g_restore_msg_timer = 0.0f;
+
 static void WriteAnilstFromMarked(const char* filepath)
 {
     FILE* f = fopen(filepath, "w");
@@ -1070,6 +1142,7 @@ static void OpenImgFile(const std::string &full_path)
 
     imgtool_clearall();
     img_load();
+    g_last_saved_version = fileversion; /* fresh load = clean baseline */
     g_img_tex_idx = -2;
     RecentAdd(full_path);
 }
@@ -1207,8 +1280,12 @@ static void DrawFileDialog() {
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
                     imgtool_clearall();
                     img_load();
+                    g_last_saved_version = fileversion; /* fresh load = clean baseline */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
+                    /* Append modifies the in-memory set on top of whatever
+                       was there — leave the dirty bookkeeping alone so the
+                       user is prompted before throwing it away. */
                     img_load();
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::LoadLbm) {
@@ -1585,12 +1662,9 @@ int imgui_overlay_wants_keyboard(void)
 
 int imgui_overlay_check_unsaved_and_quit(void)
 {
-    /* Check if file version has changed since last save */
-    if (fileversion != g_last_saved_version) {
-        g_show_unsaved_confirm = true;
-        return 0;  /* Return 0 to prevent immediate exit */
-    }
-    return 1;  /* No changes, safe to quit */
+    /* User opted out of unsaved-changes prompts — just exit. */
+    (void)g_last_saved_version;
+    return 1;
 }
 
 void imgui_overlay_mark_saved(void)
@@ -1629,6 +1703,10 @@ void imgui_overlay_render(void)
     /* View / Debug */
     if (ImGui::Shortcut(ImGuiKey_H,  route)) g_show_help = true;
     if (ImGui::Shortcut(ImGuiKey_F9, route)) g_show_debug = !g_show_debug;
+    if (ImGui::Shortcut(ImGuiKey_R,  route)) {
+        g_marquee_active = !g_marquee_active;
+        if (!g_marquee_active) g_grid_sel.active = false;
+    }
 
     /* Tool Intercepts */
     if (ImGui::Shortcut(ImGuiKey_Escape, route)) {
@@ -1749,6 +1827,20 @@ void imgui_overlay_render(void)
                 ImGui::Separator();
                 if (ImGui::MenuItem("Least Squares",   ";"))        LeastSquaresReduceMarked();
                 if (ImGui::MenuItem("Dither Replace"))              DitherReplaceMarkedImages(g_sel_color);
+                ImGui::Separator();
+                if (ImGui::MenuItem("Restore from Selected (pixel-diff)")) {
+                    int n = RestoreMarkedFromSource();
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             n > 0 ? "Restored %d pixel(s) from selected source."
+                                   : "No pixels restored. Check selection, marks, palettes, anipoints.",
+                             n);
+                    g_restore_msg_timer = 4.0f;  /* seconds */
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "For each marked image, copy non-transparent source pixels\n"
+                    "into transparent strip pixels. Selected image = source.\n"
+                    "Uses anipoints to align; same palette required.");
+                ImGui::Separator();
                 if (ImGui::MenuItem("Build TGA",       "Ctrl+B"))   OpenFileDialog(FileDialogMode::ExportTga);
                 if (ImGui::MenuItem("Write ANILST"))                OpenFileDialog(FileDialogMode::WriteAniLst);
                 ImGui::EndMenu();
@@ -1865,6 +1957,16 @@ void imgui_overlay_render(void)
         if (ImGui::Button(TB_LABEL(ICON_HITBOX, ICON_HITBOX_TXT), btn)) g_show_hitbox = !g_show_hitbox;
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Hitbox");
+        /* Marquee/select tool — explicit mode toggle. When off, no green-box
+           selection ever starts (no more random firing). */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_marquee_active ?
+            ImVec4(0.2f,0.4f,0.7f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL(ICON_MARQUEE, ICON_MARQUEE_TXT), btn)) {
+            g_marquee_active = !g_marquee_active;
+            if (!g_marquee_active) g_grid_sel.active = false;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Marquee Select Tool (R)");
         ImGui::Spacing();
         bool can_undo = g_undo_idx > 0;
         bool can_redo = g_undo_idx < g_undo_count - 1;
@@ -2294,27 +2396,48 @@ void imgui_overlay_render(void)
                and isn't already being consumed by an anim-point or hitbox-corner drag.
                Once a drag is in progress we keep updating x2/y2 wherever the mouse
                goes (clamped) until the button is released. */
-            if (!g_pasted.active) {
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && mouse_over_sprite && !widget_consumed_click) {
+            /* Block selection when:
+               - the mouse is over a hovered ImGui widget (menu item, button)
+                 OR an active item is being interacted with;
+               - any popup/menu is open (its dropdown can overlap the canvas
+                 and clicking through it must not start a marquee).
+               Geometric mouse_over_sprite still has to be true. */
+            bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+            bool ui_blocking = ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive() || any_popup;
+            if (!g_pasted.active && g_marquee_active) {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                        && mouse_over_sprite
+                        && !widget_consumed_click
+                        && !ui_blocking) {
                     int mx = (int)((mouse.x - img_pos.x) / sx);
                     int my = (int)((mouse.y - img_pos.y) / sy);
                     if (mx < 0) mx = 0; if (mx >= (int)g_img_tex_w) mx = g_img_tex_w - 1;
                     if (my < 0) my = 0; if (my >= (int)g_img_tex_h) my = g_img_tex_h - 1;
                     g_grid_sel.active = true;
+                    g_grid_sel.dragging = true;
                     g_grid_sel.x1 = g_grid_sel.x2 = mx;
                     g_grid_sel.y1 = g_grid_sel.y2 = my;
-                } else if (g_grid_sel.active && mbdn) {
+                } else if (g_grid_sel.dragging && mbdn) {
+                    /* Only extend the rect while we're in the user-initiated
+                       drag — not on every frame the button happens to be
+                       down (e.g. a click on a menu would otherwise reposition
+                       the marquee to wherever the menu click landed). */
                     int mx = (int)((mouse.x - img_pos.x) / sx);
                     int my = (int)((mouse.y - img_pos.y) / sy);
                     if (mx < 0) mx = 0; if (mx >= (int)g_img_tex_w) mx = g_img_tex_w - 1;
                     if (my < 0) my = 0; if (my >= (int)g_img_tex_h) my = g_img_tex_h - 1;
                     g_grid_sel.x2 = mx;
                     g_grid_sel.y2 = my;
+                } else if (g_grid_sel.dragging && !mbdn) {
+                    g_grid_sel.dragging = false;
                 }
             }
 
-            /* Draw selection rectangle if active */
-            if (g_grid_sel.active) {
+            /* Draw selection rectangle only when the marquee tool is on. Toggling
+               the tool off via the toolbar/R also clears g_grid_sel, but this
+               extra gate makes sure no stray green box renders if some other
+               code path leaves g_grid_sel.active=true with the tool off. */
+            if (g_grid_sel.active && g_marquee_active) {
                 int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
                 int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
                 if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
@@ -2701,6 +2824,20 @@ void imgui_overlay_render(void)
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
+    }
+
+    /* Transient toast (e.g. RestoreMarkedFromSource result). */
+    if (g_restore_msg_timer > 0.0f) {
+        g_restore_msg_timer -= io.DeltaTime;
+        ImGui::SetNextWindowBgAlpha(0.85f);
+        ImGui::SetNextWindowPos(ImVec2(sw * 0.5f, sh - 60), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+        if (ImGui::Begin("##toast", NULL,
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing)) {
+            ImGui::TextUnformatted(g_restore_msg);
+        }
+        ImGui::End();
     }
 
     /* Flush to renderer */
