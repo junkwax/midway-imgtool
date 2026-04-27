@@ -1068,7 +1068,7 @@ static void OpenImgFile(const std::string &full_path)
     }
     _chdir(dir.c_str());
 
-    img_clearall();
+    imgtool_clearall();
     img_load();
     g_img_tex_idx = -2;
     RecentAdd(full_path);
@@ -1205,7 +1205,7 @@ static void DrawFileDialog() {
                     g_last_saved_version = fileversion; /* Mark as saved in C++ state */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
-                    img_clearall();
+                    imgtool_clearall();
                     img_load();
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
@@ -2619,7 +2619,7 @@ void imgui_overlay_render(void)
         ImGui::Spacing();
         ImGui::Separator();
         if (ImGui::Button("New", ImVec2(80, 0))) {
-            img_clearall();
+            imgtool_clearall();
             fileversion = 0x0634;   /* Wimp V6.34 — current format */
             fname_s[0]  = 0;
             g_undo_count = 0;

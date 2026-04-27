@@ -30,7 +30,7 @@ extern char           fnametmp_s[13];
 /* ---- Asm-side internal subroutines ---- */
 void ilst_duplicate(void);
 void plst_histogram(void);
-void img_clearall(void);
+void imgtool_clearall(void);   /* cdecl-safe wrapper around asm img_clearall */
 void imgtool_addnewpal(void);
 void img_load(void);
 void img_save(void);
@@ -67,7 +67,7 @@ void plst_merge(void);
 #pragma comment(linker, "/alternatename:_fnametmp_s=fnametmp_s")
 #pragma comment(linker, "/alternatename:_ilst_duplicate=ilst_duplicate")
 #pragma comment(linker, "/alternatename:_plst_histogram=plst_histogram")
-#pragma comment(linker, "/alternatename:_img_clearall=img_clearall")
+#pragma comment(linker, "/alternatename:_imgtool_clearall=imgtool_clearall")
 #pragma comment(linker, "/alternatename:_imgtool_addnewpal=imgtool_addnewpal")
 #pragma comment(linker, "/alternatename:_img_load=img_load")
 #pragma comment(linker, "/alternatename:_img_save=img_save")
