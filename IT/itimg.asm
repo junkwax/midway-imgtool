@@ -320,13 +320,11 @@ _aim_0002 LABEL DWORD
 	MENU	{ _aim_0003, 8*8, i_s, i_mi, 20*8 }
 i_s	db	"Image",0
 i_mi	MENUI	{ i1_s,ilst_rename }
-	MENUI	{ i2_s,ilst_delete }
 	MENUI	{ i3_s,ilst_setpal }
 	MENUI	{ i4_s,ilst_duplicate }
 	MENUI	{ i5_s,ilst_pttblchng }
 	dd	0
 i1_s	db	"RENAME (C-r)",0
-i2_s	db	"DELETE (C-d)",0
 i3_s	db	"SET PALETTE",0
 i4_s	db	"DUPLICATE",0
 i5_s	db	"ADD/DEL PTTBL (C-p)",0
@@ -334,7 +332,6 @@ _aim_0003 LABEL DWORD
 	MENU	{ _aim_0004, 12*8, mi_s, mi_mi, 20*8 }
 mi_s	db	"Mrkd image",0
 mi_mi	MENUI	{ mi1_s,ilst_renamemrkd }
-	MENUI	{ mi2_s,ilst_deletemrkd }
 	MENUI	{ mi3_s,ilst_setpalmrkd }
 	MENUI	{ mi4_s,ilst_stripmrkd }
 	MENUI	{ mi4b_s,ilst_striplowmrkd }
@@ -344,7 +341,6 @@ mi_mi	MENUI	{ mi1_s,ilst_renamemrkd }
 	MENUI	{ mi7_s,ilst_buildtgamrkd }
 	dd	0
 mi1_s	db	"RENAME",0
-mi2_s	db	"DELETE",0
 mi3_s	db	"SET PALETTE",0
 mi4_s	db	"STRIP EDGE",0
 mi4b_s	db	"STRIP EDGE LOW",0
@@ -636,7 +632,6 @@ key_t	equ	$			;Routines for main key presses
 	WD	1ah,ilst_keys		;Ctrl z
 	WD	2e00h,ilst_clrxdata	;Alt c
 	WD	12h,ilst_rename		;Ctrl r
-	WD	4,ilst_delete		;Ctrl d
 	WD	2,ilst_buildtgamrkd	;Ctrl b
 	WD	10h,ilst_pttblchng	;Ctrl p
 	WD	2600h,ilst_loadlbm	;Alt l
@@ -3137,19 +3132,7 @@ x:
 ;********************************
 ;* Delete selected image
 
- SUBRP	ilst_delete
 
-	CLR	al
-	mov	esi,offset rusure_s
-	call	msgbox_open
-	jnz	draw			;Canceled?
-
-	mov	eax,ilselected
-	call	img_del
-draw:
-	jmp	main_draw
-
- SUBEND
 
 ;********************************
 ;* Delete selected PAL
@@ -3174,32 +3157,7 @@ draw:
 ;********************************
 ;* Delete marked images
 
- SUBR	ilst_deletemrkd
 
-	CLR	al
-	mov	esi,offset rusure_s
-	call	msgbox_open
-	jnz	draw			;Canceled?
-
-	CLR	ecx
-	dec	ecx
-
-lp:	inc	ecx
-same:	mov	eax,ecx
-	call	img_find
-	jz	draw			;Done?
-
-	test	[eax].IMG.FLAGS,MARKED
-	jz	lp
-
-	mov	eax,ecx
-	call	img_del
-	jmp	same
-
-draw:
-	jmp	main_draw
-
- SUBEND
 
 
 ;********************************

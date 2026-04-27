@@ -219,12 +219,82 @@ static PAL *get_pal(int idx);
 static int count_imgs(void);
 static int count_pals(void);
 static void ApplyPalette(int pal_idx);
+static void undo_push(void);
 
 /* ---- Histogram state ---- */
 static bool  g_show_histogram = false;
 static float g_histogram_data[256] = {0};
 static float g_histogram_max = 0.0f;
 static int   g_histogram_img_count = 0;
+
+static void DeleteImage(int idx)
+{
+    if (idx < 0 || (unsigned)idx >= imgcnt) return;
+
+    undo_push();
+
+    IMG *prev = NULL;
+    IMG *curr = (IMG *)img_p;
+    for (int i = 0; curr && i < idx; i++) {
+        prev = curr;
+        curr = (IMG *)curr->nxt_p;
+    }
+    if (!curr) return;
+
+    if (prev) prev->nxt_p = curr->nxt_p;
+    else img_p = curr->nxt_p;
+    imgcnt--;
+
+    if (idx < ilselected) ilselected--;
+    else if (idx == ilselected && (unsigned)ilselected >= imgcnt)
+        ilselected = (int)imgcnt - 1;
+
+    if (curr->data_p) mem_free(curr->data_p);
+    if (curr->pttbl_p) mem_free(curr->pttbl_p);
+    mem_free(curr);
+
+    g_img_tex_idx = -2;
+}
+
+static void DeleteMarkedImages(void)
+{
+    undo_push();
+
+    IMG *prev = NULL;
+    IMG *curr = (IMG *)img_p;
+    int idx = 0;
+    int deleted_before_sel = 0;
+    bool sel_was_deleted = false;
+
+    while (curr) {
+        if (curr->flags & 1) {
+            IMG *to_delete = curr;
+            if (prev) prev->nxt_p = curr->nxt_p;
+            else img_p = curr->nxt_p;
+            curr = (IMG *)curr->nxt_p;
+            imgcnt--;
+
+            if (idx < ilselected) deleted_before_sel++;
+            else if (idx == ilselected) sel_was_deleted = true;
+
+            if (to_delete->data_p) mem_free(to_delete->data_p);
+            if (to_delete->pttbl_p) mem_free(to_delete->pttbl_p);
+            mem_free(to_delete);
+            /* idx tracks the original list position; advance it for the deleted entry */
+            idx++;
+        } else {
+            prev = curr;
+            curr = (IMG *)curr->nxt_p;
+            idx++;
+        }
+    }
+
+    ilselected -= deleted_before_sel;
+    if (sel_was_deleted || (unsigned)ilselected >= imgcnt)
+        ilselected = imgcnt ? (int)imgcnt - 1 : -1;
+
+    g_img_tex_idx = -2;
+}
 
 static void CalculatePaletteHistogram()
 {
@@ -1260,7 +1330,7 @@ void imgui_overlay_render(void)
 
     /* Clipboard */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) copy_image();
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) { copy_image(); ilst_delete(); }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) { copy_image(); DeleteImage(ilselected); }
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) paste_image();
 
     /* File I/O */
@@ -1319,13 +1389,13 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Copy",  "Ctrl+C", false, ilselected >= 0)) copy_image();
             if (ImGui::MenuItem("Cut",   "Ctrl+X", false, ilselected >= 0)) {
                 copy_image();
-                ilst_delete();
+                DeleteImage(ilselected);
             }
             if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && ilselected >= 0))
                 paste_image();
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",  "Ctrl+R"))  ilst_rename();
-            if (ImGui::MenuItem("Delete Image",  "Ctrl+D"))  ilst_delete();
+            if (ImGui::MenuItem("Delete Image",  "Ctrl+D"))  DeleteImage(ilselected);
             if (ImGui::MenuItem("Duplicate"))                ilst_duplicate();
             if (ImGui::MenuItem("Build TGA",     "Ctrl+B"))  OpenFileDialog(FileDialogMode::ExportTga);
             ImGui::EndMenu();
@@ -1369,7 +1439,7 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             if (ImGui::BeginMenu("Marked Images")) {
                 if (ImGui::MenuItem("Rename Marked"))               ilst_renamemrkd();
-                if (ImGui::MenuItem("Delete Marked"))               ilst_deletemrkd();
+                if (ImGui::MenuItem("Delete Marked"))               DeleteMarkedImages();
                 ImGui::Separator();
                 if (ImGui::MenuItem("Set Palette",     "["))        ilst_setpalmrkd();
                 ImGui::Separator();
@@ -1559,7 +1629,7 @@ void imgui_overlay_render(void)
                     if (ImGui::BeginPopupContextItem("##imgctx")) {
                         if (ImGui::MenuItem("Mark / Unmark")) { img->flags ^= 1; }
                         if (ImGui::MenuItem("Rename"))        ilst_rename();
-                        if (ImGui::MenuItem("Delete"))        ilst_delete();
+                        if (ImGui::MenuItem("Delete"))        DeleteImage(ilselected);
                         ImGui::Separator();
                         if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
                         if (ImGui::MenuItem("Set Palette"))   ilst_setpal();
