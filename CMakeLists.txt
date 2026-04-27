@@ -25,6 +25,22 @@ endif()
 
 project(imgtool C CXX ${ASM_LANG})
 
+# Capture git short SHA at configure time so the About modal can show it.
+# Falls back to "unknown" if git isn't on PATH or this isn't a git checkout.
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE IMGTOOL_GIT_REV
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+if(NOT IMGTOOL_GIT_REV)
+    set(IMGTOOL_GIT_REV "unknown")
+endif()
+
 # SDL2: on Windows pass -DSDL2_DIR=... (handled by build.ps1).
 #       on Linux we build 32-bit, so manually target i386 SDL2.
 if(WIN32)
@@ -59,6 +75,7 @@ add_executable(imgtool
     IT/itimg.asm
     platform/it3d_stub.asm
     platform/shim_file_thunks.asm
+    platform/imgtool_thunks.asm
     platform/shim_vid.c
     platform/shim_input.c
     platform/shim_file.c
@@ -94,6 +111,25 @@ endif()
 
 if(MSVC)
     target_compile_options(imgtool PRIVATE /W3)
+    target_compile_definitions(imgtool PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+target_compile_definitions(imgtool PRIVATE IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}")
+
+# Copy bundled icon font next to the exe after each build so the overlay can
+# load it at startup. Skipped if the font file isn't present.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/assets/MaterialSymbolsSharp-Regular.ttf")
+    add_custom_command(TARGET imgtool POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:imgtool>/assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/platform/assets/MaterialSymbolsSharp-Regular.ttf"
+            "$<TARGET_FILE_DIR:imgtool>/assets/MaterialSymbolsSharp-Regular.ttf"
+        VERBATIM
+    )
+endif()
+
+if(MSVC)
     # Suppress ImGui warnings by compiling with lower warning level
     set_source_files_properties(
         imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp

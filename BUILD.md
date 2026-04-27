@@ -8,7 +8,7 @@ assembly with a thin SDL2 C shim layer.
 
 > **Note:** The `build.bat` and `build.ps1` scripts are provided for convenience but
 > are no longer actively maintained. For current builds, use CMake directly as shown
-> below. See [CLEANUP.md](CLEANUP.md) for details on obsolete files.
+> below.
 
 ---
 

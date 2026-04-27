@@ -65,9 +65,6 @@ static inline void _compat_msgbox(const char *title, const char *text, unsigned 
 /* ---- ExitProcess → exit ---- */
 #  define ExitProcess(code) exit(code)
 
-/* ---- GetTickCount → SDL_GetTicks ---- */
-#  define GetTickCount() ((DWORD)SDL_GetTicks())
-
 /* ---- MSVC string helpers ---- */
 #  define _snprintf   snprintf
 #  define _strnicmp   strncasecmp

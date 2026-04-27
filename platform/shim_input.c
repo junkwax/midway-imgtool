@@ -206,9 +206,12 @@ static void pump_events(void)
 
         switch (e.type) {
         case SDL_QUIT:
-            ExitProcess(0);
+            if (imgui_overlay_check_unsaved_and_quit()) {
+                ExitProcess(0);
+            }
             break;
         case SDL_KEYDOWN: {
+            if (imgui_overlay_wants_keyboard()) break;
             if (e.key.repeat) break;   /* handled by our own repeat logic below */
             WORD code = sdl_to_dos_key(e.key.keysym);
             if (code) {
@@ -253,7 +256,11 @@ static void pump_events(void)
     }
 
     /* Software key-repeat: fire if the held key's timer has elapsed */
-    if (s_held_code) {
+    if (imgui_overlay_wants_keyboard()) {
+        s_held_sym    = SDLK_UNKNOWN;
+        s_held_code   = 0;
+    }
+    else if (s_held_code) {
         Uint32 now = SDL_GetTicks();
         if (now >= s_repeat_next) {
             keyq_push(s_held_code);
@@ -371,15 +378,3 @@ DWORD shim_get_shift_state(void)
         ks[SDL_SCANCODE_RALT])    result |= 8;   /* bit 3 = Alt                       */
     return result;
 }
-
-/* ---- ImGui overlay integration ---- */
-
-__attribute__((force_align_arg_pointer))
-void shim_key_inject(unsigned short keycode)
-{
-    /* Push keycode into the normal key queue so the asm sees it on the next
-       shim_key_check/shim_key_get call. This allows ImGui menu items to
-       trigger asm-side actions via the existing key dispatch table. */
-    keyq_push(keycode);
-}
-

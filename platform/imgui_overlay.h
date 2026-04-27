@@ -29,14 +29,21 @@ void imgui_overlay_render(void);
 /* Shut down ImGui and free resources. Called on app exit. */
 void imgui_overlay_shutdown(void);
 
-/* Inject a synthetic keycode into the input queue (for menu commands).
-   Allows ImGui menu items to trigger asm key handlers. */
-void imgui_overlay_inject_key(unsigned short keycode);
-
 /* Check if ImGui wants to capture mouse or keyboard input.
    Returns 1 if ImGui is hovering/interacting with UI, 0 otherwise.
    Used to suppress asm menus when ImGui panels are active. */
 int imgui_overlay_wants_input(void);
+
+/* Check if ImGui specifically wants keyboard input (e.g. text boxes).
+   Returns 1 if keyboard is captured, 0 otherwise. */
+int imgui_overlay_wants_keyboard(void);
+
+/* Check if there are unsaved changes and show confirmation if needed.
+   Returns 1 if confirmed quit (or no changes), 0 if user cancelled. */
+int imgui_overlay_check_unsaved_and_quit(void);
+
+/* Called after a successful save to mark version as saved. */
+void imgui_overlay_mark_saved(void);
 
 #ifdef __cplusplus
 }

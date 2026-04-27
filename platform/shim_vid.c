@@ -216,7 +216,8 @@ void shim_scr_clr(void)
 __attribute__((force_align_arg_pointer))
 DWORD shim_gettick(void)
 {
-    return GetTickCount();
+    /* Convert SDL milliseconds to 18.2 ticks per second */
+    return (DWORD)(SDL_GetTicks() * (18.2 / 1000.0));
 }
 
 /* Clear 320x200 image window: 80 bytes/row (320/4), 200 rows, all 4 planes */

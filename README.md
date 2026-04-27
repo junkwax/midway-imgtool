@@ -1,17 +1,28 @@
 # midway-imgtool (SDL2 Experimental Port)
 
-IMGTOOL for editing and creating IMG container files used by various Midway games.
+Editor for the IMG container files used by 1990s Midway arcade games (Mortal Kombat II/3, NBA Jam, NBA Hangtime, etc.). Loads, edits, and saves the original `.IMG` libraries plus their LBM and TGA siblings; preserves the proprietary point-table and animation data the original tools produced.
 
 ![imgtool image](https://raw.githubusercontent.com/JUNKWAX/midway-imgtool/sdl-experimental/imgtool.png)
 
-> **Note:** This is an experimental native port for Windows and Linux using SDL2.
-> It no longer requires DOSBox, DOS4GW, or an ET4000 BIOS to run.
+> **Status:** experimental native port. Replaces DOSBox / DOS4GW / ET4000 BIOS with SDL2 + Dear ImGui. Runs on Windows and Linux without virtualization.
 
 ---
 
-## Getting it running
+## Architecture
 
-### Option 1 — build from source
+This is a **hybrid build**. The 1992 Watcom-era assembly core (~34,000 lines across `itos.asm`, `itimg.asm`, `it3d.asm`, `ittex.asm`) is still compiled in and still does all the heavy lifting — file I/O, IMG/PAL data structures, point tables, batch operations. A modern C++/SDL2 layer wraps it:
+
+- **ImGui overlay** (`platform/imgui_overlay.cpp`) — menu bar, panels, toolbar, palette editor, hitbox editor, native file browser, debug popup.
+- **Shim layer** (`platform/shim_*.c`) — translates DOS INT 21h, VGA register pokes, and BIOS mouse/keyboard calls into SDL2 equivalents.
+- **MASM thunks** (`platform/*_thunks.asm`) — small register-marshaling stubs so MSVC's cdecl C++ can call into the asm core's `flat,syscall` routines without trashing callee-saved registers.
+
+A handful of operations have been re-implemented natively in C++ (Strip Edge, Least-Squares Reduce, Dither Replace, Build TGA, Write ANILST, Delete Unused Colors, palette histogram), but the bulk of the engine is still asm. Consequence: build is locked to **32-bit x86** for now.
+
+The 3D editor (`it3d.asm`, ~16k lines) is stubbed out and not exposed in the UI.
+
+---
+
+## Building from source
 
 See [BUILD.md](BUILD.md) for full instructions. Short version:
 
@@ -21,60 +32,46 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 Output: `%LOCALAPPDATA%\imgtool-build\build\Release\imgtool.exe`
 
-**Linux (GCC + patched JWasm, 32-bit):**
+**Linux (GCC multilib + JWasm/UASM, 32-bit):**
 ```bash
 mkdir build-linux && cd build-linux
 cmake .. && cmake --build .
 ```
 Output: `build-linux/imgtool`
 
-The build scripts copy `SDL2.dll` (Windows) and `it.hlp` next to the executable
-automatically. Both files must stay next to `imgtool.exe` for the program to
-work — `SDL2.dll` for rendering, `it.hlp` for the in-app help screen.
-
-### Option 2 — run a prebuilt binary
-
-Drop `imgtool.exe`, `SDL2.dll`, and `it.hlp` into any folder and double-click
-`imgtool.exe`. No install, no registry changes, no `C:\BIN` directory needed
-(the DOS build required one; this one does not).
+The build copies `SDL2.dll` (Windows), `it.hlp`, and the bundled `assets/MaterialSymbolsSharp-Regular.ttf` icon font next to the executable. All three need to stay alongside `imgtool.exe` for full functionality (the icon font is optional — without it the toolbar falls back to short text labels).
 
 ---
 
-## Usage
+## Running
 
-**New to imgtool?** Read [QUICKSTART.md](QUICKSTART.md) first — it walks
-through opening a real `.IMG`, reading the UI, and making your first edit.
+Drop the contents of the `Release/` folder anywhere and double-click `imgtool.exe`. No install, no registry changes.
 
-When the window opens you'll see a blank VGA-style canvas. Key commands:
+**New users:** read [QUICKSTART.md](QUICKSTART.md) — it walks through opening a real `.IMG`, reading the UI, and making your first edit.
+
+Press `h` in the app for the live key reference. `F9` opens the **Debug Info** popup (file header + record details: OSET, LIB, FRM, PTTBLNUM). `Help > About` shows the build timestamp and git revision.
+
+### Common keys
 
 | Key | Action |
 |---|---|
-| `l` | Load a `.img` file (opens the built-in file browser) |
-| `s` | Save the current `.img` |
-| `h` | Show help (reads `it.hlp` from next to the exe) |
-| `f` | Redraw screen |
-| `Esc` | Cancel current action |
-| `F1` | Toggle between IMG mode and world builder |
-| `Tab` | Swap image lists |
+| `Ctrl+O` / `Ctrl+S` | Open / save IMG |
+| `Alt+L` / `Alt+S` | Load / save LBM |
+| `Ctrl+L` | Load TGA |
+| `Ctrl+B` | Build TGA from marked images |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste |
 | `Space` | Mark / unmark current image |
-| `d` / `D` | Double / halve image view size |
-| Right-click top row of pixels | Open the main menu |
-
-> The main menu is hidden — you must right-click the **top edge** of the window
-> to open it. This is inherited from the original DOS UI.
-
-Press `h` in the app for the full, up-to-date key reference (palette keys,
-hitbox editor, anipts, etc.).
-
-Press `F9` to open the **Debug Info** popup showing complete file header and
-record details (OSET, LIB, FRM, PTTBLNUM, etc.) for troubleshooting.
+| `M` / `m` | Mark all / clear all marks |
+| `h` | Help |
+| `F9` | Debug info |
+| `Esc` | Cancel current action |
 
 ---
 
 ## Environment variables
 
-The tool respects these optional env vars for default directories (same names
-as the original DOS build):
+Optional — same names the DOS build used.
 
 | Var | Purpose |
 |---|---|
@@ -83,67 +80,40 @@ as the original DOS build):
 | `MODELS` | Default directory for model files |
 | `ITUSR1` / `ITUSR2` / `ITUSR3` | User-defined shortcut directories |
 
-Unset = current working directory is used.
+Unset = current working directory.
 
 ---
 
-## Notes on the file format
+## File format notes
 
-IMG files are later built into IRW data for ROMs using the `.LOD` files and
-`load2.exe`. That toolchain generates `IMGPAL*.ASM` / `IMGTBL*.ASM` plus `.tbl`
-and `.glo` files. If you change an IMG file **early** in the ROM, all graphics
-ROMs and your whole game project need to be rebuilt.
+IMG files are later built into IRW data for ROMs using the `.LOD` files and `load2.exe`. That toolchain generates `IMGPAL*.ASM` / `IMGTBL*.ASM` plus `.tbl` / `.glo` files. If you change an IMG file **early** in the ROM, all graphics ROMs and your whole game project need to be rebuilt.
 
-Ancient pre-2.x IMG files are auto-converted on open; a MessageBox confirms
-the conversion so you can re-save in the current format.
+Pre-2.x IMG files are auto-converted on open; a MessageBox confirms the conversion so you can re-save in the current format.
+
+For deeper format details see [FILE_FORMATS.md](FILE_FORMATS.md). For an architectural map of the original tool see [TOOL_ARCHITECTURE.md](TOOL_ARCHITECTURE.md). The two `DMA*.txt` files at the repo root are the original Williams Z-Unit / DMA #2 hardware reference docs — relevant if you're ever generating IRW control words downstream.
 
 ---
 
 ## Hitboxes
 
-Two rows of buttons, visible only in default zoom view.
-
-- **ON/OFF** — toggle hitbox display.
-- **Top row** — set hitboxes (numbers 1–5). Top-row **DEL** deletes the
-  selected hitbox.
-- **Bottom row DEL** — deletes the primary hitbox (usually #1) and lets you
-  redraw it. With both sets on, DEL clears everything and lets you redraw all
-  five.
-
----
-
----
-
-## Features
-
-**2D Sprite Editor** (Full Feature Parity with DOS):
-- Load/Save IMG libraries (with auto-conversion of legacy pre-2.x files)
-- View and edit sprites with animation points
-- Palette management (load/save LBM, TGA formats)
-- Hitbox editor (5 collision boxes + center point)
-- Undo/Redo for all edits
-- Marked image batch operations (rename, delete, set palette, strip edge, dither replace)
-- Copy/Cut/Paste sprite properties
-
-**ImGui Native UI** (Windows/Linux):
-- Fixed Adobe/GIMP-style layout: menu bar, toolbar, center canvas, right panel, bottom palette
-- Collapsible sections for Images, Palettes, Animation Points, Properties
-- Synchronized mark/selection across lists
-- File browser with directory history
-- Debug Info popup (F9) showing all binary file data
+Toggle from the toolbar (`Hb` button or `Hitbox` icon). Drag the corner handles to resize; the four outer points snap to the sprite's pixel grid. Hitbox data is stored inside the IMG container alongside the sprite. MK2-era hitboxes use a separate file path and aren't editable in this view.
 
 ---
 
 ## Status
 
-This is the `sdl-experimental` branch, actively maintained. The DOS/DOSBox build
-still lives on `main` if you need it.
+`sdl-experimental` branch — actively maintained. The original DOSBox build still lives on `main` if you need it.
 
-**Phase 6 Complete (Apr 23, 2026):**
-- ✅ Marked Image Operations submenu (rename/delete marked, strip edge variants, dither replace)
-- ✅ Debug Info popup with full file header and record details
-- ✅ All disk file fields preserved and inspectable (OSET, LIB, FRM, PTTBLNUM)
-- ✅ Dark background theme for all panels (#060606)
-- ✅ Filename display in Images dropdown header
-- ✅ Uniform Properties panel spacing and alignment
-- ✅ Directory persistence (remembers last opened folder across restarts)
+**What works:**
+- Full 2D sprite editing parity with the DOS tool
+- Modern UI (ImGui), file browser, undo/redo, copy/paste, hitbox editor
+- All MK1/MK2/NBA-era IMG files load, edit, and save correctly
+- Cross-platform (Windows + Linux x86)
+
+**What's missing or partial:**
+- 3D model editor (`it3d.asm`) — stubbed, not exposed
+- 64-bit build — blocked on porting `itimg.asm` and `itos.asm` to C++
+- macOS / ARM — same blocker
+- Several batch operations still call into the asm core (rename/delete/duplicate, palette merge, point-table operations); native C++ ports are incremental
+
+Issues / PRs welcome at https://github.com/junkwax/midway-imgtool.
