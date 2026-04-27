@@ -373,6 +373,66 @@ static void DeletePalette(void)
     g_img_tex_idx = -2;
 }
 
+/* Assign the currently-selected palette to the currently-selected image.
+   No-ops on an invalid selection on either side. */
+static void SetPaletteOfSelected(void)
+{
+    if (plselected < 0 || (unsigned)plselected >= palcnt) return;
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img) return;
+    undo_push();
+    img->palnum = (unsigned short)plselected;
+    g_img_tex_idx = -2;
+}
+
+/* Assign the currently-selected palette to every marked image. */
+static void SetPaletteOfMarked(void)
+{
+    if (plselected < 0 || (unsigned)plselected >= palcnt) return;
+    bool any = false;
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p)
+        if (p->flags & 1) { any = true; break; }
+    if (!any) return;
+    undo_push();
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p)
+        if (p->flags & 1) p->palnum = (unsigned short)plselected;
+    g_img_tex_idx = -2;
+}
+
+/* Toggle the selected image's point table: allocate via the asm pool when
+   absent (so mem_free can release it later), free when present. No "are you
+   sure" — matches DeleteImage's no-confirm behavior. */
+static void TogglePointTable(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img) return;
+    undo_push();
+    if (img->pttbl_p) {
+        mem_free(img->pttbl_p);
+        img->pttbl_p = NULL;
+    } else {
+        imgtool_img_pttbladd(ilselected);  /* cdecl-safe wrapper around img_pttbladd */
+    }
+}
+
+/* Clear all "extra" anipt/pttbl data on every image. Mirrors ilst_clrxdata:
+   zeros anix2/aniy2/aniz2 and the contents of any attached PTTBL (without
+   freeing the PTTBL itself, so toggle state is preserved). */
+static void ClearExtraData(void)
+{
+    if (!img_p) return;
+    undo_push();
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+        p->anix2 = p->aniy2 = p->aniz2 = 0;
+        if (p->pttbl_p) {
+            /* PTTBL is 40 bytes per wmpstruc.inc: 8 dw header + 5 PTBOX
+               (4 b each) + 1 PTCBOX (4 b). */
+            memset(p->pttbl_p, 0, 40);
+        }
+    }
+    g_img_tex_idx = -2;
+}
+
 static void OpenRenameImage(void)
 {
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
@@ -933,6 +993,87 @@ static std::string PathCombine(const std::string& dir, const std::string& file)
 #endif
 }
 
+/* ===== Recent files (most-recently-opened IMG files) =====
+   Persisted as one absolute path per line in <exe_dir>/imgtool_recent.txt.
+   Newest entry is at index 0. Capped at RECENT_MAX. */
+extern "C" char exe_dir[];   /* defined in shim_file.c */
+static const size_t RECENT_MAX = 8;
+static std::vector<std::string> g_recent_files;
+
+static std::string RecentFilesPath()
+{
+    std::string base = exe_dir[0] ? exe_dir : ".";
+#ifdef _WIN32
+    return base + "\\imgtool_recent.txt";
+#else
+    return base + "/imgtool_recent.txt";
+#endif
+}
+
+static void RecentLoad()
+{
+    g_recent_files.clear();
+    FILE *f = fopen(RecentFilesPath().c_str(), "r");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), f) && g_recent_files.size() < RECENT_MAX) {
+        size_t n = strlen(line);
+        while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
+        if (n) g_recent_files.push_back(line);
+    }
+    fclose(f);
+}
+
+static void RecentSave()
+{
+    FILE *f = fopen(RecentFilesPath().c_str(), "w");
+    if (!f) return;
+    for (const std::string &p : g_recent_files) fprintf(f, "%s\n", p.c_str());
+    fclose(f);
+}
+
+static void RecentAdd(const std::string &full_path)
+{
+    auto it = std::find(g_recent_files.begin(), g_recent_files.end(), full_path);
+    if (it != g_recent_files.end()) g_recent_files.erase(it);
+    g_recent_files.insert(g_recent_files.begin(), full_path);
+    if (g_recent_files.size() > RECENT_MAX) g_recent_files.resize(RECENT_MAX);
+    RecentSave();
+}
+
+/* Load an IMG by absolute path. Mirrors the Open-button branch of the file
+   dialog: split into dir+file, populate the asm-side fpath_s/fname_s globals,
+   chdir, then img_clearall + img_load. Used by both the dialog and the
+   Recent Files menu. */
+static void OpenImgFile(const std::string &full_path)
+{
+    size_t sep = full_path.find_last_of("\\/");
+    std::string dir  = (sep == std::string::npos) ? std::string(".") : full_path.substr(0, sep);
+    std::string file = (sep == std::string::npos) ? full_path        : full_path.substr(sep + 1);
+
+    size_t n_dir = dir.size();
+    if (n_dir > 63) n_dir = 63;
+    memset(fpath_s, 0, 64);
+    memcpy(fpath_s, dir.data(), n_dir);
+
+    size_t n_file = file.size();
+    if (n_file > 12) n_file = 12;
+    memset(fname_s, 0, 13);
+    memset(fnametmp_s, 0, 13);
+    memcpy(fname_s, file.data(), n_file);
+    memcpy(fnametmp_s, file.data(), n_file);
+    for (size_t i = 0; i < n_file; i++) {
+        fname_s[i] = (char)toupper((unsigned char)fname_s[i]);
+        fnametmp_s[i] = (char)toupper((unsigned char)fnametmp_s[i]);
+    }
+    _chdir(dir.c_str());
+
+    img_clearall();
+    img_load();
+    g_img_tex_idx = -2;
+    RecentAdd(full_path);
+}
+
 static void OpenFileDialog(FileDialogMode mode) {
     if (g_file_dialog_dir[0] == '\0') {
 #ifdef _WIN32
@@ -1062,11 +1203,14 @@ static void DrawFileDialog() {
                 if (g_file_dialog_mode == FileDialogMode::SaveImg) {
                     img_save();
                     g_last_saved_version = fileversion; /* Mark as saved in C++ state */
+                    RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
                     img_clearall();
                     img_load();
+                    RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
                     img_load();
+                    RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::LoadLbm) {
                     CallLoadLbm(fname_s);
                 } else if (g_file_dialog_mode == FileDialogMode::SaveLbm) {
@@ -1363,6 +1507,8 @@ void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture 
     g_canvas_texture = canvas_tex;
     g_last_saved_version = fileversion;
 
+    RecentLoad();
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
@@ -1503,6 +1649,21 @@ void imgui_overlay_render(void)
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New"))             g_show_new_img_confirm = true;
             if (ImGui::MenuItem("Open...",  "Ctrl+O")) OpenFileDialog(FileDialogMode::OpenImg);
+            if (ImGui::BeginMenu("Open Recent", !g_recent_files.empty())) {
+                /* Snapshot since OpenImgFile mutates g_recent_files. */
+                std::vector<std::string> snap = g_recent_files;
+                for (size_t i = 0; i < snap.size(); i++) {
+                    char label[1100];
+                    snprintf(label, sizeof(label), "%zu. %s", i + 1, snap[i].c_str());
+                    if (ImGui::MenuItem(label)) OpenImgFile(snap[i]);
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Clear Recent")) {
+                    g_recent_files.clear();
+                    RecentSave();
+                }
+                ImGui::EndMenu();
+            }
             if (ImGui::MenuItem("Save",     "Ctrl+S")) OpenFileDialog(FileDialogMode::SaveImg);
             if (ImGui::MenuItem("Append",   "a"))   OpenFileDialog(FileDialogMode::AppendImg);
             ImGui::Separator();
@@ -1569,10 +1730,10 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Move Image Down in List",  "Alt+PgDn"))     MoveImageDown();
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",             "Ctrl+R"))       OpenRenameImage();
-            if (ImGui::MenuItem("Add/Del Point Table",      "Ctrl+P"))       ilst_pttblchng();
+            if (ImGui::MenuItem("Add/Del Point Table",      "Ctrl+P"))       TogglePointTable();
             if (ImGui::MenuItem("Set ID from 2nd List",     "i"))            ilst_setidfmnxtlst();
             if (ImGui::MenuItem("Least-Squares Reduce",     ";"))            LeastSquaresReduceMarked();
-            if (ImGui::MenuItem("Clear Extra Data",         "Alt+C"))        ilst_clrxdata();
+            if (ImGui::MenuItem("Clear Extra Data",         "Alt+C"))        ClearExtraData();
             ImGui::Separator();
             if (ImGui::MenuItem("Switch Image List",        "Tab"))          ilst_nxtlst();
             ImGui::Separator();
@@ -1580,7 +1741,7 @@ void imgui_overlay_render(void)
                 if (ImGui::MenuItem("Rename Marked"))               OpenRenameMarkedImages();
                 if (ImGui::MenuItem("Delete Marked"))               DeleteMarkedImages();
                 ImGui::Separator();
-                if (ImGui::MenuItem("Set Palette",     "["))        ilst_setpalmrkd();
+                if (ImGui::MenuItem("Set Palette",     "["))        SetPaletteOfMarked();
                 ImGui::Separator();
                 if (ImGui::MenuItem("Strip Edge"))                  StripMarkedImages(5);
                 if (ImGui::MenuItem("Strip Edge Low"))              StripMarkedImages(3);
@@ -1596,8 +1757,8 @@ void imgui_overlay_render(void)
         }
         ImGui::Spacing();  /* space between Image and Palette */
         if (ImGui::BeginMenu("Palette")) {
-            if (ImGui::MenuItem("Set Palette for Image",      "]"))       ilst_setpal();
-            if (ImGui::MenuItem("Set Palette for Marked",     "["))       ilst_setpalmrkd();
+            if (ImGui::MenuItem("Set Palette for Image",      "]"))       SetPaletteOfSelected();
+            if (ImGui::MenuItem("Set Palette for Marked",     "["))       SetPaletteOfMarked();
             ImGui::Separator();
             if (ImGui::MenuItem("Merge Marked into Selected", "*"))       plst_merge();
             if (ImGui::MenuItem("Delete Palette",             "Del"))     DeletePalette();
@@ -1771,7 +1932,7 @@ void imgui_overlay_render(void)
                         if (ImGui::MenuItem("Delete"))        DeleteImage(ilselected);
                         ImGui::Separator();
                         if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
-                        if (ImGui::MenuItem("Set Palette"))   ilst_setpal();
+                        if (ImGui::MenuItem("Set Palette"))   SetPaletteOfSelected();
                         ImGui::EndPopup();
                     }
                     ImGui::PopID();
@@ -1813,8 +1974,8 @@ void imgui_overlay_render(void)
                     if (ImGui::BeginPopupContextItem("##palctx")) {
                         if (ImGui::MenuItem("Mark / Unmark"))             pal->flags ^= 1;
                         ImGui::Separator();
-                        if (ImGui::MenuItem("Set for Image"))             ilst_setpal();
-                        if (ImGui::MenuItem("Set for Marked Images"))     ilst_setpalmrkd();
+                        if (ImGui::MenuItem("Set for Image"))             SetPaletteOfSelected();
+                        if (ImGui::MenuItem("Set for Marked Images"))     SetPaletteOfMarked();
                         if (ImGui::MenuItem("Merge Marked into Selected")) plst_merge();
                         ImGui::Separator();
                         if (ImGui::MenuItem("Delete Unused Colors")) DeleteUnusedPaletteColors();

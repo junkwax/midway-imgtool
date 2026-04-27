@@ -15,6 +15,7 @@
     externdef   mem_alloc:near      ; itos.asm:  EAX=len -> EAX=*mem or 0
     externdef   img_clearall:near   ; itimg.asm: () — but clobbers EBX/ESI/EDI/EBP
     externdef   img_alloc:near      ; itimg.asm: ()->EAX=*IMG or 0
+    externdef   img_pttbladd:near   ; itimg.asm: EAX=img# -> EAX=*PTTBL or 0
 
 ;*************************************************************
 ;* imgtool_clearall — cdecl-safe wrapper around img_clearall.
@@ -151,5 +152,28 @@ imgtool_mem_alloc proc near
     pop     ebx
     ret
 imgtool_mem_alloc endp
+
+;*************************************************************
+;* imgtool_img_pttbladd — cdecl wrapper. Single int arg = image #.
+;* Returns *PTTBL or NULL.
+;*************************************************************
+    public imgtool_img_pttbladd
+imgtool_img_pttbladd proc near
+    push    ebx
+    push    ecx
+    push    edx
+    push    esi
+    push    edi
+    push    ebp
+    mov     eax, [esp + 28] ; fetch image # argument
+    call    img_pttbladd
+    pop     ebp
+    pop     edi
+    pop     esi
+    pop     edx
+    pop     ecx
+    pop     ebx
+    ret
+imgtool_img_pttbladd endp
 
     end

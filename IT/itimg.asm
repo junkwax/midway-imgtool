@@ -25,6 +25,7 @@ SLGAME	equ	0
 	public	img_p, imgcnt, ilselected
 	public	pal_p, palcnt, plselected
 	public	seqcnt, scrcnt, damcnt, fileversion
+	public	img_pttbladd		;Used by imgtool_img_pttbladd thunk
 	externdef	_3d_editorinit:near
 
 ;OS functions
@@ -315,25 +316,19 @@ mis4_s	db	"SAVE TGA (C-s)",0
 _aim_0002 LABEL DWORD
 	MENU	{ _aim_0003, 8*8, i_s, i_mi, 20*8 }
 i_s	db	"Image",0
-i_mi	MENUI	{ i3_s,ilst_setpal }
-	MENUI	{ i4_s,ilst_duplicate }
-	MENUI	{ i5_s,ilst_pttblchng }
+i_mi	MENUI	{ i4_s,ilst_duplicate }
 	dd	0
-i3_s	db	"SET PALETTE",0
 i4_s	db	"DUPLICATE",0
-i5_s	db	"ADD/DEL PTTBL (C-p)",0
 _aim_0003 LABEL DWORD
 	MENU	{ _aim_0004, 12*8, mi_s, mi_mi, 20*8 }
 mi_s	db	"Mrkd image",0
-mi_mi	MENUI	{ mi3_s,ilst_setpalmrkd }
-	MENUI	{ mi4_s,ilst_stripmrkd }
+mi_mi	MENUI	{ mi4_s,ilst_stripmrkd }
 	MENUI	{ mi4b_s,ilst_striplowmrkd }
 	MENUI	{ mi4c_s,ilst_striprngmrkd }
 	MENUI	{ mi5_s,ilst_leastsqmrkd }
 	MENUI	{ mi6_s,ilst_ditherrepmrkd }
 	MENUI	{ mi7_s,ilst_buildtgamrkd }
 	dd	0
-mi3_s	db	"SET PALETTE",0
 mi4_s	db	"STRIP EDGE",0
 mi4b_s	db	"STRIP EDGE LOW",0
 mi4c_s	db	"STRIP EDGE RNG",0
@@ -615,9 +610,7 @@ key_t	equ	$			;Routines for main key presses
 	WD	9300h,ilst_keys		;Ctrl del
 	WD	19h,ilst_keys		;Ctrl y
 	WD	1ah,ilst_keys		;Ctrl z
-	WD	2e00h,ilst_clrxdata	;Alt c
 	WD	2,ilst_buildtgamrkd	;Ctrl b
-	WD	10h,ilst_pttblchng	;Ctrl p
 	WD	2600h,ilst_loadlbm	;Alt l
 	WD	1f00h,ilst_savelbm	;Alt s
 	WD	0ch,ilst_loadtga	;Ctrl l
@@ -635,8 +628,6 @@ key_t	equ	$			;Routines for main key presses
 	WD	'"',plst_kpup		;
 	WD	'?',plst_kpdn		;
 	WD	'*',plst_merge		; Merge selected pals
-	WD	']',ilst_setpal		; Set pal
-	WD	'[',ilst_setpalmrkd	; Set pal for marked imgs
 	WD	';',ilst_leastsqmrkd 	; Do a least square size reduction on selected img
 	if	SLGAME
 	WD	2900h,g_run		;Alt `
@@ -2921,42 +2912,6 @@ x:
 
 
 ;********************************
-;* Clr all extra data
-
- SUBRP	ilst_clrxdata
-
-
-	lea	esi,img_p
-	jmp	nxt
-
-lp:	CLR	eax
-	mov	[esi].IMG.ANIX2,ax
-	mov	[esi].IMG.ANIY2,ax
-	mov	[esi].IMG.ANIZ2,ax
-
-	mov	edi,[esi].IMG.PTTBL_p
-	TST	edi
-	jz	nopt			;No pttbl?
-	mov	ecx,sizeof PTTBL
-_aim_0091:	mov	[edi],al
-	inc	edi
-	loop	_aim_0091
-nopt:
-nxt:	mov	esi,[esi]
-	TST	esi
-	jnz	lp
-
-
-	call	ilst_prt
-
-	call	img_prt
-
-
-	ret
-
- SUBEND
-
-
 
 ;********************************
 ;* Print current Ctrl-cursor keys anipt mode
@@ -3085,62 +3040,6 @@ x:
 
  SUBEND
 
-
-
-;********************************
-;* Set palette of selected image to selected pal
-
- SUBRP	ilst_setpal
-
-	mov	eax,plselected
-	mov	ebx,eax
-	call	pal_find
-	jz	x			;Bad selection?
-
-	call	img_findsel
-	jz	x			;Bad selection?
-
-	mov	[eax].IMG.PALNUM,bx
-
-	call	main_draw
-x:
-	ret
-
- SUBEND
-
-;********************************
-;* Set palette of marked images to selected pal
-
- SUBRP	ilst_setpalmrkd
-
-	mov	eax,plselected
-	mov	ebx,eax
-	call	pal_find
-	jz	draw			;Bad selection?
-
-	CLR	al
-	mov	esi,offset rusure_s
-	call	msgbox_open
-	jnz	draw			;Canceled?
-
-	CLR	ecx
-	dec	ecx
-
-lp:	inc	ecx
-	mov	eax,ecx
-	call	img_find
-	jz	draw			;Done?
-
-	test	[eax].IMG.FLAGS,MARKED
-	jz	lp
-
-	mov	[eax].IMG.PALNUM,bx
-	jmp	lp
-
-draw:
-	jmp	main_draw
-
- SUBEND
 
 
 
@@ -4301,41 +4200,6 @@ draw:
 
 
 ;********************************
-;* Add point table or del if one exists
-
- SUBRP	ilst_pttblchng
-
-	call	img_findsel
-	jz	x			;Bad selection?
-	mov	edi,eax
-
-	cmp	[edi].IMG.PTTBL_p,0
-	jnz	havept
-
-	mov	eax,ilselected
-	call	img_pttbladd
-
-	jmp	draw
-
-havept:
-	CLR	al
-	mov	esi,offset rusure_s
-	call	msgbox_open
-	jnz	draw			;Canceled?
-
-	mov	eax,[edi].IMG.PTTBL_p
-	call	mem_free
-	CLR	eax
-	mov	[edi].IMG.PTTBL_p,eax
-draw:
-	call	main_draw
-
-x:
-	ret
-
- SUBEND
-
-
 
 ;********************************
 ;* Open file req for loadlbm

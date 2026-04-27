@@ -29,8 +29,6 @@ extern char           fnametmp_s[13];
 
 /* ---- Asm-side internal subroutines ---- */
 void ilst_duplicate(void);
-void ilst_setpal(void);
-void ilst_setpalmrkd(void);
 void plst_histogram(void);
 void img_clearall(void);
 void imgtool_addnewpal(void);
@@ -41,11 +39,10 @@ void savelbm(void);
 void loadtga(void);
 void savetga(void);
 void* img_alloc(void);
+void* imgtool_img_pttbladd(int img_idx);   /* cdecl-safe wrapper, allocates PTTBL */
 void mem_free(void* ptr);
 void* mem_duplicate(void* ptr);
-void ilst_pttblchng(void);
 void ilst_setidfmnxtlst(void);
-void ilst_clrxdata(void);
 void ilst_nxtlst(void);
 void plst_merge(void);
 
@@ -69,8 +66,6 @@ void plst_merge(void);
 #pragma comment(linker, "/alternatename:_fname_s=fname_s")
 #pragma comment(linker, "/alternatename:_fnametmp_s=fnametmp_s")
 #pragma comment(linker, "/alternatename:_ilst_duplicate=ilst_duplicate")
-#pragma comment(linker, "/alternatename:_ilst_setpal=ilst_setpal")
-#pragma comment(linker, "/alternatename:_ilst_setpalmrkd=ilst_setpalmrkd")
 #pragma comment(linker, "/alternatename:_plst_histogram=plst_histogram")
 #pragma comment(linker, "/alternatename:_img_clearall=img_clearall")
 #pragma comment(linker, "/alternatename:_imgtool_addnewpal=imgtool_addnewpal")
@@ -81,11 +76,10 @@ void plst_merge(void);
 #pragma comment(linker, "/alternatename:_loadtga=loadtga")
 #pragma comment(linker, "/alternatename:_savetga=savetga")
 #pragma comment(linker, "/alternatename:_img_alloc=img_alloc")
+#pragma comment(linker, "/alternatename:_imgtool_img_pttbladd=imgtool_img_pttbladd")
 #pragma comment(linker, "/alternatename:_mem_free=mem_free")
 #pragma comment(linker, "/alternatename:_mem_duplicate=mem_duplicate")
-#pragma comment(linker, "/alternatename:_ilst_pttblchng=ilst_pttblchng")
 #pragma comment(linker, "/alternatename:_ilst_setidfmnxtlst=ilst_setidfmnxtlst")
-#pragma comment(linker, "/alternatename:_ilst_clrxdata=ilst_clrxdata")
 #pragma comment(linker, "/alternatename:_ilst_nxtlst=ilst_nxtlst")
 #pragma comment(linker, "/alternatename:_plst_merge=plst_merge")
 #endif
