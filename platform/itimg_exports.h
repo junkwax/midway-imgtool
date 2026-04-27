@@ -46,15 +46,12 @@ void savetga(void);
 void* img_alloc(void);
 void mem_free(void* ptr);
 void* mem_duplicate(void* ptr);
-void ilst_moveup(void);
-void ilst_movedn(void);
 void ilst_pttblchng(void);
 void ilst_setidfmnxtlst(void);
 void ilst_clrxdata(void);
 void ilst_nxtlst(void);
 void palblk_togtruc(void);
 void plst_merge(void);
-void plst_delete(void);
 void plst_rename(void);
 
 #ifdef __cplusplus
@@ -94,14 +91,11 @@ void plst_rename(void);
 #pragma comment(linker, "/alternatename:_img_alloc=img_alloc")
 #pragma comment(linker, "/alternatename:_mem_free=mem_free")
 #pragma comment(linker, "/alternatename:_mem_duplicate=mem_duplicate")
-#pragma comment(linker, "/alternatename:_ilst_moveup=ilst_moveup")
-#pragma comment(linker, "/alternatename:_ilst_movedn=ilst_movedn")
 #pragma comment(linker, "/alternatename:_ilst_pttblchng=ilst_pttblchng")
 #pragma comment(linker, "/alternatename:_ilst_setidfmnxtlst=ilst_setidfmnxtlst")
 #pragma comment(linker, "/alternatename:_ilst_clrxdata=ilst_clrxdata")
 #pragma comment(linker, "/alternatename:_ilst_nxtlst=ilst_nxtlst")
 #pragma comment(linker, "/alternatename:_palblk_togtruc=palblk_togtruc")
 #pragma comment(linker, "/alternatename:_plst_merge=plst_merge")
-#pragma comment(linker, "/alternatename:_plst_delete=plst_delete")
 #pragma comment(linker, "/alternatename:_plst_rename=plst_rename")
 #endif

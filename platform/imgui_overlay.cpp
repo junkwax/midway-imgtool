@@ -296,6 +296,77 @@ static void DeleteMarkedImages(void)
     g_img_tex_idx = -2;
 }
 
+/* Swap two adjacent IMG nodes in the linked list. `before_a` is the node
+   whose nxt_p points at `a` (or NULL if `a` is the head); `b` must equal
+   a->nxt_p. After the call, the order is ...before_a -> b -> a -> b->nxt_p. */
+static void swap_adjacent_img(IMG *before_a, IMG *a, IMG *b)
+{
+    a->nxt_p = b->nxt_p;
+    b->nxt_p = a;
+    if (before_a) before_a->nxt_p = b;
+    else img_p = b;
+}
+
+static void MoveImageUp(void)
+{
+    if (ilselected <= 0) return;
+    undo_push();
+
+    IMG *before_prev = NULL;
+    IMG *prev = (IMG *)img_p;
+    for (int i = 0; prev && i < ilselected - 1; i++) {
+        before_prev = prev;
+        prev = (IMG *)prev->nxt_p;
+    }
+    if (!prev || !prev->nxt_p) return;
+    swap_adjacent_img(before_prev, prev, (IMG *)prev->nxt_p);
+    ilselected--;
+    g_img_tex_idx = -2;
+}
+
+static void MoveImageDown(void)
+{
+    if (ilselected < 0) return;
+    undo_push();
+
+    IMG *before_curr = NULL;
+    IMG *curr = (IMG *)img_p;
+    for (int i = 0; curr && i < ilselected; i++) {
+        before_curr = curr;
+        curr = (IMG *)curr->nxt_p;
+    }
+    if (!curr || !curr->nxt_p) return;
+    swap_adjacent_img(before_curr, curr, (IMG *)curr->nxt_p);
+    ilselected++;
+    g_img_tex_idx = -2;
+}
+
+static void DeletePalette(void)
+{
+    if (plselected < 0 || (unsigned)plselected >= palcnt) return;
+    undo_push();
+
+    PAL *prev = NULL;
+    PAL *curr = (PAL *)pal_p;
+    for (int i = 0; curr && i < plselected; i++) {
+        prev = curr;
+        curr = (PAL *)curr->nxt_p;
+    }
+    if (!curr) return;
+
+    if (prev) prev->nxt_p = curr->nxt_p;
+    else pal_p = curr->nxt_p;
+    palcnt--;
+
+    if ((unsigned)plselected >= palcnt)
+        plselected = palcnt ? (int)palcnt - 1 : -1;
+
+    if (curr->data_p) mem_free(curr->data_p);
+    mem_free(curr);
+
+    g_img_tex_idx = -2;
+}
+
 static void CalculatePaletteHistogram()
 {
     memset(g_histogram_data, 0, sizeof(g_histogram_data));
@@ -1425,8 +1496,8 @@ void imgui_overlay_render(void)
                     if (img && (img->flags & 1)) { ilselected = idx; break; }
                 }
             }
-            if (ImGui::MenuItem("Move Image Up in List",    "Alt+PgUp"))     ilst_moveup();
-            if (ImGui::MenuItem("Move Image Down in List",  "Alt+PgDn"))     ilst_movedn();
+            if (ImGui::MenuItem("Move Image Up in List",    "Alt+PgUp"))     MoveImageUp();
+            if (ImGui::MenuItem("Move Image Down in List",  "Alt+PgDn"))     MoveImageDown();
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",             "Ctrl+R"))       ilst_rename();
             if (ImGui::MenuItem("Add/Del Point Table",      "Ctrl+P"))       ilst_pttblchng();
@@ -1461,7 +1532,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Set Palette for Marked",     "["))       ilst_setpalmrkd();
             ImGui::Separator();
             if (ImGui::MenuItem("Merge Marked into Selected", "*"))       plst_merge();
-            if (ImGui::MenuItem("Delete Palette",             "Del"))     plst_delete();
+            if (ImGui::MenuItem("Delete Palette",             "Del"))     DeletePalette();
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Palette",             "Shift+R")) plst_rename();
             ImGui::Separator();
@@ -1686,7 +1757,7 @@ void imgui_overlay_render(void)
                             g_rename_buf[9] = '\0';
                             g_show_rename = true;
                         }
-                        if (ImGui::MenuItem("Delete")) plst_delete();
+                        if (ImGui::MenuItem("Delete")) DeletePalette();
                         ImGui::EndPopup();
                     }
                     ImGui::PopID();
@@ -1706,7 +1777,7 @@ void imgui_overlay_render(void)
             ImGui::SameLine();
             if (ImGui::SmallButton("Merge"))     plst_merge();
             ImGui::SameLine();
-            if (ImGui::SmallButton("Del"))       plst_delete();
+            if (ImGui::SmallButton("Del"))       DeletePalette();
         }
 
         /* --- Properties --- */

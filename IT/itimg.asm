@@ -353,7 +353,6 @@ _aim_0004 LABEL DWORD
 pal_s	db	"Pal",0
 pal_mi	MENUI	{ pal1_s,plst_rename }
 	MENUI	{ pal2_s,plst_merge }
-	MENUI	{ pal6_s,plst_delete }
 	MENUI	{ pal3_s,plst_duplicate }
 	MENUI	{ pal4_s,plst_histogram }
 	MENUI	{ pal5_s,plst_delunusedcols }
@@ -363,7 +362,6 @@ pal2_s	db	"MERGE",0
 pal3_s	db	"DUPLICATE",0
 pal4_s	db	"SHOW HISTOGRAM",0
 pal5_s	db	"DEL UNUSED COLS",0
-pal6_s	db	"DELETE",0
 _aim_0005 LABEL DWORD
 	MENU	{ _aim_0006, 7*8, mrk_s, mrk_mi, 20*8 }
 mrk_s	db	"Marks",0
@@ -615,8 +613,6 @@ key_t	equ	$			;Routines for main key presses
 	WD	4d00h,ilst_keys		;Rgt
 	WD	4900h,ilst_kpup		;Pgup
 	WD	5100h,ilst_kpdn		;Pgdn
-	WD	9900h,ilst_moveup	;Alt pgup
-	WD	0a100h,ilst_movedn	;Alt pgdn
 	WD	9800h,ilst_keys		;Alt up
 	WD	0a000h,ilst_keys	;Alt dn
 	WD	9b00h,ilst_keys		;Alt lft
@@ -3135,25 +3131,6 @@ x:
 
 
 ;********************************
-;* Delete selected PAL
-
- SUBRP	plst_delete
-
-	CLR	al
-	mov	esi,offset rusure_s
-	call	msgbox_open
-	jnz	draw			;Canceled?
-
-	mov	eax,plselected
-	call	pal_del
-	call	palblk_init
-draw:
-	jmp	main_draw
-
- SUBEND
-
-
-
 ;********************************
 ;* Delete marked images
 
@@ -4448,76 +4425,6 @@ draw:
 	call	main_draw
 
 	ret
- SUBEND
-
-
-;********************************
-;* Move selected image up in list
-
- SUBRP	ilst_moveup
-
-	lea	esi,img_p
-
-	mov	eax,ilselected
-	dec	eax
-	jl	x			;At top or no selection?
-	jz	_aim_0119			;2nd one?
-	dec	eax
-	call	img_find
-	jz	x			;Bad selection?
-	mov	esi,eax
-_aim_0119:
-	mov	eax,[esi]		;*Prev
-	TST	eax
-	jz	x
-	mov	ebx,[eax]		;*Me
-	TST	ebx
-	jz	x
-	mov	ecx,[ebx]		;*Next
-	mov	[esi],ebx		;Prev2 points to me
-	mov	[ebx],eax		;I point to prev
-	mov	[eax],ecx		;Prev points to next
-
-	dec	ilselected
-	call	ilst_prt
-x:
-	ret
-
- SUBEND
-
-
-;********************************
-;* Move selected image down in list
-
- SUBRP	ilst_movedn
-
-	lea	esi,img_p
-
-	mov	eax,ilselected
-	TST	eax
-	jl	x			;No selection?
-	jz	_aim_0120			;1st one?
-	dec	eax
-	call	img_find
-	jz	x			;Bad selection?
-	mov	esi,eax
-_aim_0120:
-	mov	eax,[esi]		;*Me
-	TST	eax
-	jz	x
-	mov	ebx,[eax]		;*Next
-	TST	ebx
-	jz	x
-	mov	ecx,[ebx]		;*Next2
-	mov	[esi],ebx		;Prev points to next
-	mov	[ebx],eax		;Next point to me
-	mov	[eax],ecx		;I points to next2
-
-	inc	ilselected
-	call	ilst_prt
-x:
-	ret
-
  SUBEND
 
 
