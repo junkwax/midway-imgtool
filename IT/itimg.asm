@@ -315,20 +315,17 @@ mis4_s	db	"SAVE TGA (C-s)",0
 _aim_0002 LABEL DWORD
 	MENU	{ _aim_0003, 8*8, i_s, i_mi, 20*8 }
 i_s	db	"Image",0
-i_mi	MENUI	{ i1_s,ilst_rename }
-	MENUI	{ i3_s,ilst_setpal }
+i_mi	MENUI	{ i3_s,ilst_setpal }
 	MENUI	{ i4_s,ilst_duplicate }
 	MENUI	{ i5_s,ilst_pttblchng }
 	dd	0
-i1_s	db	"RENAME (C-r)",0
 i3_s	db	"SET PALETTE",0
 i4_s	db	"DUPLICATE",0
 i5_s	db	"ADD/DEL PTTBL (C-p)",0
 _aim_0003 LABEL DWORD
 	MENU	{ _aim_0004, 12*8, mi_s, mi_mi, 20*8 }
 mi_s	db	"Mrkd image",0
-mi_mi	MENUI	{ mi1_s,ilst_renamemrkd }
-	MENUI	{ mi3_s,ilst_setpalmrkd }
+mi_mi	MENUI	{ mi3_s,ilst_setpalmrkd }
 	MENUI	{ mi4_s,ilst_stripmrkd }
 	MENUI	{ mi4b_s,ilst_striplowmrkd }
 	MENUI	{ mi4c_s,ilst_striprngmrkd }
@@ -336,7 +333,6 @@ mi_mi	MENUI	{ mi1_s,ilst_renamemrkd }
 	MENUI	{ mi6_s,ilst_ditherrepmrkd }
 	MENUI	{ mi7_s,ilst_buildtgamrkd }
 	dd	0
-mi1_s	db	"RENAME",0
 mi3_s	db	"SET PALETTE",0
 mi4_s	db	"STRIP EDGE",0
 mi4b_s	db	"STRIP EDGE LOW",0
@@ -347,13 +343,11 @@ mi7_s	db	"BUILD TGA (C-b)",0
 _aim_0004 LABEL DWORD
 	MENU	{ _aim_0005, 8*8, pal_s, pal_mi, 20*8 }
 pal_s	db	"Pal",0
-pal_mi	MENUI	{ pal1_s,plst_rename }
-	MENUI	{ pal2_s,plst_merge }
+pal_mi	MENUI	{ pal2_s,plst_merge }
 	MENUI	{ pal3_s,plst_duplicate }
 	MENUI	{ pal4_s,plst_histogram }
 	MENUI	{ pal5_s,plst_delunusedcols }
 	dd	0
-pal1_s	db	"RENAME",0
 pal2_s	db	"MERGE",0
 pal3_s	db	"DUPLICATE",0
 pal4_s	db	"SHOW HISTOGRAM",0
@@ -622,7 +616,6 @@ key_t	equ	$			;Routines for main key presses
 	WD	19h,ilst_keys		;Ctrl y
 	WD	1ah,ilst_keys		;Ctrl z
 	WD	2e00h,ilst_clrxdata	;Alt c
-	WD	12h,ilst_rename		;Ctrl r
 	WD	2,ilst_buildtgamrkd	;Ctrl b
 	WD	10h,ilst_pttblchng	;Ctrl p
 	WD	2600h,ilst_loadlbm	;Alt l
@@ -642,7 +635,6 @@ key_t	equ	$			;Routines for main key presses
 	WD	'"',plst_kpup		;
 	WD	'?',plst_kpdn		;
 	WD	'*',plst_merge		; Merge selected pals
-	WD	0052h,plst_rename	; shift+r - Rename selected pals
 	WD	']',ilst_setpal		; Set pal
 	WD	'[',ilst_setpalmrkd	; Set pal for marked imgs
 	WD	';',ilst_leastsqmrkd 	; Do a least square size reduction on selected img
@@ -3002,108 +2994,6 @@ _aim_0094:
 	.data
 aniptm_s	db	"Anipt mode: x x x",0
 
-
-
-;********************************
-;* Rename selected image
-
- SUBRP	ilst_rename
-
-	call	img_findsel
-	jz	x			;Bad selection?
-
-	lea	edi,[eax].IMG.N_s
-	mov	eax,INAMELEN
-	call	strbox_open
-;	jnz	x
-
-	call	main_draw
-x:
-	ret
-
- SUBEND
-
-
-
-;********************************
-;* Rename marked images
-
- SUBR	ilst_renamemrkd
-
-	local	sbuf[20]:byte
-
-
-	CLR	ecx			;>Find 1st mrkd
-	dec	ecx
-
-flp:	inc	ecx
-	mov	eax,ecx
-	call	img_find
-	jz	x			;End?
-
-	test	[eax].IMG.FLAGS,MARKED
-	jz	flp
-
-	lea	eax,[eax].IMG.N_s
-	lea	edi,buf
-	call	strcpy
-
-	mov	eax,INAMELEN-3
-	lea	edi,buf
-	call	strbox_open
-	jnz	x
-
-
-	CLR	ecx
-	dec	ecx
-
-	CLR	edx			;EDX=# to append to name
-
-lp:	inc	ecx
-	mov	eax,ecx
-	call	img_find
-	jz	draw			;Done?
-
-	test	[eax].IMG.FLAGS,MARKED
-	jz	lp
-
-	mov	esi,eax
-
-	lea	eax,[esi].IMG.N_s	;Save name
-	lea	edi,sbuf
-	call	strcpy
-
-	lea	eax,buf
-	cmp	BPTR buf,'+'
-	jne	_aim_0095
-	inc	eax
-_aim_0095:
-	lea	edi,[esi].IMG.N_s	;Copy base
-	call	strcpy
-
-	cmp	BPTR buf,'+'
-	jne	_aim_0096
-
-	lea	eax,sbuf
-	call	strcpy
-
-_aim_0096:
-	cmp	BPTR buf,'+'
-	je	_aim_0097
-
-	inc	edx			;Add #
-	mov	eax,edx
-	call	stritoa
-_aim_0097:
-	jmp	lp
-
-draw:
-	call	main_draw
-
-x:
-	ret
-
- SUBEND
 
 
 ;********************************
@@ -7957,25 +7847,6 @@ nomrk:
 
 
 ;********************************
-;* Rename selected palette
-
- SUBRP	plst_rename
-
-	call	pal_findsel
-	jz	x			;Bad selection?
-
-	lea	edi,[eax].PAL.N_s
-	mov	eax,PNAMELEN
-	call	strbox_open
-;	jnz	x
-
-	call	main_draw
-x:
-	ret
-
- SUBEND
-
-
 ;********************************
 ;* Duplicate selected palette
 

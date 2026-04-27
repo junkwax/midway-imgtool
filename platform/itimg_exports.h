@@ -28,8 +28,6 @@ extern char           fname_s[13];
 extern char           fnametmp_s[13];
 
 /* ---- Asm-side internal subroutines ---- */
-void ilst_rename(void);
-void ilst_renamemrkd(void);
 void ilst_duplicate(void);
 void ilst_setpal(void);
 void ilst_setpalmrkd(void);
@@ -50,7 +48,6 @@ void ilst_setidfmnxtlst(void);
 void ilst_clrxdata(void);
 void ilst_nxtlst(void);
 void plst_merge(void);
-void plst_rename(void);
 
 #ifdef __cplusplus
 }
@@ -71,8 +68,6 @@ void plst_rename(void);
 #pragma comment(linker, "/alternatename:_fpath_s=fpath_s")
 #pragma comment(linker, "/alternatename:_fname_s=fname_s")
 #pragma comment(linker, "/alternatename:_fnametmp_s=fnametmp_s")
-#pragma comment(linker, "/alternatename:_ilst_renamemrkd=ilst_renamemrkd")
-#pragma comment(linker, "/alternatename:_ilst_rename=ilst_rename")
 #pragma comment(linker, "/alternatename:_ilst_duplicate=ilst_duplicate")
 #pragma comment(linker, "/alternatename:_ilst_setpal=ilst_setpal")
 #pragma comment(linker, "/alternatename:_ilst_setpalmrkd=ilst_setpalmrkd")
@@ -93,5 +88,4 @@ void plst_rename(void);
 #pragma comment(linker, "/alternatename:_ilst_clrxdata=ilst_clrxdata")
 #pragma comment(linker, "/alternatename:_ilst_nxtlst=ilst_nxtlst")
 #pragma comment(linker, "/alternatename:_plst_merge=plst_merge")
-#pragma comment(linker, "/alternatename:_plst_rename=plst_rename")
 #endif

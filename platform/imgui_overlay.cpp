@@ -185,10 +185,16 @@ static bool g_show_dma_comp = false;
 static int  g_hitbox_x = 0, g_hitbox_y = 0, g_hitbox_w = 32, g_hitbox_h = 32;
 static int  g_hitbox_drag_corner = -1;
 
-/* Palette rename dialog */
-static bool g_show_rename = false;
-static int  g_rename_pal_idx = -1;
-static char g_rename_buf[10] = {0};
+/* Rename dialog — handles image/palette/marked-images. The rename target
+   determines the popup title, max name length, and where the new name lands
+   on OK. For RenameTarget::MarkedImages, an "+" prefix means "prepend the
+   typed string to the existing name"; otherwise the typed string becomes the
+   base and a numeric suffix is appended (1, 2, 3 ...). */
+enum class RenameTarget { Image, Palette, MarkedImages };
+static bool         g_show_rename = false;
+static RenameTarget g_rename_target = RenameTarget::Palette;
+static int          g_rename_idx = -1;
+static char         g_rename_buf[20] = {0};
 
 /* Unsaved changes confirmation */
 static bool g_show_unsaved_confirm = false;
@@ -365,6 +371,64 @@ static void DeletePalette(void)
     mem_free(curr);
 
     g_img_tex_idx = -2;
+}
+
+static void OpenRenameImage(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img) return;
+    g_rename_target = RenameTarget::Image;
+    g_rename_idx = ilselected;
+    strncpy(g_rename_buf, img->n_s, 15);
+    g_rename_buf[15] = '\0';
+    g_show_rename = true;
+}
+
+static void OpenRenamePalette(int idx)
+{
+    PAL *pal = get_pal(idx);
+    if (!pal) return;
+    g_rename_target = RenameTarget::Palette;
+    g_rename_idx = idx;
+    strncpy(g_rename_buf, pal->n_s, 9);
+    g_rename_buf[9] = '\0';
+    g_show_rename = true;
+}
+
+static void OpenRenameMarkedImages(void)
+{
+    /* Find first marked image to seed the buffer with its name. */
+    IMG *first = NULL;
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+        if (p->flags & 1) { first = p; break; }
+    }
+    if (!first) return;
+    g_rename_target = RenameTarget::MarkedImages;
+    g_rename_idx = -1;
+    strncpy(g_rename_buf, first->n_s, 12);
+    g_rename_buf[12] = '\0';
+    g_show_rename = true;
+}
+
+static void ApplyMarkedImageRename(const char *base)
+{
+    if (!base || !*base) return;
+    undo_push();
+    bool prepend = (base[0] == '+');
+    const char *core = prepend ? base + 1 : base;
+    int n = 0;
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+        if (!(p->flags & 1)) continue;
+        if (prepend) {
+            char old[16];
+            strncpy(old, p->n_s, 15); old[15] = '\0';
+            snprintf(p->n_s, sizeof(p->n_s), "%s%s", core, old);
+        } else {
+            n++;
+            snprintf(p->n_s, sizeof(p->n_s), "%s%d", core, n);
+        }
+        p->n_s[15] = '\0';
+    }
 }
 
 static void CalculatePaletteHistogram()
@@ -1470,7 +1534,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && ilselected >= 0))
                 paste_image();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename Image",  "Ctrl+R"))  ilst_rename();
+            if (ImGui::MenuItem("Rename Image",  "Ctrl+R"))  OpenRenameImage();
             if (ImGui::MenuItem("Delete Image",  "Ctrl+D"))  DeleteImage(ilselected);
             if (ImGui::MenuItem("Duplicate"))                ilst_duplicate();
             if (ImGui::MenuItem("Build TGA",     "Ctrl+B"))  OpenFileDialog(FileDialogMode::ExportTga);
@@ -1504,7 +1568,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Move Image Up in List",    "Alt+PgUp"))     MoveImageUp();
             if (ImGui::MenuItem("Move Image Down in List",  "Alt+PgDn"))     MoveImageDown();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename Image",             "Ctrl+R"))       ilst_rename();
+            if (ImGui::MenuItem("Rename Image",             "Ctrl+R"))       OpenRenameImage();
             if (ImGui::MenuItem("Add/Del Point Table",      "Ctrl+P"))       ilst_pttblchng();
             if (ImGui::MenuItem("Set ID from 2nd List",     "i"))            ilst_setidfmnxtlst();
             if (ImGui::MenuItem("Least-Squares Reduce",     ";"))            LeastSquaresReduceMarked();
@@ -1513,7 +1577,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Switch Image List",        "Tab"))          ilst_nxtlst();
             ImGui::Separator();
             if (ImGui::BeginMenu("Marked Images")) {
-                if (ImGui::MenuItem("Rename Marked"))               ilst_renamemrkd();
+                if (ImGui::MenuItem("Rename Marked"))               OpenRenameMarkedImages();
                 if (ImGui::MenuItem("Delete Marked"))               DeleteMarkedImages();
                 ImGui::Separator();
                 if (ImGui::MenuItem("Set Palette",     "["))        ilst_setpalmrkd();
@@ -1538,7 +1602,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Merge Marked into Selected", "*"))       plst_merge();
             if (ImGui::MenuItem("Delete Palette",             "Del"))     DeletePalette();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename Palette",             "Shift+R")) plst_rename();
+            if (ImGui::MenuItem("Rename Palette",             "Shift+R")) OpenRenamePalette(plselected);
             ImGui::Separator();
             if (ImGui::MenuItem("Show Histogram")) { CalculatePaletteHistogram(); g_show_histogram = true; }
             if (ImGui::MenuItem("Delete Unused Colors"))                  DeleteUnusedPaletteColors();
@@ -1703,7 +1767,7 @@ void imgui_overlay_render(void)
                     /* Right-click context menu on image items */
                     if (ImGui::BeginPopupContextItem("##imgctx")) {
                         if (ImGui::MenuItem("Mark / Unmark")) { img->flags ^= 1; }
-                        if (ImGui::MenuItem("Rename"))        ilst_rename();
+                        if (ImGui::MenuItem("Rename"))        OpenRenameImage();
                         if (ImGui::MenuItem("Delete"))        DeleteImage(ilselected);
                         ImGui::Separator();
                         if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
@@ -1755,12 +1819,7 @@ void imgui_overlay_render(void)
                         ImGui::Separator();
                         if (ImGui::MenuItem("Delete Unused Colors")) DeleteUnusedPaletteColors();
                         if (ImGui::MenuItem("Show Histogram")) { CalculatePaletteHistogram(); g_show_histogram = true; }
-                        if (ImGui::MenuItem("Rename")) {
-                            g_rename_pal_idx = i;
-                            strncpy(g_rename_buf, pal->n_s, 9);
-                            g_rename_buf[9] = '\0';
-                            g_show_rename = true;
-                        }
+                        if (ImGui::MenuItem("Rename")) OpenRenamePalette(i);
                         if (ImGui::MenuItem("Delete")) DeletePalette();
                         ImGui::EndPopup();
                     }
@@ -2225,24 +2284,54 @@ void imgui_overlay_render(void)
     }
     ImGui::End();
 
-    /* ===== PALETTE RENAME DIALOG ===== */
-    if (g_show_rename) ImGui::OpenPopup("Rename Palette");
-    if (ImGui::BeginPopupModal("Rename Palette", &g_show_rename, ImGuiWindowFlags_AlwaysAutoResize)) {
-        PAL *pal = get_pal(g_rename_pal_idx);
-        if (pal) {
-            ImGui::Text("Rename: %s", pal->n_s);
-            ImGui::InputText("##rn", g_rename_buf, sizeof(g_rename_buf));
-            if (ImGui::Button("OK", ImVec2(100, 0))) {
-                strncpy(pal->n_s, g_rename_buf, 9);
-                pal->n_s[9] = '\0';
-                g_show_rename = false;
-                ImGui::CloseCurrentPopup();
+    /* ===== RENAME DIALOG ===== */
+    const char *rename_title =
+        g_rename_target == RenameTarget::Image          ? "Rename Image" :
+        g_rename_target == RenameTarget::Palette        ? "Rename Palette" :
+                                                          "Rename Marked Images";
+    if (g_show_rename) ImGui::OpenPopup(rename_title);
+    if (ImGui::BeginPopupModal(rename_title, &g_show_rename, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (g_rename_target == RenameTarget::MarkedImages) {
+            ImGui::TextWrapped("Base name. Prefix with '+' to prepend "
+                               "to existing names; otherwise the base is "
+                               "used with a numeric suffix (1, 2, 3, ...).");
+        } else if (g_rename_target == RenameTarget::Image) {
+            IMG *img = get_img(g_rename_idx);
+            if (img) ImGui::Text("Rename: %s", img->n_s);
+        } else {
+            PAL *pal = get_pal(g_rename_idx);
+            if (pal) ImGui::Text("Rename: %s", pal->n_s);
+        }
+        /* Cap input width to whatever the destination field can hold. */
+        const int maxlen =
+            g_rename_target == RenameTarget::Palette ? 10 : 16;
+        ImGui::InputText("##rn", g_rename_buf,
+                         (size_t)maxlen < sizeof(g_rename_buf) ? maxlen : sizeof(g_rename_buf));
+        if (ImGui::Button("OK", ImVec2(100, 0))) {
+            if (g_rename_target == RenameTarget::Image) {
+                IMG *img = get_img(g_rename_idx);
+                if (img) {
+                    undo_push();
+                    strncpy(img->n_s, g_rename_buf, 15);
+                    img->n_s[15] = '\0';
+                }
+            } else if (g_rename_target == RenameTarget::Palette) {
+                PAL *pal = get_pal(g_rename_idx);
+                if (pal) {
+                    undo_push();
+                    strncpy(pal->n_s, g_rename_buf, 9);
+                    pal->n_s[9] = '\0';
+                }
+            } else {
+                ApplyMarkedImageRename(g_rename_buf);
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-                g_show_rename = false;
-                ImGui::CloseCurrentPopup();
-            }
+            g_show_rename = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+            g_show_rename = false;
+            ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
