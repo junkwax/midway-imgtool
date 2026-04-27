@@ -48,7 +48,6 @@ SLGAME	equ	0
 	externdef	palblk_draw:near
 	externdef	palblk_prtinfo:near
 	externdef	palblk_setvgapal:near
-	externdef	palblk_togtruc:near
 	externdef	prt:near
 	externdef	prtf6:near
 	externdef	prt_dec:near
@@ -144,7 +143,6 @@ SLGAME	equ	0
 ilstfunc_s	db	"Name         AX  AY   A2X A2Y A2Z",0
 a3box_s		db	"A3X A3Y  A3Z  ID",0
 forgetit_s	db	"FORGET IT!",0
-append_s	db	"APPEND",0
 save_s		db	"SAVE",0
 smlconv_s	db	"Old small model converted to large.",0
 bogusfv_s	db	"Bogus file version!",0
@@ -290,7 +288,6 @@ main_s	db	"Main",0
 main_mi	MENUI	{ m1_s,main_exit_stub }
 	MENUI	{ m2_s,main_clear }
 	MENUI	{ m3_s,main_loadi }
-	MENUI	{ m4_s,main_appendi }
 	MENUI	{ m5_s,main_savei }
 	MENUI	{ m6_s,help_main_stub }
 	MENUI	{ m7_s,main_saveiraw }
@@ -298,7 +295,6 @@ main_mi	MENUI	{ m1_s,main_exit_stub }
 m1_s	db	"EXIT (ESC)",0
 m2_s	db	"CLEAR",0
 m3_s	db	"LOAD (l)",0
-m4_s	db	"APPEND",0
 m5_s	db	"SAVE (s)",0
 m6_s	db	"HELP (h)",0
 m7_s	db	"RAW SAVE",0
@@ -598,7 +594,6 @@ key_t	equ	$			;Routines for main key presses
 	WD	'd',iwin_keys
 	WD	'D',iwin_keys
 	WD	'r',iwin_keys
-	WD	't',palblk_togtruc
 	WD	'T',iwin_keys
 	WD	'2',iwin_keys
 	WD	'p',iwin_keys
@@ -878,20 +873,6 @@ _aim_0042:
 	mov	eax,offset fmatchimg_s
 	mov	ebx,offset img_loadnew
 	mov	esi,offset load_s
-	mov	fmode,2
-	jmp	shim_filereq
-
- SUBEND
-
-
-;********************************
-;* Main function - Append wimp image file
-
- SUBR	main_appendi
-
-	mov	eax,offset fmatchimg_s
-	mov	ebx,offset img_load
-	mov	esi,offset append_s
 	mov	fmode,2
 	jmp	shim_filereq
 

@@ -38,7 +38,6 @@ void img_clearall(void);
 void imgtool_addnewpal(void);
 void img_load(void);
 void img_save(void);
-void main_appendi(void);
 void loadlbm(void);
 void savelbm(void);
 void loadtga(void);
@@ -50,7 +49,6 @@ void ilst_pttblchng(void);
 void ilst_setidfmnxtlst(void);
 void ilst_clrxdata(void);
 void ilst_nxtlst(void);
-void palblk_togtruc(void);
 void plst_merge(void);
 void plst_rename(void);
 
@@ -83,7 +81,6 @@ void plst_rename(void);
 #pragma comment(linker, "/alternatename:_imgtool_addnewpal=imgtool_addnewpal")
 #pragma comment(linker, "/alternatename:_img_load=img_load")
 #pragma comment(linker, "/alternatename:_img_save=img_save")
-#pragma comment(linker, "/alternatename:_main_appendi=main_appendi")
 #pragma comment(linker, "/alternatename:_loadlbm=loadlbm")
 #pragma comment(linker, "/alternatename:_savelbm=savelbm")
 #pragma comment(linker, "/alternatename:_loadtga=loadtga")
@@ -95,7 +92,6 @@ void plst_rename(void);
 #pragma comment(linker, "/alternatename:_ilst_setidfmnxtlst=ilst_setidfmnxtlst")
 #pragma comment(linker, "/alternatename:_ilst_clrxdata=ilst_clrxdata")
 #pragma comment(linker, "/alternatename:_ilst_nxtlst=ilst_nxtlst")
-#pragma comment(linker, "/alternatename:_palblk_togtruc=palblk_togtruc")
 #pragma comment(linker, "/alternatename:_plst_merge=plst_merge")
 #pragma comment(linker, "/alternatename:_plst_rename=plst_rename")
 #endif

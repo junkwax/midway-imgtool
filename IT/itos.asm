@@ -103,7 +103,6 @@ oomem_s		db	"Out of memory!$"
 viderr_s	db	"Can't set video mode!$"
 forgetit_s	db	"FORGET IT!",0
 load_s		db	"LOAD",0
-append_s	db	"APPEND",0
 save_s		db	"SAVE",0
 delete_s	db	"DELETE",0
 rerror_s	db	"Read error!",0
@@ -1806,16 +1805,6 @@ x:
 
 ;********************************
 ;* Toggle true palette setting
-
- SUBRP	palblk_togtruc
-
-	not	palbtruc
-
-	jmp	palblk_setvgapal
-
-
- SUBEND
-
 
 ;********************************
 ;* Palette block gadets

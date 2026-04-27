@@ -771,7 +771,7 @@ static void BuildTgaFromMarked(const char* filepath)
 }
 
 /* ---- ImGui Native File Dialog ---- */
-enum class FileDialogMode { OpenImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, WriteAniLst };
+enum class FileDialogMode { OpenImg, AppendImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, WriteAniLst };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
@@ -888,6 +888,7 @@ static void DrawFileDialog() {
     if (g_file_dialog_mode == FileDialogMode::SaveImg) title = "Save IMG File";
     else if (g_file_dialog_mode == FileDialogMode::ExportTga) title = "Export TGA";
     else if (g_file_dialog_mode == FileDialogMode::OpenImg) title = "Open IMG File";
+    else if (g_file_dialog_mode == FileDialogMode::AppendImg) title = "Append IMG File";
     else if (g_file_dialog_mode == FileDialogMode::LoadLbm) title = "Load LBM File";
     else if (g_file_dialog_mode == FileDialogMode::SaveLbm) title = "Save LBM File";
     else if (g_file_dialog_mode == FileDialogMode::SaveMarkedLbm) title = "Save Marked LBM";
@@ -944,8 +945,9 @@ static void DrawFileDialog() {
         ImGui::InputText("File Name", g_file_dialog_file, sizeof(g_file_dialog_file));
         ImGui::SameLine();
         
-        const char* btn_text = (g_file_dialog_mode == FileDialogMode::OpenImg || 
-                                g_file_dialog_mode == FileDialogMode::LoadLbm || 
+        const char* btn_text = (g_file_dialog_mode == FileDialogMode::OpenImg ||
+                                g_file_dialog_mode == FileDialogMode::AppendImg ||
+                                g_file_dialog_mode == FileDialogMode::LoadLbm ||
                                 g_file_dialog_mode == FileDialogMode::LoadTga) ? "Open" : "Save";
         if (ImGui::Button(btn_text, ImVec2(100, 0))) {
             std::string full_path = PathCombine(g_file_dialog_dir, g_file_dialog_file);
@@ -997,6 +999,9 @@ static void DrawFileDialog() {
                     img_save();
                     g_last_saved_version = fileversion; /* Mark as saved in C++ state */
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
+                    img_clearall();
+                    img_load();
+                } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
                     img_load();
                 } else if (g_file_dialog_mode == FileDialogMode::LoadLbm) {
                     CallLoadLbm(fname_s);
@@ -1435,7 +1440,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("New"))             g_show_new_img_confirm = true;
             if (ImGui::MenuItem("Open...",  "Ctrl+O")) OpenFileDialog(FileDialogMode::OpenImg);
             if (ImGui::MenuItem("Save",     "Ctrl+S")) OpenFileDialog(FileDialogMode::SaveImg);
-            if (ImGui::MenuItem("Append",   "a"))   main_appendi();
+            if (ImGui::MenuItem("Append",   "a"))   OpenFileDialog(FileDialogMode::AppendImg);
             ImGui::Separator();
             if (ImGui::MenuItem("Load LBM", "Alt+L"))        OpenFileDialog(FileDialogMode::LoadLbm);
             if (ImGui::MenuItem("Save LBM", "Alt+S"))        OpenFileDialog(FileDialogMode::SaveLbm);
@@ -1506,7 +1511,6 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Clear Extra Data",         "Alt+C"))        ilst_clrxdata();
             ImGui::Separator();
             if (ImGui::MenuItem("Switch Image List",        "Tab"))          ilst_nxtlst();
-            if (ImGui::MenuItem("Show True Palette Colors", "t"))            palblk_togtruc();
             ImGui::Separator();
             if (ImGui::BeginMenu("Marked Images")) {
                 if (ImGui::MenuItem("Rename Marked"))               ilst_renamemrkd();
