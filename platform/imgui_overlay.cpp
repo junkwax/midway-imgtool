@@ -3296,16 +3296,15 @@ void imgui_overlay_render(void)
             if (fname_s[0] != '\0') {
                 SaveImgFile();
                 g_last_saved_version = fileversion;
-                ExitProcess(0);
             } else {
-                OpenFileDialog(FileDialogMode::SaveImg); /* Ask for location before closing if no filename exists */
+                g_pending_quit = false;
+                OpenFileDialog(FileDialogMode::SaveImg);
             }
         }
         ImGui::SameLine();
         if (ImGui::Button("Discard", ImVec2(80, 0))) {
             g_show_unsaved_confirm = false;
             ImGui::CloseCurrentPopup();
-            ExitProcess(0);
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0))) {
