@@ -22,5 +22,6 @@ void LoadLbm(void);
 void ImportPng(const char *path);
 void ExportPng(const char *path);
 int  RestoreMarkedFromSource(void);
+int  RestoreMarkedFromSourceForce(void);
 
 #endif /* IMG_IO_H */

@@ -2234,6 +2234,18 @@ void imgui_overlay_render(void)
                 "For each marked image, copy non-transparent source pixels\n"
                 "into transparent strip pixels. Selected image = source.\n"
                 "Uses anipoints to align; same palette required.");
+            if (ImGui::MenuItem("Bulk Restore from Source (overwrite)")) {
+                int n = RestoreMarkedFromSourceForce();
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         n > 0 ? "Bulk-restored %d pixel(s) from selected source."
+                               : "No pixels written. Check selection, marks, anipoints.",
+                         n);
+                g_restore_msg_timer = 4.0f;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Unconditionally overwrites every pixel in marked images\n"
+                "with source pixels. No transparency or palette checks.\n"
+                "For rebuilding splits (1A/1B/2A...) from full source.");
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Marked"))                            OpenRenameMarkedImages();
             if (ImGui::MenuItem("Delete Marked"))                            DeleteMarkedImages();
@@ -3345,7 +3357,7 @@ void imgui_overlay_render(void)
     if (ImGui::BeginPopupModal("About midway-imgtool", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("midway-imgtool");
         ImGui::Separator();
-        ImGui::Text("A modern port of the 1992 Midway Image Tool — now \"Imgtool\".");
+        ImGui::Text("A modern port of the 1992 Midway Image Tool.");
         ImGui::Spacing();
         ImGui::Text("Build: %s %s", __DATE__, __TIME__);
 #ifdef IMGTOOL_GIT_REV

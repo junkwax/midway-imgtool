@@ -361,6 +361,53 @@ int RestoreMarkedFromSource(void)
     return total_written;
 }
 
+/* Force-restore: unconditionally copies all source pixels into every
+   marked image.  No transparency or existing-pixel checks — this
+   overwrites every pixel.  Useful for rebuilding splits (1A/1B/2A...)
+   from a full unchopped source when the strips have drifted. */
+int RestoreMarkedFromSourceForce(void)
+{
+    IMG *src = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!src || !src->data_p || src->w == 0 || src->h == 0) return 0;
+
+    bool any_target = false;
+    for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
+        if ((t->flags & 1) && t != src) { any_target = true; break; }
+    }
+    if (!any_target) return 0;
+
+    undo_push();
+
+    const unsigned char *src_pix = (const unsigned char *)src->data_p;
+    int src_stride = (src->w + 3) & ~3;
+    int total_written = 0;
+
+    for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
+        if (!(t->flags & 1) || t == src || !t->data_p || t->w == 0 || t->h == 0) continue;
+
+        unsigned char *dst_pix = (unsigned char *)t->data_p;
+        int dst_stride = (t->w + 3) & ~3;
+
+        int dx = (int)(short)src->anix - (int)(short)t->anix;
+        int dy = (int)(short)src->aniy - (int)(short)t->aniy;
+
+        for (int y = 0; y < t->h; y++) {
+            int sy = y + dy;
+            if (sy < 0 || sy >= src->h) continue;
+            for (int x = 0; x < t->w; x++) {
+                int sx = x + dx;
+                if (sx < 0 || sx >= src->w) continue;
+                unsigned char src_p = src_pix[sy * src_stride + sx];
+                dst_pix[y * dst_stride + x] = src_p;
+                total_written++;
+            }
+        }
+    }
+
+    if (total_written > 0) g_img_tex_idx = -2;
+    return total_written;
+}
+
 /* ---- Write ANILST (Export Marked Images to Assembly) ---- */
 void WriteAnilstFromMarked(const char* filepath)
 {
