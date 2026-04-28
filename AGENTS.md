@@ -6,16 +6,16 @@ Pure C/C++ port of a ~34k-line x86 assembly DOS tool, now SDL2 + Dear ImGui.
 
 ## Build Commands
 
-**Windows (VS 2022):**
+**Windows (VS 2022, x86):**
 ```cmd
-build.bat              # 64-bit (default)
-build.bat x86          # 32-bit
+build.bat
 ```
+or
 ```powershell
-.\build.ps1             # 64-bit (default)
-.\build.ps1 -Arch x86   # 32-bit
+powershell -ExecutionPolicy Bypass -File build.ps1
 ```
-Output: `%LOCALAPPDATA%\imgtool-build\build\Release\imgtool.exe`
+
+Both scripts auto-download SDL2 and CMake, output to `%LOCALAPPDATA%\imgtool-build\build\Release\imgtool.exe`.
 
 **Linux:**
 ```bash
@@ -26,74 +26,41 @@ mkdir build && cd build && cmake .. && cmake --build .
 
 | Path | Purpose |
 |------|---------|
-| `IT/it.c` | Entry point, main loop, SDL2 init |
-| `platform/imgui_overlay.cpp` | Main UI: menus, toolbar, canvas, panels, palette bar, modals, keyboard shortcuts |
-| `platform/img_format.h` | IMG/PAL structs, allocators, palette helpers, get_img/get_pal, PoolAlloc |
-| `platform/img_io.h` / `img_io.cpp` | File I/O: LoadImgFile, SaveImgFile, TGA/LBM/PNG import/export, RestoreMarkedFromSource, RestoreMarkedFromSourceForce |
-| `platform/shim_vid.c` | SDL2 renderer, palette tables, VGA shadow buffer |
-| `platform/shim_input.c` | Keyboard input, DOS scan code mapping |
-| `platform/shim_file.c` | DOS file system emulation, path remapping, old-format IMG conversion |
-| `platform/shim_dialog.c` | Native Windows file dialogs, directory persistence |
-| `platform/globals.c` | Global state: image/palette linked lists, selection indices, file paths |
-| `platform/compat.h` | Windows/Linux abstraction: types, MessageBox, _snprintf, path separators |
-| `CMakeLists.txt` | Build config, SDL2 dependency, post-build copy steps |
-| `IT/it.hlp` | Help text for DOS-style help system (unused by ImGui UI) |
-| `imgui/` | Dear ImGui v1.91.0 (trimmed: only SDL2 renderer backend) |
-
-## Code Patterns
-
-### Dirty flag for unsaved changes
-- `g_dirty = true` set by `undo_push()`, pixel edits, palette edits, paste, delete, etc.
-- `g_dirty = false` on load and explicit Ctrl+S save
-- Quit check uses `g_dirty` to decide whether to show "Unsaved Changes" popup
-
-### Quit flow
-- Menu Quit or window X → `g_pending_quit = true`
-- Render checks `g_dirty` → opens "Unsaved Changes" popup if dirty
-- Save/Discard close popup, `should_quit()` returns true → main loop exits cleanly
-- Cancel clears `g_pending_quit`
-- No hard `ExitProcess()` calls in quit path anymore
-
-### Restore from source (Operations menu)
-- **Restore from Selected (pixel-diff)**: Copies source pixels only where strip is transparent AND source has color. Palette must match.
-- **Bulk Restore from Source (overwrite)**: Clears marked strips with `memset(0)`, then repaints from source. No palette check.
-- Mapping: `sx = x + src.anix - strip.anix` (strip local → source local, note: signs were inverted in a previous version)
-
-### Texture rendering
-- Texture rebuilt EVERY frame from `img->data_p` via `rebuild_img_texture()`
-- `g_img_tex_idx` tracks last rendered image index (for zoom reset, not for triggering rebuilds)
-- `g_canvas_texture` exists for init compat, not displayed
+| `platform/imgui_overlay.cpp` | Main UI: menus, toolbar, canvas, palette, hitbox editor, file browser |
+| `platform/img_format.h` | IMG/PAL data structures, allocators, palette helpers |
+| `platform/img_io.h` / `img_io.cpp` | File I/O: IMG load/save, TGA/LBM/PNG import/export |
+| `platform/shim_*.c` | SDL2 windowing, input, file dialogs |
+| `CMakeLists.txt` | Build config, requires SDL2 |
+| `IT/` | Help file and legacy data |
+| `imgui/` | Dear ImGui v1.91.0 (bundled) |
 
 ## Known Pitfalls
 
-- **DO NOT remove `ImGui::Render()` + `ImGui_ImplSDLRenderer2_RenderDrawData()`** — this breaks render
-- Linux GCC requires `goto` targets to not skip variable initializations (unlike MSVC)
-- `_snprintf` macro maps to `snprintf` on Linux via `compat.h` — must include `compat.h`
-- `g_img_tex_idx` is defined in `img_io.cpp` (not in overlay) — declared `extern` in `img_io.h`
-
-## Help System
-- Press `h` → scrollable Help modal (700x500, embedded text)
-- Contains: Quickstart, Keyboard Reference, File Formats, DMA2 Hardware Reference
-- No external help files needed — all hardcoded in `g_help_text` raw string literal
+- **DO NOT remove `ImGui::Render()` + `ImGui_ImplSDLRenderer2_RenderDrawData()` from the end of `imgui_overlay_render()`** — this breaks sprite loading and rendering. The commit `72900a5` removed them and was reverted by `efbc545`.
+- The app links against SDL2's SDL_render API (not OpenGL). The render sequence is: draw all ImGui windows → `ImGui::Render()` → `ImGui_ImplSDLRenderer2_RenderDrawData()`.
 
 ## Current Branch
 
-`SDL-main` — actively developed. Default branch on GitHub.
+`SDL-main` — actively developed. The old DOSBox build and `sdl-experimental` branch have been retired.
+
+## Current HEAD
+
+`5834b7e` ("final: ASM removal, new main loop, app icon, window title") — **confirmed working**. Palette and canvas render correctly.
+
+Commits `b7db52e`, `72900a5`, and `efbc545` were reverted — they introduced palette/canvas rendering regressions.
 
 ## Build Architecture
 
-64-bit (x64) by default. 32-bit via `build.bat x86` or `.\build.ps1 -Arch x86`.
-
-## Releases
-
-- v2.0.0 published at https://github.com/junkwax/midway-imgtool/releases/tag/v2.0.0
-- Contains both `imgtool-x64.zip` and `imgtool-x86.zip`
-
-## CI
-
-- `.github/workflows/c-cpp.yml` — Windows (x64 + Win32) and Linux builds on push/PR
+64-bit (x64) by default. Both `build.bat` and `build.ps1` accept an arch parameter:
+```cmd
+build.bat          REM default: x64
+build.bat x86       REM 32-bit
+```
+```powershell
+.\build.ps1 -Arch x86   REM 32-bit
+```
 
 ## Git Workflow
 
 - Commit style: short descriptive messages, all lowercase
-- Branch: `SDL-main`
+- Use `--no-verify` sparingly (pre-commit hooks may exist)
