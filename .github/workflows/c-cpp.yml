@@ -1,0 +1,59 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: ["SDL-main"]
+  pull_request:
+    branches: ["SDL-main"]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64, Win32]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2
+        run: |
+          $url = "https://github.com/libsdl-org/SDL/releases/download/release-2.30.2/SDL2-devel-2.30.2-VC.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\sdl2.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\sdl2.zip" -DestinationPath "$env:RUNNER_TEMP\SDL2" -Force
+          echo "SDL2_DIR=$env:RUNNER_TEMP\SDL2\SDL2-2.30.2\cmake" >> $env:GITHUB_ENV
+
+      - name: Configure CMake
+        run: cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} -DSDL2_DIR="$env:SDL2_DIR"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgtool-windows-${{ matrix.arch }}
+          path: |
+            build/Release/imgtool.exe
+            build/Release/SDL2.dll
+            build/Release/it.hlp
+            build/Release/assets/
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+
+      - name: Configure CMake
+        run: cmake -B build
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgtool-linux-x64
+          path: build/imgtool
