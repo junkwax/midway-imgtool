@@ -2840,12 +2840,12 @@ void imgui_overlay_render(void)
 
     /* ---- Menu bar ---- */
     if (ImGui::BeginMainMenuBar()) {
-        ImGui::Spacing();  /* space before File */
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 4));
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New"))             g_show_new_img_confirm = true;
             if (ImGui::MenuItem("Open...",  "Ctrl+O")) OpenFileDialog(FileDialogMode::OpenImg);
             if (ImGui::BeginMenu("Open Recent", !g_recent_files.empty())) {
-                /* Snapshot since OpenImgFile mutates g_recent_files. */
                 std::vector<std::string> snap = g_recent_files;
                 for (size_t i = 0; i < snap.size(); i++) {
                     char label[1100];
@@ -2859,19 +2859,27 @@ void imgui_overlay_render(void)
                 }
                 ImGui::EndMenu();
             }
-            if (ImGui::MenuItem("Save",     "Ctrl+S")) OpenFileDialog(FileDialogMode::SaveImg);
-            if (ImGui::MenuItem("Append",   "a"))   OpenFileDialog(FileDialogMode::AppendImg);
+            if (ImGui::MenuItem("Save",    "Ctrl+S")) OpenFileDialog(FileDialogMode::SaveImg);
+            if (ImGui::MenuItem("Append",  "a"))      OpenFileDialog(FileDialogMode::AppendImg);
             ImGui::Separator();
-            if (ImGui::MenuItem("Load LBM", "Alt+L"))        OpenFileDialog(FileDialogMode::LoadLbm);
-            if (ImGui::MenuItem("Save LBM", "Alt+S"))        OpenFileDialog(FileDialogMode::SaveLbm);
-            if (ImGui::MenuItem("Save Marked LBM"))          OpenFileDialog(FileDialogMode::SaveMarkedLbm);
-            if (ImGui::MenuItem("Load TGA", "Ctrl+L"))       OpenFileDialog(FileDialogMode::LoadTga);
-            if (ImGui::MenuItem("Save TGA", "Ctrl+S"))       OpenFileDialog(FileDialogMode::SaveTga);
+            if (ImGui::BeginMenu("Import")) {
+                if (ImGui::MenuItem("Load LBM", "Alt+L"))  OpenFileDialog(FileDialogMode::LoadLbm);
+                if (ImGui::MenuItem("Load TGA", "Ctrl+L")) OpenFileDialog(FileDialogMode::LoadTga);
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Export")) {
+                if (ImGui::MenuItem("Save LBM", "Alt+S"))        OpenFileDialog(FileDialogMode::SaveLbm);
+                if (ImGui::MenuItem("Save Marked LBM"))          OpenFileDialog(FileDialogMode::SaveMarkedLbm);
+                if (ImGui::MenuItem("Save TGA"))                 OpenFileDialog(FileDialogMode::SaveTga);
+                ImGui::Separator();
+                if (ImGui::MenuItem("Build TGA from Marked", "Ctrl+B")) OpenFileDialog(FileDialogMode::ExportTga);
+                if (ImGui::MenuItem("Write ANILST..."))                OpenFileDialog(FileDialogMode::WriteAniLst);
+                ImGui::EndMenu();
+            }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Esc")) ExitProcess(0);
             ImGui::EndMenu();
         }
-        ImGui::Spacing();  /* space between File and Edit */
         if (ImGui::BeginMenu("Edit")) {
             bool can_undo = g_undo_idx > 0;
             bool can_redo = g_undo_idx < g_undo_count - 1;
@@ -2890,22 +2898,18 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && ilselected >= 0))
                 paste_image();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename Image",  "Ctrl+R"))  OpenRenameImage();
-            if (ImGui::MenuItem("Delete Image",  "Ctrl+D"))  DeleteImage(ilselected);
-            if (ImGui::MenuItem("Duplicate"))                DuplicateImage();
-            if (ImGui::MenuItem("Build TGA",     "Ctrl+B"))  OpenFileDialog(FileDialogMode::ExportTga);
+            if (ImGui::MenuItem("Rename Image", "Ctrl+R")) OpenRenameImage();
+            if (ImGui::MenuItem("Delete Image", "Ctrl+D")) DeleteImage(ilselected);
+            if (ImGui::MenuItem("Duplicate"))              DuplicateImage();
             ImGui::EndMenu();
         }
-        ImGui::Spacing();  /* space between Edit and Image */
         if (ImGui::BeginMenu("Image")) {
-            if (ImGui::MenuItem("Mark / Unmark",            "Space"))        { IMG *img = get_img(ilselected); if (img) img->flags ^= 1; }
-            if (ImGui::MenuItem("Set All Marks",            "M"))            { IMG *p=(IMG*)img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
-            if (ImGui::MenuItem("Clear All Marks",          "m"))            { IMG *p=(IMG*)img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
-            if (ImGui::MenuItem("Invert All Marks")) {
-                IMG *p=(IMG*)img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;}
-            }
+            if (ImGui::MenuItem("Mark / Unmark",      "Space"))  { IMG *img = get_img(ilselected); if (img) img->flags ^= 1; }
+            if (ImGui::MenuItem("Set All Marks",      "M"))      { IMG *p=(IMG*)img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
+            if (ImGui::MenuItem("Clear All Marks",    "m"))      { IMG *p=(IMG*)img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
+            if (ImGui::MenuItem("Invert All Marks"))             { IMG *p=(IMG*)img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
             ImGui::Separator();
-            if (ImGui::MenuItem("Jump to Prev Marked",      "Left")) {
+            if (ImGui::MenuItem("Jump to Prev Marked", "Left")) {
                 int n_imgs = count_imgs();
                 for (int i = 1; i <= n_imgs; i++) {
                     int idx = (ilselected - i + n_imgs) % n_imgs;
@@ -2913,7 +2917,7 @@ void imgui_overlay_render(void)
                     if (img && (img->flags & 1)) { ilselected = idx; break; }
                 }
             }
-            if (ImGui::MenuItem("Jump to Next Marked",      "Right")) {
+            if (ImGui::MenuItem("Jump to Next Marked", "Right")) {
                 int n_imgs = count_imgs();
                 for (int i = 1; i <= n_imgs; i++) {
                     int idx = (ilselected + i) % n_imgs;
@@ -2921,93 +2925,75 @@ void imgui_overlay_render(void)
                     if (img && (img->flags & 1)) { ilselected = idx; break; }
                 }
             }
-            if (ImGui::MenuItem("Move Image Up in List",    "Alt+PgUp"))     MoveImageUp();
-            if (ImGui::MenuItem("Move Image Down in List",  "Alt+PgDn"))     MoveImageDown();
+            if (ImGui::MenuItem("Move Up",    "Alt+PgUp")) MoveImageUp();
+            if (ImGui::MenuItem("Move Down",  "Alt+PgDn")) MoveImageDown();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename Image",             "Ctrl+R"))       OpenRenameImage();
-            if (ImGui::MenuItem("Add/Del Point Table",      "Ctrl+P"))       TogglePointTable();
-            if (ImGui::MenuItem("Set ID from 2nd List",     "i"))            SetIDFromSecondList();
-            if (ImGui::MenuItem("Least-Squares Reduce",     ";"))            LeastSquaresReduceMarked();
-            if (ImGui::MenuItem("Clear Extra Data",         "Alt+C"))        ClearExtraData();
-            ImGui::Separator();
-            if (ImGui::MenuItem("Switch Image List",        "Tab"))          SwitchImageList();
-            ImGui::Separator();
-            if (ImGui::BeginMenu("Marked Images")) {
-                if (ImGui::MenuItem("Rename Marked"))               OpenRenameMarkedImages();
-                if (ImGui::MenuItem("Delete Marked"))               DeleteMarkedImages();
-                ImGui::Separator();
-                if (ImGui::MenuItem("Set Palette",     "["))        SetPaletteOfMarked();
-                ImGui::Separator();
-                if (ImGui::MenuItem("Strip Edge"))                  StripMarkedImages(5);
-                if (ImGui::MenuItem("Strip Edge Low"))              StripMarkedImages(3);
-                if (ImGui::MenuItem("Strip Edge (Selected Color)")) StripMarkedImages(5, g_sel_color);
-                ImGui::Separator();
-                if (ImGui::MenuItem("Least Squares",   ";"))        LeastSquaresReduceMarked();
-                if (ImGui::MenuItem("Dither Replace"))              DitherReplaceMarkedImages(g_sel_color);
-                ImGui::Separator();
-                if (ImGui::MenuItem("Restore from Selected (pixel-diff)")) {
-                    int n = RestoreMarkedFromSource();
-                    snprintf(g_restore_msg, sizeof(g_restore_msg),
-                             n > 0 ? "Restored %d pixel(s) from selected source."
-                                   : "No pixels restored. Check selection, marks, palettes, anipoints.",
-                             n);
-                    g_restore_msg_timer = 4.0f;  /* seconds */
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-                    "For each marked image, copy non-transparent source pixels\n"
-                    "into transparent strip pixels. Selected image = source.\n"
-                    "Uses anipoints to align; same palette required.");
-                ImGui::Separator();
-                if (ImGui::MenuItem("Build TGA",       "Ctrl+B"))   OpenFileDialog(FileDialogMode::ExportTga);
-                if (ImGui::MenuItem("Write ANILST"))                OpenFileDialog(FileDialogMode::WriteAniLst);
-                ImGui::EndMenu();
-            }
+            if (ImGui::MenuItem("Add/Del Point Table",  "Ctrl+P")) TogglePointTable();
+            if (ImGui::MenuItem("Set ID from 2nd List", "i"))      SetIDFromSecondList();
+            if (ImGui::MenuItem("Switch Image List",    "Tab"))    SwitchImageList();
+            if (ImGui::MenuItem("Clear Extra Data",     "Alt+C"))  ClearExtraData();
             ImGui::EndMenu();
         }
-        ImGui::Spacing();  /* space between Image and Palette */
+        if (ImGui::BeginMenu("Operations")) {
+            if (ImGui::MenuItem("Least-Squares Reduce", ";"))               LeastSquaresReduceMarked();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Strip Edge"))                               StripMarkedImages(5);
+            if (ImGui::MenuItem("Strip Edge Low"))                           StripMarkedImages(3);
+            if (ImGui::MenuItem("Strip Edge (Selected Color)"))              StripMarkedImages(5, g_sel_color);
+            if (ImGui::MenuItem("Dither Replace"))                           DitherReplaceMarkedImages(g_sel_color);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Restore from Selected (pixel-diff)")) {
+                int n = RestoreMarkedFromSource();
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         n > 0 ? "Restored %d pixel(s) from selected source."
+                               : "No pixels restored. Check selection, marks, palettes, anipoints.",
+                         n);
+                g_restore_msg_timer = 4.0f;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "For each marked image, copy non-transparent source pixels\n"
+                "into transparent strip pixels. Selected image = source.\n"
+                "Uses anipoints to align; same palette required.");
+            ImGui::Separator();
+            if (ImGui::MenuItem("Rename Marked"))                            OpenRenameMarkedImages();
+            if (ImGui::MenuItem("Delete Marked"))                            DeleteMarkedImages();
+            if (ImGui::MenuItem("Set Palette for Marked", "["))              SetPaletteOfMarked();
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Palette")) {
-            if (ImGui::MenuItem("Set Palette for Image",      "]"))       SetPaletteOfSelected();
-            if (ImGui::MenuItem("Set Palette for Marked",     "["))       SetPaletteOfMarked();
+            if (ImGui::MenuItem("Set for Image",       "]"))       SetPaletteOfSelected();
+            if (ImGui::MenuItem("Merge Marked into Selected", "*")) MergeMarkedPalettes();
+            if (ImGui::MenuItem("Delete Palette",      "Del"))     DeletePalette();
+            if (ImGui::MenuItem("Rename Palette",      "Shift+R")) OpenRenamePalette(plselected);
             ImGui::Separator();
-            if (ImGui::MenuItem("Merge Marked into Selected", "*"))       MergeMarkedPalettes();
-            if (ImGui::MenuItem("Delete Palette",             "Del"))     DeletePalette();
+            if (ImGui::MenuItem("Show Histogram"))               { CalculatePaletteHistogram(); g_show_histogram = true; }
+            if (ImGui::MenuItem("Delete Unused Colors"))         DeleteUnusedPaletteColors();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename Palette",             "Shift+R")) OpenRenamePalette(plselected);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Show Histogram")) { CalculatePaletteHistogram(); g_show_histogram = true; }
-            if (ImGui::MenuItem("Delete Unused Colors"))                  DeleteUnusedPaletteColors();
-            ImGui::Separator();
-            if (ImGui::MenuItem("Mark All Palettes")) {
+            if (ImGui::MenuItem("Mark All")) {
                 PAL *p=(PAL*)pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;}
             }
-            if (ImGui::MenuItem("Clear All Palette Marks")) {
+            if (ImGui::MenuItem("Clear Marks")) {
                 PAL *p=(PAL*)pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;}
             }
-            if (ImGui::MenuItem("Invert Palette Marks")) {
+            if (ImGui::MenuItem("Invert Marks")) {
                 PAL *p=(PAL*)pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;}
             }
             ImGui::EndMenu();
         }
-        ImGui::Spacing();  /* space between Palette and View */
         if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Anim Points", NULL, &g_show_points);
-            ImGui::MenuItem("Hitboxes",    NULL, &g_show_hitbox);
+            ImGui::MenuItem("Anim Points",     NULL, &g_show_points);
+            ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
             ImGui::MenuItem("DMA Compression", NULL, &g_show_dma_comp);
             ImGui::EndMenu();
         }
-        ImGui::Spacing();  /* space between View and Programming */
-        if (ImGui::BeginMenu("Programming")) {
-            if (ImGui::MenuItem("Write ANILST...")) OpenFileDialog(FileDialogMode::WriteAniLst);
-            ImGui::EndMenu();
-        }
-        ImGui::Spacing();  /* space between Programming and Help */
         if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem("Show Help", "h")) g_show_help = true;
+            if (ImGui::MenuItem("Show Help",  "h"))  g_show_help = true;
             if (ImGui::MenuItem("Debug Info", "F9")) g_show_debug = !g_show_debug;
             ImGui::Separator();
             if (ImGui::MenuItem("About...")) g_show_about = true;
             ImGui::EndMenu();
         }
+        ImGui::PopStyleVar(2);
         ImGui::EndMainMenuBar();
     }
 
