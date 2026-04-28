@@ -338,8 +338,8 @@ int RestoreMarkedFromSource(void)
         unsigned char *dst_pix = (unsigned char *)t->data_p;
         int dst_stride = (t->w + 3) & ~3;
 
-        int dx = (int)(short)t->anix - (int)(short)src->anix;
-        int dy = (int)(short)t->aniy - (int)(short)src->aniy;
+        int dx = (int)(short)src->anix - (int)(short)t->anix;
+        int dy = (int)(short)src->aniy - (int)(short)t->aniy;
 
         for (int y = 0; y < t->h; y++) {
             int sy = y + dy;
