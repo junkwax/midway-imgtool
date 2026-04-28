@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include "compat.h"
 
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
