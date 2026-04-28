@@ -136,3 +136,9 @@ jobs:
         with:
           name: imgtool-macos
           path: build/ImgTool.dmg
+
+      - name: Upload DMG to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: build/ImgTool.dmg

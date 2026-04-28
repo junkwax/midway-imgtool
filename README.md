@@ -13,11 +13,15 @@ Sprite and palette editor for the IMG container files used by 1990s Midway arcad
 - **Browse sprites** — open an IMG file and scroll through every sprite frame (Up/Down, PgUp/Dn)
 - **Edit pixels** — draw with pencil, pick colors with eyedropper, flood fill, marquee select
 - **Manage palettes** — 256-color palettes with 15-bit RGB editing; assign, merge, and delete
+- **Palette tools** — palette histogram, delete unused colors, and merge marked palettes
 - **Animation points** — edit primary (X/Y) and secondary (X/Y/Z) anchor points for sprites
 - **Hitbox editor** — drag-to-resize collision boxes with live overlay on the canvas
 - **Dual-file mode** — open two IMGs at once (Tab to swap), copy IDs between them
+- **Recent Files** — persistent history of recently opened IMG files for quick access
 - **Export / Import** — TGA, LBM, and PNG import/export; Build TGA from marked sprites
+- **Data Export** — Write ANILST (assembly animation lists) and MK3-format TBL files
 - **Batch operations** — mark sprites (Space) then apply palette, reduce, strip, or dither all at once
+- **Pixel restoration** — bulk restore pixel data from a parent sprite across the entire file via Regex or explicit selection
 - **Undo / Redo** — 32-level undo stack for animation point and pixel edits
 - **Copy / Paste** — copy pixel regions between sprites or across IMGs
 
@@ -139,7 +143,6 @@ Full keyboard reference in the in-app help (`h`).
 
 **What's missing:**
 - 3D model editor (original `it3d.asm` was stubbed; the tool is 2D-only)
-- macOS / ARM support (untested)
 
 ---
 

@@ -98,13 +98,19 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/assets/MaterialSymbolsSharp-Regu
 endif()
 
 if(APPLE)
-    target_compile_options(imgtool PRIVATE -m64)
-    target_link_options(imgtool PRIVATE -m64)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
+        target_compile_options(imgtool PRIVATE -m64)
+        target_link_options(imgtool PRIVATE -m64)
+    endif()
     set_target_properties(imgtool PROPERTIES
         BUILD_RPATH "@executable_path/../Frameworks"
         INSTALL_RPATH "@executable_path/../Frameworks"
     )
 elseif(NOT WIN32)
-    target_compile_options(imgtool PRIVATE -m64)
-    target_link_options(imgtool PRIVATE -m64 -no-pie -Wl,-z,noexecstack)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
+        target_compile_options(imgtool PRIVATE -m64)
+        target_link_options(imgtool PRIVATE -m64 -no-pie -Wl,-z,noexecstack)
+    else()
+        target_link_options(imgtool PRIVATE -no-pie -Wl,-z,noexecstack)
+    endif()
 endif()
