@@ -100,7 +100,7 @@ int	main(int argc,char *argv[])
 		return 1;
 	}
 
-	SDL_Window *window = SDL_CreateWindow("Midway Image Tool",
+	SDL_Window *window = SDL_CreateWindow("Imgtool",
 		SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
 		1024, 768, SDL_WINDOW_RESIZABLE);
 	if (!window) return 1;

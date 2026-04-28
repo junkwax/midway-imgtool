@@ -32,6 +32,12 @@ else()
 endif()
 
 # ---- Sources ---------------------------------------------------------------
+if(WIN32)
+    set(PLATFORM_RC platform/imgtool.rc)
+else()
+    set(PLATFORM_RC "")
+endif()
+
 add_executable(imgtool
     IT/it.c
     platform/globals.c
@@ -47,6 +53,7 @@ add_executable(imgtool
     imgui/backends/imgui_impl_sdl2.cpp
     imgui/backends/imgui_impl_sdlrenderer2.cpp
     platform/imgui_overlay.cpp
+    ${PLATFORM_RC}
 )
 
 target_include_directories(imgtool PRIVATE
