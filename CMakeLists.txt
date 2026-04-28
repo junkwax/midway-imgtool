@@ -96,24 +96,6 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/assets/MaterialSymbolsSharp-Regu
     )
 endif()
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/DMA2.txt")
-    add_custom_command(TARGET imgtool POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/DMA2.txt"
-            "$<TARGET_FILE_DIR:imgtool>/DMA2.txt"
-        VERBATIM
-    )
-endif()
-
-if(MSVC)
-    set_source_files_properties(
-        imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp
-        imgui/backends/imgui_impl_sdl2.cpp imgui/backends/imgui_impl_sdlrenderer2.cpp
-        PROPERTIES
-        COMPILE_FLAGS "/W0"
-    )
-endif()
-
 if(NOT WIN32)
     target_compile_options(imgtool PRIVATE -m64)
     target_link_options(imgtool PRIVATE -m64 -no-pie -Wl,-z,noexecstack)

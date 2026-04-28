@@ -140,12 +140,6 @@ if ($exitCode -eq 0) {
         Copy-Item $hlp (Split-Path $exe) -Force
         Write-Host "Copied it.hlp to output folder" -ForegroundColor Green
     }
-    # DMA2.txt hardware reference
-    $dma2 = Join-Path $SourceDir "DMA2.txt"
-    if (Test-Path $dma2) {
-        Copy-Item $dma2 (Split-Path $exe) -Force
-        Write-Host "Copied DMA2.txt to output folder" -ForegroundColor Green
-    }
 } else {
     Write-Host ""
     Write-Host "*** Build FAILED (exit $exitCode) ***" -ForegroundColor Red

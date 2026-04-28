@@ -109,7 +109,6 @@ if errorlevel 1 (echo ERROR: cmake build failed & goto :fail)
 
 copy /Y "%SDL2DIR%\lib\%SDL2_ARCH%\SDL2.dll" "%BUILDDIR%\Release\"
 copy /Y "%SOURCE%\IT\it.hlp" "%BUILDDIR%\Release\"
-copy /Y "%SOURCE%\DMA2.txt" "%BUILDDIR%\Release\"
 
 echo.
 echo *** Build succeeded! ***
