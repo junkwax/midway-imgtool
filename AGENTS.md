@@ -39,7 +39,7 @@ mkdir build && cd build && cmake .. && cmake --build .
 
 ## Current Branch
 
-`main` — actively developed. The old DOSBox build and `sdl-experimental` branch have been retired.
+`SDL-main` — actively developed. The old DOSBox build and `sdl-experimental` branch have been retired.
 
 ## Current HEAD
 
