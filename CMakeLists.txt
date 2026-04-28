@@ -22,13 +22,16 @@ endif()
 if(WIN32)
     find_package(SDL2 REQUIRED)
 else()
-    set(SDL2_INCLUDE_DIRS "/usr/include/SDL2;/usr/include/x86_64-linux-gnu")
-    set(SDL2_LIBRARIES "-L/usr/lib/x86_64-linux-gnu -lSDL2")
-    add_library(SDL2::SDL2 INTERFACE IMPORTED)
-    set_target_properties(SDL2::SDL2 PROPERTIES
-        INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIRS}"
-        INTERFACE_LINK_LIBRARIES      "${SDL2_LIBRARIES}")
-    add_library(SDL2::SDL2main INTERFACE IMPORTED)
+    find_package(SDL2 QUIET)
+    if(NOT SDL2_FOUND)
+        set(SDL2_INCLUDE_DIRS "/usr/include/SDL2;/usr/include/x86_64-linux-gnu")
+        set(SDL2_LIBRARIES "-L/usr/lib/x86_64-linux-gnu -lSDL2")
+        add_library(SDL2::SDL2 INTERFACE IMPORTED)
+        set_target_properties(SDL2::SDL2 PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIRS}"
+            INTERFACE_LINK_LIBRARIES      "${SDL2_LIBRARIES}")
+        add_library(SDL2::SDL2main INTERFACE IMPORTED)
+    endif()
 endif()
 
 # ---- Sources ---------------------------------------------------------------
@@ -53,6 +56,7 @@ add_executable(imgtool
     imgui/backends/imgui_impl_sdl2.cpp
     imgui/backends/imgui_impl_sdlrenderer2.cpp
     platform/imgui_overlay.cpp
+    platform/img_io.cpp
     ${PLATFORM_RC}
 )
 

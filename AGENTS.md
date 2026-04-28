@@ -27,6 +27,8 @@ mkdir build && cd build && cmake .. && cmake --build .
 | Path | Purpose |
 |------|---------|
 | `platform/imgui_overlay.cpp` | Main UI: menus, toolbar, canvas, palette, hitbox editor, file browser |
+| `platform/img_format.h` | IMG/PAL data structures, allocators, palette helpers |
+| `platform/img_io.h` / `img_io.cpp` | File I/O: IMG load/save, TGA/LBM/PNG import/export |
 | `platform/shim_*.c` | SDL2 windowing, input, file dialogs |
 | `CMakeLists.txt` | Build config, requires SDL2 |
 | `IT/` | Help file and legacy data |

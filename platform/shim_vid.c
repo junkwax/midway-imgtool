@@ -119,16 +119,6 @@ void shim_vid_shutdown(void)
     SDL_Quit();
 }
 
-/* ---- suppress all DOS gadgets ---- */
-/* ImGui owns the entire UI. Wipe the whole VGA plane so no asm-drawn gadgets
-   (buttons, toolbars, text labels, window frames) appear on the canvas.
-   The asm redraws the selected image into the plane each frame after this call,
-   so image pixel data is always current. */
-static void suppress_gadget_region(void)
-{
-    memset(g_vga_plane, 0, sizeof(g_vga_plane));
-}
-
 /* ---- present: deplanarize + palette expand + upload texture ---- */
 
 __attribute__((force_align_arg_pointer))
