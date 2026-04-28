@@ -1,28 +1,35 @@
 # midway-imgtool
 
-Editor for the IMG container files used by 1990s Midway arcade games (Mortal Kombat II/3, NBA Jam, NBA Hangtime, etc.). Loads, edits, and saves the original `.IMG` libraries plus their LBM and TGA siblings; preserves the proprietary point-table and animation data the original tools produced.
+Sprite and palette editor for the IMG container files used by 1990s Midway arcade games — Mortal Kombat II/3, NBA Jam, NBA Hangtime, and others. Loads, edits, and saves `.IMG` libraries plus their LBM and TGA siblings, preserving proprietary point-table and animation data from the original tools.
 
-![imgtool image](https://raw.githubusercontent.com/JUNKWAX/midway-imgtool/SDL-main/imgtool.png)
+![imgtool image](https://raw.githubusercontent.com/junkwax/midway-imgtool/SDL-main/imgtool.png)
 
-> **Status:** pure C/C++ native port. Originally a 1992 DOS tool with ~34,000 lines of x86 assembly — now fully rewritten in C++ with SDL2 + Dear ImGui. No assembler, no DOSBox, no virtualization. 64-bit (x64) with optional 32-bit builds. Runs on Windows and Linux.
+> **Status:** pure C/C++ port. Originally a 1992 DOS tool with ~34,000 lines of x86 assembly — now fully rewritten in C++ with SDL2 + Dear ImGui. No assembler, no DOSBox, no virtualization. 64-bit (x64) default with optional 32-bit builds. Runs on Windows and Linux.
 
 ---
 
-## Architecture
+## What it does
 
-- **ImGui overlay** (`platform/imgui_overlay.cpp`) — menu bar, toolbar, sprite canvas, image/palette lists, properties panel, palette editor, hitbox editor, file browser, debug popup, undo/redo, clipboard.
-- **File I/O** — IMG load/save, LBM load/save, TGA load/save, all implemented in portable C++ using standard `fopen`/`fread`/`fwrite`.
-- **Shim layer** (`platform/shim_*.c`) — SDL2 windowing, input handling, native file dialogs.
-- **dear imgui** (`imgui/`, v1.91.0) — UI rendering.
-- **No assembly** — the 32,000+ lines of x86 assembly from the original 1992 Watcom tool have been fully ported to C++. Builds as a standard CMake project with no assembler required.
+- **Browse sprites** — open an IMG file and scroll through every sprite frame (Up/Down, PgUp/Dn)
+- **Edit pixels** — draw with pencil, pick colors with eyedropper, flood fill, marquee select
+- **Manage palettes** — 256-color palettes with 15-bit RGB editing; assign, merge, and delete
+- **Animation points** — edit primary (X/Y) and secondary (X/Y/Z) anchor points for sprites
+- **Hitbox editor** — drag-to-resize collision boxes with live overlay on the canvas
+- **Dual-file mode** — open two IMGs at once (Tab to swap), copy IDs between them
+- **Export / Import** — TGA, LBM, and PNG import/export; Build TGA from marked sprites
+- **Batch operations** — mark sprites (Space) then apply palette, reduce, strip, or dither all at once
+- **Undo / Redo** — 32-level undo stack for animation point and pixel edits
+- **Copy / Paste** — copy pixel regions between sprites or across IMGs
+
+Press **`h`** in the app for the full help reference — quickstart guide, keyboard shortcuts, file formats, and the Williams DMA #2 hardware document.
 
 ---
 
 ## Building from source
 
-Requirements: CMake 3.20+, SDL2 development libraries.
+Requirements: **CMake 3.20+** and **SDL2 development libraries**. Visual Studio 2022 on Windows, GCC on Linux.
 
-### Quick build (Windows)
+### Quick build (Windows) — auto-downloads everything
 
 ```cmd
 build.bat              # 64-bit (default)
@@ -33,7 +40,7 @@ build.bat x86          # 32-bit
 .\build.ps1 -Arch x86   # 32-bit
 ```
 
-Both scripts auto-download SDL2 and CMake, output to `%LOCALAPPDATA%\imgtool-build\build\Release\imgtool.exe`.
+Both scripts auto-download SDL2 2.30.2 and CMake to `%LOCALAPPDATA%\imgtool-build\`. Output: `build\Release\imgtool.exe`.
 
 ### Manual CMake build
 
@@ -50,38 +57,43 @@ mkdir build && cd build
 cmake .. && cmake --build .
 ```
 
-The build copies `SDL2.dll` (Windows), `it.hlp`, and the bundled `assets/MaterialSymbolsSharp-Regular.ttf` icon font next to the executable.
+The build copies `SDL2.dll` (Windows), `it.hlp`, and the Material Symbols icon font next to the executable.
 
 ---
 
-## Running
+## Source structure
 
-Drop the contents of the `Release/` folder anywhere and run `imgtool.exe`. No install, no registry changes.
+| Path | Purpose |
+|------|---------|
+| `IT/it.c` | Entry point, SDL2 window creation, main loop |
+| `platform/imgui_overlay.cpp` | Main UI: menus, toolbar, canvas, panels, palette, modals |
+| `platform/img_format.h` | IMG/PAL data structures, allocators, palette helpers |
+| `platform/img_io.h` / `img_io.cpp` | File I/O: IMG load/save, TGA/LBM/PNG import/export |
+| `platform/shim_vid.c` | SDL2 renderer init, palette tables, VGA emulation |
+| `platform/shim_input.c` | Keyboard input, DOS scan code mapping |
+| `platform/shim_file.c` | File system emulation, path remapping, old-format conversion |
+| `platform/shim_dialog.c` | Native Windows file dialogs, directory persistence |
+| `platform/globals.c` | Global state: image/palette lists, selection indices |
+| `imgui/` | Dear ImGui v1.91.0 (SDL2 renderer backend only, trimmed) |
+| `CMakeLists.txt` | Build config |
 
-Press `h` in the app for the full help reference — quickstart guide, keyboard shortcuts, file format info, and the Williams DMA #2 hardware document. `F9` opens the **Debug Info** popup. `Help > About` shows the build timestamp and git revision.
+---
 
-### Common keys
+## File format support
 
-| Key | Action |
-|---|---|
-| `Ctrl+O` / `Ctrl+S` | Open / save IMG |
-| `Alt+L` / `Alt+S` | Load / save LBM |
-| `Ctrl+L` | Load TGA |
-| `Ctrl+B` | Build TGA from marked images |
-| `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste |
-| `Space` | Mark / unmark current image |
-| `M` / `m` | Mark all / clear all marks |
-| `h` | Help |
-| `F9` | Debug info |
-| `Esc` | Cancel current action |
+| Format | Load | Save | Notes |
+|--------|------|------|-------|
+| **IMG** | Yes | Yes | Primary format. Pre-2.x IMGs auto-converted on open. Up to 2000 sprites/palettes per file. |
+| **TGA** | Yes | Yes | 8-bit color-mapped Truevision Targa. Bottom-up pixel order. |
+| **LBM** | Yes | Yes | IFF/ILBM chunk format. CMAP (palette) + BODY (bitmap). RLE decompression supported. |
+| **PNG** | Yes | Yes | Via stb_image/stb_image_write. Auto-quantizes colors to 15-bit palette on import. |
 
 ---
 
 ## Environment variables
 
-| Var | Purpose |
-|---|---|
+| Variable | Purpose |
+|----------|---------|
 | `IMGDIR` | Default directory for `.img` files |
 | `TGADIR` | Default directory for `.tga` files |
 | `MODELS` | Default directory for model files |
@@ -89,25 +101,46 @@ Press `h` in the app for the full help reference — quickstart guide, keyboard 
 
 ---
 
-## File format notes
+## Common keys
 
-IMG files are later built into IRW data for ROMs using the `.LOD` files and `load2.exe`. Pre-2.x IMG files are auto-converted on open.
+| Key | Action |
+|-----|--------|
+| `Ctrl+O` / `Ctrl+S` | Open / Save IMG |
+| `Alt+L` / `Alt+S` | Load / Save LBM |
+| `Ctrl+L` | Load TGA |
+| `Ctrl+B` | Build TGA from marked images |
+| `Space` | Mark / Unmark current image |
+| `M` / `m` | Mark all / Clear all marks |
+| `Up` / `Down` | Move in image list |
+| `PgUp` / `PgDn` | Page up/down image list |
+| `Tab` | Swap between image list 1 and 2 |
+| `d` / `D` | Double / Halve zoom |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste |
+| `h` | Open comprehensive help |
+| `F9` | Debug info popup |
+| `Esc` | Cancel current action |
+
+Full keyboard reference in the in-app help (`h`).
 
 ---
 
 ## Status
 
-`SDL-main` branch — actively maintained. The original DOSBox build on `main` and `sdl-experimental` have been retired.
+**`SDL-main` branch** — actively maintained. The original DOSBox build on `main` and `sdl-experimental` have been retired.
 
 **What works:**
 - Full 2D sprite editing parity with the DOS tool
 - Modern UI (ImGui), file browser, undo/redo, copy/paste, hitbox editor
 - All MK1/MK2/NBA-era IMG files load, edit, and save correctly
-- Cross-platform (Windows + Linux)
+- PNG import/export with automatic palette quantization
+- Cross-platform Windows + Linux
 - Pure C/C++ build — no assembler required
 
 **What's missing:**
 - 3D model editor (original `it3d.asm` was stubbed; the tool is 2D-only)
 - macOS / ARM support (untested)
 
-Issues / PRs welcome at https://github.com/junkwax/midway-imgtool.
+---
+
+Issues and PRs welcome at https://github.com/junkwax/midway-imgtool.
