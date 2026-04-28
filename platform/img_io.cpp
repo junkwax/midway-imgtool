@@ -139,7 +139,30 @@ void LoadImgFile(void)
         if (!img->data_p) break;
 
         fseek(f, (long)idisk.oset, SEEK_SET);
-        fread(img->data_p, 1, pix_sz, f);
+
+        if (img->flags & 0x0080) { // CMP
+            int lm_mult = 1 << ((img->flags >> 8) & 3);
+            int tm_mult = 1 << ((img->flags >> 10) & 3);
+            unsigned char *dst = (unsigned char *)img->data_p;
+            for (int y = 0; y < img->h; y++) {
+                int comp_byte = fgetc(f);
+                if (comp_byte == EOF) break;
+
+                int leading = (comp_byte & 0x0F) * lm_mult;
+                int trailing = ((comp_byte >> 4) & 0x0F) * tm_mult;
+                int visible = img->w - leading - trailing;
+                if (visible < 0) visible = 0;
+
+                memset(dst, 0, leading);
+                if (visible > 0) fread(dst + leading, 1, visible, f);
+                memset(dst + leading + visible, 0, trailing);
+                for (int x = img->w; x < (int)stride; x++) dst[x] = 0;
+
+                dst += stride;
+            }
+        } else {
+            fread(img->data_p, 1, pix_sz, f);
+        }
 
         if (hdr.version >= 0x60A && (signed short)idisk.pttblnum >= 0) {
             fseek(f, (long)(ptoset + (unsigned int)(signed short)idisk.pttblnum * 40), SEEK_SET);
@@ -192,12 +215,19 @@ void SaveImgFile(void)
     int num_imgs = (int)imgcnt;
     int num_pals = (int)palcnt;
 
+    // 1. Count point tables
+    int pt_count = 0;
+    IMG *img = (IMG *)img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        if (img->pttbl_p) pt_count++;
+    }
+
     LIB_HDR hdr = {};
     hdr.imgcnt  = (unsigned short)num_imgs;
     hdr.palcnt  = (unsigned short)(num_pals + NUMDEFPAL);
     hdr.version = 0x0634;
     hdr.temp    = 0xABCD;
-    hdr.oset    = sizeof(LIB_HDR);
+    hdr.oset    = (unsigned int)(sizeof(LIB_HDR) + pt_count * 40);
     hdr.seqcnt  = 0;
     hdr.scrcnt  = 0;
     hdr.damcnt  = 0;
@@ -205,12 +235,25 @@ void SaveImgFile(void)
 
     fwrite(&hdr, 1, sizeof(hdr), f);
 
-    int pt_index = 0;
-    IMAGE_disk idisk = {};
-    unsigned int img_data_base = (unsigned int)(sizeof(LIB_HDR) + num_imgs * sizeof(IMAGE_disk));
-    IMG *img = (IMG *)img_p;
+    // 2. Write Point Tables
+    img = (IMG *)img_p;
     for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
-        idisk = {};
+        if (img->pttbl_p) {
+            fwrite(img->pttbl_p, 1, 40, f);
+        }
+    }
+
+    // 3. Prepare positions
+    long img_hdr_pos = (long)hdr.oset;
+    long pal_hdr_pos = (long)(hdr.oset + num_imgs * sizeof(IMAGE_disk));
+    long data_pos    = (long)(pal_hdr_pos + num_pals * sizeof(PALETTE_disk));
+
+    // 4. Write IMAGE_disk array (with placeholders for oset)
+    fseek(f, img_hdr_pos, SEEK_SET);
+    int pt_index = 0;
+    img = (IMG *)img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        IMAGE_disk idisk = {};
         strncpy(idisk.n_s, img->n_s, 15); idisk.n_s[15] = '\0';
         idisk.flags  = img->flags;
         idisk.anix   = img->anix;
@@ -218,41 +261,20 @@ void SaveImgFile(void)
         idisk.w      = img->w;
         idisk.h      = img->h;
         idisk.palnum = (unsigned short)((int)img->palnum + NUMDEFPAL);
+        idisk.oset   = 0; // To be filled later
         idisk.anix2  = img->anix2;
         idisk.aniy2  = img->aniy2;
         idisk.aniz2  = img->aniz2;
-        idisk.opals  = img->opals;
         idisk.lib    = img->file_lib;
         idisk.frm    = img->file_frm;
+        idisk.opals  = img->opals;
         idisk.pttblnum = img->pttbl_p ? (unsigned short)(pt_index++) : (unsigned short)0xFFFF;
 
         fwrite(&idisk, 1, sizeof(idisk), f);
     }
 
-    unsigned int cur_img_data = img_data_base;
-    long img_hdr_start = sizeof(LIB_HDR);
-    img = (IMG *)img_p;
-    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
-        fseek(f, (long)cur_img_data, SEEK_SET);
-        unsigned int stride = ((unsigned int)img->w + 3) & ~3;
-        unsigned int sz = stride * img->h;
-        if (img->data_p)
-            fwrite(img->data_p, 1, sz, f);
-        else {
-            unsigned char *z = (unsigned char *)calloc(1, sz);
-            if (z) { fwrite(z, 1, sz, f); free(z); }
-        }
-
-        long save_pos = ftell(f);
-        fseek(f, img_hdr_start + offsetof(IMAGE_disk, oset), SEEK_SET);
-        fwrite(&cur_img_data, 1, 4, f);
-        fseek(f, save_pos, SEEK_SET);
-
-        cur_img_data += sz;
-        img_hdr_start += sizeof(IMAGE_disk);
-    }
-
-    unsigned int pal_hdr_base = cur_img_data;
+    // 5. Write PALETTE_disk array (with placeholders for oset)
+    fseek(f, pal_hdr_pos, SEEK_SET);
     PAL *pal = (PAL *)pal_p;
     for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
         PALETTE_disk pdisk = {};
@@ -260,15 +282,80 @@ void SaveImgFile(void)
         pdisk.flags   = pal->flags;
         pdisk.bitspix = pal->bitspix;
         pdisk.numc    = pal->numc;
+        pdisk.oset    = 0; // To be filled later
+
         fwrite(&pdisk, 1, sizeof(pdisk), f);
     }
 
-    unsigned int cur_pal_data = pal_hdr_base + num_pals * sizeof(PALETTE_disk);
-    long pal_hdr_pos = (long)pal_hdr_base;
+    // 6. Write Image Data & Update IMAGE_disk.oset
+    img = (IMG *)img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        fseek(f, data_pos, SEEK_SET);
+        unsigned int stride = ((unsigned int)img->w + 3) & ~3;
+        unsigned int sz = stride * img->h;
+
+        // Update oset
+        unsigned int cur_oset = (unsigned int)data_pos;
+        long save_pos = ftell(f);
+        fseek(f, img_hdr_pos + i * sizeof(IMAGE_disk) + offsetof(IMAGE_disk, oset), SEEK_SET);
+        fwrite(&cur_oset, 1, 4, f);
+        fseek(f, save_pos, SEEK_SET);
+
+        if (img->flags & 0x0080) { // CMP
+            int lm_mult = 1 << ((img->flags >> 8) & 3);
+            int tm_mult = 1 << ((img->flags >> 10) & 3);
+            unsigned char* src = (unsigned char*)img->data_p;
+            bool free_z = false;
+            if (!src) {
+                src = (unsigned char *)calloc(1, sz);
+                free_z = true;
+            }
+            if (src) {
+                for (int y = 0; y < img->h; y++) {
+                    unsigned char* row = src + y * stride;
+                    int leading = 0;
+                    while (leading < img->w && row[leading] == 0) leading++;
+                    int trailing = 0;
+                    if (leading < img->w) {
+                        while (trailing < img->w && row[img->w - 1 - trailing] == 0) trailing++;
+                    }
+
+                    int l_enc = leading / lm_mult;
+                    int t_enc = trailing / tm_mult;
+                    if (l_enc > 15) l_enc = 15;
+                    if (t_enc > 15) t_enc = 15;
+
+                    int actual_leading = l_enc * lm_mult;
+                    int actual_trailing = t_enc * tm_mult;
+                    int visible = img->w - actual_leading - actual_trailing;
+                    if (visible < 0) visible = 0;
+
+                    unsigned char comp_byte = (unsigned char)((t_enc << 4) | (l_enc & 0x0F));
+                    fwrite(&comp_byte, 1, 1, f);
+                    if (visible > 0)
+                        fwrite(row + actual_leading, 1, visible, f);
+
+                    data_pos += 1 + visible;
+                }
+                if (free_z) free(src);
+            }
+        } else {
+            if (img->data_p)
+                fwrite(img->data_p, 1, sz, f);
+            else {
+                unsigned char *z = (unsigned char *)calloc(1, sz);
+                if (z) { fwrite(z, 1, sz, f); free(z); }
+            }
+            data_pos += sz;
+        }
+    }
+
+    // 7. Write Palette Data & Update PALETTE_disk.oset
     pal = (PAL *)pal_p;
     for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
-        fseek(f, (long)cur_pal_data, SEEK_SET);
+        fseek(f, data_pos, SEEK_SET);
         unsigned int sz = (unsigned int)pal->numc * 2;
+
         if (pal->data_p)
             fwrite(pal->data_p, 1, sz, f);
         else {
@@ -276,34 +363,17 @@ void SaveImgFile(void)
             if (z) { fwrite(z, 1, sz, f); free(z); }
         }
 
+        // Update oset
+        unsigned int cur_oset = (unsigned int)data_pos;
         long save_pos = ftell(f);
-        fseek(f, pal_hdr_pos + offsetof(PALETTE_disk, oset), SEEK_SET);
-        fwrite(&cur_pal_data, 1, 4, f);
+        fseek(f, pal_hdr_pos + i * sizeof(PALETTE_disk) + offsetof(PALETTE_disk, oset), SEEK_SET);
+        fwrite(&cur_oset, 1, 4, f);
         fseek(f, save_pos, SEEK_SET);
 
-        cur_pal_data += sz;
-        pal_hdr_pos += sizeof(PALETTE_disk);
+        data_pos += sz;
     }
 
-    unsigned int pt_base = cur_pal_data;
-    img = (IMG *)img_p;
-    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
-        if (img->pttbl_p) {
-            fseek(f, (long)pt_base, SEEK_SET);
-            fwrite(img->pttbl_p, 1, 40, f);
-
-            long save_pos = ftell(f);
-            fseek(f, (long)(sizeof(LIB_HDR) + i * sizeof(IMAGE_disk) + offsetof(IMAGE_disk, pttblnum)), SEEK_SET);
-            unsigned short tbn = (unsigned short)i;
-            fwrite(&tbn, 1, 2, f);
-            fseek(f, save_pos, SEEK_SET);
-
-            pt_base += 40;
-        }
-    }
-
-    fseek(f, (long)pt_base, SEEK_SET);
-
+    // 8. Update header
     hdr.palcnt = (unsigned short)(num_pals + NUMDEFPAL);
     hdr.imgcnt = (unsigned short)num_imgs;
     rewind(f);
@@ -440,6 +510,39 @@ void WriteAnilstFromMarked(const char* filepath)
         if (p->flags & 1) {
             fprintf(f, "\t.word\tN,%d\t;%.15s\n", aninum, p->n_s);
             aninum++;
+        }
+        p = (IMG*)p->nxt_p;
+    }
+    fclose(f);
+}
+
+/* ---- Write TBL (Export Marked Images to MK2 format Assembly Table) ---- */
+void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal)
+{
+    FILE* f = fopen(filepath, "w");
+    if (!f) return;
+
+    IMG* p = (IMG*)img_p;
+    while (p) {
+        if (p->flags & 1) {
+            fprintf(f, "%s:\n", p->n_s);
+            if (mk3_format) {
+                fprintf(f, "\t.word   0%XH,0%XH,0%XH,0%XH,0%XH,0%XH,0%XH\n", 
+                        p->w, p->h, 
+                        (unsigned short)p->anix, (unsigned short)p->aniy,
+                        (unsigned short)p->anix2, (unsigned short)p->aniy2,
+                        (unsigned short)p->aniz2);
+            } else {
+                fprintf(f, "\t.word   0%XH,0%XH,0%XH,0%XH\n", 
+                        p->w, p->h, 
+                        (unsigned short)p->anix, (unsigned short)p->aniy);
+            }
+            fprintf(f, "\t.long   0%XH\n", base_address + (p->file_oset * 8));
+            fprintf(f, "\t.word   0%04XH\n", p->flags);
+            if (include_pal) {
+                PAL* pal = get_pal(p->palnum);
+                fprintf(f, "\t.long   %s\n", (pal && pal->n_s[0]) ? pal->n_s : "0");
+            }
         }
         p = (IMG*)p->nxt_p;
     }
@@ -609,10 +712,14 @@ void SaveLbm(void)
     wbe32(256 * 3);
     const unsigned char *pal_data = (const unsigned char *)pal->data_p;
     for (int i = 0; i < 256; i++) {
-        unsigned short w = (unsigned short)(pal_data[i*2] | (pal_data[i*2+1] << 8));
-        fputc((w >> 7) & 0xF8, f);
-        fputc((w >> 2) & 0xF8, f);
-        fputc((w << 3) & 0xF8, f);
+        if (i < pal->numc) {
+            unsigned short w = (unsigned short)(pal_data[i*2] | (pal_data[i*2+1] << 8));
+            fputc((w >> 7) & 0xF8, f);
+            fputc((w >> 2) & 0xF8, f);
+            fputc((w << 3) & 0xF8, f);
+        } else {
+            fputc(0, f); fputc(0, f); fputc(0, f);
+        }
     }
 
     fwrite("BODY", 1, 4, f);
@@ -731,7 +838,7 @@ void LoadTga(void)
     }
 
     dst = (unsigned char *)img->data_p;
-    if (hdr.desc & 0x10) {
+    if (hdr.desc & 0x20) {
         for (int y = 0; y < img->h; y++) {
             if (fread(dst, 1, img->w, f) != (size_t)img->w) goto err;
             dst += stride;

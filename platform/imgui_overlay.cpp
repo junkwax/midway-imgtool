@@ -1059,11 +1059,14 @@ static void LeastSquaresReduceMarked()
 }
 
 /* ---- ImGui Native File Dialog ---- */
-enum class FileDialogMode { OpenImg, AppendImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ExportPng, WriteAniLst };
+enum class FileDialogMode { OpenImg, AppendImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ExportPng, WriteAniLst, WriteTbl };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
 static char g_file_dialog_file[256] = "";
+static unsigned int g_tbl_base_address = 0x02000000;
+static bool g_tbl_export_mk3_format = false;
+static bool g_tbl_export_palette = false;
 
 struct FileEntry { std::string name; bool is_dir; };
 
@@ -1244,6 +1247,7 @@ static void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::ImportPng) title = "Import PNG File";
     else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
     else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) title = "Write ANILST";
+    else if (g_file_dialog_mode == FileDialogMode::WriteTbl) title = "Write TBL";
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
     
@@ -1291,6 +1295,13 @@ static void DrawFileDialog() {
         }
         ImGui::EndChild();
         
+        if (g_file_dialog_mode == FileDialogMode::WriteTbl) {
+            ImGui::InputScalar("ROM Base Address (Hex)", ImGuiDataType_U32, &g_tbl_base_address, NULL, NULL, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
+            ImGui::Checkbox("MK3 Format (7-value header)", &g_tbl_export_mk3_format);
+            ImGui::SetItemTooltip("Includes the 3 extra animation points: ANIX2, ANIY2, and ANIZ2.");
+            ImGui::Checkbox("Include Assigned Palette Name", &g_tbl_export_palette);
+        }
+
         ImGui::InputText("File Name", g_file_dialog_file, sizeof(g_file_dialog_file));
         ImGui::SameLine();
         
@@ -1319,6 +1330,10 @@ static void DrawFileDialog() {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".ASM";
                 WriteAnilstFromMarked(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::WriteTbl) {
+                size_t dot = full_path.find_last_of('.');
+                if (dot == std::string::npos) full_path += ".TBL";
+                WriteTblFromMarked(full_path.c_str(), g_tbl_base_address, g_tbl_export_mk3_format, g_tbl_export_palette);
             } else if (g_file_dialog_mode == FileDialogMode::SaveMarkedLbm) {
                 _chdir(g_file_dialog_dir);
                 IMG *p = (IMG *)img_p;
@@ -2164,6 +2179,7 @@ void imgui_overlay_render(void)
                 ImGui::Separator();
                 if (ImGui::MenuItem("Build TGA from Marked", "Ctrl+B")) OpenFileDialog(FileDialogMode::ExportTga);
                 if (ImGui::MenuItem("Write ANILST..."))                OpenFileDialog(FileDialogMode::WriteAniLst);
+                if (ImGui::MenuItem("Write TBL..."))                   OpenFileDialog(FileDialogMode::WriteTbl);
                 ImGui::EndMenu();
             }
             ImGui::Separator();

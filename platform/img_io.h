@@ -14,6 +14,7 @@ extern float g_restore_msg_timer;
 void LoadImgFile(void);
 void SaveImgFile(void);
 void WriteAnilstFromMarked(const char* filepath);
+void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal);
 void BuildTgaFromMarked(const char* filepath);
 void SaveTga(void);
 void SaveLbm(void);
