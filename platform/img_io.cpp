@@ -571,6 +571,14 @@ void LoadTga(void)
     FILE *f = fopen(fnametmp_s, "rb");
     if (!f) return;
 
+    IMG *img = NULL;
+    unsigned short stride = 0;
+    unsigned int   pix_sz = 0;
+    unsigned short num_colors = 0;
+    unsigned char *pal_buf = NULL;
+    PAL *pal = NULL;
+    unsigned char *dst = NULL;
+
     TGA_HEADER hdr;
     if (fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) goto err;
 
@@ -579,15 +587,15 @@ void LoadTga(void)
     if (hdr.i_type != 1 || hdr.cm_type != 1 || hdr.bpp != 8) goto err;
     if (hdr.cm_size != 15 && hdr.cm_size != 16 && hdr.cm_size != 24) goto err;
 
-    IMG *img = (IMG *)AllocImg();
+    img = (IMG *)AllocImg();
     if (!img) goto err;
 
     img->w = hdr.width;
     img->h = hdr.height;
     if (img->w == 0 || img->h == 0) goto err;
 
-    unsigned short stride = (img->w + 3) & ~3;
-    unsigned int   pix_sz = (unsigned int)stride * img->h;
+    stride = (img->w + 3) & ~3;
+    pix_sz = (unsigned int)stride * img->h;
     img->data_p = (unsigned char *)PoolAlloc(pix_sz);
     if (!img->data_p) goto err;
 
@@ -606,10 +614,10 @@ void LoadTga(void)
         img->n_s[15] = '\0';
     }
 
-    unsigned short num_colors = hdr.cm_length;
+    num_colors = hdr.cm_length;
     if (num_colors == 0) num_colors = 256;
 
-    unsigned char *pal_buf = (unsigned char *)PoolAlloc((unsigned int)num_colors * 2);
+    pal_buf = (unsigned char *)PoolAlloc((unsigned int)num_colors * 2);
     if (!pal_buf) goto err;
 
     for (int i = 0; i < num_colors; i++) {
@@ -640,7 +648,7 @@ void LoadTga(void)
         pal_buf[i * 2 + 1] = (unsigned char)(p15 >> 8);
     }
 
-    PAL *pal = (PAL *)AllocPal();
+    pal = (PAL *)AllocPal();
     if (!pal) { free(pal_buf); goto err; }
 
     pal->flags   = 0;
@@ -657,7 +665,7 @@ void LoadTga(void)
         pal->n_s[9] = '\0';
     }
 
-    unsigned char *dst = (unsigned char *)img->data_p;
+    dst = (unsigned char *)img->data_p;
     if (hdr.desc & 0x10) {
         for (int y = 0; y < img->h; y++) {
             if (fread(dst, 1, img->w, f) != (size_t)img->w) goto err;

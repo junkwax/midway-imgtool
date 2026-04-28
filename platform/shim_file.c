@@ -557,10 +557,10 @@ static BYTE  s_find_attr    = 0;      /* attribute mask from ECX at FindFirst */
 /* Return non-zero if 'name' inside s_find_dirpath is a directory */
 static int find_entry_is_dir(const char *name)
 {
-    char full[MAX_PATH];
+    char full[MAX_PATH * 2];
     struct stat st;
     if (s_find_dirpath[0])
-        _snprintf(full, sizeof(full), "%s/%s", s_find_dirpath, name);
+        snprintf(full, sizeof(full), "%s/%s", s_find_dirpath, name);
     else
         strncpy(full, name, sizeof(full) - 1);
     full[sizeof(full) - 1] = '\0';
