@@ -2,9 +2,9 @@
 
 Editor for the IMG container files used by 1990s Midway arcade games (Mortal Kombat II/3, NBA Jam, NBA Hangtime, etc.). Loads, edits, and saves the original `.IMG` libraries plus their LBM and TGA siblings; preserves the proprietary point-table and animation data the original tools produced.
 
-![imgtool image](https://raw.githubusercontent.com/JUNKWAX/midway-imgtool/sdl-experimental/imgtool.png)
+![imgtool image](https://raw.githubusercontent.com/JUNKWAX/midway-imgtool/SDL-main/imgtool.png)
 
-> **Status:** pure C/C++ native port. Originally a 1992 DOS tool with ~34,000 lines of x86 assembly — now fully rewritten in C++ with SDL2 + Dear ImGui. No assembler, no DOSBox, no virtualization. Runs on Windows and Linux.
+> **Status:** pure C/C++ native port. Originally a 1992 DOS tool with ~34,000 lines of x86 assembly — now fully rewritten in C++ with SDL2 + Dear ImGui. No assembler, no DOSBox, no virtualization. 64-bit (x64) with optional 32-bit builds. Runs on Windows and Linux.
 
 ---
 
@@ -22,20 +22,35 @@ Editor for the IMG container files used by 1990s Midway arcade games (Mortal Kom
 
 Requirements: CMake 3.20+, SDL2 development libraries.
 
+### Quick build (Windows)
+
+```cmd
+build.bat              # 64-bit (default)
+build.bat x86          # 32-bit
+```
+```powershell
+.\build.ps1             # 64-bit (default)
+.\build.ps1 -Arch x86   # 32-bit
+```
+
+Both scripts auto-download SDL2 and CMake, output to `%LOCALAPPDATA%\imgtool-build\build\Release\imgtool.exe`.
+
+### Manual CMake build
+
 **Windows (Visual Studio 2022):**
 ```cmd
 mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A Win32
+cmake .. -G "Visual Studio 17 2022" -A x64
 cmake --build . --config Release
 ```
 
-**Linux:**
+**Linux (64-bit):**
 ```bash
 mkdir build && cd build
 cmake .. && cmake --build .
 ```
 
-The build copies `SDL2.dll` (Windows), `it.hlp`, and the bundled `assets/MaterialSymbolsSharp-Regular.ttf` icon font next to the executable.
+The build copies `SDL2.dll` (Windows), `it.hlp`, `DMA2.txt`, and the bundled `assets/MaterialSymbolsSharp-Regular.ttf` icon font next to the executable.
 
 ---
 
@@ -45,7 +60,7 @@ Drop the contents of the `Release/` folder anywhere and run `imgtool.exe`. No in
 
 **New users:** read [QUICKSTART.md](QUICKSTART.md) — it walks through opening a real `.IMG`, reading the UI, and making your first edit.
 
-Press `h` in the app for the live key reference. `F9` opens the **Debug Info** popup. `Help > About` shows the build timestamp and git revision.
+Press `h` in the app for the live key reference. `F9` opens the **Debug Info** popup. `Help > DMA2 Reference` opens the original Williams DMA #2 hardware document. `Help > About` shows the build timestamp and git revision.
 
 ### Common keys
 
@@ -86,7 +101,7 @@ For deeper format details see [FILE_FORMATS.md](FILE_FORMATS.md). `DMA2.txt` is 
 
 ## Status
 
-`sdl-experimental` branch — actively maintained. The original DOSBox build lives on `main`.
+`SDL-main` branch — actively maintained. The original DOSBox build on `main` and `sdl-experimental` have been retired.
 
 **What works:**
 - Full 2D sprite editing parity with the DOS tool
