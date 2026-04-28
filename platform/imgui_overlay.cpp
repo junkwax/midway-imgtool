@@ -17,7 +17,33 @@
 #include <algorithm>
 #include "compat.h"
 #include "imgui_overlay.h"
-#include "itimg_exports.h"
+
+/* Globals defined in platform/globals.c */
+extern "C" {
+extern void          *img_p;
+extern unsigned int   imgcnt;
+extern int            ilselected;
+extern void          *pal_p;
+extern unsigned int   palcnt;
+extern int            plselected;
+extern void          *img2_p;
+extern unsigned int   img2cnt;
+extern int            il2selected;
+extern unsigned int   il1stprt;
+extern unsigned int   il21stprt;
+extern unsigned int   seqcnt;
+extern unsigned int   scrcnt;
+extern unsigned int   damcnt;
+extern unsigned int   fileversion;
+extern void          *scrseqmem_p;
+extern unsigned int   scrseqbytes;
+extern int            ilpalloaded;
+extern char           fpath_s[64];
+extern char           fname_s[13];
+extern char           fnametmp_s[13];
+extern char           exe_dir[];
+extern struct SDL_Color g_palette[256];
+}
 
 #ifdef _WIN32
 #include <windows.h>
