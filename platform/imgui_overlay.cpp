@@ -1360,35 +1360,281 @@ static void SaveLbm(void)
     fclose(f);
 }
 
+/* Load a TGA (Truevision TARGA) file as a new image+palette.
+   Ported from loadtga.  Uses fnametmp_s as the filename. */
+static void LoadTga(void)
+{
+    FILE *f = fopen(fnametmp_s, "rb");
+    if (!f) return;
+
+    TGA_HEADER hdr;
+    if (fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) goto err;
+
+    /* Skip ID field */
+    if (hdr.id_len > 0) fseek(f, hdr.id_len, SEEK_CUR);
+
+    /* Validate: must be uncompressed colour-mapped 8-bit */
+    if (hdr.i_type != 1 || hdr.cm_type != 1 || hdr.bpp != 8) goto err;
+    if (hdr.cm_size != 15 && hdr.cm_size != 16 && hdr.cm_size != 24) goto err;
+
+    /* Allocate image */
+    IMG *img = (IMG *)imgtool_img_alloc();
+    if (!img) goto err;
+
+    img->w = hdr.width;
+    img->h = hdr.height;
+    if (img->w == 0 || img->h == 0) goto err;
+
+    unsigned short stride = (img->w + 3) & ~3;
+    unsigned int   pix_sz = (unsigned int)stride * img->h;
+    img->data_p = (unsigned char *)imgtool_mem_alloc(pix_sz);
+    if (!img->data_p) goto err;
+
+    img->palnum = (unsigned short)palcnt;
+    img->flags  = 0;
+    img->anix   = 0; img->aniy  = 0;
+    img->anix2  = 0; img->aniy2 = 0; img->aniz2 = 0;
+    img->pttbl_p = NULL;
+    img->opals  = (unsigned short)-1;
+
+    /* Copy filename as image name, strip extension */
+    {
+        std::string name = fnametmp_s;
+        size_t dot = name.find_last_of('.');
+        if (dot != std::string::npos) name = name.substr(0, dot);
+        strncpy(img->n_s, name.c_str(), 15);
+        img->n_s[15] = '\0';
+    }
+
+    /* Read palette — convert to 15-bit packed RGB */
+    unsigned short num_colors = hdr.cm_length;
+    if (num_colors == 0) num_colors = 256;
+
+    unsigned char *pal_buf = (unsigned char *)imgtool_mem_alloc((unsigned int)num_colors * 2);
+    if (!pal_buf) goto err;
+
+    for (int i = 0; i < num_colors; i++) {
+        int r, g, b;
+        if (hdr.cm_size == 24) {
+            unsigned char rgb[3];
+            if (fread(rgb, 1, 3, f) != 3) { mem_free(pal_buf); goto err; }
+            b = rgb[0]; g = rgb[1]; r = rgb[2];
+        } else {
+            unsigned char w2[2];
+            if (fread(w2, 1, 2, f) != 2) { mem_free(pal_buf); goto err; }
+            unsigned short w = (unsigned short)(w2[0] | (w2[1] << 8));
+            if (hdr.cm_size == 15) {
+                r = (w >> 7) & 0xF8;   /* ARRRRRGG GGGBBBBB → 15-bit */
+                g = (w >> 2) & 0xF8;
+                b = (w << 3) & 0xF8;
+            } else { /* 16-bit */
+                r = (w >> 8) & 0xF8;
+                g = (w >> 3) & 0xF8;
+                b = (w << 3) & 0xF8;
+            }
+        }
+        unsigned short r5 = (unsigned short)(r >> 3);
+        unsigned short g5 = (unsigned short)(g >> 3);
+        unsigned short b5 = (unsigned short)(b >> 3);
+        unsigned short p15 = (unsigned short)((r5 << 10) | (g5 << 5) | b5);
+        pal_buf[i * 2]     = (unsigned char)(p15 & 0xFF);
+        pal_buf[i * 2 + 1] = (unsigned char)(p15 >> 8);
+    }
+
+    /* Allocate palette */
+    PAL *pal = (PAL *)imgtool_pal_alloc();
+    if (!pal) { mem_free(pal_buf); goto err; }
+
+    pal->flags   = 0;
+    pal->bitspix = 8;
+    pal->numc    = num_colors;
+    pal->data_p  = pal_buf;
+    pal->pad     = 0;
+    {
+        std::string name = fnametmp_s;
+        size_t dot = name.find_last_of('.');
+        if (dot != std::string::npos) name = name.substr(0, dot);
+        name += "P";
+        strncpy(pal->n_s, name.c_str(), 9);
+        pal->n_s[9] = '\0';
+    }
+
+    /* Read pixel data */
+    unsigned char *dst = (unsigned char *)img->data_p;
+    if (hdr.desc & 0x10) {
+        /* Top-down */
+        for (int y = 0; y < img->h; y++) {
+            if (fread(dst, 1, img->w, f) != (size_t)img->w) goto err;
+            dst += stride;
+        }
+    } else {
+        /* Bottom-up (TGA default) */
+        dst += (unsigned int)stride * (img->h - 1);
+        for (int y = 0; y < img->h; y++) {
+            if (fread(dst, 1, img->w, f) != (size_t)img->w) goto err;
+            dst -= stride;
+        }
+    }
+
+    fclose(f);
+
+    /* Select the newly loaded image */
+    if (imgcnt > 0) ilselected = (int)imgcnt - 1;
+    return;
+
+err:
+    if (f) fclose(f);
+}
+
+/* Load an IFF/ILBM (LBM) file as a new image+palette.
+   Ported from loadlbm.  Uses fnametmp_s as the filename. */
+static void LoadLbm(void)
+{
+    FILE *f = fopen(fnametmp_s, "rb");
+    if (!f) return;
+
+    auto rbe32 = [&](unsigned int *out) -> bool {
+        unsigned char b[4];
+        if (fread(b, 1, 4, f) != 4) return false;
+        *out = ((unsigned int)b[0]<<24)|((unsigned int)b[1]<<16)|((unsigned int)b[2]<<8)|(unsigned int)b[3];
+        return true;
+    };
+    auto rbe16 = [&](unsigned short *out) -> bool {
+        unsigned char b[2];
+        if (fread(b, 1, 2, f) != 2) return false;
+        *out = (unsigned short)((b[0]<<8)|b[1]);
+        return true;
+    };
+    auto try_close = [&] { if (f) { fclose(f); f = NULL; } };
+
+    enum { TAG_FORM=0x4D524F46, TAG_ILBM=0x4D424C49, TAG_PBM =0x204D4250,
+           TAG_BMHD=0x44484D42, TAG_CMAP=0x50414D43, TAG_BODY=0x59444F42,
+           TAG_ANIM=0x4D494E41 };
+
+    unsigned int tag, form_len;
+    if (!rbe32(&tag) || tag != TAG_FORM) { try_close(); return; }
+    if (!rbe32(&form_len)) { try_close(); return; }
+    if (!rbe32(&tag) || (tag != TAG_PBM && tag != TAG_ILBM && tag != TAG_ANIM)) { try_close(); return; }
+
+    int have_bmhd = 0;
+    unsigned short bm_w = 0, bm_h = 0;
+    unsigned char  bm_comp = 0;
+    PAL *loaded_pal = NULL;
+    IMG *loaded_img = NULL;
+
+    for (;;) {
+        long pos = ftell(f);
+        if (pos & 1) fseek(f, 1, SEEK_CUR);
+
+        unsigned int chunk_tag = 0, chunk_len = 0;
+        if (fread(&chunk_tag, 1, 4, f) != 4) break;
+        if (!rbe32(&chunk_len)) break;
+
+        if (chunk_tag == TAG_FORM) { fseek(f, 4, SEEK_CUR); continue; }
+
+        if (chunk_tag == TAG_BMHD) {
+            unsigned short w, h, xo, yo, tcol, pagew, pageh;
+            unsigned char  nplanes, masking, comp, pad1, xasp, yasp;
+            if (!rbe16(&w)||!rbe16(&h)||!rbe16(&xo)||!rbe16(&yo)) { try_close(); return; }
+            nplanes=(unsigned char)fgetc(f); masking=(unsigned char)fgetc(f);
+            comp   =(unsigned char)fgetc(f); pad1   =(unsigned char)fgetc(f);
+            if (!rbe16(&tcol)) { try_close(); return; }
+            xasp=(unsigned char)fgetc(f); yasp=(unsigned char)fgetc(f);
+            if (!rbe16(&pagew)||!rbe16(&pageh)) { try_close(); return; }
+            bm_w = w; bm_h = h; bm_comp = comp;
+            have_bmhd |= 1;
+            continue;
+        }
+
+        if (chunk_tag == TAG_CMAP) {
+            unsigned int num_colors = chunk_len / 3;
+            if (num_colors > 256) { try_close(); return; }
+
+            loaded_pal = (PAL *)imgtool_pal_alloc();
+            if (!loaded_pal) { try_close(); return; }
+            loaded_pal->flags = 0; loaded_pal->bitspix = 8;
+            loaded_pal->numc = (unsigned short)num_colors; loaded_pal->pad = 0;
+
+            unsigned char *pal_buf = (unsigned char *)imgtool_mem_alloc(num_colors * 2);
+            if (!pal_buf) { try_close(); return; }
+            loaded_pal->data_p = pal_buf;
+
+            for (unsigned int i = 0; i < num_colors; i++) {
+                int r = fgetc(f), g = fgetc(f), b = fgetc(f);
+                if (r<0||g<0||b<0) { try_close(); return; }
+                unsigned short r5=(unsigned short)(r>>3), g5=(unsigned short)(g>>3), b5=(unsigned short)(b>>3);
+                unsigned short w15 = (unsigned short)((r5<<10)|(g5<<5)|b5);
+                pal_buf[i*2]=(unsigned char)(w15&0xFF); pal_buf[i*2+1]=(unsigned char)(w15>>8);
+            }
+            { std::string n=fnametmp_s; size_t d=n.find_last_of('.'); if(d!=std::string::npos)n=n.substr(0,d); n+="P";
+              strncpy(loaded_pal->n_s,n.c_str(),9); loaded_pal->n_s[9]='\0'; }
+            have_bmhd |= 2;
+            continue;
+        }
+
+        if (chunk_tag == TAG_BODY) {
+            if (have_bmhd != 3) { try_close(); return; }
+
+            loaded_img = (IMG *)imgtool_img_alloc();
+            if (!loaded_img) { try_close(); return; }
+            loaded_img->w=bm_w; loaded_img->h=bm_h;
+            if (!bm_w||!bm_h) { try_close(); return; }
+
+            unsigned short stride=(bm_w+3)&~3;
+            loaded_img->data_p=imgtool_mem_alloc((unsigned)stride*bm_h);
+            if (!loaded_img->data_p) { try_close(); return; }
+
+            loaded_img->palnum=(unsigned short)(palcnt-1); loaded_img->flags=0;
+            loaded_img->anix=0; loaded_img->aniy=0; loaded_img->anix2=0; loaded_img->aniy2=0; loaded_img->aniz2=0;
+            loaded_img->pttbl_p=NULL; loaded_img->opals=(unsigned short)-1;
+            { std::string n=fnametmp_s; size_t d=n.find_last_of('.'); if(d!=std::string::npos)n=n.substr(0,d);
+              strncpy(loaded_img->n_s,n.c_str(),15); loaded_img->n_s[15]='\0'; }
+
+            unsigned short even_w=(unsigned short)((bm_w+1)&~1);
+            if (bm_comp != 0) {
+                /* RLE decompression: literal runs and repeat runs per row */
+                unsigned char *dst=(unsigned char*)loaded_img->data_p;
+                for (int y=0; y<bm_h; y++) {
+                    int remaining=even_w;
+                    while (remaining>0) {
+                        int b1=fgetc(f); if(b1<0){try_close();return;}
+                        signed char sc=(signed char)(unsigned char)b1;
+                        if (sc>=0) {
+                            int n=sc+1; if(fread(dst,1,(size_t)n,f)!=(size_t)n){try_close();return;}
+                            dst+=n; remaining-=n;
+                        } else {
+                            int rb=fgetc(f); if(rb<0){try_close();return;}
+                            int n=(-sc)+1; memset(dst,rb,(size_t)n); dst+=n; remaining-=n;
+                        }
+                    }
+                    for (int x=bm_w; x<stride; x++) dst[x]=0;
+                    dst+=stride;
+                }
+            } else {
+                unsigned char *dst=(unsigned char*)loaded_img->data_p;
+                for (int y=0; y<bm_h; y++) {
+                    if (fread(dst,1,even_w,f)!=even_w) { try_close(); return; }
+                    for (int x=bm_w; x<stride; x++) dst[x]=0;
+                    dst+=stride;
+                }
+            }
+            break;
+        }
+
+        /* Skip unknown chunks */
+        fseek(f, (long)chunk_len, SEEK_CUR);
+    }
+
+    try_close();
+    if (loaded_img && imgcnt>0) ilselected=(int)imgcnt-1;
+}
+
 /* ---- ImGui Native File Dialog ---- */
 enum class FileDialogMode { OpenImg, AppendImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, WriteAniLst };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
 static char g_file_dialog_file[256] = "";
-
-/* Inline ASM helpers to safely pass pointers into the legacy MASM engine */
-static void CallLoadLbm(const char* path) {
-#if defined(_MSC_VER)
-    __asm {
-        mov eax, path
-        call loadlbm
-    }
-#elif defined(__GNUC__) || defined(__clang__)
-    __asm__ __volatile__("call loadlbm" : : "a"(path) : "memory", "cc");
-#endif
-}
-
-static void CallLoadTga(const char* path) {
-#if defined(_MSC_VER)
-    __asm {
-        mov eax, path
-        call loadtga
-    }
-#elif defined(__GNUC__) || defined(__clang__)
-    __asm__ __volatile__("call loadtga" : : "a"(path) : "memory", "cc");
-#endif
-}
 
 struct FileEntry { std::string name; bool is_dir; };
 
@@ -1683,7 +1929,9 @@ static void DrawFileDialog() {
                     img_load();
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::LoadLbm) {
-                    CallLoadLbm(fname_s);
+                    LoadLbm();
+                } else if (g_file_dialog_mode == FileDialogMode::LoadTga) {
+                    LoadTga();
                 } else if (g_file_dialog_mode == FileDialogMode::SaveLbm) {
                     SaveLbm();
                 } else if (g_file_dialog_mode == FileDialogMode::SaveTga) {
