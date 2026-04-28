@@ -109,7 +109,264 @@ static inline void rgb8_to_pal_word(unsigned char r, unsigned char g, unsigned c
 }
 #pragma pack(pop)
 
-/* SDL state */
+/* Disk file-format structures matching wmpstruc.inc */
+#pragma pack(push, 2)
+struct LIB_HDR {
+    unsigned short imgcnt;    /* +0  number of images */
+    unsigned short palcnt;    /* +2  number of palettes */
+    unsigned int   oset;      /* +4  offset to IMAGE/PALETTE records */
+    unsigned short version;   /* +8  WIMP version (0x500+) */
+    unsigned short seqcnt;    /* +10 sequence count */
+    unsigned short scrcnt;    /* +12 script count */
+    unsigned short damcnt;    /* +14 damage table count */
+    unsigned short temp;      /* +16 0xABCD if valid */
+    unsigned char  bufscr[4]; /* +18 buffer script indices */
+    unsigned short spare1;    /* +22 */
+    unsigned short spare2;    /* +24 */
+    unsigned short spare3;    /* +26 */
+};
+
+struct IMAGE_disk {
+    char           n_s[16];   /* +0  image name */
+    unsigned short flags;     /* +16 */
+    unsigned short anix;      /* +18 */
+    unsigned short aniy;      /* +20 */
+    unsigned short w;         /* +22 */
+    unsigned short h;         /* +24 */
+    unsigned short palnum;    /* +26 */
+    unsigned int   oset;      /* +28 offset to pixel data */
+    unsigned int   data;      /* +32 (unused in file, placeholder) */
+    unsigned short lib;       /* +36 library index */
+    unsigned short anix2;     /* +38 */
+    unsigned short aniy2;     /* +40 */
+    unsigned short aniz2;     /* +42 */
+    unsigned short frm;       /* +44 frame number */
+    unsigned short opals;     /* +46 */
+    unsigned short pttblnum;  /* +48 point table index or 0xFFFF */
+};
+
+struct PALETTE_disk {
+    char           n_s[10];   /* +0  palette name */
+    unsigned char  flags;     /* +10 */
+    unsigned char  bitspix;   /* +11 */
+    unsigned short numc;      /* +12 number of colors */
+    unsigned int   oset;      /* +14 offset to color data */
+    unsigned short data;      /* +18 (unused in file) */
+    unsigned short lib;       /* +20 */
+    unsigned char  colind;    /* +22 */
+    unsigned char  cmap;      /* +23 */
+    unsigned short spare;     /* +24 */
+};
+#pragma pack(pop)
+
+#define NUMDEFPAL 3
+
+/* Allocator wrappers — switch from ASM pool to C heap.
+   Once img_load/img_save are fully ported, the ASM memory pool
+   is no longer needed by the C++ code path. */
+static IMG *AllocImg(void)
+{
+    IMG *img = (IMG *)calloc(1, sizeof(IMG));
+    if (!img) return NULL;
+    /* Link into list */
+    IMG **pp = (IMG **)&img_p;
+    while (*pp) pp = (IMG **)&(*pp)->nxt_p;
+    *pp = img;
+    imgcnt++;
+    return img;
+}
+
+static PAL *AllocPal(void)
+{
+    PAL *pal = (PAL *)calloc(1, sizeof(PAL));
+    if (!pal) return NULL;
+    PAL **pp = (PAL **)&pal_p;
+    while (*pp) pp = (PAL **)&(*pp)->nxt_p;
+    *pp = pal;
+    palcnt++;
+    return pal;
+}
+
+static void FreeImg(IMG *img)
+{
+    if (!img) return;
+    free(img->data_p);
+    free(img->pttbl_p);
+    free(img);
+}
+
+static void FreePal(PAL *pal)
+{
+    if (!pal) return;
+    free(pal->data_p);
+    free(pal);
+}
+
+static void *PoolAlloc(unsigned int n) { return calloc(1, n); }
+#define PoolFree  free
+#define PoolDup(p, sz) memcpy(malloc(sz), (p), (sz))
+
+static IMG *get_img(int idx);  /* forward — defined later */
+
+/* Allocate a 40-byte PTTBL and attach it to the given image index. */
+static void AddPointTable(int img_idx)
+{
+    IMG *img = (img_idx >= 0) ? get_img(img_idx) : NULL;
+    if (!img || img->pttbl_p) return;
+    img->pttbl_p = calloc(1, 40);
+}
+
+/* ---- ImgLoad: port of img_load (IMG file reader) ---- */
+static void LoadImgFile(void)
+{
+    /* Open the file using the shim's fname_s in the current directory */
+    FILE *f = fopen(fname_s, "rb");
+    if (!f) return;
+
+    LIB_HDR hdr;
+    if (fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) { fclose(f); return; }
+
+    /* Validate */
+    if (hdr.temp != 0xABCD || hdr.version < 0x500) { fclose(f); return; }
+    fileversion = hdr.version;
+
+    if (hdr.imgcnt == 0 || hdr.imgcnt > 2000) { fclose(f); return; }
+
+    ilpalloaded = -1;
+    damcnt = 0;
+
+    /* Calculate palette offset (OSET + imgcnt*sizeof(IMAGE)) */
+    unsigned int pal_oset = (unsigned int)hdr.oset + (unsigned int)hdr.imgcnt * sizeof(IMAGE_disk);
+    if (hdr.palcnt > NUMDEFPAL)
+        pal_oset += (unsigned int)(hdr.palcnt - NUMDEFPAL) * sizeof(PALETTE_disk);
+
+    /* Seek past sequences/scripts to point table area.
+       Read sequence/script headers but discard the data (our UI
+       does not use the legacy animation system). */
+    {
+        int seqcnt = (signed short)hdr.seqcnt;
+        int scrcnt = (signed short)hdr.scrcnt;
+        int is_far = (hdr.version >= 0x634);
+        int entry_sz = is_far ? 16 : 14;
+        int seqscr_sz = is_far ? 32 : 24;  /* sizeof SEQSCR */
+
+        for (int s = 0; s < seqcnt; s++) {
+            fseek(f, seqscr_sz - 2, SEEK_CUR);  /* past header except 'num' */
+            unsigned short num;
+            fread(&num, 1, 2, f);
+            fseek(f, (long)num * entry_sz, SEEK_CUR);
+        }
+        for (int s = 0; s < scrcnt; s++) {
+            fseek(f, seqscr_sz - 2, SEEK_CUR);
+            unsigned short num;
+            fread(&num, 1, 2, f);
+            fseek(f, (long)num * entry_sz, SEEK_CUR);
+        }
+    }
+
+    /* Get point table offset */
+    long ptoset = ftell(f);
+
+    /* Read images */
+    int pal_base = (int)palcnt;
+    unsigned int img_oset = hdr.oset;
+
+    for (int i = 0; i < hdr.imgcnt; i++) {
+        fseek(f, (long)img_oset, SEEK_SET);
+        img_oset += sizeof(IMAGE_disk);
+
+        IMAGE_disk idisk;
+        if (fread(&idisk, 1, sizeof(idisk), f) != sizeof(idisk)) break;
+
+        IMG *img = AllocImg();
+        if (!img) break;
+
+        /* Version-specific field mapping */
+        if (hdr.version < 0x634) {
+            unsigned short tmp = idisk.aniz2;
+            idisk.aniz2 = idisk.frm;
+            idisk.frm   = tmp;
+            idisk.opals = (unsigned short)-1;
+        }
+
+        img->flags  = idisk.flags;
+        img->anix   = idisk.anix;
+        img->aniy   = idisk.aniy;
+        img->w      = (idisk.w < 3) ? 3 : idisk.w;  /* min width 3 */
+        img->h      = idisk.h;
+        img->palnum = (unsigned short)((int)idisk.palnum - NUMDEFPAL + pal_base);
+        img->anix2  = idisk.anix2;
+        img->aniy2  = idisk.aniy2;
+        img->aniz2  = idisk.aniz2;
+        img->opals  = idisk.opals;
+        img->pttbl_p = NULL;
+
+        /* Debug fields */
+        img->file_oset     = idisk.oset;
+        img->file_lib      = idisk.lib;
+        img->file_frm      = idisk.frm;
+        img->file_pttblnum = idisk.pttblnum;
+
+        strncpy(img->n_s, idisk.n_s, 15);
+        img->n_s[15] = '\0';
+
+        /* Read pixel data */
+        unsigned int stride = ((unsigned int)img->w + 3) & ~3;
+        unsigned int pix_sz = stride * img->h;
+        img->data_p = PoolAlloc(pix_sz);
+        if (!img->data_p) break;
+
+        fseek(f, (long)idisk.oset, SEEK_SET);
+        fread(img->data_p, 1, pix_sz, f);
+
+        /* Read point table (version >= 0x60A) */
+        if (hdr.version >= 0x60A && (signed short)idisk.pttblnum >= 0) {
+            fseek(f, (long)(ptoset + (unsigned int)(signed short)idisk.pttblnum * 40), SEEK_SET);
+            img->pttbl_p = PoolAlloc(40);
+            if (img->pttbl_p) fread(img->pttbl_p, 1, 40, f);
+        }
+    }
+
+    /* Read palettes */
+    unsigned int pal_foffset = (unsigned int)hdr.oset + (unsigned int)hdr.imgcnt * sizeof(IMAGE_disk);
+    int num_pals = (int)hdr.palcnt - NUMDEFPAL;
+    if (num_pals < 0) num_pals = 0;
+
+    for (int i = 0; i < num_pals; i++) {
+        fseek(f, (long)pal_foffset, SEEK_SET);
+        pal_foffset += sizeof(PALETTE_disk);
+
+        PALETTE_disk pdisk;
+        if (fread(&pdisk, 1, sizeof(pdisk), f) != sizeof(pdisk)) break;
+
+        PAL *pal = AllocPal();
+        if (!pal) break;
+
+        pal->flags   = pdisk.flags;
+        pal->bitspix = pdisk.bitspix;
+        pal->numc    = pdisk.numc;
+        pal->pad     = 0;
+
+        strncpy(pal->n_s, pdisk.n_s, 9);
+        pal->n_s[9] = '\0';
+
+        /* Read color data (NUMC * 2 bytes of 15-bit packed RGB) */
+        unsigned int col_sz = (unsigned int)pal->numc * 2;
+        pal->data_p = PoolAlloc(col_sz);
+        if (!pal->data_p) break;
+
+        fseek(f, (long)pdisk.oset, SEEK_SET);
+        fread(pal->data_p, 1, col_sz, f);
+    }
+
+    /* Skip old-format conversion message (not needed in modern UI) */
+    fclose(f);
+
+    /* Select first image */
+    if (imgcnt > 0) ilselected = 0;
+}
+
+/* ---- SDL state ---- */
 static SDL_Window   *g_imgui_window   = NULL;
 static SDL_Renderer *g_imgui_renderer = NULL;
 static SDL_Texture  *g_canvas_texture = NULL;  /* VGA plane tex — kept for init compat, not displayed */
@@ -262,9 +519,9 @@ static void DeleteImage(int idx)
     else if (idx == ilselected && (unsigned)ilselected >= imgcnt)
         ilselected = (int)imgcnt - 1;
 
-    if (curr->data_p) mem_free(curr->data_p);
-    if (curr->pttbl_p) mem_free(curr->pttbl_p);
-    mem_free(curr);
+    if (curr->data_p) free(curr->data_p);
+    if (curr->pttbl_p) free(curr->pttbl_p);
+    free(curr);
 
     g_img_tex_idx = -2;
 }
@@ -290,9 +547,9 @@ static void DeleteMarkedImages(void)
             if (idx < ilselected) deleted_before_sel++;
             else if (idx == ilselected) sel_was_deleted = true;
 
-            if (to_delete->data_p) mem_free(to_delete->data_p);
-            if (to_delete->pttbl_p) mem_free(to_delete->pttbl_p);
-            mem_free(to_delete);
+            if (to_delete->data_p) free(to_delete->data_p);
+            if (to_delete->pttbl_p) free(to_delete->pttbl_p);
+            free(to_delete);
             /* idx tracks the original list position; advance it for the deleted entry */
             idx++;
         } else {
@@ -374,8 +631,8 @@ static void DeletePalette(void)
     if ((unsigned)plselected >= palcnt)
         plselected = palcnt ? (int)palcnt - 1 : -1;
 
-    if (curr->data_p) mem_free(curr->data_p);
-    mem_free(curr);
+    if (curr->data_p) free(curr->data_p);
+    free(curr);
 
     g_img_tex_idx = -2;
 }
@@ -415,10 +672,10 @@ static void TogglePointTable(void)
     if (!img) return;
     undo_push();
     if (img->pttbl_p) {
-        mem_free(img->pttbl_p);
+        free(img->pttbl_p);
         img->pttbl_p = NULL;
     } else {
-        imgtool_img_pttbladd(ilselected);  /* cdecl-safe wrapper around img_pttbladd */
+        AddPointTable(ilselected);  /* cdecl-safe wrapper around img_pttbladd */
     }
 }
 
@@ -452,9 +709,9 @@ static void ClearAll(void)
     while (img_p) {
         IMG *cur = (IMG *)img_p;
         img_p = cur->nxt_p;
-        if (cur->data_p)  mem_free(cur->data_p);
-        if (cur->pttbl_p) mem_free(cur->pttbl_p);
-        mem_free(cur);
+        if (cur->data_p)  free(cur->data_p);
+        if (cur->pttbl_p) free(cur->pttbl_p);
+        free(cur);
     }
     imgcnt = 0;
     ilselected = -1;
@@ -463,15 +720,15 @@ static void ClearAll(void)
     while (pal_p) {
         PAL *cur = (PAL *)pal_p;
         pal_p = cur->nxt_p;
-        if (cur->data_p) mem_free(cur->data_p);
-        mem_free(cur);
+        if (cur->data_p) free(cur->data_p);
+        free(cur);
     }
     palcnt = 0;
     plselected = -1;
 
     /* Free sequence/script memory */
     if (scrseqmem_p) {
-        mem_free(scrseqmem_p);
+        free(scrseqmem_p);
         scrseqmem_p = NULL;
         scrseqbytes  = 0;
     }
@@ -486,9 +743,9 @@ static void ClearAll(void)
         while (img2_p) {
             IMG *cur = (IMG *)img2_p;
             img2_p = cur->nxt_p;
-            if (cur->data_p)  mem_free(cur->data_p);
-            if (cur->pttbl_p) mem_free(cur->pttbl_p);
-            mem_free(cur);
+            if (cur->data_p)  free(cur->data_p);
+            if (cur->pttbl_p) free(cur->pttbl_p);
+            free(cur);
         }
     }
     img2cnt     = 0;
@@ -518,7 +775,7 @@ static void SetIDFromSecondList(void)
     if (!img) return;
 
     if (!img->pttbl_p) {
-        imgtool_img_pttbladd(ilselected);
+        AddPointTable(ilselected);
         img = (ilselected >= 0) ? get_img(ilselected) : NULL;
         if (!img || !img->pttbl_p) return;
     }
@@ -540,21 +797,25 @@ static void DuplicateImage(void)
 
     undo_push();
 
-    IMG *dst = (IMG *)imgtool_img_alloc();
+    IMG *dst = (IMG *)AllocImg();
     if (!dst) return;
 
     /* Copy pixel data */
     dst->data_p = NULL;
     if (src->data_p) {
-        dst->data_p = mem_duplicate(src->data_p);
+        unsigned int stride = ((unsigned int)src->w + 3) & ~3;
+        unsigned int sz = stride * src->h;
+        dst->data_p = malloc(sz);
         if (!dst->data_p) goto err;
+        memcpy(dst->data_p, src->data_p, sz);
     }
 
     /* Copy point table */
     dst->pttbl_p = NULL;
     if (src->pttbl_p) {
-        dst->pttbl_p = mem_duplicate(src->pttbl_p);
+        dst->pttbl_p = malloc(40);
         if (!dst->pttbl_p) goto err;
+        memcpy(dst->pttbl_p, src->pttbl_p, 40);
     }
 
     /* Copy header fields */
@@ -580,8 +841,8 @@ static void DuplicateImage(void)
 
 err:
     /* Rollback: delete the newly-allocated image */
-    if (dst->data_p) mem_free(dst->data_p);
-    if (dst->pttbl_p) mem_free(dst->pttbl_p);
+    if (dst->data_p) free(dst->data_p);
+    if (dst->pttbl_p) free(dst->pttbl_p);
     /* img_alloc appended the node — unlink it */
     {
         IMG *prev = NULL;
@@ -593,14 +854,14 @@ err:
             imgcnt--;
         }
     }
-    mem_free(dst);
+    free(dst);
 }
 
 /* Add a new blank 256-color palette.  Moved from imgtool_thunks.asm;
    uses the ASM memory pool via thunks (pal_alloc, mem_alloc). */
 static void AddNewPalette(void)
 {
-    PAL *pal = (PAL *)imgtool_pal_alloc();
+    PAL *pal = (PAL *)AllocPal();
     if (!pal) return;
 
     pal->flags   = 0;
@@ -609,7 +870,7 @@ static void AddNewPalette(void)
     pal->pad     = 0;
     pal->n_s[0]  = '\0';
 
-    unsigned char *buf = (unsigned char *)imgtool_mem_alloc(512);
+    unsigned char *buf = (unsigned char *)PoolAlloc(512);
     if (!buf) return;
     pal->data_p = buf;
     memset(buf, 0, 512);
@@ -717,8 +978,8 @@ static void MergeMarkedPalettes(void)
             /* plselected also shifts if the deleted palette was before it */
             if ((int)plselected > del_idx) plselected--;
 
-            if (to_del->data_p) mem_free(to_del->data_p);
-            mem_free(to_del);
+            if (to_del->data_p) free(to_del->data_p);
+            free(to_del);
             /* del_idx stays the same: next palette slid into this position */
         } else {
             prev = cur;
@@ -1378,7 +1639,7 @@ static void LoadTga(void)
     if (hdr.cm_size != 15 && hdr.cm_size != 16 && hdr.cm_size != 24) goto err;
 
     /* Allocate image */
-    IMG *img = (IMG *)imgtool_img_alloc();
+    IMG *img = (IMG *)AllocImg();
     if (!img) goto err;
 
     img->w = hdr.width;
@@ -1387,7 +1648,7 @@ static void LoadTga(void)
 
     unsigned short stride = (img->w + 3) & ~3;
     unsigned int   pix_sz = (unsigned int)stride * img->h;
-    img->data_p = (unsigned char *)imgtool_mem_alloc(pix_sz);
+    img->data_p = (unsigned char *)PoolAlloc(pix_sz);
     if (!img->data_p) goto err;
 
     img->palnum = (unsigned short)palcnt;
@@ -1410,18 +1671,18 @@ static void LoadTga(void)
     unsigned short num_colors = hdr.cm_length;
     if (num_colors == 0) num_colors = 256;
 
-    unsigned char *pal_buf = (unsigned char *)imgtool_mem_alloc((unsigned int)num_colors * 2);
+    unsigned char *pal_buf = (unsigned char *)PoolAlloc((unsigned int)num_colors * 2);
     if (!pal_buf) goto err;
 
     for (int i = 0; i < num_colors; i++) {
         int r, g, b;
         if (hdr.cm_size == 24) {
             unsigned char rgb[3];
-            if (fread(rgb, 1, 3, f) != 3) { mem_free(pal_buf); goto err; }
+            if (fread(rgb, 1, 3, f) != 3) { free(pal_buf); goto err; }
             b = rgb[0]; g = rgb[1]; r = rgb[2];
         } else {
             unsigned char w2[2];
-            if (fread(w2, 1, 2, f) != 2) { mem_free(pal_buf); goto err; }
+            if (fread(w2, 1, 2, f) != 2) { free(pal_buf); goto err; }
             unsigned short w = (unsigned short)(w2[0] | (w2[1] << 8));
             if (hdr.cm_size == 15) {
                 r = (w >> 7) & 0xF8;   /* ARRRRRGG GGGBBBBB → 15-bit */
@@ -1442,8 +1703,8 @@ static void LoadTga(void)
     }
 
     /* Allocate palette */
-    PAL *pal = (PAL *)imgtool_pal_alloc();
-    if (!pal) { mem_free(pal_buf); goto err; }
+    PAL *pal = (PAL *)AllocPal();
+    if (!pal) { free(pal_buf); goto err; }
 
     pal->flags   = 0;
     pal->bitspix = 8;
@@ -1550,12 +1811,12 @@ static void LoadLbm(void)
             unsigned int num_colors = chunk_len / 3;
             if (num_colors > 256) { try_close(); return; }
 
-            loaded_pal = (PAL *)imgtool_pal_alloc();
+            loaded_pal = (PAL *)AllocPal();
             if (!loaded_pal) { try_close(); return; }
             loaded_pal->flags = 0; loaded_pal->bitspix = 8;
             loaded_pal->numc = (unsigned short)num_colors; loaded_pal->pad = 0;
 
-            unsigned char *pal_buf = (unsigned char *)imgtool_mem_alloc(num_colors * 2);
+            unsigned char *pal_buf = (unsigned char *)PoolAlloc(num_colors * 2);
             if (!pal_buf) { try_close(); return; }
             loaded_pal->data_p = pal_buf;
 
@@ -1575,13 +1836,13 @@ static void LoadLbm(void)
         if (chunk_tag == TAG_BODY) {
             if (have_bmhd != 3) { try_close(); return; }
 
-            loaded_img = (IMG *)imgtool_img_alloc();
+            loaded_img = (IMG *)AllocImg();
             if (!loaded_img) { try_close(); return; }
             loaded_img->w=bm_w; loaded_img->h=bm_h;
             if (!bm_w||!bm_h) { try_close(); return; }
 
             unsigned short stride=(bm_w+3)&~3;
-            loaded_img->data_p=imgtool_mem_alloc((unsigned)stride*bm_h);
+            loaded_img->data_p=PoolAlloc((unsigned)stride*bm_h);
             if (!loaded_img->data_p) { try_close(); return; }
 
             loaded_img->palnum=(unsigned short)(palcnt-1); loaded_img->flags=0;
@@ -1781,7 +2042,7 @@ static void OpenImgFile(const std::string &full_path)
     _chdir(dir.c_str());
 
     ClearAll();
-    img_load();
+    LoadImgFile();
     g_last_saved_version = fileversion; /* fresh load = clean baseline */
     g_img_tex_idx = -2;
     RecentAdd(full_path);
@@ -1919,14 +2180,14 @@ static void DrawFileDialog() {
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
                     ClearAll();
-                    img_load();
+                    LoadImgFile();
                     g_last_saved_version = fileversion; /* fresh load = clean baseline */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
                     /* Append modifies the in-memory set on top of whatever
                        was there — leave the dirty bookkeeping alone so the
                        user is prompted before throwing it away. */
-                    img_load();
+                    LoadImgFile();
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::LoadLbm) {
                     LoadLbm();
