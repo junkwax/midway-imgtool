@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <string>
+#include <regex>
 
 /* From imgui_overlay.cpp */
 extern void undo_push(void);
@@ -496,6 +497,74 @@ int RestoreMarkedFromSourceForce(void)
     return total_written;
 }
 
+/* Bulk restore using regex to map child names to parent names.
+   Iterates all images, checks if name matches regex, uses capture group 1 as parent name.
+   If parent exists, overwrites child pixels with parent pixels (respecting anipoints). */
+int RestoreChildrenFromParentRegex(const char* regex_pattern)
+{
+    if (!img_p || !regex_pattern || !regex_pattern[0]) return 0;
+
+    std::regex re;
+    try {
+        re = std::regex(regex_pattern);
+    } catch (const std::regex_error&) {
+        return -1; // Regex compilation failed
+    }
+
+    undo_push();
+
+    int total_written = 0;
+    int imgs_processed = 0;
+
+    for (IMG *child = (IMG *)img_p; child; child = (IMG *)child->nxt_p) {
+        if (!child->data_p || child->w == 0 || child->h == 0) continue;
+
+        std::string name(child->n_s);
+        std::smatch match;
+        if (std::regex_match(name, match, re) && match.size() > 1) {
+            std::string parent_name = match[1].str();
+
+            IMG *parent = NULL;
+            for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+                if (parent_name == p->n_s) {
+                    parent = p;
+                    break;
+                }
+            }
+
+            if (parent && parent->data_p && parent->w > 0 && parent->h > 0 && parent != child) {
+                imgs_processed++;
+                unsigned char *dst_pix = (unsigned char *)child->data_p;
+                int dst_stride = (child->w + 3) & ~3;
+
+                const unsigned char *src_pix = (const unsigned char *)parent->data_p;
+                int src_stride = (parent->w + 3) & ~3;
+
+                memset(dst_pix, 0, (size_t)dst_stride * child->h);
+
+                int dx = (int)(short)parent->anix - (int)(short)child->anix;
+                int dy = (int)(short)parent->aniy - (int)(short)child->aniy;
+
+                for (int y = 0; y < child->h; y++) {
+                    int sy = y + dy;
+                    if (sy < 0 || sy >= parent->h) continue;
+                    for (int x = 0; x < child->w; x++) {
+                        int sx = x + dx;
+                        if (sx < 0 || sx >= parent->w) continue;
+                        dst_pix[y * dst_stride + x] = src_pix[sy * src_stride + sx];
+                        total_written++;
+                    }
+                }
+            }
+        }
+    }
+
+    if (total_written > 0) {
+        g_img_tex_idx = -2;
+    }
+    return imgs_processed; // Return number of child images restored instead of total pixels
+}
+
 /* ---- Write ANILST (Export Marked Images to Assembly) ---- */
 void WriteAnilstFromMarked(const char* filepath)
 {
@@ -527,15 +596,15 @@ void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk
         if (p->flags & 1) {
             fprintf(f, "%s:\n", p->n_s);
             if (mk3_format) {
-                fprintf(f, "\t.word   0%XH,0%XH,0%XH,0%XH,0%XH,0%XH,0%XH\n", 
+                fprintf(f, "\t.word   %d,%d,%d,%d,%d,%d,%d\n", 
                         p->w, p->h, 
-                        (unsigned short)p->anix, (unsigned short)p->aniy,
-                        (unsigned short)p->anix2, (unsigned short)p->aniy2,
-                        (unsigned short)p->aniz2);
+                        (int)(short)p->anix, (int)(short)p->aniy,
+                        (int)(short)p->anix2, (int)(short)p->aniy2,
+                        (int)(short)p->aniz2);
             } else {
-                fprintf(f, "\t.word   0%XH,0%XH,0%XH,0%XH\n", 
+                fprintf(f, "\t.word   %d,%d,%d,%d\n", 
                         p->w, p->h, 
-                        (unsigned short)p->anix, (unsigned short)p->aniy);
+                        (int)(short)p->anix, (int)(short)p->aniy);
             }
             fprintf(f, "\t.long   0%XH\n", base_address + (p->file_oset * 8));
             fprintf(f, "\t.word   0%04XH\n", p->flags);

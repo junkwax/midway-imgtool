@@ -24,5 +24,6 @@ void ImportPng(const char *path);
 void ExportPng(const char *path);
 int  RestoreMarkedFromSource(void);
 int  RestoreMarkedFromSourceForce(void);
+int  RestoreChildrenFromParentRegex(const char* regex_pattern);
 
 #endif /* IMG_IO_H */

@@ -212,6 +212,10 @@ static float g_histogram_data[256] = {0};
 static float g_histogram_max = 0.0f;
 static int   g_histogram_img_count = 0;
 
+/* ---- Bulk Restore Regex state ---- */
+static bool g_show_restore_regex = false;
+static char g_restore_regex_buf[256] = "^(.+)[A-Z]$";
+
 static void DeleteImage(int idx)
 {
     if (idx < 0 || (unsigned)idx >= imgcnt) return;
@@ -2279,6 +2283,12 @@ void imgui_overlay_render(void)
                 "Unconditionally overwrites every pixel in marked images\n"
                 "with source pixels. No transparency or palette checks.\n"
                 "For rebuilding splits (1A/1B/2A...) from full source.");
+            if (ImGui::MenuItem("Bulk Restore via Regex...")) {
+                g_show_restore_regex = true;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Uses a regex to map child names to parent names across the entire file,\n"
+                "then restores child pixels from their parent automatically.");
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Marked"))                            OpenRenameMarkedImages();
             if (ImGui::MenuItem("Delete Marked"))                            DeleteMarkedImages();
@@ -3238,6 +3248,38 @@ void imgui_overlay_render(void)
         ImGui::Spacing();
         if (ImGui::Button("Close", ImVec2(120, 0))) {
             g_show_histogram = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    /* ===== BULK RESTORE REGEX DIALOG ===== */
+    if (g_show_restore_regex) ImGui::OpenPopup("Bulk Restore via Regex");
+    if (ImGui::BeginPopupModal("Bulk Restore via Regex", &g_show_restore_regex, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("Uses a regex to map child names to parent names across the entire file.\n"
+                           "Capture group 1 (\\1) is used as the parent name.\n"
+                           "Example: ^(.+)[A-Z]$ maps JCJUMPFLIP1A -> JCJUMPFLIP1");
+        ImGui::Spacing();
+        ImGui::InputText("Regex Pattern", g_restore_regex_buf, sizeof(g_restore_regex_buf));
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("Restore", ImVec2(100, 0))) {
+            int n = RestoreChildrenFromParentRegex(g_restore_regex_buf);
+            if (n < 0) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg), "Regex Error: invalid pattern");
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg), 
+                         n > 0 ? "Restored %d child image(s) from their parents." 
+                               : "0 images restored. No regex matches or parents found.", 
+                         n);
+            }
+            g_restore_msg_timer = 6.0f;
+            g_show_restore_regex = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+            g_show_restore_regex = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
