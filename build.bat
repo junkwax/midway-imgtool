@@ -1,6 +1,25 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+:: Architecture: x64 (default) or x86
+set "ARCH=%1"
+if "%ARCH%"=="" set "ARCH=x64"
+if /I "%ARCH%"=="x64" (
+    set "CMAKE_ARCH=x64"
+    set "SDL2_ARCH=x64"
+    set "CMAKE_ARCH_DIR=windows-x86_64"
+    set "VCVARS_ARCH=x64"
+) else if /I "%ARCH%"=="x86" (
+    set "CMAKE_ARCH=Win32"
+    set "SDL2_ARCH=x86"
+    set "CMAKE_ARCH_DIR=windows-i386"
+    set "VCVARS_ARCH=x86"
+) else (
+    echo Usage: build.bat [x64^|x86]
+    echo Default: x64
+    goto :fail
+)
+
 set "VCVARSALL="
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if exist "%VSWHERE%" (
@@ -36,11 +55,11 @@ set SDL2VER=2.30.2
 set SDL2DIR=%DEPSDIR%\SDL2-%SDL2VER%
 set SDL2CMAKE=%SDL2DIR%\cmake
 set CMAKEVER=3.29.3
-set CMAKEDIR=%DEPSDIR%\cmake-%CMAKEVER%-windows-i386
+set CMAKEDIR=%DEPSDIR%\cmake-%CMAKEVER%-%CMAKE_ARCH_DIR%
 set CMAKE=%CMAKEDIR%\bin\cmake.exe
 
-echo [1/4] Setting up VS 2022 x86 environment...
-call "%VCVARSALL%" x86
+echo [1/4] Setting up VS 2022 %VCVARS_ARCH% environment...
+call "%VCVARSALL%" %VCVARS_ARCH%
 if errorlevel 1 (echo ERROR: vcvarsall failed & goto :fail)
 
 echo [2/4] Creating build dirs...
@@ -52,7 +71,7 @@ if not exist "%CMAKE%" (
     powershell -NoProfile -Command ^
         "[Net.ServicePointManager]::SecurityProtocol='Tls12';" ^
         "(New-Object Net.WebClient).DownloadFile(" ^
-        "'https://github.com/Kitware/CMake/releases/download/v%CMAKEVER%/cmake-%CMAKEVER%-windows-i386.zip'," ^
+        "'https://github.com/Kitware/CMake/releases/download/v%CMAKEVER%/cmake-%CMAKEVER%-%CMAKE_ARCH_DIR%.zip'," ^
         "'%DEPSDIR%\cmake.zip')"
     if errorlevel 1 (echo ERROR: cmake download failed & goto :fail)
     powershell -NoProfile -Command ^
@@ -80,7 +99,7 @@ if not exist "%SDL2DIR%" (
 )
 
 echo [4/4] CMake configure + build...
-"%CMAKE%" -B "%BUILDDIR%" -G "Visual Studio 17 2022" -A Win32 ^
+"%CMAKE%" -B "%BUILDDIR%" -G "Visual Studio 17 2022" -A %CMAKE_ARCH% ^
     -DSDL2_DIR="%SDL2CMAKE%" ^
     "%SOURCE%"
 if errorlevel 1 (echo ERROR: cmake configure failed & goto :fail)
@@ -88,8 +107,9 @@ if errorlevel 1 (echo ERROR: cmake configure failed & goto :fail)
 "%CMAKE%" --build "%BUILDDIR%" --config Release -- /v:normal
 if errorlevel 1 (echo ERROR: cmake build failed & goto :fail)
 
-copy /Y "%SDL2DIR%\lib\x86\SDL2.dll" "%BUILDDIR%\Release\"
+copy /Y "%SDL2DIR%\lib\%SDL2_ARCH%\SDL2.dll" "%BUILDDIR%\Release\"
 copy /Y "%SOURCE%\IT\it.hlp" "%BUILDDIR%\Release\"
+copy /Y "%SOURCE%\DMA2.txt" "%BUILDDIR%\Release\"
 
 echo.
 echo *** Build succeeded! ***

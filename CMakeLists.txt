@@ -23,7 +23,7 @@ if(WIN32)
     find_package(SDL2 REQUIRED)
 else()
     set(SDL2_INCLUDE_DIRS "/usr/include/SDL2;/usr/include/x86_64-linux-gnu")
-    set(SDL2_LIBRARIES "-L/usr/lib/i386-linux-gnu -lSDL2")
+    set(SDL2_LIBRARIES "-L/usr/lib/x86_64-linux-gnu -lSDL2")
     add_library(SDL2::SDL2 INTERFACE IMPORTED)
     set_target_properties(SDL2::SDL2 PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIRS}"
@@ -92,6 +92,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/assets/MaterialSymbolsSharp-Regu
     )
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/DMA2.txt")
+    add_custom_command(TARGET imgtool POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/DMA2.txt"
+            "$<TARGET_FILE_DIR:imgtool>/DMA2.txt"
+        VERBATIM
+    )
+endif()
+
 if(MSVC)
     set_source_files_properties(
         imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp
@@ -102,6 +111,6 @@ if(MSVC)
 endif()
 
 if(NOT WIN32)
-    target_compile_options(imgtool PRIVATE -m32 -mstackrealign)
-    target_link_options(imgtool PRIVATE -m32 -no-pie -Wl,-z,noexecstack)
+    target_compile_options(imgtool PRIVATE -m64)
+    target_link_options(imgtool PRIVATE -m64 -no-pie -Wl,-z,noexecstack)
 endif()

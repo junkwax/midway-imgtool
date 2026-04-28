@@ -9,11 +9,25 @@ param(
     [string]$SourceDir  = $PSScriptRoot,
     [string]$BuildRoot  = "$env:LOCALAPPDATA\imgtool-build",
     [string]$SharedDeps = "$env:LOCALAPPDATA\midway-build\deps",
-    [string]$Sdl2Ver    = ""          # leave empty to auto-fetch latest SDL2 2.x
+    [string]$Sdl2Ver    = "",          # leave empty to auto-fetch latest SDL2 2.x
+    [string]$Arch       = "x64"        # x64 (default) or x86
 )
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Validate architecture
+if ($Arch -eq "x86") {
+    $cmakeArch = "Win32"
+    $sdl2Lib   = "x86"
+    $vcvarsArch = "x86"
+} else {
+    if ($Arch -ne "x64") { Write-Warning "Unknown arch '$Arch', using x64" }
+    $Arch = "x64"
+    $cmakeArch = "x64"
+    $sdl2Lib   = "x64"
+    $vcvarsArch = "x64"
+}
 
 # -----------------------------------------------------------------------
 # 1. Locate VS 2022
@@ -92,14 +106,14 @@ if (-not (Test-Path $sdl2Cmake)) {
 # -----------------------------------------------------------------------
 # 4. CMake configure + build via a temp batch (inherits vcvarsall env)
 # -----------------------------------------------------------------------
-Write-Host "[4/4] Configuring and building (x86 Release)..." -ForegroundColor Cyan
+Write-Host "[4/4] Configuring and building ($Arch Release)..." -ForegroundColor Cyan
 
 $lines = @(
     "@echo off",
-    "call `"$vcvarsall`" x86",
+    "call \`"$vcvarsall\`" $vcvarsArch",
     "if errorlevel 1 exit /b 1",
     "set PATH=$vsCmake;%PATH%",
-    "cmake -B `"$buildDir`" -G `"Visual Studio 17 2022`" -A Win32 -DSDL2_DIR=`"$sdl2Cmake`" `"$SourceDir`"",
+    "cmake -B \`"$buildDir\`" -G \`"Visual Studio 17 2022\`" -A $cmakeArch -DSDL2_DIR=\`"$sdl2Cmake\`" \`"$SourceDir\`"",
     "if errorlevel 1 exit /b 1",
     "cmake --build `"$buildDir`" --config Release",
     "if errorlevel 1 exit /b 1"
@@ -115,7 +129,7 @@ if ($exitCode -eq 0) {
     Write-Host "*** Build succeeded ***" -ForegroundColor Green
     Write-Host "EXE: $exe" -ForegroundColor Green
     # SDL2.dll must be next to the exe
-    $sdl2Dll = "$sdl2Root\lib\x86\SDL2.dll"
+    $sdl2Dll = "$sdl2Root\lib\$sdl2Lib\SDL2.dll"
     if (Test-Path $sdl2Dll) {
         Copy-Item $sdl2Dll (Split-Path $exe) -Force
         Write-Host "Copied SDL2.dll to output folder" -ForegroundColor Green
@@ -125,6 +139,12 @@ if ($exitCode -eq 0) {
     if (Test-Path $hlp) {
         Copy-Item $hlp (Split-Path $exe) -Force
         Write-Host "Copied it.hlp to output folder" -ForegroundColor Green
+    }
+    # DMA2.txt hardware reference
+    $dma2 = Join-Path $SourceDir "DMA2.txt"
+    if (Test-Path $dma2) {
+        Copy-Item $dma2 (Split-Path $exe) -Force
+        Write-Host "Copied DMA2.txt to output folder" -ForegroundColor Green
     }
 } else {
     Write-Host ""

@@ -2537,6 +2537,8 @@ static void DrawFileDialog() {
 static bool g_show_help = false;
 static bool g_show_debug = false;
 static bool g_show_about = false;
+static bool g_show_dma2 = false;
+static char *g_dma2_text = NULL;
 static const char *g_help_text =
     "IMAGE TOOL HELP\n\n"
     "Escape - Aborts a function           Enter - Accepts a function\n"
@@ -3112,6 +3114,8 @@ void imgui_overlay_render(void)
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("Show Help",  "h"))  g_show_help = true;
             if (ImGui::MenuItem("Debug Info", "F9")) g_show_debug = !g_show_debug;
+            ImGui::Separator();
+            if (ImGui::MenuItem("DMA2 Reference"))    g_show_dma2 = true;
             ImGui::Separator();
             if (ImGui::MenuItem("About...")) g_show_about = true;
             ImGui::EndMenu();
@@ -4168,6 +4172,39 @@ void imgui_overlay_render(void)
         ImGui::Separator();
         if (ImGui::Button("Close", ImVec2(120, 0))) {
             g_show_help = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    /* ===== DMA2 REFERENCE MODAL ===== */
+    if (g_show_dma2) ImGui::OpenPopup("DMA2 Reference");
+    if (ImGui::BeginPopupModal("DMA2 Reference", &g_show_dma2,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_Always);
+        if (!g_dma2_text) {
+            FILE *f = fopen("DMA2.txt", "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                g_dma2_text = (char *)malloc(sz + 1);
+                if (g_dma2_text) {
+                    fread(g_dma2_text, 1, sz, f);
+                    g_dma2_text[sz] = '\0';
+                }
+                fclose(f);
+            }
+        }
+        if (g_dma2_text) {
+            ImGui::TextUnformatted(g_dma2_text);
+        } else {
+            ImGui::TextDisabled("DMA2.txt not found.");
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("Close", ImVec2(120, 0))) {
+            g_show_dma2 = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
