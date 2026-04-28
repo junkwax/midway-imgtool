@@ -2280,13 +2280,13 @@ static void DrawFileDialog() {
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
     
-    ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(620, 440), ImGuiCond_FirstUseEver);
     if (ImGui::BeginPopupModal(title, &g_show_file_dialog, ImGuiWindowFlags_NoSavedSettings)) {
         
         ImGui::InputText("Directory", g_file_dialog_dir, sizeof(g_file_dialog_dir));
         ImGui::Separator();
         
-        ImGui::BeginChild("##file_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2), true);
+        ImGui::BeginChild("##file_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 4), true);
         
         std::string current_dir = g_file_dialog_dir;
         std::string parent_dir = GetParentDirectory(current_dir);
@@ -2731,9 +2731,9 @@ void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture 
         ImFontConfig cfg;
         cfg.MergeMode = true;
         cfg.PixelSnapH = true;
-        cfg.GlyphMinAdvanceX = 16.0f;
-        cfg.GlyphOffset = ImVec2(0, 3.0f);  /* Material glyphs sit high — nudge down */
-        ImFont *icons = io.Fonts->AddFontFromFileTTF(fontpath, 16.0f, &cfg, icon_ranges);
+        cfg.GlyphMinAdvanceX = 22.0f;
+        cfg.GlyphOffset = ImVec2(0, 3.0f);
+        ImFont *icons = io.Fonts->AddFontFromFileTTF(fontpath, 20.0f, &cfg, icon_ranges);
         if (icons) g_icon_font_loaded = true;
     }
 
@@ -2767,8 +2767,10 @@ int imgui_overlay_wants_keyboard(void)
 
 int imgui_overlay_check_unsaved_and_quit(void)
 {
-    /* User opted out of unsaved-changes prompts — just exit. */
-    (void)g_last_saved_version;
+    if (g_last_saved_version != fileversion && imgcnt > 0) {
+        g_show_unsaved_confirm = true;
+        return 0;
+    }
     return 1;
 }
 
@@ -3035,7 +3037,7 @@ void imgui_overlay_render(void)
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     {
-        ImVec2 btn(TOOLBAR_W - 8, TOOLBAR_W - 8);
+        ImVec2 btn(TOOLBAR_W - 12, TOOLBAR_W - 12);
         #define TB_LABEL(icon, txt) (g_icon_font_loaded ? (icon) : (txt))
 
         if (ImGui::Button(TB_LABEL(ICON_OPEN, ICON_OPEN_TXT), btn))  OpenFileDialog(FileDialogMode::OpenImg);
@@ -3083,6 +3085,27 @@ void imgui_overlay_render(void)
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Redo (Ctrl+Y)");
 
         #undef TB_LABEL
+
+        /* Selected color swatch */
+        ImGui::Spacing();
+        {
+            SDL_Color &c = g_palette[g_sel_color];
+            ImU32 col = IM_COL32(c.r, c.g, c.b, 255);
+            ImVec2 cp = ImGui::GetCursorScreenPos();
+            float sw_sz = ImGui::GetContentRegionAvail().x;
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(cp, ImVec2(cp.x + sw_sz, cp.y + 24), col);
+            dl->AddRect(cp, ImVec2(cp.x + sw_sz, cp.y + 24), IM_COL32(255,255,255,80));
+            ImGui::Dummy(ImVec2(sw_sz, 24));
+        }
+        char col_label[8];
+        snprintf(col_label, sizeof(col_label), "#%d", g_sel_color);
+        if (ImGui::SmallButton(col_label)) {
+            static int last_col = 1;
+            if (g_sel_color == 0) g_sel_color = last_col;
+            else { last_col = g_sel_color; g_sel_color = 0; }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Active color index (right-click sprite to pick)");
     }
     ImGui::End();
 
@@ -3232,7 +3255,8 @@ void imgui_overlay_render(void)
                             comp_size += 1 + (img->w - leading - trailing);
                         }
                     }
-                    ImGui::Text("DMA ROM:     %d B raw / %d B comp", uncomp_size, comp_size);
+                    ImGui::Text("DMA ROM:  %d B raw", uncomp_size);
+                    ImGui::Text("           %d B compressed", comp_size);
                 }
 
                 PAL *pal = get_pal(img->palnum);
@@ -3290,6 +3314,37 @@ void imgui_overlay_render(void)
             if (ImGui::SliderInt("W##hbw",  &g_hitbox_w, 1, 640)) undo_push();
             ImGui::SetNextItemWidth(-1);
             if (ImGui::SliderInt("H##hbh",  &g_hitbox_h, 1, 400)) undo_push();
+        }
+
+        /* --- Color --- */
+        if (ImGui::CollapsingHeader("Color")) {
+            SDL_Color &col = g_palette[g_sel_color];
+            int r = col.r, g = col.g, b = col.b;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("R##cr", &r, 0, 255)) {
+                col.r = (unsigned char)r;
+                palette_writeback(g_sel_color);
+            }
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("G##cg", &g, 0, 255)) {
+                col.g = (unsigned char)g;
+                palette_writeback(g_sel_color);
+            }
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("B##cb", &b, 0, 255)) {
+                col.b = (unsigned char)b;
+                palette_writeback(g_sel_color);
+            }
+        }
+
+        /* --- Library Info --- */
+        if (ImGui::CollapsingHeader("Library")) {
+            ImGui::Text("Images:   %u", imgcnt);
+            ImGui::Text("Palettes: %u", palcnt);
+            ImGui::Text("Seqs:     %u", seqcnt);
+            ImGui::Text("Scripts:  %u", scrcnt);
+            ImGui::Text("DamTbls:  %u", damcnt);
+            ImGui::Text("Version:  0x%04X", fileversion);
         }
     }
     ImGui::End();
@@ -3723,6 +3778,7 @@ void imgui_overlay_render(void)
     float pal_y = sh - PALETTE_H;
     ImGui::SetNextWindowPos(ImVec2(0, pal_y));
     ImGui::SetNextWindowSize(ImVec2(sw, PALETTE_H));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 4));
     ImGui::Begin("##palette", NULL,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
@@ -3744,52 +3800,20 @@ void imgui_overlay_render(void)
             dl->AddRectFilled(p0, p1, IM_COL32(c.r, c.g, c.b, 255));
             if (i == g_sel_color)
                 dl->AddRect(p0, p1, IM_COL32(255,255,255,255), 0, 0, 1.5f);
+            else if (i == 0)
+                dl->AddRect(p0, p1, IM_COL32(80,80,80,120), 0, 0, 0.5f);
 
             ImGui::SetCursorScreenPos(p0);
             ImGui::InvisibleButton(("##sw" + std::to_string(i)).c_str(), ImVec2(sw16, sh16));
             if (ImGui::IsItemClicked()) g_sel_color = i;
         }
 
-        /* Advance cursor past the swatch grid */
-        ImGui::SetCursorScreenPos(ImVec2(pos0.x + 16 * col_w + 6, pos0.y));
-
-        ImGui::BeginGroup();
-        {
-            SDL_Color &col = g_palette[g_sel_color];
-            int r = col.r, g_c = col.g, b = col.b;
-            ImGui::Text("Index: %d", g_sel_color);
-            ImGui::SetNextItemWidth(160);
-            if (ImGui::SliderInt("R##cr", &r,   0, 255)) {
-                col.r = (unsigned char)r;
-                palette_writeback(g_sel_color);
-            }
-            ImGui::SetNextItemWidth(160);
-            if (ImGui::SliderInt("G##cg", &g_c, 0, 255)) {
-                col.g = (unsigned char)g_c;
-                palette_writeback(g_sel_color);
-            }
-            ImGui::SetNextItemWidth(160);
-            if (ImGui::SliderInt("B##cb", &b,   0, 255)) {
-                col.b = (unsigned char)b;
-                palette_writeback(g_sel_color);
-            }
-        }
-        ImGui::EndGroup();
-
-        /* --- Library Info (far right) --- */
-        float right_x = sw - 180.f;
-        ImGui::SetCursorScreenPos(ImVec2(right_x, pos0.y));
-        ImGui::BeginGroup();
-        {
-            ImGui::Text("Images:   %u", imgcnt);
-            ImGui::Text("Palettes: %u", palcnt);
-            ImGui::Text("Seqs:     %u", seqcnt);
-            ImGui::Text("Scripts:  %u", scrcnt);
-            ImGui::Text("DamTbls:  %u", damcnt);
-            ImGui::Text("Version:  0x%04X", fileversion);
-        }
-        ImGui::EndGroup();
+        /* Selected color index + RGB */
+        ImGui::SetCursorScreenPos(ImVec2(pos0.x + 16 * col_w + 8, pos0.y + 4));
+        SDL_Color &c = g_palette[g_sel_color];
+        ImGui::Text("#%d  R:%d G:%d B:%d", g_sel_color, c.r, c.g, c.b);
     }
+    ImGui::PopStyleVar();
     ImGui::End();
 
     /* ===== RENAME DIALOG ===== */
@@ -4033,7 +4057,7 @@ void imgui_overlay_render(void)
     if (ImGui::BeginPopupModal("About midway-imgtool", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("midway-imgtool");
         ImGui::Separator();
-        ImGui::Text("A modern port of the 1992 Midway Image Tool.");
+        ImGui::Text("A modern port of the 1992 Midway Image Tool — now \"Imgtool\".");
         ImGui::Spacing();
         ImGui::Text("Build: %s %s", __DATE__, __TIME__);
 #ifdef IMGTOOL_GIT_REV
