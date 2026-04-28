@@ -3899,3 +3899,9 @@ void imgui_overlay_shutdown(void)
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 }
+
+void imgui_overlay_present(void)
+{
+    ImGui::Render();
+    ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), g_imgui_renderer);
+}

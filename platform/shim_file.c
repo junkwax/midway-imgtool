@@ -488,20 +488,9 @@ void shim_i21_delete_impl(void)
 }
 
 /* ---- find first / next ---- */
-/* The asm code accesses dta[21] (attribute) and dta[30..] (filename).
-   We write to the asm 'dta' symbol directly.
-   MASM (.model flat,syscall) exports 'dta' with no underscore.
-   Windows/MSVC: C 'extern _dta[]' → linker symbol '__dta';
-     /alternatename redirects it to the asm 'dta'.
-   Linux/GCC + jwasm (ELF): asm exports 'dta', C 'extern dta[]' matches
-     directly (GCC adds no underscore prefix). */
-#ifdef _WIN32
-#  pragma comment(linker, "/alternatename:__dta=dta")
-   extern BYTE _dta[];
-#  define dta _dta
-#else
-   extern BYTE dta[];
-#endif
+/* DTA (Disk Transfer Area) is now defined in platform/globals.c.
+   We write to dta[21] (attribute) and dta[30..] (filename). */
+extern unsigned char dta[];
 
 /* Write filename + attribute into the DOS DTA buffer */
 static void fill_dta(const char *name, BYTE attr)

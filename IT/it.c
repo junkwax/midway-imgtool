@@ -24,6 +24,7 @@
 #include	<SDL.h>
 #include	"shim_vid.h"
 #include	"shim_file.h"
+#include	"imgui_overlay.h"
 
 
 long	conv_ftoi(float *f);
@@ -49,8 +50,9 @@ void	cbreak(int sig_no)
 
 
 /* asm entry point — itos.asm defines _osmain (MSVC _cdecl convention).
-   The original Watcom trailing-underscore has been renamed in itos.asm. */
-void osmain(char *c_p);
+   The original Watcom trailing-underscore has been renamed in itos.asm.
+   Now replaced by C++ main loop below. */
+/* void osmain(char *c_p); */
 
 int	main(int argc,char *argv[])
 {
@@ -91,75 +93,59 @@ int	main(int argc,char *argv[])
 	if (c_p = getenv("ITUSR3")) strcpy(usr3env_s, c_p);
 
 
-	mempoolsz = 16*1024*1024;
-
-	while ( !(mempool_p = malloc(mempoolsz)) ) {
-
-		mempoolsz -= 256*1024;
-		if (mempoolsz <= 0) break;
+	/* ---- Init SDL2 ---- */
+	SDL_SetMainReady();
+	if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+		MessageBoxA(NULL, SDL_GetError(), "SDL_Init Error", MB_OK | MB_ICONERROR);
+		return 1;
 	}
 
+	SDL_Window *window = SDL_CreateWindow("Midway Image Tool",
+		SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+		1024, 768, SDL_WINDOW_RESIZABLE);
+	if (!window) return 1;
 
+	SDL_Renderer *renderer = SDL_CreateRenderer(window, -1,
+		SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
+	if (!renderer) return 1;
 
-//	if (!(f_p = fopen("it.hlp","r")) ) {
-//		return;
-//	}
-//
-//	fread(buf,10,1,f_p);
-//	fclose(f_p);
+	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
+	/* Create a 640x480 canvas texture (matches original VGA resolution) */
+	SDL_Texture *canvas_tex = SDL_CreateTexture(renderer,
+		SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 640, 480);
 
-	c_p = 0;
-	if (argc > 1) c_p = argv[1];
+	/* ---- Init ImGui overlay ---- */
+	imgui_overlay_init(window, renderer, canvas_tex);
 
-#ifdef _WIN32
-	{
-		LPEXCEPTION_POINTERS g_ep = NULL;
-		__try {
-			osmain(c_p);
-		} __except (g_ep = GetExceptionInformation(), EXCEPTION_EXECUTE_HANDLER) {
-			DWORD code  = g_ep ? g_ep->ExceptionRecord->ExceptionCode   : 0;
-			PVOID addr  = g_ep ? g_ep->ExceptionRecord->ExceptionAddress : 0;
-			DWORD base  = (DWORD)(UINT_PTR)GetModuleHandleA(NULL);
-			DWORD rva   = (DWORD)(UINT_PTR)addr - base;
-			DWORD acc   = (g_ep && g_ep->ExceptionRecord->NumberParameters >= 2)
-			              ? (DWORD)g_ep->ExceptionRecord->ExceptionInformation[1] : 0;
-			DWORD eax_v = g_ep ? (DWORD)g_ep->ContextRecord->Eax : 0;
-			DWORD ecx_v = g_ep ? (DWORD)g_ep->ContextRecord->Ecx : 0;
-			DWORD edx_v = g_ep ? (DWORD)g_ep->ContextRecord->Edx : 0;
-			DWORD esi_v = g_ep ? (DWORD)g_ep->ContextRecord->Esi : 0;
-			DWORD edi_v = g_ep ? (DWORD)g_ep->ContextRecord->Edi : 0;
-			DWORD esp_v = g_ep ? (DWORD)g_ep->ContextRecord->Esp : 0;
-			{
-				char crash_path[MAX_PATH];
-				_snprintf(crash_path, sizeof(crash_path), "%s\\crash.txt", exe_dir);
-				FILE *f = fopen(crash_path, "w");
-				if (f) {
-					fprintf(f,
-						"Exception: 0x%08X\n"
-						"EIP:       0x%08X\n"
-						"RVA:       0x%08X\n"
-						"Accessed:  0x%08X\n"
-						"Base:      0x%08X\n"
-						"EAX=%08X ECX=%08X EDX=%08X\n"
-						"ESI=%08X EDI=%08X ESP=%08X\n",
-						(unsigned)code, (unsigned)(UINT_PTR)addr,
-						(unsigned)rva, (unsigned)acc, (unsigned)base,
-						eax_v, ecx_v, edx_v, esi_v, edi_v, esp_v);
-					fclose(f);
-				}
-				MessageBoxA(NULL, crash_path, "Crash written to:", MB_OK | MB_ICONERROR);
-			}
+	/* ---- Main loop ---- */
+	int running = 1;
+	while (running) {
+		SDL_Event e;
+		while (SDL_PollEvent(&e)) {
+			imgui_overlay_process_event(&e);
+			if (e.type == SDL_QUIT)
+				running = 0;
 		}
+
+		SDL_SetRenderDrawColor(renderer, 0x06, 0x06, 0x06, 0xFF);
+		SDL_RenderClear(renderer);
+
+		imgui_overlay_newframe();
+		imgui_overlay_render();
+		imgui_overlay_present();
+
+		SDL_RenderPresent(renderer);
 	}
-#else  /* Linux -------------------------------------------------------- */
-	osmain(c_p);
-#endif
 
+	imgui_overlay_shutdown();
+	SDL_DestroyTexture(canvas_tex);
+	SDL_DestroyRenderer(renderer);
+	SDL_DestroyWindow(window);
+	SDL_Quit();
 
-
+	return 0;
 }
-
 
 long	conv_ftoi(float *f)
 {

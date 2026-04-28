@@ -45,6 +45,10 @@ int imgui_overlay_check_unsaved_and_quit(void);
 /* Called after a successful save to mark version as saved. */
 void imgui_overlay_mark_saved(void);
 
+/* Composite and present the ImGui draw data to the SDL renderer.
+   Must be called after imgui_overlay_render() and before SDL_RenderPresent(). */
+void imgui_overlay_present(void);
+
 #ifdef __cplusplus
 }
 #endif
