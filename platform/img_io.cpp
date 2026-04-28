@@ -619,7 +619,7 @@ void BuildTgaFromMarked(const char* filepath)
     f = fopen(anf_path.c_str(), "wb");
     if (f) {
         fwrite("ANF ", 1, 4, f);
-        uint32_t fcnt = packed.size();
+            uint32_t fcnt = (uint32_t)packed.size();
         fwrite(&fcnt, 1, 4, f);
         for (auto& pk : packed) {
             uint32_t zero = 0; fwrite(&zero, 1, 4, f);

@@ -29,7 +29,7 @@ mkdir build && cd build && cmake .. && cmake --build .
 | `IT/it.c` | Entry point, main loop, SDL2 init |
 | `platform/imgui_overlay.cpp` | Main UI: menus, toolbar, canvas, panels, palette bar, modals, keyboard shortcuts |
 | `platform/img_format.h` | IMG/PAL structs, allocators, palette helpers, get_img/get_pal, PoolAlloc |
-| `platform/img_io.h` / `img_io.cpp` | File I/O: LoadImgFile, SaveImgFile, TGA/LBM/PNG import/export, RestoreMarkedFromSource, RestoreMarkedFromSourceForce |
+| `platform/img_io.h` / `img_io.cpp` | File I/O: LoadImgFile, SaveImgFile, TGA/LBM/PNG import/export, RestoreMarkedFromSource, RestoreMarkedFromSourceForce, WriteTblFromMarked, WriteAnilstFromMarked |
 | `platform/shim_vid.c` | SDL2 renderer, palette tables, VGA shadow buffer |
 | `platform/shim_input.c` | Keyboard input, DOS scan code mapping |
 | `platform/shim_file.c` | DOS file system emulation, path remapping, old-format IMG conversion |
@@ -63,6 +63,23 @@ mkdir build && cd build && cmake .. && cmake --build .
 - Texture rebuilt EVERY frame from `img->data_p` via `rebuild_img_texture()`
 - `g_img_tex_idx` tracks last rendered image index (for zoom reset, not for triggering rebuilds)
 - `g_canvas_texture` exists for init compat, not displayed
+
+### TBL Export (File > Export > Write TBL...)
+- `WriteTblFromMarked(filepath, base_address, mk3_format, include_pal)` in `platform/img_io.cpp:519`
+- Writes assembly-format `.TBL` files from marked images (Hex output, e.g. `0FFBDH`)
+- **MK2 format** (default): `.word W,H,ANIX,ANIY` — 4-value header
+- **MK3 format** (checkbox): `.word W,H,ANIX,ANIY,ANIX2,ANIY2,ANIZ2` — 7-value header with secondary animation points
+- **ROM address**: `.long` = `base_address + (file_oset * 8)` (bit-addressable for TMS34010)
+- **Palette name** (checkbox): `.long PAL_NAME` auto-resolved via `get_pal(p->palnum)`
+- UI state variables: `g_tbl_base_address` (default `0x02000000`), `g_tbl_export_mk3_format`, `g_tbl_export_palette`
+- `get_pal(idx)` helper in `platform/img_format.h:201` walks the PAL linked list by index
+- IMG struct debug fields used: `anix2`, `aniy2`, `aniz2`, `file_oset`, `palnum`, `flags`
+- **Menu item**: `platform/imgui_overlay.cpp:2182` — `File > Export > Write TBL...`
+- **Dialog UI** (only shown in WriteTbl mode): `platform/imgui_overlay.cpp:1298-1303`
+  - `ImGui::InputScalar` for hex ROM base address
+  - `ImGui::Checkbox` for MK3 7-value format (with `SetItemTooltip`)
+  - `ImGui::Checkbox` for palette name inclusion
+- **Save button**: `platform/imgui_overlay.cpp:1333` — appends `.TBL` if no extension, calls `WriteTblFromMarked`
 
 ## Known Pitfalls
 

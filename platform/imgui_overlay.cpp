@@ -2567,7 +2567,7 @@ void imgui_overlay_render(void)
             IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
             if (img) {
                 ImGui::Text("Name:        %.15s", img->n_s);
-                ImGui::Text("Size:        %d x %d", img->w, img->h);
+                ImGui::Text("Size:        %d x %d", (int)img->w, (int)img->h);
                 
                 if (img->data_p && img->w > 0 && img->h > 0) {
                     int uncomp_size = img->w * img->h;
@@ -2590,12 +2590,12 @@ void imgui_overlay_render(void)
                 }
 
                 PAL *pal = get_pal(img->palnum);
-                if (pal) ImGui::Text("Pal:         %d  %.9s", img->palnum, pal->n_s);
-                else     ImGui::Text("Pal:         %d", img->palnum);
+                if (pal) ImGui::Text("Pal:         %d  %.9s", (int)img->palnum, pal->n_s);
+                else     ImGui::Text("Pal:         %d", (int)img->palnum);
 
-                ImGui::Text("AX/AY:       %d, %d", img->anix, img->aniy);
-                ImGui::Text("AX2/AY2:     %d, %d", img->anix2, img->aniy2);
-                ImGui::Text("AZ2:         %d", img->aniz2);
+                ImGui::Text("AX/AY:       %d, %d", (int)(short)img->anix, (int)(short)img->aniy);
+                ImGui::Text("AX2/AY2:     %d, %d", (int)(short)img->anix2, (int)(short)img->aniy2);
+                ImGui::Text("AZ2:         %d", (int)(short)img->aniz2);
 
                 char flagbuf[48] = {};
                 if (img->flags & 1)  strncat(flagbuf, "Marked ", 47);
@@ -2603,9 +2603,9 @@ void imgui_overlay_render(void)
                 if (img->flags & 4)  strncat(flagbuf, "Changed ", 47);
                 if (img->flags & 8)  strncat(flagbuf, "Delete ", 47);
                 if (!flagbuf[0])     strncpy(flagbuf, "-", 47);
-                ImGui::Text("Flags:       0x%04X  %s", img->flags, flagbuf);
+                ImGui::Text("Flags:       0x%04X  %s", (int)img->flags, flagbuf);
 
-                ImGui::Text("DATA:        0x%08X", (unsigned)(uintptr_t)img->data_p);
+                ImGui::Text("DATA:        %p", img->data_p);
 
                 ImGui::Spacing();
                 if (g_clipboard.valid) ImGui::TextDisabled("Clip:   %dx%d pixels", g_clipboard.w, g_clipboard.h);
@@ -2619,16 +2619,16 @@ void imgui_overlay_render(void)
         if (ImGui::CollapsingHeader("Anim Points")) {
             IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
             if (img) {
-                int ax = img->anix, ay = img->aniy;
-                int ax2 = img->anix2, ay2 = img->aniy2;
+                int ax = (short)img->anix, ay = (short)img->aniy;
+                int ax2 = (short)img->anix2, ay2 = (short)img->aniy2;
                 ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("X1##ptx",  &ax,  0, 639)) { undo_push(); img->anix  = (unsigned short)ax;  }
+                if (ImGui::SliderInt("X1##ptx",  &ax,  -1024, 1024)) { undo_push(); img->anix  = (unsigned short)(short)ax;  }
                 ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Y1##pty",  &ay,  0, 399)) { undo_push(); img->aniy  = (unsigned short)ay;  }
+                if (ImGui::SliderInt("Y1##pty",  &ay,  -1024, 1024)) { undo_push(); img->aniy  = (unsigned short)(short)ay;  }
                 ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("X2##ptx2", &ax2, 0, 639)) { undo_push(); img->anix2 = (unsigned short)ax2; }
+                if (ImGui::SliderInt("X2##ptx2", &ax2, -1024, 1024)) { undo_push(); img->anix2 = (unsigned short)(short)ax2; }
                 ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Y2##pty2", &ay2, 0, 399)) { undo_push(); img->aniy2 = (unsigned short)ay2; }
+                if (ImGui::SliderInt("Y2##pty2", &ay2, -1024, 1024)) { undo_push(); img->aniy2 = (unsigned short)(short)ay2; }
             } else {
                 ImGui::TextDisabled("No image selected");
             }
@@ -2637,13 +2637,20 @@ void imgui_overlay_render(void)
         /* --- Hitbox Editor --- */
         if (ImGui::CollapsingHeader("Hitbox")) {
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("X##hbx",  &g_hitbox_x, 0, 639)) undo_push();
+            if (ImGui::SliderInt("X##hbx",  &g_hitbox_x, -1024, 1024)) undo_push();
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("Y##hby",  &g_hitbox_y, 0, 399)) undo_push();
+            if (ImGui::SliderInt("Y##hby",  &g_hitbox_y, -1024, 1024)) undo_push();
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("W##hbw",  &g_hitbox_w, 1, 640)) undo_push();
+            if (ImGui::SliderInt("W##hbw",  &g_hitbox_w, 1, 2048)) undo_push();
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("H##hbh",  &g_hitbox_h, 1, 400)) undo_push();
+            if (ImGui::SliderInt("H##hbh",  &g_hitbox_h, 1, 2048)) undo_push();
+
+            ImGui::Spacing();
+            if (ImGui::Button("Copy ASM to Clipboard", ImVec2(-1, 0))) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "\t.word   %d,%d,%d,%d\t; Hitbox X, Y, W, H\n", g_hitbox_x, g_hitbox_y, g_hitbox_w, g_hitbox_h);
+                ImGui::SetClipboardText(buf);
+            }
         }
 
         /* --- Color --- */
@@ -2921,10 +2928,8 @@ void imgui_overlay_render(void)
                 if (drag1 && mbdn) {
                     int nx = (int)((mouse.x - img_pos.x) / sx);
                     int ny = (int)((mouse.y - img_pos.y) / sy);
-                    if (nx < 0) nx = 0; if (nx > 639) nx = 639;
-                    if (ny < 0) ny = 0; if (ny > 399) ny = 399;
-                    img->anix = (unsigned short)nx;
-                    img->aniy = (unsigned short)ny;
+                    img->anix = (unsigned short)(short)nx;
+                    img->aniy = (unsigned short)(short)ny;
                 } else if (!mbdn && drag1) { drag1 = false; undo_push(); }
 
                 if (img->anix2 || img->aniy2) {
@@ -2940,10 +2945,8 @@ void imgui_overlay_render(void)
                     if (drag2 && mbdn) {
                         int nx = (int)((mouse.x - img_pos.x) / sx);
                         int ny = (int)((mouse.y - img_pos.y) / sy);
-                        if (nx < 0) nx = 0; if (nx > 639) nx = 639;
-                        if (ny < 0) ny = 0; if (ny > 399) ny = 399;
-                        img->anix2 = (unsigned short)nx;
-                        img->aniy2 = (unsigned short)ny;
+                        img->anix2 = (unsigned short)(short)nx;
+                        img->aniy2 = (unsigned short)(short)ny;
                     } else if (!mbdn && drag2) { drag2 = false; undo_push(); }
                 }
             }
@@ -2979,8 +2982,6 @@ void imgui_overlay_render(void)
             if (g_hitbox_drag_corner >= 0 && mbdn) {
                 int mx = (int)((mouse.x - img_pos.x) / sx);
                 int my = (int)((mouse.y - img_pos.y) / sy);
-                if (mx < 0) mx = 0; if (mx > 639) mx = 639;
-                if (my < 0) my = 0; if (my > 399) my = 399;
                 int c = g_hitbox_drag_corner;
                 if (c == 0) { g_hitbox_w += g_hitbox_x - mx; g_hitbox_h += g_hitbox_y - my; g_hitbox_x = mx; g_hitbox_y = my; }
                 if (c == 1) { g_hitbox_w = mx - g_hitbox_x; g_hitbox_h += g_hitbox_y - my; g_hitbox_y = my; }
@@ -3262,22 +3263,22 @@ void imgui_overlay_render(void)
         IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
         if (ImGui::CollapsingHeader("IMAGE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (img) {
-                ImGui::Text("NXT_p:    0x%08X",   (unsigned)(uintptr_t)img->nxt_p);
+                ImGui::Text("NXT_p:    %p",       img->nxt_p);
                 ImGui::Text("N_s:      %.15s",    img->n_s);
-                ImGui::Text("FLAGS:    0x%04X",   img->flags);
-                ImGui::Text("ANIX:     %u",       img->anix);
-                ImGui::Text("ANIY:     %u",       img->aniy);
-                ImGui::Text("W:        %u",       img->w);
-                ImGui::Text("H:        %u",       img->h);
-                ImGui::Text("PALNUM:   %u",       img->palnum);
-                ImGui::Text("DATA_p:   0x%08X",   (unsigned)(uintptr_t)img->data_p);
-                if (img->pttbl_p) ImGui::Text("PTTBL_p:  0x%08X", (unsigned)(uintptr_t)img->pttbl_p);
+                ImGui::Text("FLAGS:    0x%04X",   (int)img->flags);
+                ImGui::Text("ANIX:     %d",       (int)(short)img->anix);
+                ImGui::Text("ANIY:     %d",       (int)(short)img->aniy);
+                ImGui::Text("W:        %d",       (int)img->w);
+                ImGui::Text("H:        %d",       (int)img->h);
+                ImGui::Text("PALNUM:   %d",       (int)img->palnum);
+                ImGui::Text("DATA_p:   %p",       img->data_p);
+                if (img->pttbl_p) ImGui::Text("PTTBL_p:  %p", img->pttbl_p);
                 else ImGui::TextDisabled("PTTBL_p:  NULL");
-                ImGui::Text("ANIX2:    %u",       img->anix2);
-                ImGui::Text("ANIY2:    %u",       img->aniy2);
-                ImGui::Text("ANIZ2:    %u",       img->aniz2);
-                ImGui::Text("OPALS:    0x%04X",   img->opals);
-                ImGui::Text("TEMP:     0x%08X",   (unsigned)(uintptr_t)img->temp);
+                ImGui::Text("ANIX2:    %d",       (int)(short)img->anix2);
+                ImGui::Text("ANIY2:    %d",       (int)(short)img->aniy2);
+                ImGui::Text("ANIZ2:    %d",       (int)(short)img->aniz2);
+                ImGui::Text("OPALS:    0x%04X",   (int)img->opals);
+                ImGui::Text("TEMP:     %p",       img->temp);
             } else {
                 ImGui::TextDisabled("No image selected");
             }
@@ -3287,14 +3288,14 @@ void imgui_overlay_render(void)
         PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
         if (ImGui::CollapsingHeader("PALETTE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (pal) {
-                ImGui::Text("NXT_p:    0x%08X",   (unsigned)(uintptr_t)pal->nxt_p);
+                ImGui::Text("NXT_p:    %p",       pal->nxt_p);
                 ImGui::Text("N_s:      %.9s",     pal->n_s);
                 ImGui::Text("FLAGS:    0x%02X",   pal->flags);
                 ImGui::Text("BITSPIX:  %u",       pal->bitspix);
                 ImGui::Text("NUMC:     %u",       pal->numc);
                 ImGui::Text("PAD:      0x%04X",   pal->pad);
-                ImGui::Text("DATA_p:   0x%08X",   (unsigned)(uintptr_t)pal->data_p);
-                ImGui::Text("TEMP:     0x%08X",   (unsigned)(uintptr_t)pal->temp);
+                ImGui::Text("DATA_p:   %p",       pal->data_p);
+                ImGui::Text("TEMP:     %p",       pal->temp);
             } else {
                 ImGui::TextDisabled("No palette selected");
             }
