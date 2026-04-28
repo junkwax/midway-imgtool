@@ -2111,6 +2111,15 @@ void imgui_overlay_render(void)
     }
 
     /* Image Operations */
+    if (ImGui::Shortcut(ImGuiKey_Space, route)) {
+        IMG *img = get_img(ilselected); if (img) { img->flags ^= 1; g_dirty = true; }
+    }
+    if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_M, route)) {
+        IMG *p = (IMG*)img_p; while (p) { p->flags |= 1; p = (IMG*)p->nxt_p; }
+    }
+    if (ImGui::Shortcut(ImGuiKey_M, route)) {
+        IMG *p = (IMG*)img_p; while (p) { p->flags &= ~1; p = (IMG*)p->nxt_p; }
+    }
     if (ImGui::Shortcut(ImGuiKey_Semicolon, route)) LeastSquaresReduceMarked();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_B, route)) OpenFileDialog(FileDialogMode::ExportTga);
 
