@@ -50,7 +50,7 @@ mkdir build && cd build
 cmake .. && cmake --build .
 ```
 
-The build copies `SDL2.dll` (Windows), `it.hlp`, `DMA2.txt`, and the bundled `assets/MaterialSymbolsSharp-Regular.ttf` icon font next to the executable.
+The build copies `SDL2.dll` (Windows), `it.hlp`, and the bundled `assets/MaterialSymbolsSharp-Regular.ttf` icon font next to the executable.
 
 ---
 
@@ -58,9 +58,7 @@ The build copies `SDL2.dll` (Windows), `it.hlp`, `DMA2.txt`, and the bundled `as
 
 Drop the contents of the `Release/` folder anywhere and run `imgtool.exe`. No install, no registry changes.
 
-**New users:** read [QUICKSTART.md](QUICKSTART.md) — it walks through opening a real `.IMG`, reading the UI, and making your first edit.
-
-Press `h` in the app for the live key reference. `F9` opens the **Debug Info** popup. `Help > DMA2 Reference` opens the original Williams DMA #2 hardware document. `Help > About` shows the build timestamp and git revision.
+Press `h` in the app for the full help reference — quickstart guide, keyboard shortcuts, file format info, and the Williams DMA #2 hardware document. `F9` opens the **Debug Info** popup. `Help > About` shows the build timestamp and git revision.
 
 ### Common keys
 
@@ -94,8 +92,6 @@ Press `h` in the app for the live key reference. `F9` opens the **Debug Info** p
 ## File format notes
 
 IMG files are later built into IRW data for ROMs using the `.LOD` files and `load2.exe`. Pre-2.x IMG files are auto-converted on open.
-
-For deeper format details see [FILE_FORMATS.md](FILE_FORMATS.md). `DMA2.txt` is the original Williams DMA #2 hardware reference document.
 
 ---
 
