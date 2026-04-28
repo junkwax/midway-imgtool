@@ -2252,11 +2252,12 @@ void imgui_overlay_render(void)
                 "Uses anipoints to align; same palette required.");
             if (ImGui::MenuItem("Bulk Restore from Source (overwrite)")) {
                 int n = RestoreMarkedFromSourceForce();
+                IMG *s = get_img(ilselected);
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         n > 0 ? "Bulk-restored %d pixel(s) from selected source."
-                               : "No pixels written. Check selection, marks, anipoints.",
-                         n);
-                g_restore_msg_timer = 4.0f;
+                         n > 0 ? "Bulk-restored %d px. Source anipt (%d,%d) %dx%d"
+                               : "0 px restored. Source anipt (%d,%d) %dx%d. Check marks/anipoints.",
+                         n, s? (int)(short)s->anix:0, s? (int)(short)s->aniy:0, s? (int)s->w:0, s? (int)s->h:0);
+                g_restore_msg_timer = 6.0f;
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Unconditionally overwrites every pixel in marked images\n"
@@ -3376,9 +3377,9 @@ void imgui_overlay_render(void)
     }
 
     /* ===== ABOUT MODAL ===== */
-    if (g_show_about) ImGui::OpenPopup("About midway-imgtool");
-    if (ImGui::BeginPopupModal("About midway-imgtool", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("midway-imgtool");
+    if (g_show_about) ImGui::OpenPopup("About Imgtool");
+    if (ImGui::BeginPopupModal("About Imgtool", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Imgtool");
         ImGui::Separator();
         ImGui::Text("A modern port of the 1992 Midway Image Tool.");
         ImGui::Spacing();

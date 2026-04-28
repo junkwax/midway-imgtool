@@ -387,9 +387,11 @@ int RestoreMarkedFromSourceForce(void)
     const unsigned char *src_pix = (const unsigned char *)src->data_p;
     int src_stride = (src->w + 3) & ~3;
     int total_written = 0;
+    int imgs_processed = 0;
 
     for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
         if (!(t->flags & 1) || t == src || !t->data_p || t->w == 0 || t->h == 0) continue;
+        imgs_processed++;
 
         unsigned char *dst_pix = (unsigned char *)t->data_p;
         int dst_stride = (t->w + 3) & ~3;
