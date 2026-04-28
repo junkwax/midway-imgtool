@@ -440,6 +440,128 @@ static void ClearExtraData(void)
     g_img_tex_idx = -2;
 }
 
+/* ---- C++ ports of ASM operations ---- */
+
+static void OpenRenameImage(void);  /* forward decl — used by DuplicateImage */
+
+/* Swap to the alternate (second) image list.  Purely swaps globals —
+   no ASM dependencies. */
+static void SwitchImageList(void)
+{
+    void *tmp_p = img_p;  img_p = img2_p;  img2_p = tmp_p;
+    unsigned int tmp_cnt = imgcnt;  imgcnt = img2cnt;  img2cnt = tmp_cnt;
+    int tmp_sel = ilselected;  ilselected = il2selected;  il2selected = tmp_sel;
+    unsigned int tmp_prt = il1stprt;  il1stprt = il21stprt;  il21stprt = tmp_prt;
+    g_img_tex_idx = -2;
+}
+
+/* Set the selected image's PTTBL.ID to (il2selected + 1).  If no PTTBL
+   exists for the image, allocate one via the ASM memory pool. */
+static void SetIDFromSecondList(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img) return;
+
+    if (!img->pttbl_p) {
+        imgtool_img_pttbladd(ilselected);
+        img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+        if (!img || !img->pttbl_p) return;
+    }
+
+    /* PTTBL.ID is at struct offset 14 (dw aligned, pack-2) */
+    unsigned char *pttbl = (unsigned char *)img->pttbl_p;
+    unsigned short new_id = (unsigned short)(il2selected + 1);
+    pttbl[14] = (unsigned char)(new_id & 0xFF);
+    pttbl[15] = (unsigned char)(new_id >> 8);
+}
+
+/* Duplicate the selected image: allocate a new IMG via the ASM pool,
+   copy all fields (including pixel data and PTTBL), then open the
+   ImGui rename dialog so the user can name the copy. */
+static void DuplicateImage(void)
+{
+    IMG *src = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!src) return;
+
+    undo_push();
+
+    IMG *dst = (IMG *)imgtool_img_alloc();
+    if (!dst) return;
+
+    /* Copy pixel data */
+    dst->data_p = NULL;
+    if (src->data_p) {
+        dst->data_p = mem_duplicate(src->data_p);
+        if (!dst->data_p) goto err;
+    }
+
+    /* Copy point table */
+    dst->pttbl_p = NULL;
+    if (src->pttbl_p) {
+        dst->pttbl_p = mem_duplicate(src->pttbl_p);
+        if (!dst->pttbl_p) goto err;
+    }
+
+    /* Copy header fields */
+    dst->flags  = src->flags;
+    dst->anix   = src->anix;
+    dst->aniy   = src->aniy;
+    dst->w      = src->w;
+    dst->h      = src->h;
+    dst->palnum = src->palnum;
+    dst->anix2  = src->anix2;
+    dst->aniy2  = src->aniy2;
+    dst->aniz2  = src->aniz2;
+    dst->opals  = src->opals;
+
+    strncpy(dst->n_s, src->n_s, 15);
+    dst->n_s[15] = '\0';
+
+    /* Select the new image and open rename */
+    ilselected = (int)imgcnt - 1;
+    g_img_tex_idx = -2;
+    OpenRenameImage();
+    return;
+
+err:
+    /* Rollback: delete the newly-allocated image */
+    if (dst->data_p) mem_free(dst->data_p);
+    if (dst->pttbl_p) mem_free(dst->pttbl_p);
+    /* img_alloc appended the node — unlink it */
+    {
+        IMG *prev = NULL;
+        IMG *cur = (IMG *)img_p;
+        while (cur && cur != dst) { prev = cur; cur = (IMG *)cur->nxt_p; }
+        if (cur == dst) {
+            if (prev) prev->nxt_p = cur->nxt_p;
+            else img_p = cur->nxt_p;
+            imgcnt--;
+        }
+    }
+    mem_free(dst);
+}
+
+/* Add a new blank 256-color palette.  Moved from imgtool_thunks.asm;
+   uses the ASM memory pool via thunks (pal_alloc, mem_alloc). */
+static void AddNewPalette(void)
+{
+    PAL *pal = (PAL *)imgtool_pal_alloc();
+    if (!pal) return;
+
+    pal->flags   = 0;
+    pal->bitspix = 8;
+    pal->numc    = 256;
+    pal->pad     = 0;
+    pal->n_s[0]  = '\0';
+
+    unsigned char *buf = (unsigned char *)imgtool_mem_alloc(512);
+    if (!buf) return;
+    pal->data_p = buf;
+    memset(buf, 0, 512);
+
+    if (palcnt > 0) plselected = (int)palcnt - 1;
+}
+
 static void OpenRenameImage(void)
 {
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
@@ -1775,7 +1897,7 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",  "Ctrl+R"))  OpenRenameImage();
             if (ImGui::MenuItem("Delete Image",  "Ctrl+D"))  DeleteImage(ilselected);
-            if (ImGui::MenuItem("Duplicate"))                ilst_duplicate();
+            if (ImGui::MenuItem("Duplicate"))                DuplicateImage();
             if (ImGui::MenuItem("Build TGA",     "Ctrl+B"))  OpenFileDialog(FileDialogMode::ExportTga);
             ImGui::EndMenu();
         }
@@ -1809,11 +1931,11 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",             "Ctrl+R"))       OpenRenameImage();
             if (ImGui::MenuItem("Add/Del Point Table",      "Ctrl+P"))       TogglePointTable();
-            if (ImGui::MenuItem("Set ID from 2nd List",     "i"))            ilst_setidfmnxtlst();
+            if (ImGui::MenuItem("Set ID from 2nd List",     "i"))            SetIDFromSecondList();
             if (ImGui::MenuItem("Least-Squares Reduce",     ";"))            LeastSquaresReduceMarked();
             if (ImGui::MenuItem("Clear Extra Data",         "Alt+C"))        ClearExtraData();
             ImGui::Separator();
-            if (ImGui::MenuItem("Switch Image List",        "Tab"))          ilst_nxtlst();
+            if (ImGui::MenuItem("Switch Image List",        "Tab"))          SwitchImageList();
             ImGui::Separator();
             if (ImGui::BeginMenu("Marked Images")) {
                 if (ImGui::MenuItem("Rename Marked"))               OpenRenameMarkedImages();
@@ -2097,7 +2219,7 @@ void imgui_overlay_render(void)
             ImGui::SameLine();
             if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
             if (ImGui::SmallButton("Add")) {
-                imgtool_addnewpal();
+                AddNewPalette();
                 if (palcnt > 0) plselected = (int)palcnt - 1;
             }
             ImGui::SameLine();

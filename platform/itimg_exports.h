@@ -26,6 +26,12 @@ extern unsigned int   fileversion;
 extern char           fpath_s[64];
 extern char           fname_s[13];
 extern char           fnametmp_s[13];
+/* Second image list globals (for dual-list / Tab switching) */
+extern void          *img2_p;
+extern unsigned int   img2cnt;
+extern int            il2selected;
+extern unsigned int   il1stprt;
+extern unsigned int   il21stprt;
 
 /* ---- Asm-side internal subroutines ---- */
 void ilst_duplicate(void);
@@ -40,6 +46,9 @@ void loadtga(void);
 void savetga(void);
 void* img_alloc(void);
 void* imgtool_img_pttbladd(int img_idx);   /* cdecl-safe wrapper, allocates PTTBL */
+void* imgtool_img_alloc(void);             /* cdecl-safe wrapper around img_alloc */
+void* imgtool_pal_alloc(void);             /* cdecl-safe wrapper around pal_alloc */
+void* imgtool_mem_alloc(unsigned int size); /* cdecl-safe wrapper around ASM mem_alloc */
 void mem_free(void* ptr);
 void* mem_duplicate(void* ptr);
 void ilst_setidfmnxtlst(void);
@@ -52,6 +61,11 @@ void plst_merge(void);
 
 /* ---- Linker directives to map C-symbols to ASM COFF names ---- */
 #ifdef _MSC_VER
+#pragma comment(linker, "/alternatename:_img2_p=img2_p")
+#pragma comment(linker, "/alternatename:_img2cnt=img2cnt")
+#pragma comment(linker, "/alternatename:_il2selected=il2selected")
+#pragma comment(linker, "/alternatename:_il1stprt=il1stprt")
+#pragma comment(linker, "/alternatename:_il21stprt=il21stprt")
 #pragma comment(linker, "/alternatename:_img_p=img_p")
 #pragma comment(linker, "/alternatename:_imgcnt=imgcnt")
 #pragma comment(linker, "/alternatename:_ilselected=ilselected")
@@ -77,6 +91,9 @@ void plst_merge(void);
 #pragma comment(linker, "/alternatename:_savetga=savetga")
 #pragma comment(linker, "/alternatename:_img_alloc=img_alloc")
 #pragma comment(linker, "/alternatename:_imgtool_img_pttbladd=imgtool_img_pttbladd")
+#pragma comment(linker, "/alternatename:_imgtool_img_alloc=imgtool_img_alloc")
+#pragma comment(linker, "/alternatename:_imgtool_pal_alloc=imgtool_pal_alloc")
+#pragma comment(linker, "/alternatename:_imgtool_mem_alloc=imgtool_mem_alloc")
 #pragma comment(linker, "/alternatename:_mem_free=mem_free")
 #pragma comment(linker, "/alternatename:_mem_duplicate=mem_duplicate")
 #pragma comment(linker, "/alternatename:_ilst_setidfmnxtlst=ilst_setidfmnxtlst")
