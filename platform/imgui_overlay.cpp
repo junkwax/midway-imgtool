@@ -366,6 +366,152 @@ static void LoadImgFile(void)
     if (imgcnt > 0) ilselected = 0;
 }
 
+/* ---- SaveImgFile: port of img_save (IMG file writer) ---- */
+static void SaveImgFile(void)
+{
+    FILE *f = fopen(fname_s, "wb");
+    if (!f) return;
+
+    int num_imgs = (int)imgcnt;
+    int num_pals = (int)palcnt;
+
+    /* Build LIB_HDR */
+    LIB_HDR hdr = {};
+    hdr.imgcnt  = (unsigned short)num_imgs;
+    hdr.palcnt  = (unsigned short)(num_pals + NUMDEFPAL);
+    hdr.version = 0x0634;
+    hdr.temp    = 0xABCD;
+    hdr.oset    = sizeof(LIB_HDR);  /* IMAGE records start here */
+    hdr.seqcnt  = 0;
+    hdr.scrcnt  = 0;
+    hdr.damcnt  = 0;
+    for (int i = 0; i < 4; i++) hdr.bufscr[i] = (unsigned char)-1;
+
+    /* Write placeholder header (will rewrite at end) */
+    fwrite(&hdr, 1, sizeof(hdr), f);
+
+    /* Write IMAGE records (pass 1: assign PTTBL indices) */
+    int pt_index = 0;
+    IMAGE_disk idisk = {};
+    unsigned int img_data_base = (unsigned int)(sizeof(LIB_HDR) + num_imgs * sizeof(IMAGE_disk));
+    IMG *img = (IMG *)img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        idisk = {};
+        strncpy(idisk.n_s, img->n_s, 15); idisk.n_s[15] = '\0';
+        idisk.flags  = img->flags;
+        idisk.anix   = img->anix;
+        idisk.aniy   = img->aniy;
+        idisk.w      = img->w;
+        idisk.h      = img->h;
+        idisk.palnum = (unsigned short)((int)img->palnum + NUMDEFPAL);
+        idisk.anix2  = img->anix2;
+        idisk.aniy2  = img->aniy2;
+        idisk.aniz2  = img->aniz2;
+        idisk.opals  = img->opals;
+        idisk.lib    = img->file_lib;
+        idisk.frm    = img->file_frm;
+        idisk.pttblnum = img->pttbl_p ? (unsigned short)(pt_index++) : (unsigned short)0xFFFF;
+
+        fwrite(&idisk, 1, sizeof(idisk), f);
+    }
+
+    /* Write image pixel data */
+    unsigned int cur_img_data = img_data_base;
+    /* Seek back to start of data area to fill in offsets */
+    long img_hdr_start = sizeof(LIB_HDR);
+    img = (IMG *)img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        /* Write pixel data at current position */
+        fseek(f, (long)cur_img_data, SEEK_SET);
+        unsigned int stride = ((unsigned int)img->w + 3) & ~3;
+        unsigned int sz = stride * img->h;
+        if (img->data_p)
+            fwrite(img->data_p, 1, sz, f);
+        else {
+            /* Write zeros */
+            unsigned char *z = (unsigned char *)calloc(1, sz);
+            if (z) { fwrite(z, 1, sz, f); free(z); }
+        }
+
+        /* Patch OSET in the IMAGE record */
+        long save_pos = ftell(f);
+        fseek(f, img_hdr_start + offsetof(IMAGE_disk, oset), SEEK_SET);
+        fwrite(&cur_img_data, 1, 4, f);
+        fseek(f, save_pos, SEEK_SET);
+
+        cur_img_data += sz;
+        img_hdr_start += sizeof(IMAGE_disk);
+    }
+
+    /* Write PALETTE records (skip NUMDEFPAL default palettes) */
+    unsigned int pal_hdr_base = cur_img_data;
+    PAL *pal = (PAL *)pal_p;
+    for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
+        PALETTE_disk pdisk = {};
+        strncpy(pdisk.n_s, pal->n_s, 9); pdisk.n_s[9] = '\0';
+        pdisk.flags   = pal->flags;
+        pdisk.bitspix = pal->bitspix;
+        pdisk.numc    = pal->numc;
+        /* OSET will be patched */
+        fwrite(&pdisk, 1, sizeof(pdisk), f);
+    }
+
+    /* Write palette color data */
+    unsigned int cur_pal_data = pal_hdr_base + num_pals * sizeof(PALETTE_disk);
+    long pal_hdr_pos = (long)pal_hdr_base;
+    pal = (PAL *)pal_p;
+    for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
+        fseek(f, (long)cur_pal_data, SEEK_SET);
+        unsigned int sz = (unsigned int)pal->numc * 2;
+        if (pal->data_p)
+            fwrite(pal->data_p, 1, sz, f);
+        else {
+            unsigned char *z = (unsigned char *)calloc(1, sz);
+            if (z) { fwrite(z, 1, sz, f); free(z); }
+        }
+
+        /* Patch OSET in PALETTE record */
+        long save_pos = ftell(f);
+        fseek(f, pal_hdr_pos + offsetof(PALETTE_disk, oset), SEEK_SET);
+        fwrite(&cur_pal_data, 1, 4, f);
+        fseek(f, save_pos, SEEK_SET);
+
+        cur_pal_data += sz;
+        pal_hdr_pos += sizeof(PALETTE_disk);
+    }
+
+    /* Write point tables after palette data */
+    unsigned int pt_base = cur_pal_data;
+    img = (IMG *)img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        if (img->pttbl_p) {
+            fseek(f, (long)pt_base, SEEK_SET);
+            fwrite(img->pttbl_p, 1, 40, f);
+
+            /* Patch PTTBLNUM in IMAGE record */
+            long save_pos = ftell(f);
+            fseek(f, (long)(sizeof(LIB_HDR) + i * sizeof(IMAGE_disk) + offsetof(IMAGE_disk, pttblnum)), SEEK_SET);
+            unsigned short tbn = (unsigned short)i;
+            fwrite(&tbn, 1, 2, f);
+            fseek(f, save_pos, SEEK_SET);
+
+            pt_base += 40;
+        }
+    }
+
+    /* Set end position */
+    fseek(f, (long)pt_base, SEEK_SET);
+
+    /* Update LIB_HDR counts */
+    hdr.palcnt = (unsigned short)(num_pals + NUMDEFPAL);
+    hdr.imgcnt = (unsigned short)num_imgs;
+    rewind(f);
+    fwrite(&hdr, 1, sizeof(hdr), f);
+
+    fclose(f);
+    fileversion = hdr.version;
+}
+
 /* ---- SDL state ---- */
 static SDL_Window   *g_imgui_window   = NULL;
 static SDL_Renderer *g_imgui_renderer = NULL;
@@ -2175,7 +2321,7 @@ static void DrawFileDialog() {
                 _chdir(g_file_dialog_dir);
                 
                 if (g_file_dialog_mode == FileDialogMode::SaveImg) {
-                    img_save();
+                    SaveImgFile();
                     g_last_saved_version = fileversion; /* Mark as saved in C++ state */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
@@ -3670,7 +3816,7 @@ void imgui_overlay_render(void)
             g_show_unsaved_confirm = false;
             ImGui::CloseCurrentPopup();
             if (fname_s[0] != '\0') {
-                img_save();
+                SaveImgFile();
                 g_last_saved_version = fileversion;
                 ExitProcess(0);
             } else {
