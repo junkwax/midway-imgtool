@@ -1,10 +1,3 @@
-
-IT/IT.EXE
-*.OBJ
-
-# Claude Code local config
-.claude/
-
 # Build output / CMake
 build/
 build-*/
@@ -15,7 +8,21 @@ cmake_install.cmake
 *.vcxproj*
 *.sln
 
-# Editor / OS cruft
+# Build artifacts
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.map
+
+# Build scripts output dir
+imgtool-build/
+
+# Crash dump
+crashdump.dmp
+
+# Editor / OS
 .vscode/
 .idea/
 *.swp
@@ -23,10 +30,5 @@ cmake_install.cmake
 .DS_Store
 Thumbs.db
 
-# Misc build artifacts
-*.exp
-*.lib
-*.pdb
-*.ilk
-*.map
-GEMINI.md
+# AI assistants local config
+.claude/
