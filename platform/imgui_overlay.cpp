@@ -2093,8 +2093,114 @@ static void LoadLbm(void)
     if (loaded_img && imgcnt>0) ilselected=(int)imgcnt-1;
 }
 
+/* ---- PNG Import ---- */
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+static void ImportPng(const char *path)
+{
+    int w, h, channels;
+    unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
+    if (!data || w == 0 || h == 0) return;
+
+    struct ColorCount { unsigned int rgb; int count; unsigned char idx; };
+    ColorCount hist[4096] = {};
+    int hist_count = 0;
+
+    for (int i = 0; i < w * h; i++) {
+        unsigned char r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2], a = data[i * 4 + 3];
+        if (a < 128) continue;
+        unsigned int rgb = ((unsigned int)(r & 0xF8) << 7) | ((unsigned int)(g & 0xFC) << 2) | ((unsigned int)(b >> 3));
+        int found = -1;
+        for (int j = 0; j < hist_count; j++) { if (hist[j].rgb == rgb) { found = j; break; } }
+        if (found >= 0) hist[found].count++;
+        else if (hist_count < 4096) { hist[hist_count].rgb = rgb; hist[hist_count].count = 1; hist_count++; }
+    }
+    for (int i = 0; i < hist_count - 1; i++)
+        for (int j = i + 1; j < hist_count; j++)
+            if (hist[j].count > hist[i].count) { ColorCount t = hist[i]; hist[i] = hist[j]; hist[j] = t; }
+
+    int pal_colors = hist_count < 255 ? hist_count : 255;
+    PAL *pal = AllocPal();
+    if (!pal) { stbi_image_free(data); return; }
+    pal->flags = 0; pal->bitspix = 8; pal->numc = (unsigned short)(pal_colors + 1);
+    pal->data_p = PoolAlloc((unsigned int)(pal_colors + 1) * 2);
+    if (!pal->data_p) { stbi_image_free(data); return; }
+    ((unsigned char *)pal->data_p)[0] = 0; ((unsigned char *)pal->data_p)[1] = 0;
+    for (int i = 0; i < pal_colors; i++) {
+        unsigned int rgb = hist[i].rgb;
+        unsigned short w15 = (unsigned short)((((rgb >> 7) & 0x1F) << 10) | (((rgb >> 2) & 0x1F) << 5) | (rgb & 0x1F));
+        ((unsigned char *)pal->data_p)[(i + 1) * 2] = (unsigned char)(w15 & 0xFF);
+        ((unsigned char *)pal->data_p)[(i + 1) * 2 + 1] = (unsigned char)(w15 >> 8);
+        hist[i].idx = (unsigned char)(i + 1);
+    }
+
+    IMG *img = AllocImg();
+    if (!img) { stbi_image_free(data); return; }
+    img->w = (unsigned short)w; img->h = (unsigned short)h;
+    img->palnum = (unsigned short)(palcnt - 1); img->flags = 0;
+    img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
+    img->pttbl_p = NULL; img->opals = (unsigned short)-1;
+    unsigned short stride = (unsigned short)((w + 3) & ~3);
+    img->data_p = PoolAlloc((unsigned int)stride * h);
+    if (!img->data_p) { stbi_image_free(data); return; }
+    memset(img->data_p, 0, (unsigned int)stride * h);
+
+    const char *name = strrchr(path, '/'); if (!name) name = strrchr(path, '\\'); if (!name) name = path; else name++;
+    strncpy(img->n_s, name, 15); img->n_s[15] = '\0';
+    char *dot = strrchr(img->n_s, '.'); if (dot) *dot = '\0';
+    strncpy(pal->n_s, img->n_s, 8); pal->n_s[8] = 'P'; pal->n_s[9] = '\0';
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char *p = data + (y * w + x) * 4;
+            if (p[3] < 128) continue;
+            unsigned int rgb = ((unsigned int)(p[0] & 0xF8) << 7) | ((unsigned int)(p[1] & 0xFC) << 2) | ((unsigned int)(p[2] >> 3));
+            for (int j = 0; j < pal_colors; j++) {
+                if (hist[j].rgb == rgb) { ((unsigned char *)img->data_p)[y * stride + x] = hist[j].idx; break; }
+            }
+        }
+    }
+    stbi_image_free(data);
+    if (imgcnt > 0) ilselected = (int)imgcnt - 1;
+    g_img_tex_idx = -2;
+}
+
+/* ---- PNG Export ---- */
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+static void ExportPng(const char *path)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+    PAL *pal = get_pal(img->palnum);
+    if (!pal || !pal->data_p) return;
+    int w = img->w, h = img->h;
+    unsigned short stride = (unsigned short)((w + 3) & ~3);
+    unsigned char *rgba = (unsigned char *)malloc((size_t)w * h * 4);
+    if (!rgba) return;
+    const unsigned char *pal_data = (const unsigned char *)pal->data_p;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = ((const unsigned char *)img->data_p)[y * stride + x];
+            int off = (y * w + x) * 4;
+            if (ci == 0) { rgba[off+0]=0; rgba[off+1]=0; rgba[off+2]=0; rgba[off+3]=0; }
+            else {
+                unsigned short pw = (unsigned short)(pal_data[ci*2] | (pal_data[ci*2+1] << 8));
+                rgba[off+0] = (unsigned char)(((pw >> 10) & 0x1F) << 3);
+                rgba[off+1] = (unsigned char)(((pw >>  5) & 0x1F) << 3);
+                rgba[off+2] = (unsigned char)(( pw        & 0x1F) << 3);
+                rgba[off+3] = 255;
+            }
+        }
+    }
+    stbi_write_png(path, w, h, 4, rgba, w * 4);
+    free(rgba);
+}
+
 /* ---- ImGui Native File Dialog ---- */
-enum class FileDialogMode { OpenImg, AppendImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, WriteAniLst };
+enum class FileDialogMode { OpenImg, AppendImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ExportPng, WriteAniLst };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
@@ -2276,6 +2382,8 @@ static void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::SaveMarkedLbm) title = "Save Marked LBM";
     else if (g_file_dialog_mode == FileDialogMode::LoadTga) title = "Load TGA File";
     else if (g_file_dialog_mode == FileDialogMode::SaveTga) title = "Save TGA File";
+    else if (g_file_dialog_mode == FileDialogMode::ImportPng) title = "Import PNG File";
+    else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
     else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) title = "Write ANILST";
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
@@ -2327,7 +2435,9 @@ static void DrawFileDialog() {
         ImGui::InputText("File Name", g_file_dialog_file, sizeof(g_file_dialog_file));
         ImGui::SameLine();
         
-        const char* btn_text = (g_file_dialog_mode == FileDialogMode::OpenImg ||
+        const char* btn_text = (g_file_dialog_mode == FileDialogMode::ImportPng ||
+                                g_file_dialog_mode == FileDialogMode::ExportPng) ? "OK" :
+                               (g_file_dialog_mode == FileDialogMode::OpenImg ||
                                 g_file_dialog_mode == FileDialogMode::AppendImg ||
                                 g_file_dialog_mode == FileDialogMode::LoadLbm ||
                                 g_file_dialog_mode == FileDialogMode::LoadTga) ? "Open" : "Save";
@@ -2339,6 +2449,13 @@ static void DrawFileDialog() {
                 if (dot != std::string::npos) full_path = full_path.substr(0, dot);
                 full_path += ".TGA";
                 BuildTgaFromMarked(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::ExportPng) {
+                size_t dot = full_path.find_last_of('.');
+                if (dot != std::string::npos) full_path = full_path.substr(0, dot);
+                full_path += ".PNG";
+                ExportPng(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::ImportPng) {
+                ImportPng(full_path.c_str());
             } else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".ASM";
@@ -2865,11 +2982,15 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Append",  "a"))      OpenFileDialog(FileDialogMode::AppendImg);
             ImGui::Separator();
             if (ImGui::BeginMenu("Import")) {
+                if (ImGui::MenuItem("PNG File..."))                 OpenFileDialog(FileDialogMode::ImportPng);
+                ImGui::Separator();
                 if (ImGui::MenuItem("Load LBM", "Alt+L"))  OpenFileDialog(FileDialogMode::LoadLbm);
                 if (ImGui::MenuItem("Load TGA", "Ctrl+L")) OpenFileDialog(FileDialogMode::LoadTga);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Export")) {
+                if (ImGui::MenuItem("PNG File..."))                    OpenFileDialog(FileDialogMode::ExportPng);
+                ImGui::Separator();
                 if (ImGui::MenuItem("Save LBM", "Alt+S"))        OpenFileDialog(FileDialogMode::SaveLbm);
                 if (ImGui::MenuItem("Save Marked LBM"))          OpenFileDialog(FileDialogMode::SaveMarkedLbm);
                 if (ImGui::MenuItem("Save TGA"))                 OpenFileDialog(FileDialogMode::SaveTga);
