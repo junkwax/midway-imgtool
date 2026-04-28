@@ -2128,6 +2128,7 @@ void imgui_overlay_render(void)
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 4));
         if (ImGui::BeginMenu("File")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("New"))             g_show_new_img_confirm = true;
             if (ImGui::MenuItem("Open...",  "Ctrl+O")) OpenFileDialog(FileDialogMode::OpenImg);
             if (ImGui::BeginMenu("Open Recent", !g_recent_files.empty())) {
@@ -2167,9 +2168,11 @@ void imgui_overlay_render(void)
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Esc")) g_pending_quit = true;
+            ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Edit")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             bool can_undo = g_undo_idx > 0;
             bool can_redo = g_undo_idx < g_undo_count - 1;
             if (!can_undo) ImGui::BeginDisabled();
@@ -2190,9 +2193,11 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Rename Image", "Ctrl+R")) OpenRenameImage();
             if (ImGui::MenuItem("Delete Image", "Ctrl+D")) DeleteImage(ilselected);
             if (ImGui::MenuItem("Duplicate"))              DuplicateImage();
+            ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Image")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Mark / Unmark",      "Space"))  { IMG *img = get_img(ilselected); if (img) img->flags ^= 1; }
             if (ImGui::MenuItem("Set All Marks",      "M"))      { IMG *p=(IMG*)img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
             if (ImGui::MenuItem("Clear All Marks",    "m"))      { IMG *p=(IMG*)img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
@@ -2221,9 +2226,11 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Set ID from 2nd List", "i"))      SetIDFromSecondList();
             if (ImGui::MenuItem("Switch Image List",    "Tab"))    SwitchImageList();
             if (ImGui::MenuItem("Clear Extra Data",     "Alt+C"))  ClearExtraData();
+            ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Operations")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Least-Squares Reduce", ";"))               LeastSquaresReduceMarked();
             ImGui::Separator();
             if (ImGui::MenuItem("Strip Edge"))                               StripMarkedImages(5);
@@ -2259,9 +2266,11 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Rename Marked"))                            OpenRenameMarkedImages();
             if (ImGui::MenuItem("Delete Marked"))                            DeleteMarkedImages();
             if (ImGui::MenuItem("Set Palette for Marked", "["))              SetPaletteOfMarked();
+            ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Palette")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Set for Image",       "]"))       SetPaletteOfSelected();
             if (ImGui::MenuItem("Merge Marked into Selected", "*")) MergeMarkedPalettes();
             if (ImGui::MenuItem("Delete Palette",      "Del"))     DeletePalette();
@@ -2279,19 +2288,24 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Invert Marks")) {
                 PAL *p=(PAL*)pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;}
             }
+            ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             ImGui::MenuItem("Anim Points",     NULL, &g_show_points);
             ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
             ImGui::MenuItem("DMA Compression", NULL, &g_show_dma_comp);
+            ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Help")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Show Help",  "h"))  g_show_help = true;
             if (ImGui::MenuItem("Debug Info", "F9")) g_show_debug = !g_show_debug;
             ImGui::Separator();
             if (ImGui::MenuItem("About...")) g_show_about = true;
+            ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
         ImGui::PopStyleVar(2);
