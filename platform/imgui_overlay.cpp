@@ -1963,7 +1963,7 @@ void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture 
     ImGuiStyle &style = ImGui::GetStyle();
     style.WindowPadding    = ImVec2(4, 4);
     style.FramePadding     = ImVec2(4, 3);
-    style.ItemSpacing      = ImVec2(4, 3);
+    style.ItemSpacing      = ImVec2(4, 5);
     style.ScrollbarSize    = 12.0f;
     style.WindowBorderSize = 0.0f;
     style.ChildBorderSize  = 1.0f;
