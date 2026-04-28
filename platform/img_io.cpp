@@ -357,7 +357,13 @@ int RestoreMarkedFromSource(void)
         }
     }
 
-    if (total_written > 0) g_img_tex_idx = -2;
+    if (total_written > 0) {
+        g_img_tex_idx = -2;
+        int idx = 0;
+        for (IMG *t2 = (IMG *)img_p; t2; t2 = (IMG *)t2->nxt_p, idx++) {
+            if ((t2->flags & 1) && t2 != src) { ilselected = idx; break; }
+        }
+    }
     return total_written;
 }
 
@@ -404,7 +410,14 @@ int RestoreMarkedFromSourceForce(void)
         }
     }
 
-    if (total_written > 0) g_img_tex_idx = -2;
+    if (total_written > 0) {
+        g_img_tex_idx = -2;
+        /* Jump to first marked image so the user sees the result */
+        int idx = 0;
+        for (IMG *t2 = (IMG *)img_p; t2; t2 = (IMG *)t2->nxt_p, idx++) {
+            if ((t2->flags & 1) && t2 != src) { ilselected = idx; break; }
+        }
+    }
     return total_written;
 }
 
