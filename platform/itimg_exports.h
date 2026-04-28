@@ -23,6 +23,9 @@ extern unsigned int   seqcnt;
 extern unsigned int   scrcnt;
 extern unsigned int   damcnt;
 extern unsigned int   fileversion;
+extern void          *scrseqmem_p;
+extern unsigned int   scrseqbytes;
+extern int            ilpalloaded;
 extern char           fpath_s[64];
 extern char           fname_s[13];
 extern char           fnametmp_s[13];
@@ -76,6 +79,9 @@ void plst_merge(void);
 #pragma comment(linker, "/alternatename:_scrcnt=scrcnt")
 #pragma comment(linker, "/alternatename:_damcnt=damcnt")
 #pragma comment(linker, "/alternatename:_fileversion=fileversion")
+#pragma comment(linker, "/alternatename:_scrseqmem_p=scrseqmem_p")
+#pragma comment(linker, "/alternatename:_scrseqbytes=scrseqbytes")
+#pragma comment(linker, "/alternatename:_ilpalloaded=ilpalloaded")
 #pragma comment(linker, "/alternatename:_fpath_s=fpath_s")
 #pragma comment(linker, "/alternatename:_fname_s=fname_s")
 #pragma comment(linker, "/alternatename:_fnametmp_s=fnametmp_s")

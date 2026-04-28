@@ -26,6 +26,7 @@ SLGAME	equ	0
 	public	pal_p, palcnt, plselected
 	public	img2_p, img2cnt, il2selected, il1stprt, il21stprt
 	public	seqcnt, scrcnt, damcnt, fileversion
+	public	scrseqmem_p, scrseqbytes, ilpalloaded
 	public	img_pttbladd		;Used by imgtool_img_pttbladd thunk
 	externdef	_3d_editorinit:near
 

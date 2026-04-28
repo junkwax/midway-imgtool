@@ -444,6 +444,61 @@ static void ClearExtraData(void)
 
 static void OpenRenameImage(void);  /* forward decl — used by DuplicateImage */
 
+/* Free all images, palettes, and sequence/script data.  Resets all counters
+   and selections.  Ported from img_clearall — called before img_load. */
+static void ClearAll(void)
+{
+    /* Delete all images (delete index 0 repeatedly, mirroring img_del(0) loop) */
+    while (img_p) {
+        IMG *cur = (IMG *)img_p;
+        img_p = cur->nxt_p;
+        if (cur->data_p)  mem_free(cur->data_p);
+        if (cur->pttbl_p) mem_free(cur->pttbl_p);
+        mem_free(cur);
+    }
+    imgcnt = 0;
+    ilselected = -1;
+
+    /* Delete all palettes */
+    while (pal_p) {
+        PAL *cur = (PAL *)pal_p;
+        pal_p = cur->nxt_p;
+        if (cur->data_p) mem_free(cur->data_p);
+        mem_free(cur);
+    }
+    palcnt = 0;
+    plselected = -1;
+
+    /* Free sequence/script memory */
+    if (scrseqmem_p) {
+        mem_free(scrseqmem_p);
+        scrseqmem_p = NULL;
+        scrseqbytes  = 0;
+    }
+
+    seqcnt = 0;
+    scrcnt = 0;
+    damcnt = 0;
+    ilpalloaded = -1;
+
+    /* Reset second image list */
+    if (img2_p) {
+        while (img2_p) {
+            IMG *cur = (IMG *)img2_p;
+            img2_p = cur->nxt_p;
+            if (cur->data_p)  mem_free(cur->data_p);
+            if (cur->pttbl_p) mem_free(cur->pttbl_p);
+            mem_free(cur);
+        }
+    }
+    img2cnt     = 0;
+    il2selected = -1;
+    il1stprt    = 0;
+    il21stprt   = 0;
+
+    g_img_tex_idx = -2;
+}
+
 /* Swap to the alternate (second) image list.  Purely swaps globals —
    no ASM dependencies. */
 static void SwitchImageList(void)
@@ -1379,7 +1434,7 @@ static void OpenImgFile(const std::string &full_path)
     }
     _chdir(dir.c_str());
 
-    imgtool_clearall();
+    ClearAll();
     img_load();
     g_last_saved_version = fileversion; /* fresh load = clean baseline */
     g_img_tex_idx = -2;
@@ -1517,7 +1572,7 @@ static void DrawFileDialog() {
                     g_last_saved_version = fileversion; /* Mark as saved in C++ state */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
-                    imgtool_clearall();
+                    ClearAll();
                     img_load();
                     g_last_saved_version = fileversion; /* fresh load = clean baseline */
                     RecentAdd(full_path);
@@ -2981,7 +3036,7 @@ void imgui_overlay_render(void)
         ImGui::Spacing();
         ImGui::Separator();
         if (ImGui::Button("New", ImVec2(80, 0))) {
-            imgtool_clearall();
+            ClearAll();
             fileversion = 0x0634;   /* Wimp V6.34 — current format */
             fname_s[0]  = 0;
             g_undo_count = 0;
