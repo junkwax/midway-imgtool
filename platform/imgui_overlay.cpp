@@ -176,8 +176,8 @@ static char         g_rename_buf[20] = {0};
 
 /* Unsaved changes confirmation */
 static bool g_show_unsaved_confirm = false;
-static unsigned int g_last_saved_version = 0;
 static bool g_pending_quit = false;
+static bool g_dirty = false;
 
 /* New IMG / Add Palette confirmations */
 static bool g_show_new_img_confirm = false;
@@ -509,6 +509,7 @@ static void SwitchImageList(void)
    exists for the image, allocate one via the ASM memory pool. */
 static void SetIDFromSecondList(void)
 {
+    g_dirty = true;
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img) return;
 
@@ -599,6 +600,7 @@ err:
    uses the ASM memory pool via thunks (pal_alloc, mem_alloc). */
 static void AddNewPalette(void)
 {
+    g_dirty = true;
     PAL *pal = (PAL *)AllocPal();
     if (!pal) return;
 
@@ -902,6 +904,7 @@ static void DeleteUnusedPaletteColors()
 /* ---- Strip Edge (DMA Compression Prep) ---- */
 static void StripMarkedImages(int max_transparent_neighbors, int specific_color = -1)
 {
+    g_dirty = true;
     IMG *img = (IMG *)img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
@@ -977,6 +980,7 @@ static void StripMarkedImages(int max_transparent_neighbors, int specific_color 
 /* ---- Dither Replace ---- */
 static void DitherReplaceMarkedImages(int specific_color)
 {
+    g_dirty = true;
     IMG *img = (IMG *)img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
@@ -1001,6 +1005,7 @@ static void DitherReplaceMarkedImages(int specific_color)
 /* ---- Least-Squares Reduce (Shrink Palette/Auto-Crop) ---- */
 static void LeastSquaresReduceMarked()
 {
+    g_dirty = true;
     IMG *img = (IMG *)img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
@@ -1206,7 +1211,7 @@ static void OpenImgFile(const std::string &full_path)
 
     ClearAll();
     LoadImgFile();
-    g_last_saved_version = fileversion; /* fresh load = clean baseline */
+    g_dirty = false; /* fresh load = clean baseline */
     g_img_tex_idx = -2;
     RecentAdd(full_path);
 }
@@ -1350,12 +1355,12 @@ static void DrawFileDialog() {
                 
                 if (g_file_dialog_mode == FileDialogMode::SaveImg) {
                     SaveImgFile();
-                    g_last_saved_version = fileversion; /* Mark as saved in C++ state */
+                    g_dirty = false; /* Mark as saved in C++ state */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
                     ClearAll();
                     LoadImgFile();
-                    g_last_saved_version = fileversion; /* fresh load = clean baseline */
+    g_dirty = false; /* fresh load = clean baseline */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
                     /* Append modifies the in-memory set on top of whatever
@@ -1734,6 +1739,7 @@ SDL-main branch -- 64-bit build.  github.com/junkwax/midway-imgtool
    Save persists them. */
 static void palette_writeback(int color_idx)
 {
+    g_dirty = true;
     PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
     if (!pal || !pal->data_p) return;
     if (color_idx < 0 || color_idx >= (int)pal->numc) return;
@@ -1795,6 +1801,7 @@ static void rebuild_img_texture(IMG *img)
 /* ---- Undo helpers ---- */
 void undo_push(void)
 {
+    g_dirty = true;
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img) return;
 
@@ -1890,6 +1897,7 @@ static void copy_image(void)
 
 static void apply_pasted_region(void)
 {
+    g_dirty = true;
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
 
@@ -1942,7 +1950,7 @@ void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture 
     g_imgui_window   = window;
     g_imgui_renderer = renderer;
     g_canvas_texture = canvas_tex;
-    g_last_saved_version = fileversion;
+    g_dirty = false;
 
     RecentLoad();
 
@@ -2022,7 +2030,7 @@ int imgui_overlay_wants_keyboard(void)
 
 int imgui_overlay_check_unsaved_and_quit(void)
 {
-    if (g_last_saved_version != fileversion && imgcnt > 0) {
+    if (g_dirty && imgcnt > 0) {
         g_show_unsaved_confirm = true;
         return 0;
     }
@@ -2042,7 +2050,7 @@ int imgui_overlay_should_quit(void)
 
 void imgui_overlay_mark_saved(void)
 {
-    g_last_saved_version = fileversion;
+    g_dirty = false;
 }
 
 /* =========================================================
@@ -2831,8 +2839,10 @@ void imgui_overlay_render(void)
                             g_pixel_undo_img = ilselected;
                         }
                         if (io.KeyShift) {
+                            g_dirty = true;
                             FloodFill(cimg, px, py, (unsigned char)g_sel_color);
                         } else {
+                            g_dirty = true;
                             *pix = (unsigned char)g_sel_color;
                         }
                         g_img_tex_idx = -2;
@@ -3278,10 +3288,8 @@ void imgui_overlay_render(void)
 
     /* ===== UNSAVED CHANGES CONFIRMATION ===== */
     if (g_pending_quit && !g_show_unsaved_confirm) {
-        if (g_last_saved_version != fileversion && imgcnt > 0) {
+        if (g_dirty && imgcnt > 0) {
             g_show_unsaved_confirm = true;
-        } else {
-            g_pending_quit = false; /* no changes — safe to exit, caller checks should_quit */
         }
     }
     if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
@@ -3295,7 +3303,7 @@ void imgui_overlay_render(void)
             ImGui::CloseCurrentPopup();
             if (fname_s[0] != '\0') {
                 SaveImgFile();
-                g_last_saved_version = fileversion;
+                g_dirty = false;
             } else {
                 g_pending_quit = false;
                 OpenFileDialog(FileDialogMode::SaveImg);
