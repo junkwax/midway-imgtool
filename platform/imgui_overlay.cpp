@@ -562,6 +562,123 @@ static void AddNewPalette(void)
     if (palcnt > 0) plselected = (int)palcnt - 1;
 }
 
+/* Merge marked palettes into the selected palette.
+   For each marked palette, each color is remapped to the closest match
+   in the selected palette (Euclidean distance in 5-bit RGB space).
+   All images using the marked palette are remapped and reassigned.
+   Finally, the marked palettes are deleted.  Ported from plst_merge. */
+static void MergeMarkedPalettes(void)
+{
+    PAL *sel = (plselected >= 0) ? get_pal(plselected) : NULL;
+    if (!sel || !sel->data_p || sel->numc == 0) return;
+
+    /* Count marked palettes (excluding the selected one) */
+    bool any_marked = false;
+    for (PAL *p = (PAL *)pal_p; p; p = (PAL *)p->nxt_p)
+        if ((p->flags & 1) && p != sel) { any_marked = true; break; }
+    if (!any_marked) return;
+
+    undo_push();
+
+    /* Clear mark on the selected palette so it survives deletion pass */
+    sel->flags &= ~1;
+
+    unsigned short dst_numc   = sel->numc;
+    unsigned char *dst_colors = (unsigned char *)sel->data_p;
+
+    /* Phase 1: build remap and remap images for each marked palette */
+    PAL *pal = (PAL *)pal_p;
+    while (pal) {
+        if (!(pal->flags & 1) || pal == sel || !pal->data_p || pal->numc == 0) {
+            pal = (PAL *)pal->nxt_p;
+            continue;
+        }
+
+        unsigned short  src_numc   = pal->numc;
+        unsigned char  *src_colors = (unsigned char *)pal->data_p;
+
+        /* Build remap: for each source color find closest destination */
+        unsigned char remap[256] = {0};
+        for (int si = 0; si < src_numc; si++) {
+            unsigned short sw = (unsigned short)(src_colors[si * 2] |
+                                                 (src_colors[si * 2 + 1] << 8));
+            int sr5 = (sw >> 10) & 0x1F;
+            int sg5 = (sw >>  5) & 0x1F;
+            int sb5 =  sw        & 0x1F;
+
+            int best_dist = 0x7FFFFFFF;
+            int best_idx  = 0;
+            for (int di = 0; di < dst_numc; di++) {
+                unsigned short dw = (unsigned short)(dst_colors[di * 2] |
+                                                     (dst_colors[di * 2 + 1] << 8));
+                int dr5 = (dw >> 10) & 0x1F;
+                int dg5 = (dw >>  5) & 0x1F;
+                int db5 =  dw        & 0x1F;
+                int dr = dr5 - sr5, dg = dg5 - sg5, db = db5 - sb5;
+                int dist = dr * dr + dg * dg + db * db;
+                if (dist < best_dist) { best_dist = dist; best_idx = di; }
+            }
+            remap[si] = (unsigned char)best_idx;
+        }
+
+        /* Find this palette's index in the linked list */
+        int pal_idx = 0;
+        for (PAL *q = (PAL *)pal_p; q && q != pal; q = (PAL *)q->nxt_p) pal_idx++;
+
+        /* Remap all images that use this palette */
+        for (IMG *img = (IMG *)img_p; img; img = (IMG *)img->nxt_p) {
+            if (img->palnum != pal_idx) continue;
+            img->palnum = (unsigned short)plselected;
+
+            if (!img->data_p || img->w == 0 || img->h == 0) continue;
+            unsigned short stride = (img->w + 3) & ~3;
+            int total = (int)stride * img->h;
+            unsigned char *pixels = (unsigned char *)img->data_p;
+            for (int i = 0; i < total; i++)
+                if (pixels[i] != 0) pixels[i] = remap[pixels[i]];
+        }
+
+        pal = (PAL *)pal->nxt_p;
+    }
+
+    /* Phase 2: delete marked palettes and fix up image palette indices */
+    PAL *prev = NULL;
+    PAL *cur  = (PAL *)pal_p;
+    int del_idx = 0;
+
+    while (cur) {
+        if (cur->flags & 1) {
+            PAL *to_del = cur;
+            /* Unlink */
+            if (prev) prev->nxt_p = cur->nxt_p;
+            else pal_p = cur->nxt_p;
+            cur = (PAL *)cur->nxt_p;
+            palcnt--;
+
+            /* Any image pointing to palette index > del_idx shifts down */
+            for (IMG *img = (IMG *)img_p; img; img = (IMG *)img->nxt_p) {
+                if ((int)img->palnum > del_idx) img->palnum--;
+            }
+            /* plselected also shifts if the deleted palette was before it */
+            if ((int)plselected > del_idx) plselected--;
+
+            if (to_del->data_p) mem_free(to_del->data_p);
+            mem_free(to_del);
+            /* del_idx stays the same: next palette slid into this position */
+        } else {
+            prev = cur;
+            cur = (PAL *)cur->nxt_p;
+            del_idx++;
+        }
+    }
+
+    /* Fix selection if it went out of bounds */
+    if ((unsigned)plselected >= palcnt)
+        plselected = palcnt ? (int)palcnt - 1 : -1;
+
+    g_img_tex_idx = -2;
+}
+
 static void OpenRenameImage(void)
 {
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
@@ -1974,7 +2091,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Set Palette for Image",      "]"))       SetPaletteOfSelected();
             if (ImGui::MenuItem("Set Palette for Marked",     "["))       SetPaletteOfMarked();
             ImGui::Separator();
-            if (ImGui::MenuItem("Merge Marked into Selected", "*"))       plst_merge();
+            if (ImGui::MenuItem("Merge Marked into Selected", "*"))       MergeMarkedPalettes();
             if (ImGui::MenuItem("Delete Palette",             "Del"))     DeletePalette();
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Palette",             "Shift+R")) OpenRenamePalette(plselected);
@@ -2200,7 +2317,7 @@ void imgui_overlay_render(void)
                         ImGui::Separator();
                         if (ImGui::MenuItem("Set for Image"))             SetPaletteOfSelected();
                         if (ImGui::MenuItem("Set for Marked Images"))     SetPaletteOfMarked();
-                        if (ImGui::MenuItem("Merge Marked into Selected")) plst_merge();
+                        if (ImGui::MenuItem("Merge Marked into Selected")) MergeMarkedPalettes();
                         ImGui::Separator();
                         if (ImGui::MenuItem("Delete Unused Colors")) DeleteUnusedPaletteColors();
                         if (ImGui::MenuItem("Show Histogram")) { CalculatePaletteHistogram(); g_show_histogram = true; }
@@ -2223,7 +2340,7 @@ void imgui_overlay_render(void)
                 if (palcnt > 0) plselected = (int)palcnt - 1;
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Merge"))     plst_merge();
+            if (ImGui::SmallButton("Merge"))     MergeMarkedPalettes();
             ImGui::SameLine();
             if (ImGui::SmallButton("Del"))       DeletePalette();
         }
