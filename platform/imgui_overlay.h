@@ -45,6 +45,14 @@ int imgui_overlay_check_unsaved_and_quit(void);
 /* Called after a successful save to mark version as saved. */
 void imgui_overlay_mark_saved(void);
 
+/* Signal that the app should quit (from menu or window close).
+   The render loop will show unsaved changes prompt if needed. */
+void imgui_overlay_request_quit(void);
+
+/* Returns 1 when it is safe to exit the main loop (no unsaved
+   changes, or user confirmed via the unsaved changes popup). */
+int imgui_overlay_should_quit(void);
+
 /* Composite and present the ImGui draw data to the SDL renderer.
    Must be called after imgui_overlay_render() and before SDL_RenderPresent(). */
 void imgui_overlay_present(void);

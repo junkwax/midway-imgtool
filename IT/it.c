@@ -125,7 +125,7 @@ int	main(int argc,char *argv[])
 		while (SDL_PollEvent(&e)) {
 			imgui_overlay_process_event(&e);
 			if (e.type == SDL_QUIT)
-				running = 0;
+				imgui_overlay_request_quit();
 		}
 
 		SDL_SetRenderDrawColor(renderer, 0x06, 0x06, 0x06, 0xFF);
@@ -136,6 +136,9 @@ int	main(int argc,char *argv[])
 		imgui_overlay_present();
 
 		SDL_RenderPresent(renderer);
+
+		if (imgui_overlay_should_quit())
+			running = 0;
 	}
 
 	imgui_overlay_shutdown();

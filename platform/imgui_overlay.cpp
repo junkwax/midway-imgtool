@@ -177,6 +177,7 @@ static char         g_rename_buf[20] = {0};
 /* Unsaved changes confirmation */
 static bool g_show_unsaved_confirm = false;
 static unsigned int g_last_saved_version = 0;
+static bool g_pending_quit = false;
 
 /* New IMG / Add Palette confirmations */
 static bool g_show_new_img_confirm = false;
@@ -2028,6 +2029,17 @@ int imgui_overlay_check_unsaved_and_quit(void)
     return 1;
 }
 
+void imgui_overlay_request_quit(void)
+{
+    g_pending_quit = true;
+}
+
+int imgui_overlay_should_quit(void)
+{
+    /* If we're pending quit and no unsaved popup is showing, it's safe to exit */
+    return (g_pending_quit && !g_show_unsaved_confirm) ? 1 : 0;
+}
+
 void imgui_overlay_mark_saved(void)
 {
     g_last_saved_version = fileversion;
@@ -2137,7 +2149,7 @@ void imgui_overlay_render(void)
                 ImGui::EndMenu();
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Quit", "Esc")) ExitProcess(0);
+            if (ImGui::MenuItem("Quit", "Esc")) g_pending_quit = true;
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Edit")) {
@@ -3265,6 +3277,13 @@ void imgui_overlay_render(void)
     }
 
     /* ===== UNSAVED CHANGES CONFIRMATION ===== */
+    if (g_pending_quit && !g_show_unsaved_confirm) {
+        if (g_last_saved_version != fileversion && imgcnt > 0) {
+            g_show_unsaved_confirm = true;
+        } else {
+            g_pending_quit = false; /* no changes — safe to exit, caller checks should_quit */
+        }
+    }
     if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
     if (ImGui::BeginPopupModal("Unsaved Changes", &g_show_unsaved_confirm, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("You have unsaved changes.");
@@ -3291,6 +3310,7 @@ void imgui_overlay_render(void)
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0))) {
             g_show_unsaved_confirm = false;
+            g_pending_quit = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
