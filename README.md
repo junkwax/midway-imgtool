@@ -61,6 +61,13 @@ mkdir build && cd build
 cmake .. && cmake --build .
 ```
 
+**macOS (Apple Silicon / Intel):**
+```bash
+brew install sdl2
+mkdir build && cd build
+cmake .. -DCMAKE_PREFIX_PATH="$(brew --prefix)" && cmake --build .
+```
+
 The build copies `SDL2.dll` (Windows), `it.hlp`, and the Material Symbols icon font next to the executable.
 
 ---
