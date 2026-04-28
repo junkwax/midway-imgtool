@@ -57,3 +57,82 @@ jobs:
         with:
           name: imgtool-linux-x64
           path: build/imgtool
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2
+        run: brew install sdl2
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Create app bundle
+        run: |
+          APP="build/ImgTool.app"
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Frameworks"
+          mkdir -p "$APP/Contents/Resources/assets"
+
+          # Copy binary
+          cp build/imgtool "$APP/Contents/MacOS/imgtool"
+
+          # Copy SDL2 dylib and fix install name
+          SDL2_DYLIB=$(otool -L build/imgtool | grep libSDL2 | awk '{print $1}')
+          cp "$SDL2_DYLIB" "$APP/Contents/Frameworks/"
+          SDL2_NAME=$(basename "$SDL2_DYLIB")
+          install_name_tool -change "$SDL2_DYLIB" "@executable_path/../Frameworks/$SDL2_NAME" "$APP/Contents/MacOS/imgtool"
+          install_name_tool -id "@executable_path/../Frameworks/$SDL2_NAME" "$APP/Contents/Frameworks/$SDL2_NAME"
+
+          # Copy assets (icon font)
+          if [ -d "build/assets" ]; then
+            cp -R build/assets/* "$APP/Contents/Resources/assets/"
+          fi
+          if [ -d "platform/assets" ]; then
+            cp platform/assets/* "$APP/Contents/Resources/assets/"
+          fi
+
+          # Create Info.plist
+          cat > "$APP/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>imgtool</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.imgtool.midway</string>
+              <key>CFBundleName</key>
+              <string>ImgTool</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>2.0.0</string>
+              <key>CFBundleVersion</key>
+              <string>2.0.0</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>10.13</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Create DMG
+        run: |
+          DMG_DIR="build/dmg"
+          mkdir -p "$DMG_DIR"
+          cp -R "build/ImgTool.app" "$DMG_DIR/"
+          ln -s /Applications "$DMG_DIR/Applications"
+          hdiutil create -volname "ImgTool" -srcfolder "$DMG_DIR" -ov -format UDZO "build/ImgTool.dmg"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgtool-macos
+          path: build/ImgTool.dmg

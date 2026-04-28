@@ -70,6 +70,10 @@ static LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPoi
 #include <dirent.h>
 #include <sys/stat.h>
 #include <signal.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <limits.h>
+#endif
 
 static void PosixCrashHandler(int sig) {
     fprintf(stderr, "CRASH: Fatal signal %d received!\n", sig);
@@ -1216,6 +1220,19 @@ static void OpenImgFile(const std::string &full_path)
     }
     _chdir(dir.c_str());
 
+    g_undo_count = 0;
+    g_undo_idx   = 0;
+    if (g_clipboard.valid && g_clipboard.data_p) {
+        free(g_clipboard.data_p);
+        g_clipboard.data_p = NULL;
+        g_clipboard.valid = false;
+    }
+    g_grid_sel.active = false;
+    g_grid_sel.dragging = false;
+    g_marquee_active = false;
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+
     ClearAll();
     LoadImgFile();
     g_dirty = false; /* fresh load = clean baseline */
@@ -1224,7 +1241,12 @@ static void OpenImgFile(const std::string &full_path)
 }
 
 static void OpenFileDialog(FileDialogMode mode) {
-    if (g_file_dialog_dir[0] == '\0') {
+    if (fpath_s[0] != '\0') {
+        size_t n = 0;
+        while (n < 63 && fpath_s[n] != '\0') n++;
+        memcpy(g_file_dialog_dir, fpath_s, n);
+        g_file_dialog_dir[n] = '\0';
+    } else if (g_file_dialog_dir[0] == '\0') {
 #ifdef _WIN32
         GetCurrentDirectoryA(sizeof(g_file_dialog_dir), g_file_dialog_dir);
 #else
@@ -1232,7 +1254,14 @@ static void OpenFileDialog(FileDialogMode mode) {
             g_file_dialog_dir[0] = '\0';
 #endif
     }
-    g_file_dialog_file[0] = '\0';
+    if (fname_s[0] != '\0') {
+        size_t n = 0;
+        while (n < 12 && fname_s[n] != '\0') n++;
+        memcpy(g_file_dialog_file, fname_s, n);
+        g_file_dialog_file[n] = '\0';
+    } else {
+        g_file_dialog_file[0] = '\0';
+    }
     g_file_dialog_mode = mode;
     g_show_file_dialog = true;
 }
@@ -1255,7 +1284,7 @@ static void DrawFileDialog() {
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
     
-    ImGui::SetNextWindowSize(ImVec2(620, 440), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(750, 440), ImGuiCond_FirstUseEver);
     if (ImGui::BeginPopupModal(title, &g_show_file_dialog, ImGuiWindowFlags_NoSavedSettings)) {
         
         ImGui::InputText("Directory", g_file_dialog_dir, sizeof(g_file_dialog_dir));
@@ -1377,6 +1406,18 @@ static void DrawFileDialog() {
                     g_dirty = false; /* Mark as saved in C++ state */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
+                    g_undo_count = 0;
+                    g_undo_idx   = 0;
+                    if (g_clipboard.valid && g_clipboard.data_p) {
+                        free(g_clipboard.data_p);
+                        g_clipboard.data_p = NULL;
+                        g_clipboard.valid = false;
+                    }
+                    g_grid_sel.active = false;
+                    g_grid_sel.dragging = false;
+                    g_marquee_active = false;
+                    g_pasted.active = false;
+                    g_pasted.dragging = false;
                     ClearAll();
                     LoadImgFile();
     g_dirty = false; /* fresh load = clean baseline */
@@ -2005,6 +2046,22 @@ void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture 
             if (slash) *slash = 0;
             snprintf(fontpath, sizeof(fontpath), "%s\\assets\\MaterialSymbolsSharp-Regular.ttf", exepath);
         }
+#elif __APPLE__
+        {
+            char exepath[PATH_MAX] = {0};
+            uint32_t size = sizeof(exepath);
+            if (_NSGetExecutablePath(exepath, &size) == 0) {
+                char *rp = realpath(exepath, NULL);
+                if (rp) {
+                    char *p = strrchr(rp, '/'); if (p) *p = '\0'; // imgool
+                    p = strrchr(rp, '/'); if (p) *p = '\0'; // MacOS
+                    snprintf(fontpath, sizeof(fontpath), "%s/Resources/assets/MaterialSymbolsSharp-Regular.ttf", rp);
+                    free(rp);
+                }
+            }
+        }
+        if (fontpath[0] == '\0')
+            snprintf(fontpath, sizeof(fontpath), "assets/MaterialSymbolsSharp-Regular.ttf");
 #else
         snprintf(fontpath, sizeof(fontpath), "assets/MaterialSymbolsSharp-Regular.ttf");
 #endif

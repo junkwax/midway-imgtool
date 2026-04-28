@@ -24,8 +24,9 @@ if(WIN32)
 else()
     find_package(SDL2 QUIET)
     if(NOT SDL2_FOUND)
-        set(SDL2_INCLUDE_DIRS "/usr/include/SDL2;/usr/include/x86_64-linux-gnu")
-        set(SDL2_LIBRARIES "-L/usr/lib/x86_64-linux-gnu -lSDL2")
+        # Try Homebrew (macOS) and standard Linux paths
+        set(SDL2_INCLUDE_DIRS "/opt/homebrew/include/SDL2;/usr/local/include/SDL2;/usr/include/SDL2;/usr/include/x86_64-linux-gnu")
+        set(SDL2_LIBRARIES "-L/opt/homebrew/lib -L/usr/local/lib -L/usr/lib/x86_64-linux-gnu -lSDL2")
         add_library(SDL2::SDL2 INTERFACE IMPORTED)
         set_target_properties(SDL2::SDL2 PROPERTIES
             INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIRS}"
@@ -96,7 +97,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/assets/MaterialSymbolsSharp-Regu
     )
 endif()
 
-if(NOT WIN32)
+if(APPLE)
+    target_compile_options(imgtool PRIVATE -m64)
+    target_link_options(imgtool PRIVATE -m64)
+    set_target_properties(imgtool PROPERTIES
+        BUILD_RPATH "@executable_path/../Frameworks"
+        INSTALL_RPATH "@executable_path/../Frameworks"
+    )
+elseif(NOT WIN32)
     target_compile_options(imgtool PRIVATE -m64)
     target_link_options(imgtool PRIVATE -m64 -no-pie -Wl,-z,noexecstack)
 endif()
