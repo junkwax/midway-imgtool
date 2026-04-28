@@ -1260,6 +1260,106 @@ static void BuildTgaFromMarked(const char* filepath)
     }
 }
 
+/* Save the selected image to a TGA (Truevision TARGA) file.
+   Ported from savetga.  Uses fnametmp_s as the filename. */
+static void SaveTga(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+
+    PAL *pal = get_pal(img->palnum);
+    if (!pal || !pal->data_p) return;
+
+    FILE *f = fopen(fnametmp_s, "wb");
+    if (!f) return;
+
+    TGA_HEADER hdr = {};
+    hdr.cm_type   = 1;
+    hdr.i_type    = 1;
+    hdr.cm_length = pal->numc;
+    hdr.cm_size   = 15;
+    hdr.width     = img->w;
+    hdr.height    = img->h;
+    hdr.bpp       = 8;
+
+    fwrite(&hdr, 1, sizeof(hdr), f);
+    fwrite(pal->data_p, 2, pal->numc, f);
+
+    /* Pixel rows: bottom-up (TGA convention) */
+    unsigned short stride = (img->w + 3) & ~3;
+    const unsigned char *src = (const unsigned char *)img->data_p
+                                + (unsigned int)stride * (img->h - 1);
+    for (int y = 0; y < img->h; y++) {
+        fwrite(src, 1, img->w, f);
+        src -= stride;
+    }
+    fclose(f);
+}
+
+/* Save the selected image to an IFF/ILBM (LBM) file.
+   Ported from savelbm.  Uses fnametmp_s as the filename. */
+static void SaveLbm(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+
+    PAL *pal = get_pal(img->palnum);
+    if (!pal || !pal->data_p) return;
+
+    FILE *f = fopen(fnametmp_s, "wb");
+    if (!f) return;
+
+    auto wbe32 = [&](unsigned int v) {
+        unsigned char b[4] = { (unsigned char)(v>>24), (unsigned char)(v>>16),
+                               (unsigned char)(v>>8),  (unsigned char)v };
+        fwrite(b, 1, 4, f);
+    };
+    auto wbe16 = [&](unsigned short v) {
+        unsigned char b[2] = { (unsigned char)(v>>8), (unsigned char)v };
+        fwrite(b, 1, 2, f);
+    };
+
+    unsigned short row_bytes = (unsigned short)((img->w + 1) & ~1);
+    unsigned int body_len = (unsigned int)row_bytes * img->h;
+
+    fwrite("FORM", 1, 4, f);
+    wbe32(0);
+    fwrite("PBM ", 1, 4, f);
+
+    fwrite("BMHD", 1, 4, f);
+    wbe32(20);
+    wbe16(img->w); wbe16(img->h);
+    wbe16(0); wbe16(0);
+    fputc(8, f); fputc(0, f); fputc(0, f); fputc(0, f);
+    wbe16(0);
+    fputc(5, f); fputc(6, f);
+    wbe16(img->w); wbe16(img->h);
+
+    fwrite("CMAP", 1, 4, f);
+    wbe32(256 * 3);
+    const unsigned char *pal_data = (const unsigned char *)pal->data_p;
+    for (int i = 0; i < 256; i++) {
+        unsigned short w = (unsigned short)(pal_data[i*2] | (pal_data[i*2+1] << 8));
+        fputc((w >> 7) & 0xF8, f);
+        fputc((w >> 2) & 0xF8, f);
+        fputc((w << 3) & 0xF8, f);
+    }
+
+    fwrite("BODY", 1, 4, f);
+    wbe32(body_len);
+    const unsigned char *src = (const unsigned char *)img->data_p;
+    unsigned short stride = (img->w + 3) & ~3;
+    for (int y = 0; y < img->h; y++) {
+        fwrite(src, 1, row_bytes, f);
+        src += stride;
+    }
+
+    long end_pos = ftell(f);
+    fseek(f, 4, SEEK_SET);
+    wbe32((unsigned int)(end_pos - 8));
+    fclose(f);
+}
+
 /* ---- ImGui Native File Dialog ---- */
 enum class FileDialogMode { OpenImg, AppendImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, WriteAniLst };
 static bool g_show_file_dialog = false;
@@ -1543,7 +1643,7 @@ static void DrawFileDialog() {
                         ilselected = i;
                         memset(fnametmp_s, 0, 13);
                         snprintf(fnametmp_s, 13, "%.8s.LBM", p->n_s);
-                        savelbm();
+                        SaveLbm();
                     }
                     p = (IMG *)p->nxt_p;
                     i++;
@@ -1585,11 +1685,9 @@ static void DrawFileDialog() {
                 } else if (g_file_dialog_mode == FileDialogMode::LoadLbm) {
                     CallLoadLbm(fname_s);
                 } else if (g_file_dialog_mode == FileDialogMode::SaveLbm) {
-                    savelbm();
-                } else if (g_file_dialog_mode == FileDialogMode::LoadTga) {
-                    CallLoadTga(fname_s);
+                    SaveLbm();
                 } else if (g_file_dialog_mode == FileDialogMode::SaveTga) {
-                    savetga();
+                    SaveTga();
                 }
             }
             g_img_tex_idx = -2; /* Force canvas texture refresh */
