@@ -577,12 +577,20 @@ static bool g_icon_font_loaded = false;
 static SDL_Texture  *g_img_texture    = NULL;
 static int           g_img_tex_w      = 0;
 static int           g_img_tex_h      = 0;
-static int           g_img_tex_idx    = -2;  /* -2 = never built */
+static int           g_img_tex_idx    = -2;
+
+/* ---- Zoom / Pan ---- */
+static float g_zoom       = 1.0f;
+static float g_pan_x      = 0.0f;
+static float g_pan_y      = 0.0f;
+static bool  g_zoom_reset = true;
+static unsigned char *g_pixel_undo = NULL;
+static int            g_pixel_undo_img = -1;  /* -2 = never built */
 
 /* ---- Layout constants ---- */
-static const float TOOLBAR_W   = 40.0f;
+static const float TOOLBAR_W   = 44.0f;
 static const float PANEL_W     = 240.0f;
-static const float PALETTE_H   = 110.0f;
+static const float PALETTE_H   = 78.0f;
 
 /* ---- Undo system ---- */
 #define UNDO_STACK_SIZE 32
@@ -872,6 +880,29 @@ static void ClearExtraData(void)
 /* ---- C++ ports of ASM operations ---- */
 
 static void OpenRenameImage(void);  /* forward decl — used by DuplicateImage */
+
+/* Flood fill helper — 4-connected stack-based fill */
+static void FloodFill(IMG *img, int sx, int sy, unsigned char new_color)
+{
+    if (!img || !img->data_p || sx < 0 || sy < 0 || sx >= (int)img->w || sy >= (int)img->h)
+        return;
+    unsigned short stride = (unsigned short)((img->w + 3) & ~3);
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    unsigned char old_color = pixels[sy * stride + sx];
+    if (old_color == new_color) return;
+    struct Pt { int x, y; };
+    std::vector<Pt> stack; stack.reserve(4096);
+    stack.push_back({sx, sy});
+    while (!stack.empty()) {
+        Pt p = stack.back(); stack.pop_back();
+        if (p.x < 0 || p.x >= (int)img->w || p.y < 0 || p.y >= (int)img->h) continue;
+        unsigned char *px = &pixels[p.y * stride + p.x];
+        if (*px != old_color) continue;
+        *px = new_color;
+        stack.push_back({p.x + 1, p.y}); stack.push_back({p.x - 1, p.y});
+        stack.push_back({p.x, p.y + 1}); stack.push_back({p.x, p.y - 1});
+    }
+}
 
 /* Free all images, palettes, and sequence/script data.  Resets all counters
    and selections.  Ported from img_clearall — called before img_load. */
@@ -2487,6 +2518,7 @@ static void rebuild_img_texture(IMG *img)
         g_img_texture = SDL_CreateTexture(g_imgui_renderer,
             SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
         SDL_SetTextureBlendMode(g_img_texture, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_img_texture, SDL_ScaleModeNearest);
         g_img_tex_w = w;
         g_img_tex_h = h;
     }
@@ -2758,7 +2790,19 @@ void imgui_overlay_render(void)
     ImGuiInputFlags route = ImGuiInputFlags_RouteGlobal;
 
     /* Undo / Redo */
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) { if (g_undo_idx > 0) { g_undo_idx--; undo_apply(g_undo_idx); } }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) {
+        if (g_pixel_undo && g_pixel_undo_img == ilselected) {
+            IMG *img = get_img(ilselected);
+            if (img && img->data_p) {
+                unsigned short s = (img->w + 3) & ~3;
+                unsigned int sz = (unsigned int)s * img->h;
+                unsigned char *tmp = (unsigned char *)malloc(sz);
+                if (tmp) { memcpy(tmp, img->data_p, sz); memcpy(img->data_p, g_pixel_undo, sz);
+                           memcpy(g_pixel_undo, tmp, sz); free(tmp); }
+                g_img_tex_idx = -2;
+            }
+        } else if (g_undo_idx > 0) { g_undo_idx--; undo_apply(g_undo_idx); }
+    }
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) { if (g_undo_idx < g_undo_count - 1) { g_undo_idx++; undo_apply(g_undo_idx); } }
 
     /* Clipboard */
@@ -3287,16 +3331,42 @@ void imgui_overlay_render(void)
         float sx = 1.0f, sy = 1.0f;
 
         if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
-            float tw = avail.x, th = (float)g_img_tex_h * (tw / (float)g_img_tex_w);
-            if (th > avail.y) { th = avail.y; tw = (float)g_img_tex_w * (th / (float)g_img_tex_h); }
-            float scale = (float)(int)(tw / (float)g_img_tex_w);
-            if (scale < 1.0f) scale = 1.0f;
-            tw = (float)g_img_tex_w * scale;
-            th = (float)g_img_tex_h * scale;
-            float off_x = (avail.x - tw) * 0.5f;
-            float off_y = (avail.y - th) * 0.5f;
-            if (off_x > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + off_x);
-            if (off_y > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + off_y);
+            /* ---- Zoom: mouse wheel ---- */
+            if (ImGui::IsWindowHovered()) {
+                float wh = io.MouseWheel;
+                if (wh != 0.0f) {
+                    float old_z = g_zoom;
+                    g_zoom += wh * 0.25f;
+                    if (g_zoom < 1.0f) g_zoom = 1.0f;
+                    if (g_zoom > 32.0f) g_zoom = 32.0f;
+                    if (g_zoom <= 4.0f) g_zoom = roundf(g_zoom);
+                    ImVec2 m = io.MousePos;
+                    float cx = img_pos.x + img_sz.x * 0.5f;
+                    float cy = img_pos.y + img_sz.y * 0.5f;
+                    g_pan_x = (g_pan_x + cx - m.x) * (g_zoom / old_z) - (cx - m.x);
+                    g_pan_y = (g_pan_y + cy - m.y) * (g_zoom / old_z) - (cy - m.y);
+                    g_zoom_reset = false;
+                }
+            }
+
+            if (g_zoom_reset) { g_zoom = 1.0f; g_pan_x = 0; g_pan_y = 0; g_zoom_reset = false; }
+            else if (ilselected != g_img_tex_idx) g_zoom_reset = true;
+
+            float scale = g_zoom;
+            if (g_zoom == 1.0f) {
+                float fitscale = (float)(int)(avail.x / (float)g_img_tex_w);
+                if (fitscale < 1.0f) fitscale = 1.0f;
+                float fith = (float)g_img_tex_h * fitscale;
+                if (fith > avail.y) fitscale = (float)(int)(avail.y / (float)g_img_tex_h);
+                if (fitscale < 1.0f) fitscale = 1.0f;
+                scale = fitscale;
+            }
+            float tw = (float)g_img_tex_w * scale;
+            float th = (float)g_img_tex_h * scale;
+            float off_x = (avail.x - tw) * 0.5f + g_pan_x;
+            float off_y = (avail.y - th) * 0.5f + g_pan_y;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + off_x);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + off_y);
 
             img_pos = ImGui::GetCursorScreenPos();
             img_sz  = ImVec2(tw, th);
@@ -3352,6 +3422,25 @@ void imgui_overlay_render(void)
                     }
                 }
             }
+
+            /* Pixel grid overlay at high zoom */
+            if (scale >= 4.0f) {
+                ImU32 gc = IM_COL32(60, 60, 60, 100);
+                for (int x = 0; x <= g_img_tex_w; x++)
+                    dl->AddLine(ImVec2(img_pos.x + x * sx, img_pos.y),
+                                ImVec2(img_pos.x + x * sx, img_pos.y + th), gc, 0.5f);
+                for (int y = 0; y <= g_img_tex_h; y++)
+                    dl->AddLine(ImVec2(img_pos.x, img_pos.y + y * sy),
+                                ImVec2(img_pos.x + tw, img_pos.y + y * sy), gc, 0.5f);
+            }
+
+            /* Zoom indicator */
+            if (g_zoom > 1.001f) {
+                char zbuf[32];
+                snprintf(zbuf, sizeof(zbuf), "%.0f%%", g_zoom * 100.0f);
+                ImGui::SetCursorPos(ImVec2(8, 4));
+                ImGui::TextDisabled("%s", zbuf);
+            }
         } else {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + avail.y * 0.45f);
             float tw = ImGui::CalcTextSize("No image selected").x;
@@ -3365,6 +3454,82 @@ void imgui_overlay_render(void)
         /* Set when an overlay widget (anim point, hitbox corner) eats this frame's
            click, so the grid-selection block below doesn't also start a selection. */
         bool widget_consumed_click = false;
+
+        /* Pixel highlight at high zoom */
+        {
+            bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
+                        mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
+            if (over && img_sz.x > 0 && g_zoom >= 4.0f) {
+                int hx = (int)((mouse.x - img_pos.x) / sx);
+                int hy = (int)((mouse.y - img_pos.y) / sy);
+                ImDrawList *dl = ImGui::GetWindowDrawList();
+                dl->AddRect(ImVec2(img_pos.x + hx * sx, img_pos.y + hy * sy),
+                            ImVec2(img_pos.x + (hx + 1) * sx, img_pos.y + (hy + 1) * sy),
+                            IM_COL32(255, 255, 0, 180), 0.0f, 0, 1.5f);
+            }
+        }
+
+        /* ---- Pencil + eyedropper + fill + pan tools ---- */
+        {
+            IMG *cimg = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
+                        mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
+
+            /* Pan: middle-mouse drag or spacebar+drag or right-drag at zoom */
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
+                ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Middle, 0.0f);
+                g_pan_x += d.x; g_pan_y += d.y;
+                ImGui::ResetMouseDragDelta(ImGuiMouseButton_Middle);
+                widget_consumed_click = true;
+            }
+            if (ImGui::IsKeyDown(ImGuiKey_Space) && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+                ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+                g_pan_x += d.x; g_pan_y += d.y;
+                ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+                widget_consumed_click = true;
+            }
+            if (!g_marquee_active && g_zoom > 1.0f &&
+                ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0f) && over) {
+                ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right, 0.0f);
+                g_pan_x += d.x; g_pan_y += d.y;
+                ImGui::ResetMouseDragDelta(ImGuiMouseButton_Right);
+                widget_consumed_click = true;
+            }
+
+            if (cimg && cimg->data_p && cimg->w > 0 && cimg->h > 0 && over) {
+                int px = (int)((mouse.x - img_pos.x) / sx);
+                int py = (int)((mouse.y - img_pos.y) / sy);
+                if (px >= 0 && px < (int)cimg->w && py >= 0 && py < (int)cimg->h) {
+                    unsigned short stride = (cimg->w + 3) & ~3;
+                    unsigned char *pix = (unsigned char *)cimg->data_p + py * stride + px;
+
+                    /* Right-click: eyedropper */
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                        g_sel_color = *pix;
+                        widget_consumed_click = true;
+                    }
+                    /* Left-click: pencil or fill */
+                    if (!g_marquee_active && !g_pasted.active &&
+                        ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        if (g_pixel_undo_img != ilselected) {
+                            free(g_pixel_undo); g_pixel_undo = NULL;
+                            unsigned short s = (cimg->w + 3) & ~3;
+                            unsigned int sz = (unsigned int)s * cimg->h;
+                            g_pixel_undo = (unsigned char *)malloc(sz);
+                            if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
+                            g_pixel_undo_img = ilselected;
+                        }
+                        if (io.KeyShift) {
+                            FloodFill(cimg, px, py, (unsigned char)g_sel_color);
+                        } else {
+                            *pix = (unsigned char)g_sel_color;
+                        }
+                        g_img_tex_idx = -2;
+                        widget_consumed_click = true;
+                    }
+                }
+            }
+        }
 
         /* --- Anim point overlay + dragging --- */
         if (g_show_points) {
