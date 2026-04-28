@@ -396,6 +396,10 @@ int RestoreMarkedFromSourceForce(void)
         unsigned char *dst_pix = (unsigned char *)t->data_p;
         int dst_stride = (t->w + 3) & ~3;
 
+        /* Clear the entire strip first, then repaint from source.
+           This guarantees old art is gone and only source pixels remain. */
+        memset(dst_pix, 0, (size_t)dst_stride * t->h);
+
         int dx = (int)(short)src->anix - (int)(short)t->anix;
         int dy = (int)(short)src->aniy - (int)(short)t->aniy;
 
@@ -405,8 +409,7 @@ int RestoreMarkedFromSourceForce(void)
             for (int x = 0; x < t->w; x++) {
                 int sx = x + dx;
                 if (sx < 0 || sx >= src->w) continue;
-                unsigned char src_p = src_pix[sy * src_stride + sx];
-                dst_pix[y * dst_stride + x] = src_p;
+                dst_pix[y * dst_stride + x] = src_pix[sy * src_stride + sx];
                 total_written++;
             }
         }

@@ -2254,7 +2254,7 @@ void imgui_overlay_render(void)
                 int n = RestoreMarkedFromSourceForce();
                 IMG *s = get_img(ilselected);
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         n > 0 ? "Bulk-restored %d px. Source anipt (%d,%d) %dx%d"
+                         n > 0 ? "Rebuilt %d px from source. Source anipt (%d,%d) %dx%d"
                                : "0 px restored. Source anipt (%d,%d) %dx%d. Check marks/anipoints.",
                          n, s? (int)(short)s->anix:0, s? (int)(short)s->aniy:0, s? (int)s->w:0, s? (int)s->h:0);
                 g_restore_msg_timer = 6.0f;
