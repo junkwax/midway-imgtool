@@ -793,6 +793,104 @@ int ExecuteBulkRestoreDiff(const std::vector<BulkRestoreMatch>& matches)
     return imgs_processed;
 }
 
+/* Reconstruct-mode bulk restore.
+ *
+ * Treats the parent as ground truth and pulls each child toward it.
+ * For every child pixel within the anipoint-shifted parent rect,
+ * if the child diverges from the parent, overwrite the child with
+ * the parent's value. Out-of-overlap child pixels are untouched.
+ *
+ * Use case: shipping art has censored/redacted regions in child
+ * pieces (e.g. logos blacked out for licensing) but the master
+ * sprite retains the original. This pulls the original detail
+ * back into the children using the same chop geometry as the
+ * original WIMP toolchain.
+ *
+ * Differences from the other modes:
+ *  - Pairs:  zeros the whole child first, then copies the parent
+ *            rect → destroys per-piece detail outside the parent
+ *            rect, and overwrites EVERY pixel inside it.
+ *  - Diff:   copies parent pixels where parent CURRENT differs from
+ *            parent BASELINE → only propagates session-edits.
+ *  - Reconstruct: copies parent pixels where CHILD differs from
+ *            parent → propagates the original parent content into
+ *            wherever the child has been blacked out / drifted.
+ */
+int ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches)
+{
+    if (!img_p || matches.empty()) return 0;
+
+    undo_push();
+
+    int imgs_processed = 0;
+    int total_written  = 0;
+
+    for (const auto& match : matches) {
+        if (!match.selected) continue;
+
+        IMG *child  = match.child;
+        IMG *parent = match.parent;
+
+        if (!child->data_p  || child->w  == 0 || child->h  == 0) continue;
+        if (!parent || !parent->data_p || parent->w == 0 || parent->h == 0
+            || parent == child) continue;
+
+        if (child->palnum != parent->palnum) continue;
+
+        unsigned char       *dst_pix    = (unsigned char *)child->data_p;
+        const unsigned char *src_pix    = (const unsigned char *)parent->data_p;
+        int dst_stride = (child->w  + 3) & ~3;
+        int src_stride = (parent->w + 3) & ~3;
+
+        int dx = (int)(short)parent->anix - (int)(short)child->anix;
+        int dy = (int)(short)parent->aniy - (int)(short)child->aniy;
+
+        int written_this = 0;
+        for (int y = 0; y < child->h; y++) {
+            int sy = y + dy;
+            if (sy < 0 || sy >= parent->h) continue;
+            for (int x = 0; x < child->w; x++) {
+                int sx = x + dx;
+                if (sx < 0 || sx >= parent->w) continue;
+                int s_idx = sy * src_stride + sx;
+                int d_idx = y  * dst_stride + x;
+                /* Restore only where:
+                 *   - parent has actual content (non-zero palette index), AND
+                 *   - child also has content at this position (non-zero).
+                 *
+                 * Both halves matter:
+                 *   - Skip when parent is 0: prevents transparent-parent
+                 *     pixels from blanking out per-piece child detail.
+                 *   - Skip when child is 0: preserves the child's
+                 *     original silhouette. The shipping art was cropped
+                 *     inward in some children (master sprite is the
+                 *     uncropped pants; children have less extent at the
+                 *     edges). Filling parent content into the child's
+                 *     transparent regions would extend the silhouette,
+                 *     which changes leading/trailing-zero counts and
+                 *     breaks SAG alignment under ZON+PPP packing.
+                 *
+                 * Net behavior: re-paint censored INTERIOR regions of the
+                 * child (where Midway replaced logo pixels with a flat
+                 * color), but never grow the silhouette. */
+                unsigned char s = src_pix[s_idx];
+                unsigned char d = dst_pix[d_idx];
+                if (s != 0 && d != 0 && d != s) {
+                    dst_pix[d_idx] = s;
+                    written_this++;
+                }
+            }
+        }
+        if (written_this > 0) total_written += written_this;
+        imgs_processed++;
+    }
+
+    if (total_written > 0) {
+        g_img_tex_idx = -2;
+    }
+    return imgs_processed;
+}
+
 /* ---- Write ANILST (Export Marked Images to Assembly) ---- */
 void WriteAnilstFromMarked(const char* filepath)
 {

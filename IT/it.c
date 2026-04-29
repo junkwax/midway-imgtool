@@ -118,14 +118,29 @@ int	main(int argc,char *argv[])
 	/* ---- Init ImGui overlay ---- */
 	imgui_overlay_init(window, renderer, canvas_tex);
 
-	/* ---- Main loop ---- */
+	/* ---- Main loop ----
+	 *
+	 * Idle-friendly: we use SDL_WaitEventTimeout to block when nothing's
+	 * happening, instead of spinning at 100% CPU on one core. The timeout
+	 * keeps ImGui's hover-tooltip delays, popup fade animations and any
+	 * mouse-button-held repaints (paint dragging, anipoint dragging) feel-
+	 * ing smooth — a 16ms timeout is one-frame-at-60Hz, so worst case the
+	 * UI catches up within a single frame.
+	 *
+	 * We force-render every iteration regardless of whether the wait timed
+	 * out or returned an event; ImGui needs at least one frame to settle
+	 * after every input change, and reactive elements like tooltips fade
+	 * across multiple frames. */
 	int running = 1;
 	while (running) {
 		SDL_Event e;
-		while (SDL_PollEvent(&e)) {
-			imgui_overlay_process_event(&e);
-			if (e.type == SDL_QUIT)
-				imgui_overlay_request_quit();
+		/* Block up to 16ms waiting for the first event. */
+		if (SDL_WaitEventTimeout(&e, 16)) {
+			do {
+				imgui_overlay_process_event(&e);
+				if (e.type == SDL_QUIT)
+					imgui_overlay_request_quit();
+			} while (SDL_PollEvent(&e));
 		}
 
 		SDL_SetRenderDrawColor(renderer, 0x06, 0x06, 0x06, 0xFF);

@@ -219,6 +219,23 @@ void undo_push(void);
 static bool  g_show_histogram = false;
 static bool  g_show_load2_verify = false;
 static L2Report g_load2_report;
+
+/* ---- World View mode (DOS-tool-style anipoint alignment workspace) ----
+ * When on, renders the sprite inside a fixed black canvas at
+ * (world_origin - anix, world_origin - aniy). Left-drag the sprite
+ * to update its anipoint (drag direction is "sprite follows cursor"
+ * which means anix/aniy DECREASE as you drag right/down). Use up/down
+ * arrows to flick through frames — origin stays put so you can
+ * eyeball whether anipoints line up across frames. */
+static bool  g_world_view = false;
+static int   g_world_w = 400;       /* arcade playfield width */
+static int   g_world_h = 254;       /* arcade playfield height */
+static int   g_world_origin_x = 200;/* anchor target inside world */
+static int   g_world_origin_y = 200;
+static bool  g_world_onion = false; /* faintly draw prev frame underneath */
+static SDL_Texture *g_world_onion_tex = NULL;
+static int   g_world_onion_tex_w = 0, g_world_onion_tex_h = 0;
+static int   g_world_onion_idx = -1; /* which sprite the onion tex holds */
 static int   g_load2_selected_idx = -1;          /* index into g_load2_report.issues */
 static SDL_Texture *g_load2_drift_tex = NULL;
 static int   g_load2_drift_tex_w = 0, g_load2_drift_tex_h = 0;
@@ -2314,6 +2331,24 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiKey_Semicolon, route)) LeastSquaresReduceMarked();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_B, route)) OpenFileDialog(FileDialogMode::ExportTga);
 
+    /* Sprite list navigation: cursor up/down flicks between images,
+     * matching DOS imgtool muscle memory. Skipped if a text input has
+     * focus (ImGui::Shortcut respects WantCaptureKeyboard for text). */
+    if (imgcnt > 0) {
+        if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
+            ilselected = (ilselected + 1) % (int)imgcnt;
+            g_zoom_reset = true;
+        }
+        if (ImGui::Shortcut(ImGuiKey_UpArrow, route)) {
+            ilselected = (ilselected <= 0) ? (int)imgcnt - 1 : ilselected - 1;
+            g_zoom_reset = true;
+        }
+    }
+    /* Tab toggles World View mode (anipoint alignment workspace). */
+    if (ImGui::Shortcut(ImGuiKey_Tab, route)) {
+        g_world_view = !g_world_view;
+    }
+
     /* ---- Menu bar ---- */
     if (ImGui::BeginMainMenuBar()) {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
@@ -2495,6 +2530,19 @@ void imgui_overlay_render(void)
             ImGui::MenuItem("Anim Points",     NULL, &g_show_points);
             ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
             ImGui::MenuItem("DMA Compression", NULL, &g_show_dma_comp);
+            ImGui::Separator();
+            ImGui::MenuItem("World View",      "Tab",  &g_world_view);
+            if (g_world_view) {
+                ImGui::MenuItem("  Onion-skin prev frame", NULL, &g_world_onion);
+                ImGui::SetNextItemWidth(80);
+                ImGui::InputInt("World W",      &g_world_w, 0, 0);
+                ImGui::SetNextItemWidth(80);
+                ImGui::InputInt("World H",      &g_world_h, 0, 0);
+                ImGui::SetNextItemWidth(80);
+                ImGui::InputInt("Origin X",     &g_world_origin_x, 0, 0);
+                ImGui::SetNextItemWidth(80);
+                ImGui::InputInt("Origin Y",     &g_world_origin_y, 0, 0);
+            }
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
@@ -2906,7 +2954,139 @@ void imgui_overlay_render(void)
         ImVec2 img_sz(0, 0);
         float sx = 1.0f, sy = 1.0f;
 
-        if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+        /* ---- World View mode (DOS-style anipoint alignment workspace) ----
+         * Renders the sprite inside a fixed black canvas, sprite anchored at
+         * (g_world_origin - sprite.anipoint). Left-drag adjusts anix/aniy.
+         * Up/Down (handled in the global shortcut block) flicks frames.
+         * When this branch runs, the rest of the canvas pipeline (pixel
+         * paint, marquee, anim-point handles, hitboxes, DMA overlay,
+         * grid-selection) is skipped. */
+        if (g_world_view && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+            IMG *cimg = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            if (cimg) {
+                /* Auto-fit the world canvas inside the available area. */
+                float fit_x = avail.x / (float)g_world_w;
+                float fit_y = avail.y / (float)g_world_h;
+                float wscale = (fit_x < fit_y) ? fit_x : fit_y;
+                if (wscale < 1.0f) wscale = 1.0f;
+                wscale = (float)(int)wscale;
+                if (wscale < 1.0f) wscale = 1.0f;
+
+                float ww = (float)g_world_w * wscale;
+                float wh = (float)g_world_h * wscale;
+                ImVec2 wpos(img_pos.x + (avail.x - ww) * 0.5f,
+                            img_pos.y + (avail.y - wh) * 0.5f);
+
+                ImDrawList *dl = ImGui::GetWindowDrawList();
+                /* Solid black world background. */
+                dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),
+                                  IM_COL32(0, 0, 0, 255));
+                /* Origin crosshair. */
+                float ox = wpos.x + g_world_origin_x * wscale;
+                float oy = wpos.y + g_world_origin_y * wscale;
+                dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy),
+                            IM_COL32(120, 120, 120, 255));
+                dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
+                            IM_COL32(120, 120, 120, 255));
+
+                /* Onion-skin: faintly draw the previous sprite. */
+                if (g_world_onion && imgcnt > 1) {
+                    int prev_idx = (ilselected <= 0) ? (int)imgcnt - 1 : ilselected - 1;
+                    IMG *pimg = get_img(prev_idx);
+                    if (pimg && pimg->data_p && pimg->w > 0 && pimg->h > 0) {
+                        if (!g_world_onion_tex
+                            || g_world_onion_tex_w != pimg->w
+                            || g_world_onion_tex_h != pimg->h
+                            || g_world_onion_idx != prev_idx)
+                        {
+                            if (g_world_onion_tex) SDL_DestroyTexture(g_world_onion_tex);
+                            g_world_onion_tex = SDL_CreateTexture(g_imgui_renderer,
+                                SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+                                pimg->w, pimg->h);
+                            SDL_SetTextureBlendMode(g_world_onion_tex, SDL_BLENDMODE_BLEND);
+                            SDL_SetTextureScaleMode(g_world_onion_tex, SDL_ScaleModeNearest);
+                            g_world_onion_tex_w = pimg->w;
+                            g_world_onion_tex_h = pimg->h;
+                            g_world_onion_idx = prev_idx;
+                            void *pix; int pitch;
+                            if (SDL_LockTexture(g_world_onion_tex, NULL, &pix, &pitch) == 0) {
+                                int s = (pimg->w + 3) & ~3;
+                                const unsigned char *src = (const unsigned char *)pimg->data_p;
+                                Uint32 *dst = (Uint32 *)pix;
+                                for (int y = 0; y < pimg->h; y++)
+                                for (int x = 0; x < pimg->w; x++) {
+                                    unsigned char ci = src[y * s + x];
+                                    SDL_Color c = g_palette[ci];
+                                    Uint32 a = (ci == 0) ? 0u : 90u;  /* faint */
+                                    dst[y * (pitch / 4) + x] =
+                                        (a << 24) | ((Uint32)c.r << 16) |
+                                        ((Uint32)c.g << 8) | c.b;
+                                }
+                                SDL_UnlockTexture(g_world_onion_tex);
+                            }
+                        }
+                        float pw = pimg->w * wscale;
+                        float ph = pimg->h * wscale;
+                        ImVec2 ppos(ox - (int)(short)pimg->anix * wscale,
+                                    oy - (int)(short)pimg->aniy * wscale);
+                        dl->AddImage((ImTextureID)(intptr_t)g_world_onion_tex,
+                                     ppos, ImVec2(ppos.x + pw, ppos.y + ph));
+                    }
+                }
+
+                /* Sprite at world origin minus its anipoint. */
+                int ax = (int)(short)cimg->anix;
+                int ay = (int)(short)cimg->aniy;
+                float spw = cimg->w * wscale;
+                float sph = cimg->h * wscale;
+                ImVec2 spos(ox - ax * wscale, oy - ay * wscale);
+
+                dl->AddImage((ImTextureID)(intptr_t)g_img_texture,
+                             spos, ImVec2(spos.x + spw, spos.y + sph));
+
+                /* Anchor marker on the sprite's anipoint (== world origin). */
+                dl->AddCircle(ImVec2(ox, oy), 4.0f,
+                              IM_COL32(255, 200, 0, 255), 0, 1.5f);
+
+                /* Drag-to-move: left-drag inside world canvas adjusts anipoint.
+                 * "Sprite follows cursor" means anix/aniy DECREASE as you drag
+                 * right/down (the anchor moves left/up in sprite-space). */
+                if (!io.WantCaptureMouse) {
+                    bool over_world =
+                        io.MousePos.x >= wpos.x && io.MousePos.x < wpos.x + ww &&
+                        io.MousePos.y >= wpos.y && io.MousePos.y < wpos.y + wh;
+                    if (over_world &&
+                        ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
+                    {
+                        ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+                        ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+                        int dx = (int)(d.x / wscale);
+                        int dy = (int)(d.y / wscale);
+                        if (dx != 0 || dy != 0) {
+                            cimg->anix = (unsigned short)((int)(short)cimg->anix - dx);
+                            cimg->aniy = (unsigned short)((int)(short)cimg->aniy - dy);
+                            g_dirty = true;
+                        }
+                    }
+                    /* Wheel zooms world canvas (changes wscale via origin sizing). */
+                }
+
+                /* Coord readout overlay (top-left of world canvas). */
+                char buf[64];
+                snprintf(buf, sizeof(buf),
+                         "[%d] %s   anix=%d aniy=%d   world=%dx%d",
+                         ilselected, cimg->n_s, ax, ay, g_world_w, g_world_h);
+                dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
+                                  ImVec2(wpos.x + 320, wpos.y + 18),
+                                  IM_COL32(0, 0, 0, 180));
+                dl->AddText(ImVec2(wpos.x + 4, wpos.y + 2),
+                            IM_COL32(220, 220, 220, 255), buf);
+
+                /* Reserve the canvas region so other widgets don't overlap. */
+                ImGui::Dummy(ImVec2(avail.x, avail.y));
+            }
+        }
+        else if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
             /* ---- Zoom: mouse wheel ---- */
             if (ImGui::IsWindowHovered()) {
                 float wh = io.MouseWheel;
@@ -3571,6 +3751,15 @@ void imgui_overlay_render(void)
             ImGui::SetTooltip("Wipes each child to zero, then fills its bbox\n"
                               "with parent pixels. Clobbers hand-tuned\n"
                               "per-piece details.");
+        ImGui::SameLine();
+        ImGui::RadioButton("Reconstruct from Parent", &g_restore_diff_mode, 2);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Treats parent as ground truth. For every child\n"
+                              "pixel that diverges from the parent (after\n"
+                              "anipoint-relative shift), copies the parent's\n"
+                              "value into the child.\n"
+                              "Use to restore censored / blacked-out regions\n"
+                              "where the master still has the original detail.");
         ImGui::Spacing();
         
         bool pattern_changed = ImGui::InputText("Regex Pattern", g_restore_regex_buf, sizeof(g_restore_regex_buf));
@@ -3684,17 +3873,29 @@ void imgui_overlay_render(void)
         
         ImGui::BeginDisabled(!g_restore_regex_tested || g_restore_matches.empty());
         if (ImGui::Button("Start Restore", ImVec2(120, 0))) {
-            int n = g_restore_diff_mode
-                  ? ExecuteBulkRestoreDiff(g_restore_matches)
-                  : ExecuteBulkRestorePairs(g_restore_matches);
+            int n = 0;
+            const char *verb_done = "Restored";
+            const char *verb_zero = "restored";
+            switch (g_restore_diff_mode) {
+                case 1:
+                    n = ExecuteBulkRestoreDiff(g_restore_matches);
+                    verb_done = "Diff-restored"; verb_zero = "diffed";
+                    break;
+                case 2:
+                    n = ExecuteBulkRestoreReconstruct(g_restore_matches);
+                    verb_done = "Reconstructed"; verb_zero = "reconstructed";
+                    break;
+                default:
+                    n = ExecuteBulkRestorePairs(g_restore_matches);
+                    break;
+            }
             if (n > 0) {
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          "%s %d child image(s) from their parents.",
-                         g_restore_diff_mode ? "Diff-restored" : "Restored", n);
+                         verb_done, n);
             } else {
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "0 images %s.",
-                         g_restore_diff_mode ? "diffed" : "restored");
+                         "0 images %s.", verb_zero);
             }
             g_restore_msg_timer = 6.0f;
 
@@ -3941,6 +4142,7 @@ void imgui_overlay_render(void)
 void imgui_overlay_shutdown(void)
 {
     if (g_img_texture) { SDL_DestroyTexture(g_img_texture); g_img_texture = NULL; }
+    if (g_world_onion_tex) { SDL_DestroyTexture(g_world_onion_tex); g_world_onion_tex = NULL; }
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

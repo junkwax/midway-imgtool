@@ -48,5 +48,12 @@ int  RestoreMarkedFromSource(void);
 int  RestoreMarkedFromSourceForce(void);
 int  ExecuteBulkRestorePairs(const std::vector<BulkRestoreMatch>& matches);
 int  ExecuteBulkRestoreDiff (const std::vector<BulkRestoreMatch>& matches);
+/* Reconstruct mode: parent is treated as ground truth. For each child
+ * pixel, if it differs from the parent (after anipoint-relative dx/dy
+ * shift), copy the parent's pixel into the child. Useful for restoring
+ * censored/blacked-out regions in shipping art where the master sprite
+ * still carries the original detail. Out-of-overlap child pixels are
+ * untouched (unlike Pairs mode's zero-fill). */
+int  ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches);
 
 #endif /* IMG_IO_H */

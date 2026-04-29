@@ -114,3 +114,45 @@ mkdir build && cd build && cmake .. && cmake --build .
 
 - Commit style: short descriptive messages, all lowercase
 - Branch: `SDL-main`
+
+## Recent additions
+
+### LOAD2 packing verifier (`platform/load2_verify.{h,cpp}`)
+- Detects edits that would misalign SAGs after LOAD2 repacks the saved IMG.
+- Three checks per image, mirroring `doc/load2/load2.c:2299-2547` + `doc/load2/zcom.c`:
+  1. **Geometry drift**: w/h changes vs `baseline_p` snapshot taken at file load.
+  2. **Palette ppp fallback**: `pal->numc > (1 << ppp)` triggers LOAD2's silent bpp-fallback at `load2.c:2303-2307` → destbits jumps ~33%, every following SAG misaligns. Default ppp=6 (MK2MIL.LOD).
+  3. **Zero-shape drift**: per-row leading/trailing zero-count comparison (matches `zcom_analysis` per-row scan). Recolor edits that don't change silhouette are silent by design.
+- Public API: `VerifyLoad2Packing(int ppp)` returns `L2Report` with `L2Issue` list. `VerifyLoad2BeforeSave(int ppp)` runs the check and pops a `g_restore_msg` toast if any breaking issues found; called from `SaveImgFile` (advisory only — save proceeds either way).
+- UI: `Tools → Verify LOAD2 Packing` opens a modal with per-issue breakdown, click-to-jump-to-image navigation, editable PPP field.
+- **Drift visualization**: clicking a Break-severity issue triggers `update_drift_texture()` which renders the sprite with drifting rows tinted red so the user sees exactly which scanlines need attention. Skipped for warnings.
+
+### Bulk Restore from Regex — three modes
+`Operations → Bulk Restore via Regex` dialog. Mode selected via radio buttons; dispatched in `imgui_overlay.cpp:~3687`.
+1. **Replace** (`ExecuteBulkRestorePairs`): zeros child, fills parent rect verbatim. Original behavior. Lossy on per-piece detail outside the parent rect.
+2. **Diff** (`ExecuteBulkRestoreDiff`): copies parent pixels where parent CURRENT ≠ parent BASELINE. Propagates session edits to children only.
+3. **Reconstruct from Parent** (`ExecuteBulkRestoreReconstruct`, new): copies parent pixels where parent ≠ 0 AND child ≠ 0 AND child ≠ parent. The 3-way AND preserves both silhouettes — never blanks a child pixel, never extends a child silhouette. Use case: restore censored/blacked-out regions in shipping art (e.g. OTOMIX logo on Cage's pants in MK2 CAGE1.IMG).
+   - Critical: `child != 0` guard prevents silhouette extension, which would cause zero-shape drift under `ZON+PPP` packing. Without it, master sprites that are wider than child silhouettes would extend the children → SAG misalign.
+
+### OOB coverage guard for Bulk Restore preview
+- `BulkRestoreMatch` extended with `covered_pixels` / `total_pixels` fields (`img_io.h`).
+- `ComputeBulkRestoreCoverage(matches)` in `img_io.cpp` rect-clips the parent footprint after applying the same `dx = parent->anix - child->anix` shift the executors use, then stores the in-bounds pixel count.
+- Called after sorting matches in the regex modal. Rows with coverage < 100% render in red with `(N% covered)` suffix; orange banner at top counts partials; "Deselect Partial" button mass-skips them.
+- The byte-copy itself is unchanged — still pixel-perfect within the overlap region. The guard is preview-only.
+
+### World View mode (`g_world_view`, Tab toggle)
+- Alternative canvas render mode for cross-frame anipoint alignment. Replicates the DOS imgtool's "world canvas" workflow.
+- Renders a fixed-size black canvas (default 400×254 = arcade playfield) with the sprite anchored at `(world_origin - sprite.anipoint)`. Up/Down arrows flick frames; canvas stays put, so the user can eyeball whether anipoints land in the same world position across frames.
+- Left-drag adjusts `anix`/`aniy` (sprite-follows-cursor convention — anipoint decreases as you drag right/down).
+- **Onion-skin** option draws the previous frame faintly underneath, useful for body-attachment alignment (e.g. NBA player heads onto body sprites).
+- Coord readout overlay shows `[idx] name anix=N aniy=N world=WxH`.
+- View menu exposes: World W, World H, Origin X, Origin Y, Onion-skin toggle.
+- Pixel editing tools (paint, marquee, anim-point handles, hitboxes, DMA overlay, grid-selection) are auto-disabled while in World View — the existing canvas pipeline is gated `else` of the World View branch.
+
+### Cursor up/down sprite list navigation
+- `ImGuiKey_UpArrow` / `ImGuiKey_DownArrow` advance/retreat `ilselected` (wraps at ends) and trigger `g_zoom_reset = true`. Matches DOS imgtool muscle memory.
+- Uses `ImGuiInputFlags_RouteGlobal` so it skips text-input fields automatically.
+
+### Idle-friendly main loop (`IT/it.c`)
+- Replaced uncapped `SDL_PollEvent` busy-loop with `SDL_WaitEventTimeout(&e, 16)`. Idle CPU drops from ~100% of one core to near-zero. Still renders one frame after every input change so ImGui hover delays and popup fades stay smooth (16ms = one frame at 60Hz worst case).
+- Important on macOS where energy/thermal reporting surfaces idle CPU prominently.

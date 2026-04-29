@@ -21,7 +21,10 @@ Sprite and palette editor for the IMG container files used by 1990s Midway arcad
 - **Export / Import** — TGA, LBM, and PNG import/export; Build TGA from marked sprites
 - **Data Export** — Write ANILST (assembly animation lists) and MK3-format TBL files
 - **Batch operations** — mark sprites (Space) then apply palette, reduce, strip, or dither all at once
-- **Pixel restoration** — bulk restore pixel data from a parent sprite across the entire file via Regex or explicit selection
+- **Pixel restoration** — bulk restore pixel data from a parent sprite across the entire file via Regex or explicit selection. Three modes: *Replace* (overwrite child bbox), *Diff* (propagate only your session edits), *Reconstruct from Parent* (re-paint censored/blacked-out interior pixels using the master as ground truth, preserving silhouettes)
+- **OOB coverage preview** — Bulk Restore previews now compute the actual parent-rect coverage per child after the anipoint-relative shift; partial-coverage pairs are flagged red with a "Deselect Partial" mass-skip button
+- **LOAD2 packing verifier** — `Tools → Verify LOAD2 Packing` cross-checks edits against LOAD2's destbits computation (geometry drift, PPP-fallback palette overflow, per-row zero-shape drift). Each break can be clicked for a per-row drift visualization that tints affected scanlines red on the sprite. Catches edits that would misalign sprite addresses (SAGs) when the IMG is repacked into the game's IRW/ROM
+- **World View mode** — `Tab` toggles a fixed-size black canvas (default 400×254, the arcade playfield) with the sprite anchored at its anipoint. Drag the sprite to adjust `anix`/`aniy`; cursor up/down flicks frames so you can eyeball cross-frame alignment. Optional onion-skin draws the previous frame faintly underneath. Designed for attaching heads/limbs to body sprites in NBA/MK-era games where the engine uses anipoints for object positioning
 - **Undo / Redo** — 32-level undo stack for animation point and pixel edits
 - **Copy / Paste** — copy pixel regions between sprites or across IMGs
 
@@ -122,9 +125,9 @@ The build copies `SDL2.dll` (Windows), `it.hlp`, and the Material Symbols icon f
 | `Ctrl+B` | Build TGA from marked images |
 | `Space` | Mark / Unmark current image |
 | `M` / `m` | Mark all / Clear all marks |
-| `Up` / `Down` | Move in image list |
+| `Up` / `Down` | Move in image list (works in both pixel-edit and World View) |
 | `PgUp` / `PgDn` | Page up/down image list |
-| `Tab` | Swap between image list 1 and 2 |
+| `Tab` | Toggle World View (anipoint alignment workspace) |
 | `d` / `D` | Double / Halve zoom |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste |
