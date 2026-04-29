@@ -32,8 +32,22 @@ struct IMG {
     /* Debug-only: disk file fields (populated during load, used during save) */
     unsigned int   file_oset;   /* offset in file of this image */
     unsigned short file_lib;    /* library handle index */
-    unsigned short file_frm;    /* frame number for anim */
+    unsigned short file_frm;    /* frame number for anim — 0xFFFF in real
+                                   game files; 0 in DOS-imgtool-saved ones */
     unsigned short file_pttblnum; /* point table index or 0xFFFF */
+    /* Verbatim 16-byte name field from disk. Real game files use bytes after
+     * the null terminator as scratch (e.g. "JCSTANCE1\0vda  \0") — those
+     * trailing bytes ride along through the WIMP toolchain. LOAD2 hashes the
+     * raw 16 bytes for sprite-allocation purposes, so zero-padding here
+     * (which the original DOS imgtool DID — it just strcpy'd to a stale
+     * buffer that often held leftover bytes) shifts the IRW layout. */
+    unsigned char  file_name_raw[16];
+    /* Pristine pixel snapshot taken at load time. Same shape as data_p
+     * (stride * h bytes, where stride = (w+3)&~3). Used by the diff-mode
+     * bulk-restore so we can propagate ONLY the user's edits to children
+     * instead of overwriting hand-tuned per-piece pixels. NULL until load
+     * fills it; freed by FreeImg. */
+    void          *baseline_p;
 };
 
 struct PAL {
@@ -141,6 +155,10 @@ extern unsigned int   damcnt;
 extern unsigned int   fileversion;
 extern void          *scrseqmem_p;
 extern unsigned int   scrseqbytes;
+extern unsigned char  file_bufscr[4];
+extern unsigned short file_spare1;
+extern unsigned short file_spare2;
+extern unsigned short file_spare3;
 extern int            ilpalloaded;
 extern char           fpath_s[64];
 extern char           fname_s[13];
@@ -176,6 +194,7 @@ static inline void FreeImg(IMG *img)
     if (!img) return;
     free(img->data_p);
     free(img->pttbl_p);
+    free(img->baseline_p);
     free(img);
 }
 

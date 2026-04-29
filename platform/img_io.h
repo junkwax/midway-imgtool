@@ -6,6 +6,13 @@
 #define IMG_IO_H
 
 #include "img_format.h"
+#include <vector>
+
+struct BulkRestoreMatch {
+    IMG* child;
+    IMG* parent;
+    bool selected;
+};
 
 extern int  g_img_tex_idx;
 extern char g_restore_msg[128];
@@ -24,6 +31,7 @@ void ImportPng(const char *path);
 void ExportPng(const char *path);
 int  RestoreMarkedFromSource(void);
 int  RestoreMarkedFromSourceForce(void);
-int  RestoreChildrenFromParentRegex(const char* regex_pattern);
+int  ExecuteBulkRestorePairs(const std::vector<BulkRestoreMatch>& matches);
+int  ExecuteBulkRestoreDiff (const std::vector<BulkRestoreMatch>& matches);
 
 #endif /* IMG_IO_H */

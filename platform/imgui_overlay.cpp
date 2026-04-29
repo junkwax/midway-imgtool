@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <vector>
 #include <algorithm>
+#include <regex>
 #include "compat.h"
 #include "img_format.h"
 #include "img_io.h"
@@ -219,6 +220,14 @@ static int   g_histogram_img_count = 0;
 /* ---- Bulk Restore Regex state ---- */
 static bool g_show_restore_regex = false;
 static char g_restore_regex_buf[256] = "^(.+)[A-Z]$";
+static std::vector<BulkRestoreMatch> g_restore_matches;
+static bool g_restore_regex_tested = false;
+static bool g_restore_regex_error = false;
+/* Mode: 0 = Replace (overwrite child bbox with parent pixels — clobbers
+ * hand-tuned per-piece details). 1 = Diff (only propagate the user's
+ * edits to the master, leaving every untouched pixel alone). Diff is the
+ * right choice when adding a small detail to a master sprite. */
+static int g_restore_diff_mode = 1;
 
 static void DeleteImage(int idx)
 {
@@ -602,6 +611,43 @@ err:
         }
     }
     free(dst);
+}
+
+/* Add a new blank IMG (32x32, 8bpp, transparent) to the current library.
+ * Uses the currently selected palette if any, otherwise palette 0.
+ * Useful when starting a new library from scratch — File → New gives you
+ * an empty library, "Add" on palettes makes a blank palette, then this
+ * gives you the first sprite to start drawing on. */
+static void AddNewBlankImage(void)
+{
+    g_dirty = true;
+    IMG *img = AllocImg();
+    if (!img) return;
+
+    img->w        = 32;
+    img->h        = 32;
+    img->flags    = 0;
+    img->anix     = 0;
+    img->aniy     = 0;
+    img->anix2    = 0;
+    img->aniy2    = 0;
+    img->aniz2    = 0;
+    img->opals    = (unsigned short)-1;
+    img->pttbl_p  = NULL;
+    img->palnum   = (plselected >= 0) ? (unsigned short)plselected : 0;
+
+    unsigned int stride = ((unsigned int)img->w + 3) & ~3;
+    unsigned int sz = stride * img->h;
+    img->data_p = PoolAlloc(sz);
+    if (img->data_p) memset(img->data_p, 0, sz);
+    img->baseline_p = PoolAlloc(sz);
+    if (img->baseline_p) memset(img->baseline_p, 0, sz);
+
+    static int next_id = 1;
+    snprintf(img->n_s, sizeof(img->n_s), "NEW%d", next_id++);
+
+    if (imgcnt > 0) ilselected = (int)imgcnt - 1;
+    g_img_tex_idx = -2;
 }
 
 /* Add a new blank 256-color palette.  Moved from imgtool_thunks.asm;
@@ -2572,6 +2618,12 @@ void imgui_overlay_render(void)
             if (ImGui::SmallButton("Invert"))   { IMG *p=(IMG*)img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Mk"))       { IMG *img = get_img(ilselected); if (img) img->flags ^= 1; }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Add"))      { AddNewBlankImage(); }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Add a blank 32x32 sprite using the\n"
+                                  "currently selected palette. Rename via\n"
+                                  "right-click on the new entry.");
         }
 
         /* --- Palette List --- */
@@ -2896,12 +2948,19 @@ void imgui_overlay_render(void)
         ImVec2 mouse = io.MousePos;
         bool   mbdn  = ImGui::IsMouseDown(ImGuiMouseButton_Left);
 
+        /* When a modal or popup window is on top, ImGui sets WantCaptureMouse —
+         * suppress all canvas interaction (paint, eyedropper, highlight, drag,
+         * marquee, anim-point handles, etc.) so clicks meant for the modal
+         * don't bleed through to the sprite underneath. */
+        bool canvas_input_blocked = io.WantCaptureMouse;
+        if (canvas_input_blocked) mbdn = false;
+
         /* Set when an overlay widget (anim point, hitbox corner) eats this frame's
            click, so the grid-selection block below doesn't also start a selection. */
         bool widget_consumed_click = false;
 
         /* Pixel highlight at high zoom */
-        {
+        if (!canvas_input_blocked) {
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                         mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
             if (over && img_sz.x > 0 && g_zoom >= 4.0f) {
@@ -2915,7 +2974,7 @@ void imgui_overlay_render(void)
         }
 
         /* ---- Pencil + eyedropper + fill + pan tools ---- */
-        {
+        if (!canvas_input_blocked) {
             IMG *cimg = (ilselected >= 0) ? get_img(ilselected) : NULL;
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                         mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
@@ -2979,7 +3038,7 @@ void imgui_overlay_render(void)
         }
 
         /* --- Anim point overlay + dragging --- */
-        if (g_show_points) {
+        if (g_show_points && !canvas_input_blocked) {
             IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
             if (img && img->w > 0) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -3020,7 +3079,7 @@ void imgui_overlay_render(void)
         }
 
         /* --- Hitbox overlay + corner dragging --- */
-        if (g_show_hitbox) {
+        if (g_show_hitbox && !canvas_input_blocked) {
             ImDrawList *dl = ImGui::GetWindowDrawList();
             ImVec2 tl(img_pos.x + g_hitbox_x * sx, img_pos.y + g_hitbox_y * sy);
             ImVec2 br(img_pos.x + (g_hitbox_x + g_hitbox_w) * sx,
@@ -3151,7 +3210,7 @@ void imgui_overlay_render(void)
                 }
 
                 /* Handle dragging the paste */
-                if (hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (hovering && !canvas_input_blocked && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                     g_pasted.dragging = true;
                 }
                 if (g_pasted.dragging && mbdn) {
@@ -3317,26 +3376,129 @@ void imgui_overlay_render(void)
                            "Capture group 1 (\\1) is used as the parent name.\n"
                            "Example: ^(.+)[A-Z]$ maps JCJUMPFLIP1A -> JCJUMPFLIP1");
         ImGui::Spacing();
-        ImGui::InputText("Regex Pattern", g_restore_regex_buf, sizeof(g_restore_regex_buf));
+
+        ImGui::Text("Mode:");
+        ImGui::SameLine();
+        ImGui::RadioButton("Diff (preserve hand-tuning)", &g_restore_diff_mode, 1);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Only the pixels you EDITED on the master are\n"
+                              "propagated into children. Every untouched\n"
+                              "pixel in each child stays as-is.\n"
+                              "(Right choice for adding a logo, edge tweak, etc.)");
+        ImGui::SameLine();
+        ImGui::RadioButton("Replace (overwrite child bbox)", &g_restore_diff_mode, 0);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Wipes each child to zero, then fills its bbox\n"
+                              "with parent pixels. Clobbers hand-tuned\n"
+                              "per-piece details.");
+        ImGui::Spacing();
+        
+        bool pattern_changed = ImGui::InputText("Regex Pattern", g_restore_regex_buf, sizeof(g_restore_regex_buf));
+        if (pattern_changed) {
+            g_restore_regex_tested = false;
+            g_restore_regex_error = false;
+            g_restore_matches.clear();
+        }
+
+        if (!g_restore_regex_tested) {
+            if (ImGui::Button("Preview Matches", ImVec2(120, 0))) {
+                g_restore_matches.clear();
+                g_restore_regex_error = false;
+                std::regex re;
+                try {
+                    re = std::regex(g_restore_regex_buf);
+                    for (IMG *child = (IMG *)img_p; child; child = (IMG *)child->nxt_p) {
+                        if (!child->data_p || child->w == 0 || child->h == 0) continue;
+                        std::string name(child->n_s);
+                        std::smatch match;
+                        if (std::regex_match(name, match, re) && match.size() > 1) {
+                            std::string parent_name = match[1].str();
+                            IMG *parent = NULL;
+                            for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+                                if (parent_name == p->n_s) {
+                                    parent = p;
+                                    break;
+                                }
+                            }
+                            if (parent && parent->data_p && parent->w > 0 && parent->h > 0 && parent != child
+                                && parent->palnum == child->palnum) {
+                                /* Same-palette only — pixel indices across different palettes
+                                 * map to different colors, producing garbled output. */
+                                g_restore_matches.push_back({child, parent, true});
+                            }
+                        }
+                    }
+                    std::sort(g_restore_matches.begin(), g_restore_matches.end(), [](const BulkRestoreMatch& a, const BulkRestoreMatch& b) {
+                        int cmp = strcmp(a.parent->n_s, b.parent->n_s);
+                        if (cmp != 0) return cmp < 0;
+                        return strcmp(a.child->n_s, b.child->n_s) < 0;
+                    });
+                    g_restore_regex_tested = true;
+                } catch (const std::regex_error&) {
+                    g_restore_regex_error = true;
+                }
+            }
+            if (g_restore_regex_error) {
+                ImGui::TextColored(ImVec4(1, 0, 0, 1), "Regex Error: invalid pattern");
+            }
+        } else {
+            ImGui::Text("Found %d match(es). Select items to restore:", (int)g_restore_matches.size());
+            ImGui::BeginChild("MatchesList", ImVec2(400, 200), true);
+            std::string last_parent = "";
+            for (size_t i = 0; i < g_restore_matches.size(); i++) {
+                std::string current_parent = g_restore_matches[i].parent->n_s;
+                if (current_parent != last_parent) {
+                    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", current_parent.c_str());
+                    last_parent = current_parent;
+                }
+                ImGui::Indent(16.0f);
+                char label[128];
+                snprintf(label, sizeof(label), "%s##%zu", g_restore_matches[i].child->n_s, i);
+                ImGui::Checkbox(label, &g_restore_matches[i].selected);
+                ImGui::Unindent(16.0f);
+            }
+            ImGui::EndChild();
+            
+            if (ImGui::Button("Select All")) {
+                for (auto& m : g_restore_matches) m.selected = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Deselect All")) {
+                for (auto& m : g_restore_matches) m.selected = false;
+            }
+        }
+
         ImGui::Spacing();
         ImGui::Separator();
-        if (ImGui::Button("Restore", ImVec2(100, 0))) {
-            int n = RestoreChildrenFromParentRegex(g_restore_regex_buf);
-            if (n < 0) {
-                snprintf(g_restore_msg, sizeof(g_restore_msg), "Regex Error: invalid pattern");
+        
+        ImGui::BeginDisabled(!g_restore_regex_tested || g_restore_matches.empty());
+        if (ImGui::Button("Start Restore", ImVec2(120, 0))) {
+            int n = g_restore_diff_mode
+                  ? ExecuteBulkRestoreDiff(g_restore_matches)
+                  : ExecuteBulkRestorePairs(g_restore_matches);
+            if (n > 0) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "%s %d child image(s) from their parents.",
+                         g_restore_diff_mode ? "Diff-restored" : "Restored", n);
             } else {
-                snprintf(g_restore_msg, sizeof(g_restore_msg), 
-                         n > 0 ? "Restored %d child image(s) from their parents." 
-                               : "0 images restored. No regex matches or parents found.", 
-                         n);
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "0 images %s.",
+                         g_restore_diff_mode ? "diffed" : "restored");
             }
             g_restore_msg_timer = 6.0f;
+
             g_show_restore_regex = false;
+            g_restore_regex_tested = false;
+            g_restore_matches.clear();
             ImGui::CloseCurrentPopup();
         }
+        ImGui::EndDisabled();
+
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(100, 0))) {
             g_show_restore_regex = false;
+            g_restore_regex_tested = false;
+            g_restore_matches.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

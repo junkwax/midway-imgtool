@@ -40,6 +40,18 @@ unsigned int  fileversion = 0;
 void         *scrseqmem_p = NULL;
 unsigned int  scrseqbytes = 0;
 
+/* ---- LIB_HDR fields preserved verbatim from load ----
+ * The original DOS imgtool clobbers bufscr to -1 and zeroes spare1/2/3 on
+ * save. But real game-asset pipelines populate bufscr with script-buffer
+ * indices that LOAD2 reads to compute IRW layout. Clobbering bufscr causes
+ * LOAD2 to emit a slightly different IRW size, shifting the start of every
+ * subsequent character's sprites in the bank — producing visible "Cage
+ * sprites overflow into Baraka" artifacts. Preserve verbatim. */
+unsigned char file_bufscr[4]    = { 0xFF, 0xFF, 0xFF, 0xFF };
+unsigned short file_spare1      = 0;
+unsigned short file_spare2      = 0;
+unsigned short file_spare3      = 0;
+
 /* ---- File I/O paths (DOS-era 8.3 convention) ---- */
 char          fpath_s[64]    = {0};
 char          fname_s[13]    = {0};

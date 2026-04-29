@@ -78,6 +78,14 @@ void LoadImgFile(void)
     if (scrseqmem_p) { free(scrseqmem_p); scrseqmem_p = NULL; }
     scrseqbytes = 0;
 
+    /* Capture LIB_HDR fields that have to round-trip verbatim. The original
+     * DOS imgtool clobbered these on save (bufscr=-1, spare*=0), but real
+     * game-asset files have meaningful values that LOAD2 consumes. */
+    memcpy(file_bufscr, hdr.bufscr, 4);
+    file_spare1 = hdr.spare1;
+    file_spare2 = hdr.spare2;
+    file_spare3 = hdr.spare3;
+
     ilpalloaded = -1;
     damcnt = 0;
 
@@ -181,6 +189,7 @@ void LoadImgFile(void)
         img->file_lib      = idisk.lib;
         img->file_frm      = idisk.frm;
         img->file_pttblnum = idisk.pttblnum;
+        memcpy(img->file_name_raw, idisk.n_s, 16);
 
         strncpy(img->n_s, idisk.n_s, 15);
         img->n_s[15] = '\0';
@@ -221,6 +230,14 @@ void LoadImgFile(void)
             img->pttbl_p = PoolAlloc(40);
             if (img->pttbl_p) fread(img->pttbl_p, 1, 40, f);
         }
+
+        /* Snapshot the just-loaded pixel data as the baseline. The diff-mode
+         * bulk-restore uses this to propagate ONLY the user's edits to a
+         * master sprite into its child pieces, leaving any pixel that wasn't
+         * touched alone (preserving hand-tuned per-piece details). */
+        img->baseline_p = PoolAlloc(pix_sz);
+        if (img->baseline_p && img->data_p)
+            memcpy(img->baseline_p, img->data_p, pix_sz);
     }
 
     unsigned int pal_foffset = (unsigned int)hdr.oset + (unsigned int)hdr.imgcnt * sizeof(IMAGE_disk);
@@ -292,7 +309,13 @@ void SaveImgFile(void)
     hdr.seqcnt  = (unsigned short)seqcnt;
     hdr.scrcnt  = (unsigned short)scrcnt;
     hdr.damcnt  = 0;  /* original asm always zeros this on save */
-    for (int i = 0; i < 4; i++) hdr.bufscr[i] = (unsigned char)-1;
+    /* Preserve bufscr + spare1/2/3 from load (real game files use them;
+     * LOAD2 consumes bufscr to compute IRW layout). Default is all 0xFF /
+     * zero (matches a freshly-created file). */
+    memcpy(hdr.bufscr, file_bufscr, 4);
+    hdr.spare1 = file_spare1;
+    hdr.spare2 = file_spare2;
+    hdr.spare3 = file_spare3;
     fwrite(&hdr, 1, sizeof(hdr), f);
 
     /* ---- 2. Palette pixel data ---- */
@@ -368,7 +391,28 @@ void SaveImgFile(void)
     img = (IMG *)img_p;
     for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
         IMAGE_disk idisk = {};
-        strncpy(idisk.n_s, img->n_s, 15); idisk.n_s[15] = '\0';
+
+        /* Name: write the verbatim 16-byte buffer from load. If the user
+         * renamed the sprite, we splice the new name into the head and keep
+         * the original tail-bytes after the first null. If this is a brand
+         * new sprite (no file_name_raw populated — it's all zeros), zero
+         * pad like a fresh save. */
+        bool fresh_name = true;
+        for (int k = 0; k < 16; k++) if (img->file_name_raw[k]) { fresh_name = false; break; }
+        if (fresh_name) {
+            strncpy(idisk.n_s, img->n_s, 15);
+            idisk.n_s[15] = '\0';
+        } else {
+            /* Copy original tail; overlay new name up to first null */
+            memcpy(idisk.n_s, img->file_name_raw, 16);
+            size_t name_len = strnlen(img->n_s, 15);
+            memcpy(idisk.n_s, img->n_s, name_len);
+            /* Place a null at name_len if it isn't already there. The bytes
+             * after name_len stay as the original tail (which itself contains
+             * a null somewhere — that's how the original tool wrote them). */
+            idisk.n_s[name_len] = '\0';
+        }
+
         idisk.flags    = img->flags;
         idisk.anix     = img->anix;
         idisk.aniy     = img->aniy;
@@ -380,7 +424,9 @@ void SaveImgFile(void)
         idisk.aniy2    = img->aniy2;
         idisk.aniz2    = img->aniz2;
         idisk.lib      = img->file_lib;
-        idisk.frm      = 0;  /* original asm zeros this on save */
+        idisk.frm      = img->file_frm;  /* preserve from load (real files
+                                            often have 0xFFFF; original DOS
+                                            imgtool clobbered to 0) */
         idisk.opals    = img->opals;
         idisk.pttblnum = img->pttbl_p ? (unsigned short)(pt_index++) : (unsigned short)0xFFFF;
         fwrite(&idisk, 1, sizeof(idisk), f);
@@ -533,64 +579,51 @@ int RestoreMarkedFromSourceForce(void)
     return total_written;
 }
 
-/* Bulk restore using regex to map child names to parent names.
-   Iterates all images, checks if name matches regex, uses capture group 1 as parent name.
-   If parent exists, overwrites child pixels with parent pixels (respecting anipoints). */
-int RestoreChildrenFromParentRegex(const char* regex_pattern)
+/* Bulk restore given matches.
+   Overwrites child pixels with parent pixels (respecting anipoints). */
+int ExecuteBulkRestorePairs(const std::vector<BulkRestoreMatch>& matches)
 {
-    if (!img_p || !regex_pattern || !regex_pattern[0]) return 0;
-
-    std::regex re;
-    try {
-        re = std::regex(regex_pattern);
-    } catch (const std::regex_error&) {
-        return -1; // Regex compilation failed
-    }
+    if (!img_p || matches.empty()) return 0;
 
     undo_push();
 
     int total_written = 0;
     int imgs_processed = 0;
 
-    for (IMG *child = (IMG *)img_p; child; child = (IMG *)child->nxt_p) {
+    for (const auto& match : matches) {
+        if (!match.selected) continue;
+        
+        IMG *child = match.child;
+        IMG *parent = match.parent;
+
         if (!child->data_p || child->w == 0 || child->h == 0) continue;
+        if (!parent || !parent->data_p || parent->w == 0 || parent->h == 0 || parent == child) continue;
 
-        std::string name(child->n_s);
-        std::smatch match;
-        if (std::regex_match(name, match, re) && match.size() > 1) {
-            std::string parent_name = match[1].str();
+        /* Skip cross-palette pairs — pixel indices aren't comparable across
+         * palettes, so a byte-for-byte copy would produce garbled colors.
+         * (The single-frame RestoreMarkedFromSource has the same guard.) */
+        if (child->palnum != parent->palnum) continue;
 
-            IMG *parent = NULL;
-            for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
-                if (parent_name == p->n_s) {
-                    parent = p;
-                    break;
-                }
-            }
+        imgs_processed++;
+        unsigned char *dst_pix = (unsigned char *)child->data_p;
+        int dst_stride = (child->w + 3) & ~3;
 
-            if (parent && parent->data_p && parent->w > 0 && parent->h > 0 && parent != child) {
-                imgs_processed++;
-                unsigned char *dst_pix = (unsigned char *)child->data_p;
-                int dst_stride = (child->w + 3) & ~3;
+        const unsigned char *src_pix = (const unsigned char *)parent->data_p;
+        int src_stride = (parent->w + 3) & ~3;
 
-                const unsigned char *src_pix = (const unsigned char *)parent->data_p;
-                int src_stride = (parent->w + 3) & ~3;
+        memset(dst_pix, 0, (size_t)dst_stride * child->h);
 
-                memset(dst_pix, 0, (size_t)dst_stride * child->h);
+        int dx = (int)(short)parent->anix - (int)(short)child->anix;
+        int dy = (int)(short)parent->aniy - (int)(short)child->aniy;
 
-                int dx = (int)(short)parent->anix - (int)(short)child->anix;
-                int dy = (int)(short)parent->aniy - (int)(short)child->aniy;
-
-                for (int y = 0; y < child->h; y++) {
-                    int sy = y + dy;
-                    if (sy < 0 || sy >= parent->h) continue;
-                    for (int x = 0; x < child->w; x++) {
-                        int sx = x + dx;
-                        if (sx < 0 || sx >= parent->w) continue;
-                        dst_pix[y * dst_stride + x] = src_pix[sy * src_stride + sx];
-                        total_written++;
-                    }
-                }
+        for (int y = 0; y < child->h; y++) {
+            int sy = y + dy;
+            if (sy < 0 || sy >= parent->h) continue;
+            for (int x = 0; x < child->w; x++) {
+                int sx = x + dx;
+                if (sx < 0 || sx >= parent->w) continue;
+                dst_pix[y * dst_stride + x] = src_pix[sy * src_stride + sx];
+                total_written++;
             }
         }
     }
@@ -598,7 +631,83 @@ int RestoreChildrenFromParentRegex(const char* regex_pattern)
     if (total_written > 0) {
         g_img_tex_idx = -2;
     }
-    return imgs_processed; // Return number of child images restored instead of total pixels
+    return imgs_processed;
+}
+
+/* Diff-mode bulk restore.
+ *
+ * Propagates ONLY the user's edits to the parent (master) sprite into each
+ * child piece, leaving every untouched pixel alone. Preserves hand-tuned
+ * per-piece details that the plain Replace mode would clobber.
+ *
+ * Algorithm: for each child pixel (x, y), look up the corresponding parent
+ * pixel at (x + dx, y + dy). Compare against parent->baseline_p (snapshot
+ * taken at file load). If parent[sx,sy] != baseline[sx,sy], the user has
+ * edited that pixel — write it into child[x,y]. Otherwise leave child alone.
+ *
+ * This is the right tool when adding a small detail to a master sprite
+ * (e.g. a logo on pants) and you want it to appear on the A/B/C piece
+ * sprites that the game actually renders, without disturbing edge cleanup
+ * or other per-piece adjustments.
+ */
+int ExecuteBulkRestoreDiff(const std::vector<BulkRestoreMatch>& matches)
+{
+    if (!img_p || matches.empty()) return 0;
+
+    undo_push();
+
+    int imgs_processed = 0;
+    int total_written  = 0;
+
+    for (const auto& match : matches) {
+        if (!match.selected) continue;
+
+        IMG *child  = match.child;
+        IMG *parent = match.parent;
+
+        if (!child->data_p || child->w == 0 || child->h == 0) continue;
+        if (!parent || !parent->data_p || parent->w == 0 || parent->h == 0 || parent == child) continue;
+
+        /* Without a baseline we can't tell what the user edited, so skip
+         * (this can happen for sprites added in this session that never had
+         * a snapshot taken at file load). */
+        if (!parent->baseline_p) continue;
+
+        if (child->palnum != parent->palnum) continue;
+
+        unsigned char       *dst_pix    = (unsigned char *)child->data_p;
+        const unsigned char *src_pix    = (const unsigned char *)parent->data_p;
+        const unsigned char *baseline   = (const unsigned char *)parent->baseline_p;
+        int dst_stride = (child->w  + 3) & ~3;
+        int src_stride = (parent->w + 3) & ~3;
+
+        int dx = (int)(short)parent->anix - (int)(short)child->anix;
+        int dy = (int)(short)parent->aniy - (int)(short)child->aniy;
+
+        int written_this = 0;
+        for (int y = 0; y < child->h; y++) {
+            int sy = y + dy;
+            if (sy < 0 || sy >= parent->h) continue;
+            for (int x = 0; x < child->w; x++) {
+                int sx = x + dx;
+                if (sx < 0 || sx >= parent->w) continue;
+                int p_idx = sy * src_stride + sx;
+                if (src_pix[p_idx] != baseline[p_idx]) {
+                    dst_pix[y * dst_stride + x] = src_pix[p_idx];
+                    written_this++;
+                }
+            }
+        }
+        if (written_this > 0) {
+            total_written += written_this;
+        }
+        imgs_processed++;
+    }
+
+    if (total_written > 0) {
+        g_img_tex_idx = -2;
+    }
+    return imgs_processed;
 }
 
 /* ---- Write ANILST (Export Marked Images to Assembly) ---- */
