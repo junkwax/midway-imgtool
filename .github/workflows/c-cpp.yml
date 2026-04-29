@@ -42,6 +42,15 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      # SDL2.dll must be placed next to the exe at runtime.
+      # CMake links the .lib but does not copy the DLL automatically.
+      - name: Copy SDL2 DLL
+        shell: pwsh
+        run: |
+          $sdl2_base = "$env:RUNNER_TEMP\SDL2\SDL2-2.30.2"
+          $dll_arch  = if ("${{ matrix.arch }}" -eq "Win32") { "x86" } else { "x64" }
+          Copy-Item "$sdl2_base\lib\$dll_arch\SDL2.dll" "build\Release\SDL2.dll"
+
       # Stage the build into a clean dist/ tree, then zip it. Both the CI
       # artifact and the release upload pull from the same zip.
       - name: Stage dist tree
@@ -53,7 +62,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item "build/Release/imgtool.exe" $dist
           Copy-Item "build/Release/SDL2.dll"   $dist
-          Copy-Item "build/Release/it.hlp"     $dist
+          Copy-Item "build/Release/it.hlp"     $dist -ErrorAction SilentlyContinue
           if (Test-Path "build/Release/assets") {
             Copy-Item -Recurse "build/Release/assets" $dist
           }
