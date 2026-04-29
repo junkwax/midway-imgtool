@@ -12,8 +12,8 @@ Sprite and palette editor for the IMG container files used by 1990s Midway arcad
 
 - **Browse sprites** — open an IMG file and scroll through every sprite frame (Up/Down, PgUp/Dn)
 - **Edit pixels** — draw with pencil, pick colors with eyedropper, flood fill, marquee select
-- **Manage palettes** — 256-color palettes with 15-bit RGB editing; assign, merge, and delete
-- **Palette tools** — palette histogram, delete unused colors, and merge marked palettes
+- **Manage palettes** — 256-color palettes with 15-bit RGB editing; assign, merge, duplicate, and delete. Keyboard navigation for palette list (click a palette then Up/Down to move).
+- **Palette tools** — hue shift with live preview (`Color` panel), create new palette from hue, reset palette to original, palette histogram, delete unused colors, and merge marked palettes
 - **Animation points** — edit primary (X/Y) and secondary (X/Y/Z) anchor points for sprites
 - **Hitbox editor** — drag-to-resize collision boxes with live overlay on the canvas
 - **Dual-file mode** — open two IMGs at once (Tab to swap), copy IDs between them
@@ -125,7 +125,7 @@ The build copies `SDL2.dll` (Windows), `it.hlp`, and the Material Symbols icon f
 | `Ctrl+B` | Build TGA from marked images |
 | `Space` | Mark / Unmark current image |
 | `M` / `m` | Mark all / Clear all marks |
-| `Up` / `Down` | Move in image list (works in both pixel-edit and World View) |
+| `Up` / `Down` | Move in image list or palette list (palette list when last clicked) |
 | `PgUp` / `PgDn` | Page up/down image list |
 | `Tab` | Toggle World View (anipoint alignment workspace) |
 | `d` / `D` | Double / Halve zoom |

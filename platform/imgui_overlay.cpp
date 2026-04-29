@@ -17,6 +17,10 @@
 #include <algorithm>
 #include <regex>
 #include "compat.h"
+#ifdef _WIN32
+#include <shlobj.h>
+#pragma comment(lib, "shell32.lib")
+#endif
 #include "img_format.h"
 #include "img_io.h"
 #include "imgui_overlay.h"
@@ -190,6 +194,15 @@ static bool g_dirty = false;
 
 /* New IMG / Add Palette confirmations */
 static bool g_show_new_img_confirm = false;
+
+/* Keyboard navigation focus: up/down arrows navigate palettes when true */
+static bool g_palette_nav = false;
+
+/* Hue shift slider state (reset on palette change) */
+static int g_hue_slider = 0;
+static int g_hue_last = 0;
+static unsigned char g_palette_baseline[512];
+static int g_palette_baseline_nc = 0;
 
 /* Grid selection tool (for copy/paste) */
 struct GridSelection {
@@ -595,6 +608,10 @@ static void ClearAll(void)
     il21stprt   = 0;
 
     g_img_tex_idx = -2;
+    g_palette_nav = false;
+    g_hue_slider  = 0;
+    g_hue_last    = 0;
+    g_palette_baseline_nc = 0;
 }
 
 /* Swap to the alternate (second) image list.  Purely swaps globals —
@@ -754,6 +771,30 @@ static void AddNewPalette(void)
     if (!buf) return;
     pal->data_p = buf;
     memset(buf, 0, 512);
+
+    if (palcnt > 0) plselected = (int)palcnt - 1;
+}
+
+static void DuplicatePalette(void)
+{
+    PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
+    if (!src || !src->data_p) return;
+
+    g_dirty = true;
+    PAL *pal = (PAL *)AllocPal();
+    if (!pal) return;
+
+    pal->flags   = src->flags;
+    pal->bitspix = src->bitspix;
+    pal->numc    = src->numc;
+    pal->pad     = 0;
+    memcpy(pal->n_s, src->n_s, 10);
+
+    unsigned int col_sz = (unsigned int)pal->numc * 2;
+    unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
+    if (!buf) return;
+    pal->data_p = buf;
+    memcpy(buf, src->data_p, col_sz);
 
     if (palcnt > 0) plselected = (int)palcnt - 1;
 }
@@ -1208,6 +1249,52 @@ static unsigned int g_tbl_base_address = 0x02000000;
 static bool g_tbl_export_mk3_format = false;
 static bool g_tbl_export_palette = false;
 
+static const char *get_dialog_config_path(void)
+{
+    static char path[MAX_PATH] = "";
+    if (!path[0]) {
+#ifdef _WIN32
+        char appdata[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata))) {
+            _snprintf(path, sizeof(path), "%s\\imgtool\\last_dir.txt", appdata);
+        } else {
+            _snprintf(path, sizeof(path), "last_dir.txt");
+        }
+#else
+        _snprintf(path, sizeof(path), "%s/.imgtool_last_dir",
+            getenv("HOME") ? getenv("HOME") : ".");
+#endif
+    }
+    return path;
+}
+
+static void save_last_dir(const char *dir)
+{
+    if (!dir || !*dir) return;
+#ifdef _WIN32
+    char parent[MAX_PATH];
+    _snprintf(parent, sizeof(parent), "%s\\imgtool",
+        getenv("APPDATA") ? getenv("APPDATA") : ".");
+    CreateDirectoryA(parent, NULL);
+#endif
+    FILE *f = fopen(get_dialog_config_path(), "w");
+    if (f) { fprintf(f, "%s", dir); fclose(f); }
+}
+
+static void load_last_dir(char *dir, size_t dirsz)
+{
+    if (!dir || !dirsz) return;
+    dir[0] = '\0';
+    FILE *f = fopen(get_dialog_config_path(), "r");
+    if (f) {
+        if (fgets(dir, (int)dirsz, f)) {
+            size_t len = strlen(dir);
+            if (len > 0 && dir[len - 1] == '\n') dir[len - 1] = '\0';
+        }
+        fclose(f);
+    }
+}
+
 struct FileEntry { std::string name; bool is_dir; };
 
 static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& entries)
@@ -1379,6 +1466,9 @@ static void OpenFileDialog(FileDialogMode mode) {
         memcpy(g_file_dialog_dir, fpath_s, n);
         g_file_dialog_dir[n] = '\0';
     } else if (g_file_dialog_dir[0] == '\0') {
+        load_last_dir(g_file_dialog_dir, sizeof(g_file_dialog_dir));
+    }
+    if (g_file_dialog_dir[0] == '\0') {
 #ifdef _WIN32
         GetCurrentDirectoryA(sizeof(g_file_dialog_dir), g_file_dialog_dir);
 #else
@@ -1416,7 +1506,7 @@ static void DrawFileDialog() {
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
     
-    ImGui::SetNextWindowSize(ImVec2(750, 440), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(800, 520), ImGuiCond_Once);
     if (ImGui::BeginPopupModal(title, &g_show_file_dialog, ImGuiWindowFlags_NoSavedSettings)) {
         
         ImGui::InputText("Directory", g_file_dialog_dir, sizeof(g_file_dialog_dir));
@@ -1571,6 +1661,7 @@ static void DrawFileDialog() {
                 }
             }
             g_img_tex_idx = -2; /* Force canvas texture refresh */
+            save_last_dir(g_file_dialog_dir);
             g_show_file_dialog = false;
             ImGui::CloseCurrentPopup();
         }
@@ -1940,6 +2031,94 @@ static void palette_writeback(int color_idx)
     rgb8_to_pal_word(c.r, c.g, c.b, (unsigned char *)pal->data_p + color_idx * 2);
 }
 
+static void hue_shift_palette(int delta_deg)
+{
+    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    if (!pal || !pal->data_p || delta_deg == 0) return;
+    g_dirty = true;
+
+    float dh = (float)delta_deg / 360.0f;
+    int n = (int)pal->numc;
+    if (n > 256) n = 256;
+
+    for (int i = 0; i < n; i++) {
+        float r = (float)g_palette[i].r / 255.0f;
+        float g = (float)g_palette[i].g / 255.0f;
+        float b = (float)g_palette[i].b / 255.0f;
+
+        float mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        float mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        float l = (mx + mn) * 0.5f;
+
+        float h = 0.0f, s = 0.0f;
+        if (mx != mn) {
+            float d = mx - mn;
+            s = l > 0.5f ? d / (2.0f - mx - mn) : d / (mx + mn);
+            if (r == mx)      h = (g - b) / d + (g < b ? 6.0f : 0.0f);
+            else if (g == mx) h = (b - r) / d + 2.0f;
+            else              h = (r - g) / d + 4.0f;
+            h /= 6.0f;
+        }
+
+        h += dh;
+        if (h < 0.0f) h += 1.0f;
+        if (h >= 1.0f) h -= 1.0f;
+
+        auto hue2rgb = [](float p, float q, float t) -> float {
+            if (t < 0.0f) t += 1.0f;
+            if (t > 1.0f) t -= 1.0f;
+            if (t < 1.0f / 6.0f) return p + (q - p) * 6.0f * t;
+            if (t < 0.5f) return q;
+            if (t < 2.0f / 3.0f) return p + (q - p) * (2.0f / 3.0f - t) * 6.0f;
+            return p;
+        };
+
+        if (s < 0.0001f) {
+            r = g = b = l;
+        } else {
+            float q = l < 0.5f ? l * (1.0f + s) : l + s - l * s;
+            float p = 2.0f * l - q;
+            r = hue2rgb(p, q, h + 1.0f / 3.0f);
+            g = hue2rgb(p, q, h);
+            b = hue2rgb(p, q, h - 1.0f / 3.0f);
+        }
+
+        int ri = (int)(r * 255.0f + 0.5f); if (ri < 0) ri = 0; if (ri > 255) ri = 255;
+        int gi = (int)(g * 255.0f + 0.5f); if (gi < 0) gi = 0; if (gi > 255) gi = 255;
+        int bi = (int)(b * 255.0f + 0.5f); if (bi < 0) bi = 0; if (bi > 255) bi = 255;
+
+        g_palette[i].r = (unsigned char)ri;
+        g_palette[i].g = (unsigned char)gi;
+        g_palette[i].b = (unsigned char)bi;
+        rgb8_to_pal_word((unsigned char)ri, (unsigned char)gi, (unsigned char)bi,
+                         (unsigned char *)pal->data_p + i * 2);
+    }
+}
+
+static void save_palette_baseline(void)
+{
+    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    if (!pal || !pal->data_p) { g_palette_baseline_nc = 0; return; }
+    int nc = (int)pal->numc;
+    if (nc > 256) nc = 256;
+    memcpy(g_palette_baseline, pal->data_p, nc * 2);
+    g_palette_baseline_nc = nc;
+}
+
+static void reset_palette_to_baseline(void)
+{
+    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    if (!pal || !pal->data_p || g_palette_baseline_nc == 0) return;
+    int nc = (int)pal->numc;
+    if (nc > 256) nc = 256;
+    if (nc > g_palette_baseline_nc) nc = g_palette_baseline_nc;
+    memcpy(pal->data_p, g_palette_baseline, nc * 2);
+    ApplyPalette(plselected);
+    g_hue_slider = 0;
+    g_hue_last   = 0;
+    g_dirty = true;
+}
+
 /* Load the selected palette into g_palette[] so the canvas/swatches reflect it. */
 static void ApplyPalette(int pal_idx)
 {
@@ -2283,8 +2462,9 @@ void imgui_overlay_render(void)
                 unsigned char *tmp = (unsigned char *)malloc(sz);
                 if (tmp) { memcpy(tmp, img->data_p, sz); memcpy(img->data_p, g_pixel_undo, sz);
                            memcpy(g_pixel_undo, tmp, sz); free(tmp); }
-                g_img_tex_idx = -2;
-            }
+    g_img_tex_idx = -2;
+    g_palette_nav = false;
+}
         } else if (g_undo_idx > 0) { g_undo_idx--; undo_apply(g_undo_idx); }
     }
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) { if (g_undo_idx < g_undo_count - 1) { g_undo_idx++; undo_apply(g_undo_idx); } }
@@ -2331,10 +2511,19 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiKey_Semicolon, route)) LeastSquaresReduceMarked();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_B, route)) OpenFileDialog(FileDialogMode::ExportTga);
 
-    /* Sprite list navigation: cursor up/down flicks between images,
-     * matching DOS imgtool muscle memory. Skipped if a text input has
-     * focus (ImGui::Shortcut respects WantCaptureKeyboard for text). */
-    if (imgcnt > 0) {
+    /* Sprite / palette list navigation: cursor up/down flicks
+     * between images (default) or palettes (when palette panel
+     * was last clicked), matching DOS imgtool muscle memory. */
+    if (g_palette_nav && palcnt > 0) {
+        if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
+            plselected = (plselected + 1) % (int)palcnt;
+            g_zoom_reset = true;
+        }
+        if (ImGui::Shortcut(ImGuiKey_UpArrow, route)) {
+            plselected = (plselected <= 0) ? (int)palcnt - 1 : plselected - 1;
+            g_zoom_reset = true;
+        }
+    } else if (imgcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
             ilselected = (ilselected + 1) % (int)imgcnt;
             g_zoom_reset = true;
@@ -2583,13 +2772,16 @@ void imgui_overlay_render(void)
         last_pal_p = pal_p;
         IMG* img = get_img(ilselected);
         if (img) plselected = img->palnum;
+        last_plselected = -1; /* force palette reapply when pal_p changes */
     }
 
-    if (plselected != last_plselected || pal_p != last_pal_p) {
+    if (plselected != last_plselected) {
         last_plselected = plselected;
-        last_pal_p = pal_p;
         ApplyPalette(plselected);
         g_img_tex_idx = -2; /* Force texture rebuild to use new palette */
+        g_hue_slider = 0;
+        g_hue_last   = 0;
+        save_palette_baseline();
     }
 
     /* Rebuild image texture every frame to pick up palette and data changes */
@@ -2720,6 +2912,7 @@ void imgui_overlay_render(void)
                     if (selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
                     if (ImGui::Selectable(label, selected)) {
                         ilselected = i;
+                        g_palette_nav = false;
                     }
                     if (selected) ImGui::PopStyleColor();
 
@@ -2771,6 +2964,7 @@ void imgui_overlay_render(void)
                     if (sel) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
                     if (ImGui::Selectable(label, sel)) {
                         plselected = i;
+                        g_palette_nav = true;
                     }
                     if (sel) ImGui::PopStyleColor();
 
@@ -2804,6 +2998,8 @@ void imgui_overlay_render(void)
             }
             ImGui::SameLine();
             if (ImGui::SmallButton("Merge"))     MergeMarkedPalettes();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Dup"))       DuplicatePalette();
             ImGui::SameLine();
             if (ImGui::SmallButton("Del"))       DeletePalette();
         }
@@ -2917,6 +3113,42 @@ void imgui_overlay_render(void)
             if (ImGui::SliderInt("B##cb", &b, 0, 255)) {
                 col.b = (unsigned char)b;
                 palette_writeback(g_sel_color);
+            }
+            ImGui::Separator();
+            ImGui::Text("Hue");
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("##hue", &g_hue_slider, -180, 180)) {
+                int delta = g_hue_slider - g_hue_last;
+                g_hue_last = g_hue_slider;
+                hue_shift_palette(delta);
+            }
+            if (ImGui::SmallButton("Reset")) {
+                reset_palette_to_baseline();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("New from Hue")) {
+                PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
+                if (src && src->data_p) {
+                    PAL *pal = (PAL *)AllocPal();
+                    if (pal) {
+                        pal->flags   = src->flags;
+                        pal->bitspix = src->bitspix;
+                        pal->numc    = src->numc;
+                        pal->pad     = 0;
+                        memcpy(pal->n_s, src->n_s, 10);
+                        unsigned int col_sz = (unsigned int)pal->numc * 2;
+                        unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
+                        if (buf) {
+                            pal->data_p = buf;
+                            memcpy(buf, src->data_p, col_sz);
+                            if (palcnt > 0) plselected = (int)palcnt - 1;
+                            ApplyPalette(plselected);
+                            g_hue_slider = 0;
+                            g_hue_last   = 0;
+                            g_dirty = true;
+                        }
+                    }
+                }
             }
         }
 
