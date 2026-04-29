@@ -4,6 +4,8 @@
  * Extracted from imgui_overlay.cpp.
  *************************************************************/
 #include "img_io.h"
+#include "load2_verify.h"
+#include "compat.h"
 #include <vector>
 #include <algorithm>
 #include <string>
@@ -61,9 +63,20 @@ struct AFACE {
  *   [.. ..)                 SEQSCR/ENTRY blob (seqcnt sequences + scrcnt scripts)
  *   [.. EOF)                PTTBL records (40 bytes each, indexed by IMAGE.pttblnum)
  */
+static void build_full_path(char *dst, int dstsz)
+{
+    size_t plen = strlen(fpath_s);
+    if (plen > 0 && fpath_s[plen - 1] != '\\' && fpath_s[plen - 1] != '/')
+        _snprintf(dst, dstsz, "%s\\%s", fpath_s, fname_s);
+    else
+        _snprintf(dst, dstsz, "%s%s", fpath_s, fname_s);
+}
+
 void LoadImgFile(void)
 {
-    FILE *f = fopen(fname_s, "rb");
+    char full[MAX_PATH];
+    build_full_path(full, sizeof(full));
+    FILE *f = fopen(full, "rb");
     if (!f) return;
 
     LIB_HDR hdr;
@@ -186,6 +199,7 @@ void LoadImgFile(void)
         img->pttbl_p = NULL;
 
         img->file_oset     = idisk.oset;
+        img->file_data     = idisk.data;
         img->file_lib      = idisk.lib;
         img->file_frm      = idisk.frm;
         img->file_pttblnum = idisk.pttblnum;
@@ -262,6 +276,13 @@ void LoadImgFile(void)
         strncpy(pal->n_s, pdisk.n_s, 9);
         pal->n_s[9] = '\0';
 
+        memcpy(pal->file_name_raw, pdisk.n_s, 10);
+        pal->file_data  = pdisk.data;
+        pal->file_lib   = pdisk.lib;
+        pal->file_colind = pdisk.colind;
+        pal->file_cmap  = pdisk.cmap;
+        pal->file_spare = pdisk.spare;
+
         unsigned int col_sz = (unsigned int)pal->numc * 2;
         pal->data_p = PoolAlloc(col_sz);
         if (!pal->data_p) break;
@@ -291,9 +312,20 @@ void LoadImgFile(void)
  *      that has one.
  *   9. Rewind, rewrite the finalized LIB_HDR.
  */
+/* PPP> setting from MK2MIL.LOD; other LODs differ. 6 covers MK2's
+ * fighter sprites (≤64 colors per palette). Verifier compares
+ * palette numc against (1<<ppp); set to 0 to disable the check. */
+int g_load2_ppp = 6;
+
 void SaveImgFile(void)
 {
-    FILE *f = fopen(fname_s, "wb");
+    /* Pre-save advisory: pop a toast if edits will misalign SAGs
+     * after LOAD2 processes the saved IMG. Save proceeds either way. */
+    VerifyLoad2BeforeSave(g_load2_ppp);
+
+    char full[MAX_PATH];
+    build_full_path(full, sizeof(full));
+    FILE *f = fopen(full, "wb");
     if (!f) return;
 
     int num_imgs = (int)imgcnt;
@@ -424,11 +456,14 @@ void SaveImgFile(void)
         idisk.aniy2    = img->aniy2;
         idisk.aniz2    = img->aniz2;
         idisk.lib      = img->file_lib;
+        idisk.data     = img->file_data;  /* preserve from load */
         idisk.frm      = img->file_frm;  /* preserve from load (real files
                                             often have 0xFFFF; original DOS
                                             imgtool clobbered to 0) */
         idisk.opals    = img->opals;
-        idisk.pttblnum = img->pttbl_p ? (unsigned short)(pt_index++) : (unsigned short)0xFFFF;
+        idisk.pttblnum = img->pttbl_p
+            ? (img->file_oset ? img->file_pttblnum : (unsigned short)(pt_index++))
+            : (unsigned short)0xFFFF;
         fwrite(&idisk, 1, sizeof(idisk), f);
     }
 
@@ -436,12 +471,28 @@ void SaveImgFile(void)
     pal = (PAL *)pal_p;
     for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
         PALETTE_disk pdisk = {};
-        strncpy(pdisk.n_s, pal->n_s, 9); pdisk.n_s[9] = '\0';
+
+        bool fresh_name = true;
+        for (int k = 0; k < 10; k++) if (pal->file_name_raw[k]) { fresh_name = false; break; }
+        if (fresh_name) {
+            strncpy(pdisk.n_s, pal->n_s, 9);
+            pdisk.n_s[9] = '\0';
+        } else {
+            memcpy(pdisk.n_s, pal->file_name_raw, 10);
+            size_t name_len = strnlen(pal->n_s, 9);
+            memcpy(pdisk.n_s, pal->n_s, name_len);
+            pdisk.n_s[name_len] = '\0';
+        }
+
         pdisk.flags   = pal->flags;
         pdisk.bitspix = pal->bitspix;
         pdisk.numc    = pal->numc;
         pdisk.oset    = (unsigned int)(uintptr_t)pal->temp;
-        /* spare/lib/colind/cmap zeroed (original asm only sets spare=0) */
+        pdisk.data    = pal->file_data;
+        pdisk.lib     = pal->file_lib;
+        pdisk.colind  = pal->file_colind;
+        pdisk.cmap    = pal->file_cmap;
+        pdisk.spare   = pal->file_spare;
         fwrite(&pdisk, 1, sizeof(pdisk), f);
     }
 
@@ -577,6 +628,38 @@ int RestoreMarkedFromSourceForce(void)
         }
     }
     return total_written;
+}
+
+/* Cheap rect-clip: fills covered_pixels / total_pixels per match.
+ * Mirrors the dx/dy shift used by Pairs and Diff exactly so the
+ * preview number matches what Start Restore will actually copy. */
+void ComputeBulkRestoreCoverage(std::vector<BulkRestoreMatch>& matches)
+{
+    for (auto& m : matches) {
+        m.covered_pixels = 0;
+        m.total_pixels   = 0;
+        IMG *child  = m.child;
+        IMG *parent = m.parent;
+        if (!child) continue;
+        m.total_pixels = (int)child->w * (int)child->h;
+        if (!parent || parent == child) continue;
+        if (child->palnum != parent->palnum) continue;
+        if (child->w == 0 || child->h == 0)  continue;
+        if (parent->w == 0 || parent->h == 0) continue;
+
+        int dx = (int)(short)parent->anix - (int)(short)child->anix;
+        int dy = (int)(short)parent->aniy - (int)(short)child->aniy;
+
+        /* Child rect [0..w) × [0..h) shifted by (dx,dy) into parent space.
+         * Intersect with parent's [0..pw) × [0..ph). Width/height of the
+         * intersection (in child coords) gives covered_pixels. */
+        int x0 = dx > 0 ? 0 : -dx;
+        int y0 = dy > 0 ? 0 : -dy;
+        int x1 = (parent->w - dx < child->w) ? parent->w - dx : child->w;
+        int y1 = (parent->h - dy < child->h) ? parent->h - dy : child->h;
+        if (x1 <= x0 || y1 <= y0) continue;
+        m.covered_pixels = (x1 - x0) * (y1 - y0);
+    }
 }
 
 /* Bulk restore given matches.

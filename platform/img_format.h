@@ -31,6 +31,9 @@ struct IMG {
     void          *temp;        /* temp for offset when saving */
     /* Debug-only: disk file fields (populated during load, used during save) */
     unsigned int   file_oset;   /* offset in file of this image */
+    unsigned int   file_data;   /* IMAGE_disk.data (+32) — unused by runtime
+                                   but part of the on-disk record; real files
+                                   carry non-zero values here */
     unsigned short file_lib;    /* library handle index */
     unsigned short file_frm;    /* frame number for anim — 0xFFFF in real
                                    game files; 0 in DOS-imgtool-saved ones */
@@ -59,6 +62,13 @@ struct PAL {
     unsigned short pad;
     void          *data_p;    /* pointer to packed 15-bit RGB words (2 bytes each, little-endian: XRRRRRGG GGGBBBBB) */
     void          *temp;      /* temp for offset when saving */
+    /* Debug-only: disk file fields (populated during load, used during save) */
+    unsigned char  file_name_raw[10]; /* verbatim 10-byte name from disk */
+    unsigned short file_data;  /* PALETTE_disk.data (+18) */
+    unsigned short file_lib;   /* PALETTE_disk.lib (+20) */
+    unsigned char  file_colind;/* PALETTE_disk.colind (+22) */
+    unsigned char  file_cmap;  /* PALETTE_disk.cmap (+23) */
+    unsigned short file_spare; /* PALETTE_disk.spare (+24) */
 };
 
 /* Pack/unpack helpers for the 15-bit RGB palette word stored in PAL.DATA_p.

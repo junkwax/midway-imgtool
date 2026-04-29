@@ -12,7 +12,22 @@ struct BulkRestoreMatch {
     IMG* child;
     IMG* parent;
     bool selected;
+    /* OOB diagnostics, populated by ComputeBulkRestoreCoverage:
+     *   covered_pixels = pixels of child that fall inside parent rect after
+     *                    anipoint-relative dx/dy shift
+     *   total_pixels   = child->w * child->h
+     * Coverage < 100% means the copy will be partial: Pairs mode zero-fills
+     * the uncovered region (potentially destroying hand-tuned detail), Diff
+     * mode leaves it untouched. Either way, dx/dy may indicate an anipoint
+     * mismatch the user should review before clicking Start. */
+    int covered_pixels;
+    int total_pixels;
 };
+
+/* Fills covered_pixels / total_pixels for every match in the vector.
+ * Cheap (just rect-clip math, no pixel walk) so it's safe to call in
+ * the preview/test step. */
+void ComputeBulkRestoreCoverage(std::vector<BulkRestoreMatch>& matches);
 
 extern int  g_img_tex_idx;
 extern char g_restore_msg[128];

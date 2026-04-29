@@ -58,6 +58,7 @@ add_executable(imgtool
     imgui/backends/imgui_impl_sdlrenderer2.cpp
     platform/imgui_overlay.cpp
     platform/img_io.cpp
+    platform/load2_verify.cpp
     ${PLATFORM_RC}
 )
 

@@ -20,6 +20,10 @@
 #include "img_format.h"
 #include "img_io.h"
 #include "imgui_overlay.h"
+#include "load2_verify.h"
+
+/* PPP setting from img_io.cpp — used to drive the verifier modal. */
+extern int g_load2_ppp;
 
 /* Globals defined in platform/globals.c */
 extern "C" {
@@ -213,6 +217,71 @@ void undo_push(void);
 
 /* ---- Histogram state ---- */
 static bool  g_show_histogram = false;
+static bool  g_show_load2_verify = false;
+static L2Report g_load2_report;
+static int   g_load2_selected_idx = -1;          /* index into g_load2_report.issues */
+static SDL_Texture *g_load2_drift_tex = NULL;
+static int   g_load2_drift_tex_w = 0, g_load2_drift_tex_h = 0;
+
+/* Build a per-row drift overlay texture for the given image. Renders the
+ * sprite's current pixels at full color, then tints rows where the
+ * baseline-vs-current zero-shape differs in semi-transparent red so the
+ * user can see exactly which scanlines will shift LOAD2's destbits. */
+static void update_drift_texture(IMG *img)
+{
+    if (!img || !img->data_p || !img->baseline_p || img->w == 0 || img->h == 0) {
+        if (g_load2_drift_tex) { SDL_DestroyTexture(g_load2_drift_tex); g_load2_drift_tex = NULL; }
+        g_load2_drift_tex_w = g_load2_drift_tex_h = 0;
+        return;
+    }
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+
+    if (!g_load2_drift_tex || g_load2_drift_tex_w != w || g_load2_drift_tex_h != h) {
+        if (g_load2_drift_tex) SDL_DestroyTexture(g_load2_drift_tex);
+        g_load2_drift_tex = SDL_CreateTexture(g_imgui_renderer,
+            SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+        SDL_SetTextureBlendMode(g_load2_drift_tex, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_load2_drift_tex, SDL_ScaleModeNearest);
+        g_load2_drift_tex_w = w;
+        g_load2_drift_tex_h = h;
+    }
+    void *pixels; int pitch;
+    if (SDL_LockTexture(g_load2_drift_tex, NULL, &pixels, &pitch) != 0) return;
+
+    const unsigned char *cur  = (const unsigned char *)img->data_p;
+    const unsigned char *base = (const unsigned char *)img->baseline_p;
+    Uint32 *dst = (Uint32 *)pixels;
+
+    for (int y = 0; y < h; y++) {
+        /* Compute lead/trail counts on baseline and current to decide if
+         * this row drifts. Match load2_verify.cpp count_row_zeros exactly. */
+        int bl = 0, bt = 0, cl = 0, ct = 0;
+        const unsigned char *brow = base + y * stride;
+        const unsigned char *crow = cur  + y * stride;
+        while (bl < w && brow[bl] == 0) bl++;
+        if (bl < w) { int x = w - 1; while (x >= bl && brow[x] == 0) { bt++; x--; } }
+        while (cl < w && crow[cl] == 0) cl++;
+        if (cl < w) { int x = w - 1; while (x >= cl && crow[x] == 0) { ct++; x--; } }
+        bool row_drifts = (bl != cl) || (bt != ct);
+
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = cur[y * stride + x];
+            SDL_Color c = g_palette[ci];
+            Uint32 r = c.r, g = c.g, b = c.b;
+            Uint32 a = (ci == 0) ? 0x00u : 0xFFu;
+
+            if (row_drifts) {
+                /* Tint: blend toward red. Transparent pixels get a faint
+                 * red rectangle so empty rows still show their drift. */
+                if (a == 0) { r = 200; g = 40; b = 40; a = 90; }
+                else { r = (r + 510) / 3; g = g / 3; b = b / 3; }
+            }
+            dst[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+    SDL_UnlockTexture(g_load2_drift_tex);
+}
 static float g_histogram_data[256] = {0};
 static float g_histogram_max = 0.0f;
 static int   g_histogram_img_count = 0;
@@ -2429,6 +2498,16 @@ void imgui_overlay_render(void)
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Tools")) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
+            if (ImGui::MenuItem("Verify LOAD2 Packing")) {
+                g_load2_report = VerifyLoad2Packing(g_load2_ppp);
+                g_load2_selected_idx = -1;
+                g_show_load2_verify = true;
+            }
+            ImGui::PopStyleVar();
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Help")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Show Help",  "h"))  g_show_help = true;
@@ -3327,6 +3406,107 @@ void imgui_overlay_render(void)
         ImGui::EndPopup();
     }
 
+    /* ===== LOAD2 PACKING VERIFY DIALOG ===== */
+    if (g_show_load2_verify) ImGui::OpenPopup("LOAD2 Packing Verify");
+    if (ImGui::BeginPopupModal("LOAD2 Packing Verify", &g_show_load2_verify,
+                               ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Checked %d image%s against pristine baseline",
+                    g_load2_report.imgs_checked,
+                    g_load2_report.imgs_checked == 1 ? "" : "s");
+        if (g_load2_report.imgs_no_baseline > 0) {
+            ImGui::TextDisabled("(%d had no baseline — new/duplicated, "
+                                "skipped shape check)",
+                                g_load2_report.imgs_no_baseline);
+        }
+        ImGui::Separator();
+        ImGui::Text("PPP: %d  (palette-colors limit = %d)",
+                    g_load2_ppp,
+                    g_load2_ppp > 0 ? (1 << g_load2_ppp) : 0);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputInt("##ppp", &g_load2_ppp, 1, 0)) {
+            if (g_load2_ppp < 0) g_load2_ppp = 0;
+            if (g_load2_ppp > 8) g_load2_ppp = 8;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Re-check")) {
+            g_load2_report = VerifyLoad2Packing(g_load2_ppp);
+            g_load2_selected_idx = -1;
+        }
+        ImGui::Separator();
+
+        if (g_load2_report.issues.empty()) {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
+                               "OK — no SAG-breaking edits detected.");
+        } else {
+            ImGui::Text("Breaking: %d   Warnings: %d",
+                        g_load2_report.break_count,
+                        g_load2_report.warn_count);
+            ImGui::Spacing();
+            ImGui::BeginChild("l2_issues", ImVec2(640, 280), true);
+            for (size_t i = 0; i < g_load2_report.issues.size(); i++) {
+                auto &iss = g_load2_report.issues[i];
+                bool is_sel = ((int)i == g_load2_selected_idx);
+                ImVec4 col = iss.sev == L2Severity::Break
+                    ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f)
+                    : ImVec4(1.0f, 0.85f, 0.4f,  1.0f);
+                ImGui::PushID((int)i);
+                char hdr[40];
+                snprintf(hdr, sizeof(hdr), "[%4d] %-15s", iss.img_idx, iss.img_name.c_str());
+                if (ImGui::Selectable("##row", is_sel, ImGuiSelectableFlags_AllowItemOverlap,
+                                      ImVec2(0, 0))) {
+                    g_load2_selected_idx = (int)i;
+                    if (iss.img_idx >= 0) ilselected = iss.img_idx;
+                    if (iss.sev == L2Severity::Break) {
+                        update_drift_texture(get_img(iss.img_idx));
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextColored(col, "%s", hdr);
+                ImGui::SameLine();
+                ImGui::TextWrapped("%s", iss.message.c_str());
+                ImGui::PopID();
+                ImGui::Separator();
+            }
+            ImGui::EndChild();
+
+            /* ---- Drift visualization for the selected issue ---- */
+            if (g_load2_selected_idx >= 0
+                && g_load2_selected_idx < (int)g_load2_report.issues.size())
+            {
+                auto &sel = g_load2_report.issues[g_load2_selected_idx];
+                IMG *si = get_img(sel.img_idx);
+                if (sel.sev == L2Severity::Break && si && si->baseline_p) {
+                    if (!g_load2_drift_tex
+                        || g_load2_drift_tex_w != (int)si->w
+                        || g_load2_drift_tex_h != (int)si->h)
+                    {
+                        update_drift_texture(si);
+                    }
+                    if (g_load2_drift_tex) {
+                        ImGui::Spacing();
+                        ImGui::TextDisabled("Red rows = zero-shape drift "
+                                            "(silhouette differs from baseline)");
+                        float scale = (si->w < 64) ? 4.0f : (si->w < 128) ? 3.0f : 2.0f;
+                        ImVec2 sz((float)si->w * scale, (float)si->h * scale);
+                        ImGui::Image((ImTextureID)(intptr_t)g_load2_drift_tex, sz);
+                    }
+                } else if (sel.sev != L2Severity::Break) {
+                    ImGui::Spacing();
+                    ImGui::TextDisabled("(no drift visualization for warnings)");
+                }
+            }
+        }
+
+        ImGui::Spacing();
+        if (ImGui::Button("Close")) {
+            g_show_load2_verify = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     /* ===== PALETTE HISTOGRAM DIALOG ===== */
     if (g_show_histogram) ImGui::OpenPopup("Palette Histogram");
     if (ImGui::BeginPopupModal("Palette Histogram", &g_show_histogram, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -3424,7 +3604,7 @@ void imgui_overlay_render(void)
                                 && parent->palnum == child->palnum) {
                                 /* Same-palette only — pixel indices across different palettes
                                  * map to different colors, producing garbled output. */
-                                g_restore_matches.push_back({child, parent, true});
+                                g_restore_matches.push_back({child, parent, true, 0, 0});
                             }
                         }
                     }
@@ -3433,6 +3613,7 @@ void imgui_overlay_render(void)
                         if (cmp != 0) return cmp < 0;
                         return strcmp(a.child->n_s, b.child->n_s) < 0;
                     });
+                    ComputeBulkRestoreCoverage(g_restore_matches);
                     g_restore_regex_tested = true;
                 } catch (const std::regex_error&) {
                     g_restore_regex_error = true;
@@ -3442,29 +3623,59 @@ void imgui_overlay_render(void)
                 ImGui::TextColored(ImVec4(1, 0, 0, 1), "Regex Error: invalid pattern");
             }
         } else {
+            int partial_count = 0;
+            for (auto& m : g_restore_matches) {
+                if (m.total_pixels > 0 && m.covered_pixels < m.total_pixels) partial_count++;
+            }
             ImGui::Text("Found %d match(es). Select items to restore:", (int)g_restore_matches.size());
-            ImGui::BeginChild("MatchesList", ImVec2(400, 200), true);
+            if (partial_count > 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                    "%d match%s with partial coverage (anipoint shift pushes parent rect "
+                    "out of bounds). Pairs mode will zero-fill the uncovered area.",
+                    partial_count, partial_count == 1 ? "" : "es");
+            }
+            ImGui::BeginChild("MatchesList", ImVec2(520, 220), true);
             std::string last_parent = "";
             for (size_t i = 0; i < g_restore_matches.size(); i++) {
-                std::string current_parent = g_restore_matches[i].parent->n_s;
+                BulkRestoreMatch& m = g_restore_matches[i];
+                std::string current_parent = m.parent->n_s;
                 if (current_parent != last_parent) {
                     ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", current_parent.c_str());
                     last_parent = current_parent;
                 }
                 ImGui::Indent(16.0f);
                 char label[128];
-                snprintf(label, sizeof(label), "%s##%zu", g_restore_matches[i].child->n_s, i);
-                ImGui::Checkbox(label, &g_restore_matches[i].selected);
+                snprintf(label, sizeof(label), "%s##%zu", m.child->n_s, i);
+                bool partial = m.total_pixels > 0 && m.covered_pixels < m.total_pixels;
+                if (partial) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.55f, 1.0f));
+                ImGui::Checkbox(label, &m.selected);
+                if (partial) ImGui::PopStyleColor();
+                if (m.total_pixels > 0) {
+                    ImGui::SameLine();
+                    int pct = (int)((100.0 * m.covered_pixels) / m.total_pixels + 0.5);
+                    if (partial) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f),
+                                           "(%d%% covered)", pct);
+                    } else {
+                        ImGui::TextDisabled("(100%%)");
+                    }
+                }
                 ImGui::Unindent(16.0f);
             }
             ImGui::EndChild();
-            
+
             if (ImGui::Button("Select All")) {
                 for (auto& m : g_restore_matches) m.selected = true;
             }
             ImGui::SameLine();
             if (ImGui::Button("Deselect All")) {
                 for (auto& m : g_restore_matches) m.selected = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Deselect Partial")) {
+                for (auto& m : g_restore_matches) {
+                    if (m.total_pixels > 0 && m.covered_pixels < m.total_pixels) m.selected = false;
+                }
             }
         }
 
