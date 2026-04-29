@@ -50,7 +50,17 @@ struct AFACE {
 };
 #pragma pack(pop)
 
-/* ---- ImgLoad: port of img_load (IMG file reader) ---- */
+/* ---- ImgLoad: port of img_load (IMG file reader) ----
+ *
+ * On-disk layout (per doc/it/itimg.asm img_load):
+ *   [0 .. 28)               LIB_HDR
+ *   [28 .. hdr.oset)        Pixel data + palette data, packed in arbitrary order.
+ *                           Reachable only via IMAGE.oset / PALETTE.oset fields.
+ *   [hdr.oset ..)           IMAGE_disk records (imgcnt of them)
+ *   [.. ..)                 PALETTE_disk records (palcnt - NUMDEFPAL of them)
+ *   [.. ..)                 SEQSCR/ENTRY blob (seqcnt sequences + scrcnt scripts)
+ *   [.. EOF)                PTTBL records (40 bytes each, indexed by IMAGE.pttblnum)
+ */
 void LoadImgFile(void)
 {
     FILE *f = fopen(fname_s, "rb");
@@ -64,35 +74,76 @@ void LoadImgFile(void)
 
     if (hdr.imgcnt == 0 || hdr.imgcnt > 2000) { fclose(f); return; }
 
+    /* Drop any prior seq/scr blob — we rebuild it from this file's contents. */
+    if (scrseqmem_p) { free(scrseqmem_p); scrseqmem_p = NULL; }
+    scrseqbytes = 0;
+
     ilpalloaded = -1;
     damcnt = 0;
 
-    unsigned int pal_oset = (unsigned int)hdr.oset + (unsigned int)hdr.imgcnt * sizeof(IMAGE_disk);
+    /* Compute offset to the seq/scr region: it lives just past the
+     * IMAGE_disk and PALETTE_disk record arrays. */
+    unsigned int seqscr_oset = (unsigned int)hdr.oset
+                             + (unsigned int)hdr.imgcnt * sizeof(IMAGE_disk);
     if (hdr.palcnt > NUMDEFPAL)
-        pal_oset += (unsigned int)(hdr.palcnt - NUMDEFPAL) * sizeof(PALETTE_disk);
+        seqscr_oset += (unsigned int)(hdr.palcnt - NUMDEFPAL) * sizeof(PALETTE_disk);
 
+    /* ---- Walk SEQSCR + ENTRY blob to compute its size, then slurp it.
+     *
+     * On disk (v0x634+, "far ptr" — empirically verified against CAGE1.IMG):
+     *   SEQSCR record = 98 bytes:
+     *      [+0..16) name_s  (zero-padded ASCII)
+     *      [+16..18) flags  (0x40 = SEQFLG bit; sequences have it set, scripts don't)
+     *      [+18..20) num    (count of ENTRY records that follow this SEQSCR)
+     *      [+20..84) entry_t  (16 dwords — placeholder pointers used at runtime)
+     *      [+84..86) startx
+     *      [+86..88) starty
+     *      [+88..94) dam[6]
+     *      [+94..96) spare1
+     *      [+96..98) spare2
+     *   ENTRY record = 18 bytes (not 16 as wmpstruc.inc's struct field math suggests —
+     *   the on-disk record carries an extra 2-byte field).
+     *
+     * For v < 0x634 ("near ptr" model), the original asm subtracts 2*16+8=40 bytes
+     * from SEQSCR size and 2 bytes from ENTRY size: SEQSCR=58, ENTRY=16.
+     */
+    long seqscr_blob_start = (long)seqscr_oset;
     {
-        int seqcnt = (signed short)hdr.seqcnt;
-        int scrcnt = (signed short)hdr.scrcnt;
-        int is_far = (hdr.version >= 0x634);
-        int entry_sz = is_far ? 16 : 14;
-        int seqscr_sz = is_far ? 32 : 24;
+        int seqcnt_local = (signed short)hdr.seqcnt;
+        int scrcnt_local = (signed short)hdr.scrcnt;
+        int is_far     = (hdr.version >= 0x634);
+        int seqscr_sz  = is_far ? 98 : 58;
+        int entry_sz   = is_far ? 18 : 16;
+        unsigned int total_bytes = 0;
+        long pos = seqscr_blob_start;
 
-        for (int s = 0; s < seqcnt; s++) {
-            fseek(f, seqscr_sz - 2, SEEK_CUR);
-            unsigned short num;
-            fread(&num, 1, 2, f);
-            fseek(f, (long)num * entry_sz, SEEK_CUR);
+        for (int s = 0; s < seqcnt_local + scrcnt_local; s++) {
+            unsigned short num = 0;
+            fseek(f, pos + 18, SEEK_SET);  /* SEQSCR.num at +18 */
+            if (fread(&num, 1, 2, f) != 2) break;
+            unsigned int rec_bytes = (unsigned int)seqscr_sz + (unsigned int)num * (unsigned int)entry_sz;
+            total_bytes += rec_bytes;
+            pos += (long)rec_bytes;
         }
-        for (int s = 0; s < scrcnt; s++) {
-            fseek(f, seqscr_sz - 2, SEEK_CUR);
-            unsigned short num;
-            fread(&num, 1, 2, f);
-            fseek(f, (long)num * entry_sz, SEEK_CUR);
+
+        scrseqbytes = total_bytes;
+        if (scrseqbytes > 0) {
+            scrseqmem_p = malloc(scrseqbytes);
+            if (scrseqmem_p) {
+                fseek(f, seqscr_blob_start, SEEK_SET);
+                if (fread(scrseqmem_p, 1, scrseqbytes, f) != scrseqbytes) {
+                    free(scrseqmem_p); scrseqmem_p = NULL; scrseqbytes = 0;
+                }
+            } else {
+                scrseqbytes = 0;
+            }
         }
     }
+    /* Point tables follow the seq/scr blob. */
+    long ptoset = seqscr_blob_start + (long)scrseqbytes;
 
-    long ptoset = ftell(f);
+    seqcnt = (unsigned int)(signed short)hdr.seqcnt;
+    scrcnt = (unsigned int)(signed short)hdr.scrcnt;
 
     int pal_base = (int)palcnt;
     unsigned int img_oset = hdr.oset;
@@ -207,7 +258,22 @@ void LoadImgFile(void)
     if (imgcnt > 0) ilselected = 0;
 }
 
-/* ---- SaveImgFile: port of img_save (IMG file writer) ---- */
+/* ---- SaveImgFile: port of img_save (IMG file writer) ----
+ *
+ * On-disk layout produced (matches doc/it/itimg.asm img_save exactly):
+ *   1. Reserve LIB_HDR placeholder at [0..28).
+ *   2. Write all palette pixel data — each PAL.DATA, no padding. Stash the
+ *      file offset at write time into PAL.temp (used in step 6).
+ *   3. Write all image pixel data — each IMG.DATA. Stash file offset into
+ *      IMG.temp.
+ *   4. Snap LIB_HDR.OSET = current file pointer (= start of records).
+ *   5. Write all IMAGE_disk records (using IMG.temp for OSET fields).
+ *   6. Write all PALETTE_disk records (using PAL.temp for OSET fields).
+ *   7. Write the SEQSCR+ENTRY blob verbatim (scrseqmem_p, scrseqbytes).
+ *   8. Write all per-image PTTBL records (40 bytes each) for any image
+ *      that has one.
+ *   9. Rewind, rewrite the finalized LIB_HDR.
+ */
 void SaveImgFile(void)
 {
     FILE *f = fopen(fname_s, "wb");
@@ -216,117 +282,63 @@ void SaveImgFile(void)
     int num_imgs = (int)imgcnt;
     int num_pals = (int)palcnt;
 
-    // 1. Count point tables
-    int pt_count = 0;
-    IMG *img = (IMG *)img_p;
-    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
-        if (img->pttbl_p) pt_count++;
-    }
-
+    /* ---- 1. Header placeholder ---- */
     LIB_HDR hdr = {};
     hdr.imgcnt  = (unsigned short)num_imgs;
     hdr.palcnt  = (unsigned short)(num_pals + NUMDEFPAL);
-    hdr.version = 0x0634;
+    hdr.version = (fileversion != 0) ? (unsigned short)fileversion : 0x0634;
     hdr.temp    = 0xABCD;
-    hdr.oset    = (unsigned int)(sizeof(LIB_HDR) + pt_count * 40);
-    hdr.seqcnt  = 0;
-    hdr.scrcnt  = 0;
-    hdr.damcnt  = 0;
+    hdr.oset    = 0;  /* finalized in step 4 */
+    hdr.seqcnt  = (unsigned short)seqcnt;
+    hdr.scrcnt  = (unsigned short)scrcnt;
+    hdr.damcnt  = 0;  /* original asm always zeros this on save */
     for (int i = 0; i < 4; i++) hdr.bufscr[i] = (unsigned char)-1;
-
     fwrite(&hdr, 1, sizeof(hdr), f);
 
-    // 2. Write Point Tables
-    img = (IMG *)img_p;
-    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
-        if (img->pttbl_p) {
-            fwrite(img->pttbl_p, 1, 40, f);
+    /* ---- 2. Palette pixel data ---- */
+    PAL *pal = (PAL *)pal_p;
+    for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
+        unsigned int data_oset = (unsigned int)ftell(f);
+        pal->temp = (void *)(uintptr_t)data_oset;
+        unsigned int sz = (unsigned int)pal->numc * 2;
+        if (pal->data_p) {
+            fwrite(pal->data_p, 1, sz, f);
+        } else if (sz > 0) {
+            unsigned char *z = (unsigned char *)calloc(1, sz);
+            if (z) { fwrite(z, 1, sz, f); free(z); }
         }
     }
 
-    // 3. Prepare positions
-    long img_hdr_pos = (long)hdr.oset;
-    long pal_hdr_pos = (long)(hdr.oset + num_imgs * sizeof(IMAGE_disk));
-    long data_pos    = (long)(pal_hdr_pos + num_pals * sizeof(PALETTE_disk));
-
-    // 4. Write IMAGE_disk array (with placeholders for oset)
-    fseek(f, img_hdr_pos, SEEK_SET);
-    int pt_index = 0;
-    img = (IMG *)img_p;
+    /* ---- 3. Image pixel data ---- */
+    IMG *img = (IMG *)img_p;
     for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
-        IMAGE_disk idisk = {};
-        strncpy(idisk.n_s, img->n_s, 15); idisk.n_s[15] = '\0';
-        idisk.flags  = img->flags;
-        idisk.anix   = img->anix;
-        idisk.aniy   = img->aniy;
-        idisk.w      = img->w;
-        idisk.h      = img->h;
-        idisk.palnum = (unsigned short)((int)img->palnum + NUMDEFPAL);
-        idisk.oset   = 0; // To be filled later
-        idisk.anix2  = img->anix2;
-        idisk.aniy2  = img->aniy2;
-        idisk.aniz2  = img->aniz2;
-        idisk.lib    = img->file_lib;
-        idisk.frm    = img->file_frm;
-        idisk.opals  = img->opals;
-        idisk.pttblnum = img->pttbl_p ? (unsigned short)(pt_index++) : (unsigned short)0xFFFF;
+        unsigned int data_oset = (unsigned int)ftell(f);
+        img->temp = (void *)(uintptr_t)data_oset;
 
-        fwrite(&idisk, 1, sizeof(idisk), f);
-    }
-
-    // 5. Write PALETTE_disk array (with placeholders for oset)
-    fseek(f, pal_hdr_pos, SEEK_SET);
-    PAL *pal = (PAL *)pal_p;
-    for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
-        PALETTE_disk pdisk = {};
-        strncpy(pdisk.n_s, pal->n_s, 9); pdisk.n_s[9] = '\0';
-        pdisk.flags   = pal->flags;
-        pdisk.bitspix = pal->bitspix;
-        pdisk.numc    = pal->numc;
-        pdisk.oset    = 0; // To be filled later
-
-        fwrite(&pdisk, 1, sizeof(pdisk), f);
-    }
-
-    // 6. Write Image Data & Update IMAGE_disk.oset
-    img = (IMG *)img_p;
-    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
-        fseek(f, data_pos, SEEK_SET);
         unsigned int stride = ((unsigned int)img->w + 3) & ~3;
         unsigned int sz = stride * img->h;
 
-        // Update oset
-        unsigned int cur_oset = (unsigned int)data_pos;
-        long save_pos = ftell(f);
-        fseek(f, img_hdr_pos + i * sizeof(IMAGE_disk) + offsetof(IMAGE_disk, oset), SEEK_SET);
-        fwrite(&cur_oset, 1, 4, f);
-        fseek(f, save_pos, SEEK_SET);
-
-        if (img->flags & 0x0080) { // CMP
+        if (img->flags & 0x0080) {
+            /* CMP mode — leading/trailing zero RLE per row. */
             int lm_mult = 1 << ((img->flags >> 8) & 3);
             int tm_mult = 1 << ((img->flags >> 10) & 3);
-            unsigned char* src = (unsigned char*)img->data_p;
+            unsigned char *src = (unsigned char *)img->data_p;
             bool free_z = false;
-            if (!src) {
-                src = (unsigned char *)calloc(1, sz);
-                free_z = true;
-            }
+            if (!src) { src = (unsigned char *)calloc(1, sz); free_z = true; }
             if (src) {
                 for (int y = 0; y < img->h; y++) {
-                    unsigned char* row = src + y * stride;
+                    unsigned char *row = src + y * stride;
                     int leading = 0;
                     while (leading < img->w && row[leading] == 0) leading++;
                     int trailing = 0;
                     if (leading < img->w) {
                         while (trailing < img->w && row[img->w - 1 - trailing] == 0) trailing++;
                     }
-
                     int l_enc = leading / lm_mult;
                     int t_enc = trailing / tm_mult;
                     if (l_enc > 15) l_enc = 15;
                     if (t_enc > 15) t_enc = 15;
-
-                    int actual_leading = l_enc * lm_mult;
+                    int actual_leading  = l_enc * lm_mult;
                     int actual_trailing = t_enc * tm_mult;
                     int visible = img->w - actual_leading - actual_trailing;
                     if (visible < 0) visible = 0;
@@ -335,48 +347,72 @@ void SaveImgFile(void)
                     fwrite(&comp_byte, 1, 1, f);
                     if (visible > 0)
                         fwrite(row + actual_leading, 1, visible, f);
-
-                    data_pos += 1 + visible;
                 }
                 if (free_z) free(src);
             }
         } else {
-            if (img->data_p)
+            if (img->data_p) {
                 fwrite(img->data_p, 1, sz, f);
-            else {
+            } else if (sz > 0) {
                 unsigned char *z = (unsigned char *)calloc(1, sz);
                 if (z) { fwrite(z, 1, sz, f); free(z); }
             }
-            data_pos += sz;
         }
     }
 
-    // 7. Write Palette Data & Update PALETTE_disk.oset
+    /* ---- 4. Snap OSET ---- */
+    hdr.oset = (unsigned int)ftell(f);
+
+    /* ---- 5. IMAGE_disk records ---- */
+    int pt_index = 0;
+    img = (IMG *)img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        IMAGE_disk idisk = {};
+        strncpy(idisk.n_s, img->n_s, 15); idisk.n_s[15] = '\0';
+        idisk.flags    = img->flags;
+        idisk.anix     = img->anix;
+        idisk.aniy     = img->aniy;
+        idisk.w        = img->w;
+        idisk.h        = img->h;
+        idisk.palnum   = (unsigned short)((int)img->palnum + NUMDEFPAL);
+        idisk.oset     = (unsigned int)(uintptr_t)img->temp;
+        idisk.anix2    = img->anix2;
+        idisk.aniy2    = img->aniy2;
+        idisk.aniz2    = img->aniz2;
+        idisk.lib      = img->file_lib;
+        idisk.frm      = 0;  /* original asm zeros this on save */
+        idisk.opals    = img->opals;
+        idisk.pttblnum = img->pttbl_p ? (unsigned short)(pt_index++) : (unsigned short)0xFFFF;
+        fwrite(&idisk, 1, sizeof(idisk), f);
+    }
+
+    /* ---- 6. PALETTE_disk records ---- */
     pal = (PAL *)pal_p;
     for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
-        fseek(f, data_pos, SEEK_SET);
-        unsigned int sz = (unsigned int)pal->numc * 2;
-
-        if (pal->data_p)
-            fwrite(pal->data_p, 1, sz, f);
-        else {
-            unsigned char *z = (unsigned char *)calloc(1, sz);
-            if (z) { fwrite(z, 1, sz, f); free(z); }
-        }
-
-        // Update oset
-        unsigned int cur_oset = (unsigned int)data_pos;
-        long save_pos = ftell(f);
-        fseek(f, pal_hdr_pos + i * sizeof(PALETTE_disk) + offsetof(PALETTE_disk, oset), SEEK_SET);
-        fwrite(&cur_oset, 1, 4, f);
-        fseek(f, save_pos, SEEK_SET);
-
-        data_pos += sz;
+        PALETTE_disk pdisk = {};
+        strncpy(pdisk.n_s, pal->n_s, 9); pdisk.n_s[9] = '\0';
+        pdisk.flags   = pal->flags;
+        pdisk.bitspix = pal->bitspix;
+        pdisk.numc    = pal->numc;
+        pdisk.oset    = (unsigned int)(uintptr_t)pal->temp;
+        /* spare/lib/colind/cmap zeroed (original asm only sets spare=0) */
+        fwrite(&pdisk, 1, sizeof(pdisk), f);
     }
 
-    // 8. Update header
-    hdr.palcnt = (unsigned short)(num_pals + NUMDEFPAL);
-    hdr.imgcnt = (unsigned short)num_imgs;
+    /* ---- 7. SEQSCR+ENTRY blob ---- */
+    if (scrseqmem_p && scrseqbytes > 0) {
+        fwrite(scrseqmem_p, 1, scrseqbytes, f);
+    }
+
+    /* ---- 8. Per-image PTTBL records (40 bytes each) ---- */
+    img = (IMG *)img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        if (img->pttbl_p) {
+            fwrite(img->pttbl_p, 1, 40, f);
+        }
+    }
+
+    /* ---- 9. Rewrite finalized LIB_HDR ---- */
     rewind(f);
     fwrite(&hdr, 1, sizeof(hdr), f);
 
@@ -585,36 +621,57 @@ void WriteAnilstFromMarked(const char* filepath)
     fclose(f);
 }
 
-/* ---- Write TBL (Export Marked Images to MK2 format Assembly Table) ---- */
+/* ---- Write TBL (Export Marked Images to MK2 format Assembly Table) ----
+ *
+ * Format produced (MK2 / non-MK3 branch), matching e.g. data/MKMK3.TBL:
+ *   <whole file is wrapped in .DATA ... .TEXT>
+ *   LABEL:
+ *       .word  W, H, ANIX, ANIY                   ; (mk3_format adds anix2/y2/z2)
+ *       .long  <ROM_BIT_ADDRESS>H
+ *       .word  <FLAGS>H
+ *       .long  <PALETTE_LABEL>                    ; ONLY emitted when palette
+ *                                                 ; differs from previous entry
+ *
+ * Caveat: <ROM_BIT_ADDRESS> is the bit-address of the sprite's pixel data
+ * inside the IROM blob, which is determined by LOAD2 when it builds the IRW
+ * — NOT by the .IMG file alone. The value below is base_address + (file_oset
+ * in the .IMG file)*8 as a placeholder; if you're producing a TBL meant to be
+ * linked against a real IRW, run LOAD2 and use its emitted .TBL instead.
+ */
 void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal)
 {
     FILE* f = fopen(filepath, "w");
     if (!f) return;
 
+    fprintf(f, "\t.DATA\n");
+
     IMG* p = (IMG*)img_p;
+    int prev_palnum = -1;
     while (p) {
         if (p->flags & 1) {
             fprintf(f, "%s:\n", p->n_s);
             if (mk3_format) {
-                fprintf(f, "\t.word   %d,%d,%d,%d,%d,%d,%d\n", 
-                        p->w, p->h, 
+                fprintf(f, "\t.word   %d,%d,%d,%d,%d,%d,%d\n",
+                        p->w, p->h,
                         (int)(short)p->anix, (int)(short)p->aniy,
                         (int)(short)p->anix2, (int)(short)p->aniy2,
                         (int)(short)p->aniz2);
             } else {
-                fprintf(f, "\t.word   %d,%d,%d,%d\n", 
-                        p->w, p->h, 
+                fprintf(f, "\t.word   %d,%d,%d,%d\n",
+                        p->w, p->h,
                         (int)(short)p->anix, (int)(short)p->aniy);
             }
             fprintf(f, "\t.long   0%XH\n", base_address + (p->file_oset * 8));
             fprintf(f, "\t.word   0%04XH\n", p->flags);
-            if (include_pal) {
+            if (include_pal && (int)p->palnum != prev_palnum) {
                 PAL* pal = get_pal(p->palnum);
                 fprintf(f, "\t.long   %s\n", (pal && pal->n_s[0]) ? pal->n_s : "0");
+                prev_palnum = (int)p->palnum;
             }
         }
         p = (IMG*)p->nxt_p;
     }
+    fprintf(f, "\t.TEXT\n");
     fclose(f);
 }
 

@@ -32,7 +32,11 @@ unsigned int  scrcnt      = 0;
 unsigned int  damcnt      = 0;
 unsigned int  fileversion = 0;
 
-/* ---- Sequence/script memory ---- */
+/* ---- Sequence/script memory ----
+ * Raw byte blob of all SEQSCR records and their ENTRY arrays, captured
+ * verbatim from the source file so save can write it back unchanged.
+ * Lives in [oset + imgcnt*IMAGE_disk + (palcnt-NUMDEFPAL)*PALETTE_disk ..)
+ * on disk — NOT at the start of the file. */
 void         *scrseqmem_p = NULL;
 unsigned int  scrseqbytes = 0;
 

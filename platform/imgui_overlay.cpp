@@ -3348,17 +3348,24 @@ void imgui_overlay_render(void)
     if (ImGui::BeginPopupModal("Debug Info", &g_show_debug, ImGuiWindowFlags_NoMove)) {
         ImGui::SetNextWindowSize(ImVec2(520, 580), ImGuiCond_Always);
 
-        /* --- Library Header --- */
+        /* --- Library Header (LIB_HDR + seq/scr blob round-trip status) --- */
         if (ImGui::CollapsingHeader("LIB_HDR", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Text("IMGCNT:  %u",   imgcnt);
-            ImGui::Text("PALCNT:  %u",   palcnt);
-            ImGui::Text("SEQCNT:  %u",   seqcnt);
-            ImGui::Text("SCRCNT:  %u",   scrcnt);
-            ImGui::Text("DAMCNT:  %u",   damcnt);
+            ImGui::Text("IMGCNT:  %u",     imgcnt);
+            ImGui::Text("PALCNT:  %u",     palcnt);
+            ImGui::Text("SEQCNT:  %u",     seqcnt);
+            ImGui::Text("SCRCNT:  %u",     scrcnt);
+            ImGui::Text("DAMCNT:  %u",     damcnt);
             ImGui::Text("VERSION: 0x%04X", fileversion);
+            ImGui::Separator();
+            ImGui::TextDisabled("SEQSCR/ENTRY blob (load-time, round-trips on save):");
+            if (scrseqmem_p && scrseqbytes > 0) {
+                ImGui::Text("SCRSEQBYTES:  %u bytes", scrseqbytes);
+            } else {
+                ImGui::TextDisabled("SCRSEQBYTES:  0  (no seq/scr in file)");
+            }
         }
 
-        /* --- Selected IMAGE record (runtime) --- */
+        /* --- Selected IMAGE record (runtime + disk-side) --- */
         IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
         if (ImGui::CollapsingHeader("IMAGE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (img) {
@@ -3382,6 +3389,28 @@ void imgui_overlay_render(void)
                 ImGui::TextDisabled("No image selected");
             }
         }
+        if (ImGui::CollapsingHeader("IMAGE_disk (load-time)", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (img) {
+                ImGui::Text("FILE_OSET:    0x%X (%u)", img->file_oset, img->file_oset);
+                ImGui::Text("FILE_LIB:     %u",        (unsigned)img->file_lib);
+                ImGui::Text("FILE_FRM:     %u",        (unsigned)img->file_frm);
+                if (img->file_pttblnum == 0xFFFF)
+                    ImGui::TextDisabled("FILE_PTTBLNUM: 0xFFFF (none)");
+                else
+                    ImGui::Text("FILE_PTTBLNUM: %u",  (unsigned)img->file_pttblnum);
+                /* Pixel-data byte size, derived from runtime w/h (CMP variable) */
+                if (!(img->flags & 0x0080)) {
+                    unsigned int stride = ((unsigned int)img->w + 3u) & ~3u;
+                    ImGui::Text("PIX_SIZE:     %u bytes (uncompressed, %ux%u)",
+                                stride * (unsigned)img->h,
+                                (unsigned)img->w, (unsigned)img->h);
+                } else {
+                    ImGui::TextDisabled("PIX_SIZE:     CMP — variable per row");
+                }
+            } else {
+                ImGui::TextDisabled("No image selected");
+            }
+        }
 
         /* --- Selected PALETTE record (runtime) --- */
         PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
@@ -3395,6 +3424,9 @@ void imgui_overlay_render(void)
                 ImGui::Text("PAD:      0x%04X",   pal->pad);
                 ImGui::Text("DATA_p:   %p",       pal->data_p);
                 ImGui::Text("TEMP:     %p",       pal->temp);
+                ImGui::Separator();
+                ImGui::TextDisabled("PALETTE_disk fields (lib/colind/cmap/oset)");
+                ImGui::TextDisabled("are not currently retained at load.");
             } else {
                 ImGui::TextDisabled("No palette selected");
             }
