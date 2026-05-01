@@ -25,6 +25,7 @@
 #include "img_io.h"
 #include "imgui_overlay.h"
 #include "load2_verify.h"
+#include "lod_parser.h"
 
 /* PPP setting from img_io.cpp — used to drive the verifier modal. */
 extern int g_load2_ppp;
@@ -1240,7 +1241,7 @@ static void LeastSquaresReduceMarked()
 }
 
 /* ---- ImGui Native File Dialog ---- */
-enum class FileDialogMode { OpenImg, AppendImg, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ExportPng, WriteAniLst, WriteTbl };
+enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ExportPng, WriteAniLst, WriteTbl, WriteIrw };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
@@ -1248,6 +1249,9 @@ static char g_file_dialog_file[256] = "";
 static unsigned int g_tbl_base_address = 0x02000000;
 static bool g_tbl_export_mk3_format = false;
 static bool g_tbl_export_palette = false;
+static int  g_irw_bpp             = 8;
+static unsigned int g_irw_base_address = 0x02000000;
+static bool g_irw_align_16bit     = true;
 
 static const char *get_dialog_config_path(void)
 {
@@ -1297,14 +1301,17 @@ static void load_last_dir(char *dir, size_t dirsz)
 
 struct FileEntry { std::string name; bool is_dir; };
 
-static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& entries)
+static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& entries, const char* ext_filter)
 {
     entries.clear();
 #ifdef _WIN32
     WIN32_FIND_DATAA fd;
     std::string search = dir;
     if (!search.empty() && search.back() != '\\' && search.back() != '/') search += "\\";
-    search += "*";
+    if (ext_filter && ext_filter[0])
+        search += std::string("*.") + ext_filter;
+    else
+        search += "*";
     HANDLE hFind = FindFirstFileA(search.c_str(), &fd);
     if (hFind != INVALID_HANDLE_VALUE) {
         do {
@@ -1313,6 +1320,22 @@ static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& en
             entries.push_back({fd.cFileName, is_dir});
         } while (FindNextFileA(hFind, &fd));
         FindClose(hFind);
+    }
+    if (ext_filter && ext_filter[0]) {
+        std::string dir_search = dir;
+        if (!dir_search.empty() && dir_search.back() != '\\' && dir_search.back() != '/') dir_search += "\\";
+        dir_search += "*";
+        HANDLE hDir = FindFirstFileA(dir_search.c_str(), &fd);
+        if (hDir != INVALID_HANDLE_VALUE) {
+            do {
+                if (strcmp(fd.cFileName, ".") == 0) continue;
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                bool dup = false;
+                for (const auto& e : entries) { if (e.name == fd.cFileName) { dup = true; break; } }
+                if (!dup) entries.push_back({fd.cFileName, true});
+            } while (FindNextFileA(hDir, &fd));
+            FindClose(hDir);
+        }
     }
 #else
     DIR* d = opendir(dir.empty() ? "." : dir.c_str());
@@ -1331,7 +1354,22 @@ static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& en
                 if (stat(full_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
                     is_dir = true;
             }
-            entries.push_back({dir_ent->d_name, is_dir});
+            if (is_dir) {
+                entries.push_back({dir_ent->d_name, true});
+            } else if (ext_filter && ext_filter[0]) {
+                const char* dot = strrchr(dir_ent->d_name, '.');
+                if (dot) {
+#ifdef _WIN32
+                    if (_stricmp(dot + 1, ext_filter) == 0)
+                        entries.push_back({dir_ent->d_name, false});
+#else
+                    if (strcasecmp(dot + 1, ext_filter) == 0)
+                        entries.push_back({dir_ent->d_name, false});
+#endif
+                }
+            } else {
+                entries.push_back({dir_ent->d_name, false});
+            }
         }
         closedir(d);
     }
@@ -1459,6 +1497,27 @@ static void OpenImgFile(const std::string &full_path)
     RecentAdd(full_path);
 }
 
+static const char* GetDialogExtension(FileDialogMode mode)
+{
+    switch (mode) {
+        case FileDialogMode::OpenImg:
+        case FileDialogMode::AppendImg:
+        case FileDialogMode::SaveImg:   return "IMG";
+        case FileDialogMode::OpenLod:   return "LOD";
+        case FileDialogMode::LoadLbm:
+        case FileDialogMode::SaveLbm:
+        case FileDialogMode::SaveMarkedLbm: return "LBM";
+        case FileDialogMode::LoadTga:
+        case FileDialogMode::SaveTga:
+        case FileDialogMode::ExportTga: return "TGA";
+        case FileDialogMode::ImportPng:
+        case FileDialogMode::ExportPng: return "PNG";
+        case FileDialogMode::WriteAniLst: return "ASM";
+        case FileDialogMode::WriteTbl:  return "TBL";
+    }
+    return "";
+}
+
 static void OpenFileDialog(FileDialogMode mode) {
     if (fpath_s[0] != '\0') {
         size_t n = 0;
@@ -1494,6 +1553,7 @@ static void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::ExportTga) title = "Export TGA";
     else if (g_file_dialog_mode == FileDialogMode::OpenImg) title = "Open IMG File";
     else if (g_file_dialog_mode == FileDialogMode::AppendImg) title = "Append IMG File";
+    else if (g_file_dialog_mode == FileDialogMode::OpenLod) title = "Open LOD File";
     else if (g_file_dialog_mode == FileDialogMode::LoadLbm) title = "Load LBM File";
     else if (g_file_dialog_mode == FileDialogMode::SaveLbm) title = "Save LBM File";
     else if (g_file_dialog_mode == FileDialogMode::SaveMarkedLbm) title = "Save Marked LBM";
@@ -1503,6 +1563,7 @@ static void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
     else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) title = "Write ANILST";
     else if (g_file_dialog_mode == FileDialogMode::WriteTbl) title = "Write TBL";
+    else if (g_file_dialog_mode == FileDialogMode::WriteIrw) title = "Write IRW";
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
     
@@ -1526,7 +1587,7 @@ static void DrawFileDialog() {
         }
         
         std::vector<FileEntry> entries;
-        GetDirectoryFiles(current_dir, entries);
+        GetDirectoryFiles(current_dir, entries, GetDialogExtension(g_file_dialog_mode));
         
         std::sort(entries.begin(), entries.end(), [](const FileEntry& a, const FileEntry& b) {
             if (a.is_dir != b.is_dir) return a.is_dir > b.is_dir;
@@ -1556,6 +1617,11 @@ static void DrawFileDialog() {
             ImGui::SetItemTooltip("Includes the 3 extra animation points: ANIX2, ANIY2, and ANIZ2.");
             ImGui::Checkbox("Include Assigned Palette Name", &g_tbl_export_palette);
         }
+        if (g_file_dialog_mode == FileDialogMode::WriteIrw) {
+            ImGui::InputScalar("ROM Base Address (Hex)", ImGuiDataType_U32, &g_irw_base_address, NULL, NULL, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
+            ImGui::SliderInt("Bits Per Pixel", &g_irw_bpp, 1, 8);
+            ImGui::Checkbox("Align to 16-bit boundary (/L)", &g_irw_align_16bit);
+        }
 
         ImGui::InputText("File Name", g_file_dialog_file, sizeof(g_file_dialog_file));
         ImGui::SameLine();
@@ -1564,6 +1630,7 @@ static void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::ExportPng) ? "OK" :
                                (g_file_dialog_mode == FileDialogMode::OpenImg ||
                                 g_file_dialog_mode == FileDialogMode::AppendImg ||
+                                g_file_dialog_mode == FileDialogMode::OpenLod ||
                                 g_file_dialog_mode == FileDialogMode::LoadLbm ||
                                 g_file_dialog_mode == FileDialogMode::LoadTga) ? "Open" : "Save";
         if (ImGui::Button(btn_text, ImVec2(100, 0))) {
@@ -1588,7 +1655,11 @@ static void DrawFileDialog() {
             } else if (g_file_dialog_mode == FileDialogMode::WriteTbl) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".TBL";
-                WriteTblFromMarked(full_path.c_str(), g_tbl_base_address, g_tbl_export_mk3_format, g_tbl_export_palette);
+                WriteTblFromMarked(full_path.c_str(), g_tbl_base_address, g_tbl_export_mk3_format, g_tbl_export_palette, false, false);
+            } else if (g_file_dialog_mode == FileDialogMode::WriteIrw) {
+                size_t dot = full_path.find_last_of('.');
+                if (dot == std::string::npos) full_path += ".IRW";
+                WriteIrwFromMarked(full_path.c_str(), g_irw_base_address, g_irw_bpp, g_irw_align_16bit);
             } else if (g_file_dialog_mode == FileDialogMode::SaveMarkedLbm) {
                 _chdir(g_file_dialog_dir);
                 IMG *p = (IMG *)img_p;
@@ -1605,6 +1676,96 @@ static void DrawFileDialog() {
                     i++;
                 }
                 ilselected = original_selection;
+            } else if (g_file_dialog_mode == FileDialogMode::OpenLod) {
+                LodManifest manifest = ParseLodFile(full_path.c_str());
+                verbose_log("OpenLod: %s -> %zu entries, PPP=%d", full_path.c_str(), manifest.entries.size(), manifest.ppp_value);
+                if (manifest.parse_error) {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg), "LOD: %s", manifest.error_msg.c_str());
+                    g_restore_msg_timer = 6.0f;
+                } else {
+                    if (manifest.ppp_value > 0)
+                        g_load2_ppp = manifest.ppp_value;
+
+                    g_undo_count = 0;
+                    g_undo_idx   = 0;
+                    if (g_clipboard.valid && g_clipboard.data_p) {
+                        free(g_clipboard.data_p);
+                        g_clipboard.data_p = NULL;
+                        g_clipboard.valid = false;
+                    }
+                    g_grid_sel.active = false;
+                    g_grid_sel.dragging = false;
+                    g_marquee_active = false;
+                    g_pasted.active = false;
+                    g_pasted.dragging = false;
+                    ClearAll();
+
+                    std::string lod_dir(g_file_dialog_dir);
+
+                    int loaded = 0;
+                    for (size_t i = 0; i < manifest.entries.size(); i++) {
+                        const std::string &rpath = manifest.entries[i].resolved_path;
+
+                        size_t sep = rpath.find_last_of("\\/");
+                        std::string dir, file;
+                        if (sep != std::string::npos) {
+                            dir  = rpath.substr(0, sep);
+                            file = rpath.substr(sep + 1);
+                        } else {
+                            dir  = ".";
+                            file = rpath;
+                        }
+
+                        size_t n_file = file.length();
+                        if (n_file > 12) n_file = 12;
+
+                        auto try_load = [&](const std::string &d) -> bool {
+                            size_t nd = d.length();
+                            if (nd > 63) nd = 63;
+                            memset(fpath_s, 0, 64);
+                            memcpy(fpath_s, d.c_str(), nd);
+
+                            memset(fname_s, 0, 13);
+                            memcpy(fname_s, file.c_str(), n_file);
+                            for (size_t j = 0; j < n_file; j++)
+                                fname_s[j] = (char)toupper((unsigned char)fname_s[j]);
+
+                            unsigned int prev = imgcnt;
+                            _chdir(d.c_str());
+                            LoadImgFile();
+                            return imgcnt > prev;
+                        };
+
+                        if (try_load(dir)) {
+                            loaded++;
+                        } else if (lod_dir != dir && try_load(lod_dir)) {
+                            loaded++;
+                        } else {
+                            const char *imgdir = getenv("IMGDIR");
+                            if (imgdir && imgdir[0] && std::string(imgdir) != dir && std::string(imgdir) != lod_dir) {
+                                if (try_load(imgdir)) loaded++;
+                            }
+                        }
+                    }
+
+                    ilselected = imgcnt > 0 ? 0 : -1;
+                    g_dirty = false;
+                    RecentAdd(full_path);
+
+                    int total = (int)manifest.entries.size();
+                    if (loaded == 0)
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                            "LOD: 0/%d IMG(s) loaded. Check IMGDIR or file paths.", total);
+                    else if (loaded < total)
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                            "LOD: %d/%d IMG(s) loaded%s", loaded, total,
+                            manifest.ppp_value > 0 ? " (PPP set)" : "");
+                    else
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                            "Loaded %d IMG(s) from LOD%s", loaded,
+                            manifest.ppp_value > 0 ? " (PPP set)" : "");
+                    g_restore_msg_timer = 4.0f;
+                }
             } else {
                 size_t n_dir = strlen(g_file_dialog_dir);
                 if (n_dir > 63) n_dir = 63;
@@ -2562,6 +2723,7 @@ void imgui_overlay_render(void)
             }
             if (ImGui::MenuItem("Save",    "Ctrl+S")) OpenFileDialog(FileDialogMode::SaveImg);
             if (ImGui::MenuItem("Append",  "a"))      OpenFileDialog(FileDialogMode::AppendImg);
+            if (ImGui::MenuItem("Open LOD..."))       OpenFileDialog(FileDialogMode::OpenLod);
             ImGui::Separator();
             if (ImGui::BeginMenu("Import")) {
                 if (ImGui::MenuItem("PNG File..."))                 OpenFileDialog(FileDialogMode::ImportPng);
@@ -2580,6 +2742,7 @@ void imgui_overlay_render(void)
                 if (ImGui::MenuItem("Build TGA from Marked", "Ctrl+B")) OpenFileDialog(FileDialogMode::ExportTga);
                 if (ImGui::MenuItem("Write ANILST..."))                OpenFileDialog(FileDialogMode::WriteAniLst);
                 if (ImGui::MenuItem("Write TBL..."))                   OpenFileDialog(FileDialogMode::WriteTbl);
+    if (ImGui::MenuItem("Write IRW..."))                   OpenFileDialog(FileDialogMode::WriteIrw);
                 ImGui::EndMenu();
             }
             ImGui::Separator();
@@ -3443,7 +3606,7 @@ void imgui_overlay_render(void)
          * suppress all canvas interaction (paint, eyedropper, highlight, drag,
          * marquee, anim-point handles, etc.) so clicks meant for the modal
          * don't bleed through to the sprite underneath. */
-        bool canvas_input_blocked = io.WantCaptureMouse;
+        bool canvas_input_blocked = io.WantCaptureMouse && !ImGui::IsWindowHovered();
         if (canvas_input_blocked) mbdn = false;
 
         /* Set when an overlay widget (anim point, hitbox corner) eats this frame's
@@ -3677,46 +3840,84 @@ void imgui_overlay_render(void)
                 dl->AddRectFilled(r1, r2, IM_COL32(0, 255, 0, 30), 0.0f);
             }
 
-            /* Draw paste boundary overlay (when paste is active) */
+            /* Paste overlay with pixel preview */
             if (g_pasted.active && g_clipboard.valid && g_clipboard.w > 0 && g_clipboard.h > 0) {
                 int px = g_pasted.paste_x;
                 int py = g_pasted.paste_y;
                 int pw = g_clipboard.w;
                 int ph = g_clipboard.h;
+                unsigned short cs = g_clipboard.stride;
 
-                /* Check if mouse is over the paste boundary for dragging */
                 ImVec2 p1(img_pos.x + px * sx, img_pos.y + py * sy);
                 ImVec2 p2(img_pos.x + (px + pw) * sx, img_pos.y + (py + ph) * sy);
                 bool hovering = mouse.x >= p1.x && mouse.x < p2.x && mouse.y >= p1.y && mouse.y < p2.y;
+                bool over_sprite = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
+                                   mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
 
-                /* Draw border */
+                /* Render clipboard pixel preview with alpha */
+                IMG *simg = (ilselected >= 0) ? get_img(ilselected) : NULL;
+                PAL *spal = simg ? get_pal(simg->palnum) : NULL;
+                const unsigned char *pald = spal ? (const unsigned char *)spal->data_p : NULL;
+                const unsigned char *src = (const unsigned char *)g_clipboard.data_p;
+                for (int y = 0; y < ph; y++) {
+                    for (int x = 0; x < pw; x++) {
+                        unsigned char ci = src[y * cs + x];
+                        if (ci == 0) continue;
+                        ImU32 col;
+                        if (pald) {
+                            unsigned short w15 = (unsigned short)(pald[ci*2] | (pald[ci*2+1] << 8));
+                            col = IM_COL32(
+                                (unsigned char)(((w15 >> 10) & 0x1F) << 3),
+                                (unsigned char)(((w15 >>  5) & 0x1F) << 3),
+                                (unsigned char)(( w15        & 0x1F) << 3),
+                                160);
+                        } else {
+                            col = IM_COL32(255, 255, 255, 160);
+                        }
+                        ImVec2 pp1(img_pos.x + (px + x) * sx, img_pos.y + (py + y) * sy);
+                        ImVec2 pp2(img_pos.x + (px + x + 1) * sx, img_pos.y + (py + y + 1) * sy);
+                        dl->AddRectFilled(pp1, pp2, col);
+                    }
+                }
+
+                /* Border — gold when hovering, yellow otherwise */
                 ImU32 border_col = hovering ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 255, 0, 255);
-                dl->AddRect(p1, p2, border_col, 0.0f, 0, 3.0f);
+                dl->AddRect(p1, p2, border_col, 0.0f, 0, 2.0f);
 
-                /* Draw paste instruction text */
-                if (g_pasted.dragging) {
-                    dl->AddText(ImVec2(img_pos.x + 10, img_pos.y + 10), IM_COL32(255, 200, 0, 255), "Release to place paste");
-                } else {
-                    dl->AddText(ImVec2(img_pos.x + 10, img_pos.y + 10), IM_COL32(255, 255, 0, 255), "Drag to position | Enter to apply | Esc to cancel");
-                }
+                /* Instruction text */
+                if (g_pasted.dragging)
+                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 200, 0, 255), "Moving...");
+                else
+                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 255, 0, 255), "Drag to move | Click outside to place | Esc cancel");
 
-                /* Handle dragging the paste */
-                if (hovering && !canvas_input_blocked && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                    g_pasted.dragging = true;
-                }
-                if (g_pasted.dragging && mbdn) {
-                    int new_x = (int)((mouse.x - img_pos.x) / sx);
-                    int new_y = (int)((mouse.y - img_pos.y) / sy);
-                    if (new_x < 0) new_x = 0;
-                    if (new_y < 0) new_y = 0;
-                    if (new_x + pw > (int)g_img_tex_w) new_x = g_img_tex_w - pw;
-                    if (new_y + ph > (int)g_img_tex_h) new_y = g_img_tex_h - ph;
-                    g_pasted.paste_x = new_x;
-                    g_pasted.paste_y = new_y;
-                } else if (!mbdn && g_pasted.dragging) {
-                    g_pasted.dragging = false;
-                    g_pasted.active = false;  /* Paste complete */
-                    apply_pasted_region();
+                if (!canvas_input_blocked) {
+                    /* Start drag: click inside paste rect */
+                    if (hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                        g_pasted.dragging = true;
+
+                    /* Drag to move */
+                    if (g_pasted.dragging && mbdn) {
+                        int nx = (int)((mouse.x - img_pos.x) / sx);
+                        int ny = (int)((mouse.y - img_pos.y) / sy);
+                        if (nx < 0) nx = 0;
+                        if (ny < 0) ny = 0;
+                        if (nx + pw > (int)g_img_tex_w) nx = g_img_tex_w - pw;
+                        if (ny + ph > (int)g_img_tex_h) ny = g_img_tex_h - ph;
+                        g_pasted.paste_x = nx;
+                        g_pasted.paste_y = ny;
+                    }
+
+                    /* Stop drag on release — keep floating */
+                    if (g_pasted.dragging && !mbdn)
+                        g_pasted.dragging = false;
+
+                    /* Click outside paste rect (but on sprite) to confirm */
+                    if (!hovering && over_sprite && !g_pasted.dragging &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    {
+                        apply_pasted_region();
+                        g_pasted.active = false;
+                    }
                 }
             }
         }
@@ -3762,8 +3963,10 @@ void imgui_overlay_render(void)
         ImGui::SetCursorScreenPos(ImVec2(pos0.x + 16 * col_w + 8, pos0.y + 4));
         SDL_Color &c = g_palette[g_sel_color];
         ImGui::Text("#%d  R:%d G:%d B:%d", g_sel_color, c.r, c.g, c.b);
-    }
-    ImGui::PopStyleVar();
+            }
+            ImGui::Separator();
+            ImGui::MenuItem("Verbose Logging",  NULL, &g_verbose);
+            ImGui::PopStyleVar();
     ImGui::End();
 
     /* ===== RENAME DIALOG ===== */

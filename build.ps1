@@ -110,10 +110,10 @@ Write-Host "[4/4] Configuring and building ($Arch Release)..." -ForegroundColor 
 
 $lines = @(
     "@echo off",
-    "call \`"$vcvarsall\`" $vcvarsArch",
+    "call `"$vcvarsall`" $vcvarsArch",
     "if errorlevel 1 exit /b 1",
     "set PATH=$vsCmake;%PATH%",
-    "cmake -B \`"$buildDir\`" -G \`"Visual Studio 17 2022\`" -A $cmakeArch -DSDL2_DIR=\`"$sdl2Cmake\`" \`"$SourceDir\`"",
+    "cmake -B `"$buildDir`" -G `"Visual Studio 17 2022`" -A $cmakeArch -DSDL2_DIR=`"$sdl2Cmake`" `"$SourceDir`"",
     "if errorlevel 1 exit /b 1",
     "cmake --build `"$buildDir`" --config Release",
     "if errorlevel 1 exit /b 1"

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <string>
 #include <regex>
+#include <stdarg.h>
 
 /* From imgui_overlay.cpp */
 extern void undo_push(void);
@@ -20,6 +21,25 @@ int  g_img_tex_idx = -2;
 /* Status message for restore operation */
 char  g_restore_msg[128] = {0};
 float g_restore_msg_timer = 0.0f;
+
+/* Verbose logging toggle */
+bool  g_verbose = false;
+
+void verbose_log(const char *fmt, ...)
+{
+    if (!g_verbose) return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+#ifdef _WIN32
+    OutputDebugStringA(buf);
+    OutputDebugStringA("\n");
+#else
+    fprintf(stderr, "%s\n", buf);
+#endif
+}
 
 /* TGA structures shared by SaveTga/LoadTga/BuildTgaFromMarked */
 #pragma pack(push, 1)
@@ -76,8 +96,9 @@ void LoadImgFile(void)
 {
     char full[MAX_PATH];
     build_full_path(full, sizeof(full));
+    verbose_log("LoadImgFile: %s", full);
     FILE *f = fopen(full, "rb");
-    if (!f) return;
+    if (!f) { verbose_log("  -> fopen failed"); return; }
 
     LIB_HDR hdr;
     if (fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) { fclose(f); return; }
@@ -86,6 +107,10 @@ void LoadImgFile(void)
     fileversion = hdr.version;
 
     if (hdr.imgcnt == 0 || hdr.imgcnt > 2000) { fclose(f); return; }
+
+    verbose_log("  version=0x%04X  imgcnt=%u  palcnt=%u  seqcnt=%d  scrcnt=%d",
+        hdr.version, hdr.imgcnt, hdr.palcnt,
+        (signed short)hdr.seqcnt, (signed short)hdr.scrcnt);
 
     /* Drop any prior seq/scr blob — we rebuild it from this file's contents. */
     if (scrseqmem_p) { free(scrseqmem_p); scrseqmem_p = NULL; }
@@ -928,7 +953,7 @@ void WriteAnilstFromMarked(const char* filepath)
  * in the .IMG file)*8 as a placeholder; if you're producing a TBL meant to be
  * linked against a real IRW, run LOAD2 and use its emitted .TBL instead.
  */
-void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal)
+void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal, bool pad_4bit, bool align_16bit)
 {
     FILE* f = fopen(filepath, "w");
     if (!f) return;
@@ -937,6 +962,8 @@ void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk
 
     IMG* p = (IMG*)img_p;
     int prev_palnum = -1;
+    unsigned int current_bit_address = base_address;
+
     while (p) {
         if (p->flags & 1) {
             fprintf(f, "%s:\n", p->n_s);
@@ -951,17 +978,180 @@ void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk
                         p->w, p->h,
                         (int)(short)p->anix, (int)(short)p->aniy);
             }
-            fprintf(f, "\t.long   0%XH\n", base_address + (p->file_oset * 8));
+
+            if (align_16bit) {
+                current_bit_address = (current_bit_address + 15) & ~15;
+            } else if (pad_4bit) {
+                current_bit_address = (current_bit_address + 3) & ~3;
+            }
+
+            fprintf(f, "\t.long   0%XH\n", current_bit_address);
             fprintf(f, "\t.word   0%04XH\n", p->flags);
             if (include_pal && (int)p->palnum != prev_palnum) {
                 PAL* pal = get_pal(p->palnum);
                 fprintf(f, "\t.long   %s\n", (pal && pal->n_s[0]) ? pal->n_s : "0");
                 prev_palnum = (int)p->palnum;
             }
+
+            // Accumulate the bit size of this image for the next marked image.
+            // Using 8bpp uncompressed size as a baseline.
+            current_bit_address += (p->w * p->h * 8);
         }
         p = (IMG*)p->nxt_p;
     }
     fprintf(f, "\t.TEXT\n");
+    fclose(f);
+}
+
+/* ---- IRW structs ---- */
+#pragma pack(push, 1)
+struct IRW_HEADER {
+    char     version[32];
+    uint32_t ver_cksum;
+    uint32_t magic_num;
+    uint32_t spare1;
+    uint32_t spare2;
+};
+
+struct IRW_RECORD {
+    uint32_t start_addr;
+    uint32_t byte_count;
+    uint32_t checksum;
+    uint16_t interleave;
+    uint16_t skipbytes;
+    int16_t  bank;
+    int16_t  spare1;
+    uint32_t spare2;
+};
+#pragma pack(pop)
+
+#define IRW_MAGIC   0x64
+#define IRW_VERSION "IMAGETOOL IRW 1.0"
+
+static unsigned int irw_cksum_str(const char *s)
+{
+    unsigned int sum = 0;
+    while (*s) sum += (unsigned char)*s++;
+    return sum;
+}
+
+static void irw_flush_word(FILE *f, unsigned int *dataword, int *bits_filled,
+                           uint32_t *byte_count, uint32_t *checksum)
+{
+    if (*bits_filled > 0) {
+        uint16_t word = (uint16_t)(*dataword & 0xFFFF);
+        fwrite(&word, 1, 2, f);
+        *byte_count += 2;
+        *checksum += (uint32_t)word;
+        *dataword = 0;
+        *bits_filled = 0;
+    }
+}
+
+static void irw_write_bits(FILE *f, unsigned int data, int nbits,
+                           unsigned int *dataword, int *bits_filled,
+                           uint32_t *byte_count, uint32_t *checksum)
+{
+    *dataword |= (data & ((1u << nbits) - 1)) << *bits_filled;
+    *bits_filled += nbits;
+    while (*bits_filled >= 16) {
+        uint16_t word = (uint16_t)(*dataword & 0xFFFF);
+        fwrite(&word, 1, 2, f);
+        *byte_count += 2;
+        *checksum += (uint32_t)word;
+        *dataword >>= 16;
+        *bits_filled -= 16;
+    }
+}
+
+void WriteIrwFromMarked(const char *filepath, unsigned int base_address,
+                        int bpp, bool align_16bit)
+{
+    FILE *f = fopen(filepath, "wb");
+    if (!f) return;
+
+    /* Gather marked images */
+    std::vector<IMG*> marked;
+    IMG *p = (IMG*)img_p;
+    while (p) {
+        if ((p->flags & 1) && p->w > 0 && p->h > 0 && p->data_p)
+            marked.push_back(p);
+        p = (IMG*)p->nxt_p;
+    }
+    if (marked.empty()) { fclose(f); return; }
+
+    if (bpp < 1) bpp = 1;
+    if (bpp > 8) bpp = 8;
+
+    /* Write header placeholder */
+    IRW_HEADER hdr = {};
+    strncpy(hdr.version, IRW_VERSION, sizeof(hdr.version) - 1);
+    hdr.magic_num = IRW_MAGIC;
+    hdr.ver_cksum = irw_cksum_str(hdr.version);
+    fwrite(&hdr, sizeof(hdr), 1, f);
+
+    unsigned int addr = base_address;
+    unsigned int dataword = 0;
+    int bits_filled = 0;
+
+    for (size_t i = 0; i < marked.size(); i++) {
+        IMG *img = marked[i];
+
+        /* Ensure we start on a 16-bit word boundary */
+        irw_flush_word(f, &dataword, &bits_filled, NULL, NULL);
+
+        /* Align address to 16-bit */
+        if (align_16bit && (addr & 0xF)) {
+            /* already handled by flush above, but also round address */
+            addr = (addr + 15) & ~15u;
+        }
+
+        /* Write record placeholder (we'll patch byte_count & checksum after) */
+        long rec_pos = ftell(f);
+        IRW_RECORD rec = {};
+        rec.start_addr = addr;
+        rec.byte_count = 0;
+        rec.checksum = 0;
+        rec.interleave = 4;
+        rec.skipbytes = 0;
+        rec.bank = 0;
+        fwrite(&rec, sizeof(rec), 1, f);
+
+        /* Write pixel data packed at bpp */
+        uint32_t byte_count = 0;
+        uint32_t checksum = 0;
+        unsigned int dw = 0;
+        int bf = 0;
+        unsigned short stride = (img->w + 3) & ~3;
+        unsigned char *src = (unsigned char *)img->data_p;
+
+        for (int y = 0; y < (int)img->h; y++) {
+            for (int x = 0; x < (int)img->w; x++) {
+                irw_write_bits(f, src[y * stride + x], bpp,
+                               &dw, &bf, &byte_count, &checksum);
+            }
+        }
+        irw_flush_word(f, &dw, &bf, &byte_count, &checksum);
+
+        /* Compute bit size for address advance */
+        unsigned int bit_size = (unsigned int)img->w * (unsigned int)img->h * (unsigned int)bpp;
+        addr += bit_size;
+
+        /* Pad to 16-bit boundary */
+        if (align_16bit && (bit_size & 0xF)) {
+            unsigned int pad_bits = 16 - (bit_size & 0xF);
+            addr += pad_bits;
+        }
+
+        /* Patch record */
+        long end_pos = ftell(f);
+        fseek(f, rec_pos, SEEK_SET);
+        rec.byte_count = byte_count;
+        rec.checksum   = checksum;
+        fwrite(&rec, sizeof(rec), 1, f);
+        fseek(f, end_pos, SEEK_SET);
+    }
+
     fclose(f);
 }
 
@@ -1414,6 +1604,7 @@ void LoadLbm(void)
 
     try_close();
     if (loaded_img && imgcnt>0) ilselected=(int)imgcnt-1;
+    verbose_log("  -> loaded, total images=%u palettes=%u", imgcnt, palcnt);
 }
 
 /* ---- PNG Import ---- */
@@ -1422,6 +1613,7 @@ void LoadLbm(void)
 
 void ImportPng(const char *path)
 {
+    verbose_log("ImportPng: %s", path);
     int w, h, channels;
     unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
     if (!data || w == 0 || h == 0) return;
@@ -1433,7 +1625,7 @@ void ImportPng(const char *path)
     for (int i = 0; i < w * h; i++) {
         unsigned char r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2], a = data[i * 4 + 3];
         if (a < 128) continue;
-        unsigned int rgb = ((unsigned int)(r & 0xF8) << 7) | ((unsigned int)(g & 0xFC) << 2) | ((unsigned int)(b >> 3));
+        unsigned int rgb = ((unsigned int)(r & 0xF8) << 7) | ((unsigned int)(g & 0xF8) << 2) | ((unsigned int)(b >> 3));
         int found = -1;
         for (int j = 0; j < hist_count; j++) { if (hist[j].rgb == rgb) { found = j; break; } }
         if (found >= 0) hist[found].count++;
@@ -1478,7 +1670,7 @@ void ImportPng(const char *path)
         for (int x = 0; x < w; x++) {
             unsigned char *p = data + (y * w + x) * 4;
             if (p[3] < 128) continue;
-            unsigned int rgb = ((unsigned int)(p[0] & 0xF8) << 7) | ((unsigned int)(p[1] & 0xFC) << 2) | ((unsigned int)(p[2] >> 3));
+            unsigned int rgb = ((unsigned int)(p[0] & 0xF8) << 7) | ((unsigned int)(p[1] & 0xF8) << 2) | ((unsigned int)(p[2] >> 3));
             for (int j = 0; j < pal_colors; j++) {
                 if (hist[j].rgb == rgb) { ((unsigned char *)img->data_p)[y * stride + x] = hist[j].idx; break; }
             }
@@ -1487,6 +1679,7 @@ void ImportPng(const char *path)
     stbi_image_free(data);
     if (imgcnt > 0) ilselected = (int)imgcnt - 1;
     g_img_tex_idx = -2;
+    verbose_log("  -> %dx%d px, %d palette colors", w, h, pal_colors);
 }
 
 /* ---- PNG Export ---- */
@@ -1495,6 +1688,7 @@ void ImportPng(const char *path)
 
 void ExportPng(const char *path)
 {
+    verbose_log("ExportPng: %s", path);
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
     PAL *pal = get_pal(img->palnum);

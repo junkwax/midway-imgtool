@@ -2,6 +2,7 @@
 build/
 build-*/
 out/
+doc/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake

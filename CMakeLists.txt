@@ -59,6 +59,7 @@ add_executable(imgtool
     platform/imgui_overlay.cpp
     platform/img_io.cpp
     platform/load2_verify.cpp
+    platform/lod_parser.cpp
     ${PLATFORM_RC}
 )
 
