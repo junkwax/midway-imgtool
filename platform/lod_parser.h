@@ -23,7 +23,9 @@ struct LodManifest {
 
 /* Parse a .lod file at the given path.  Resolves IMG file references
  * using IMGDIR (environment variable) when no directory is supplied.
+ * If override_dir is provided and non-empty, it forces all paths to
+ * be resolved against it (equivalent to /O flag).
  * Returns the parsed manifest. */
-LodManifest ParseLodFile(const char *lod_path);
+LodManifest ParseLodFile(const char *lod_path, const char *override_dir = nullptr);
 
 #endif /* LOD_PARSER_H */

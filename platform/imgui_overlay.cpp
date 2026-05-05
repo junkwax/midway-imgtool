@@ -28,7 +28,6 @@
 #include "lod_parser.h"
 
 /* PPP setting from img_io.cpp — used to drive the verifier modal. */
-extern int g_load2_ppp;
 
 /* Globals defined in platform/globals.c */
 extern "C" {
@@ -1246,9 +1245,15 @@ static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
 static char g_file_dialog_file[256] = "";
+static char g_lod_override_dir[1024] = "";
+
 static unsigned int g_tbl_base_address = 0x02000000;
 static bool g_tbl_export_mk3_format = false;
 static bool g_tbl_export_palette = false;
+static bool g_tbl_export_pad_4bit = false;
+static bool g_tbl_export_align_16bit = false;
+static bool g_tbl_export_dual_bank = false;
+static int  g_tbl_export_bank      = 0;
 static int  g_irw_bpp             = 8;
 static unsigned int g_irw_base_address = 0x02000000;
 static bool g_irw_align_16bit     = true;
@@ -1616,11 +1621,37 @@ static void DrawFileDialog() {
             ImGui::Checkbox("MK3 Format (7-value header)", &g_tbl_export_mk3_format);
             ImGui::SetItemTooltip("Includes the 3 extra animation points: ANIX2, ANIY2, and ANIZ2.");
             ImGui::Checkbox("Include Assigned Palette Name", &g_tbl_export_palette);
+            ImGui::Checkbox("Pad to 4-bit boundary (/P)", &g_tbl_export_pad_4bit);
+            ImGui::Checkbox("Align to 16-bit boundary (/L)", &g_tbl_export_align_16bit);
+            ImGui::Checkbox("Dual-Banked Memory (/E)", &g_tbl_export_dual_bank);
+            if (g_tbl_export_dual_bank) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(100);
+                ImGui::InputInt("Bank (0/1)", &g_tbl_export_bank);
+                if (g_tbl_export_bank < 0) g_tbl_export_bank = 0;
+                if (g_tbl_export_bank > 1) g_tbl_export_bank = 1;
+            }
         }
         if (g_file_dialog_mode == FileDialogMode::WriteIrw) {
             ImGui::InputScalar("ROM Base Address (Hex)", ImGuiDataType_U32, &g_irw_base_address, NULL, NULL, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
-            ImGui::SliderInt("Bits Per Pixel", &g_irw_bpp, 1, 8);
+            ImGui::Text("Bits Per Pixel:");
+            if (ImGui::RadioButton("Auto (Image Data)", g_irw_bpp == 0)) g_irw_bpp = 0;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Auto (Palette Size) /B", g_irw_bpp == -1)) g_irw_bpp = -1;
+            ImGui::SameLine();
+            int fixed_bpp = (g_irw_bpp > 0) ? g_irw_bpp : 8;
+            if (ImGui::RadioButton("Fixed", g_irw_bpp > 0)) g_irw_bpp = fixed_bpp;
+            if (g_irw_bpp > 0) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(100);
+                if (ImGui::SliderInt("##bpp", &fixed_bpp, 1, 8)) g_irw_bpp = fixed_bpp;
+            }
             ImGui::Checkbox("Align to 16-bit boundary (/L)", &g_irw_align_16bit);
+        }
+
+        if (g_file_dialog_mode == FileDialogMode::OpenLod) {
+            ImGui::InputText("Force Override Directory (/O)", g_lod_override_dir, sizeof(g_lod_override_dir));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("If set, forces all IMGs to load from this directory, ignoring paths in the .lod file.");
         }
 
         ImGui::InputText("File Name", g_file_dialog_file, sizeof(g_file_dialog_file));
@@ -1655,7 +1686,7 @@ static void DrawFileDialog() {
             } else if (g_file_dialog_mode == FileDialogMode::WriteTbl) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".TBL";
-                WriteTblFromMarked(full_path.c_str(), g_tbl_base_address, g_tbl_export_mk3_format, g_tbl_export_palette, false, false);
+                WriteTblFromMarked(full_path.c_str(), g_tbl_base_address, g_tbl_export_mk3_format, g_tbl_export_palette, g_tbl_export_pad_4bit, g_tbl_export_align_16bit, g_tbl_export_dual_bank, g_tbl_export_bank);
             } else if (g_file_dialog_mode == FileDialogMode::WriteIrw) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".IRW";
@@ -4045,8 +4076,11 @@ void imgui_overlay_render(void)
             if (g_load2_ppp > 8) g_load2_ppp = 8;
         }
         ImGui::SameLine();
+        ImGui::Checkbox("/3 Limit (Max Scales)", &g_load2_limit_scales_to_3);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Warns if any image uses an eighth scale (M_COPIES=3).");
+        ImGui::SameLine();
         if (ImGui::Button("Re-check")) {
-            g_load2_report = VerifyLoad2Packing(g_load2_ppp);
+            g_load2_report = VerifyLoad2Packing(g_load2_ppp, g_load2_limit_scales_to_3);
             g_load2_selected_idx = -1;
         }
         ImGui::Separator();

@@ -33,13 +33,15 @@ extern int  g_img_tex_idx;
 extern char g_restore_msg[128];
 extern float g_restore_msg_timer;
 extern bool g_verbose;
+extern int g_load2_ppp;
+extern bool g_load2_limit_scales_to_3;
 
 void verbose_log(const char *fmt, ...);
 
 void LoadImgFile(void);
 void SaveImgFile(void);
 void WriteAnilstFromMarked(const char* filepath);
-void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal, bool pad_4bit, bool align_16bit);
+void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal, bool pad_4bit, bool align_16bit, bool dual_bank, int bank);
 void WriteIrwFromMarked(const char* filepath, unsigned int base_address, int bpp, bool align_16bit);
 void BuildTgaFromMarked(const char* filepath);
 void SaveTga(void);

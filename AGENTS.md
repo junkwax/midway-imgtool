@@ -67,7 +67,7 @@ mkdir build && cd build && cmake .. && cmake --build .
 - `g_canvas_texture` exists for init compat, not displayed
 
 ### TBL Export (File > Export > Write TBL...)
-- `WriteTblFromMarked(filepath, base_address, mk3_format, include_pal)` in `platform/img_io.cpp:519`
+- `WriteTblFromMarked(filepath, base_address, mk3_format, include_pal, pad_4bit, align_16bit)` in `platform/img_io.cpp:519`
 - Writes assembly-format `.TBL` files from marked images (Hex output, e.g. `0FFBDH`)
 - **MK2 format** (default): `.word W,H,ANIX,ANIY` — 4-value header
 - **MK3 format** (checkbox): `.word W,H,ANIX,ANIY,ANIX2,ANIY2,ANIZ2` — 7-value header with secondary animation points
@@ -94,8 +94,9 @@ From `doc/wimp/wmpstruc.txt` and `doc/load2/load2.hlp`:
 - In the in-memory `IMG` struct: `pttbl_p` is either `NULL` or points to a `calloc(1, 40)` block.
 - Purpose: collision polygons, attachment points, or other per-sprite coordinate data used by the game engine.
 - Toggled in WIMP via `PON>` / `POF>` directives (palette-on/palette-off in old docs, but the same keywords control point table visibility).
-- Loaded/saved automatically by `LoadImgFile`/`SaveImgFile` via the `TryLoadPointTable()` / write path at `img_format.h:254-259`.
+- Loaded/saved automatically by `LoadImgFile`/`SaveImgFile` via inline read at `img_io.cpp:267-270` and write at `img_io.cpp:532-533`.
 - `TogglePointTable()` in `imgui_overlay.cpp:499` allocates/frees `pttbl_p` on the selected image.
+- **Trailing name bytes**: The 16-byte raw name field (`file_name_raw[16]`) can carry trailing bytes past the null terminator (e.g. `"JCSTANCE1\0vda  \0"`). These are preserved verbatim during save because LOAD2 hashes the full 16 bytes for IRW sprite allocation — changing them shifts SAG layout. The UI only displays the null-terminated portion.
 
 ### Hitboxes (Bounding Box)
 - Separate from point tables — stored as screen-space rectangle in the canvas overlay.
@@ -196,6 +197,7 @@ The palette defaults (#0=black, #1=red, #2=white) are never stored on disk — t
 ### LOD Manifest Parser (`platform/lod_parser.{h,cpp}`)
 - Parses LOAD2 `.lod` manifest files for batch-loading IMG libraries.
 - **File > Open LOD...** opens the file dialog; on confirm, the `.lod` is parsed and all referenced IMG files are loaded in sequence.
+- Dialog includes **Force Override Directory (/O)** input to override paths specified in the `.lod` file.
 - Recognizes all LOAD2 keywords: `PPP>`, `--->`, `***>`, `GLO>`, `ASM>`, `ROM>`, `ZON>/ZOF>`, `CON>/COF>`, `PON>/POF>`, `XON>/XOF>`, `FRM>`, `BBB>`, `UFN>`, `UGL>`, `UNI>`, `IHDR`, `MON>/MOF>`, `BON>/BOF>`, `ZAL>`.
 - Only `PPP>` is acted upon — sets `g_load2_ppp` for the LOAD2 packing verifier. All other directives are parsed and skipped.
 - IMG paths without a directory component are resolved via the `IMGDIR` environment variable (falls back to current working directory if unset).
@@ -203,14 +205,14 @@ The palette defaults (#0=black, #1=red, #2=white) are never stored on disk — t
 - Toast shows: `"Loaded N IMG(s) from LOD (PPP set)"` on success, error message on failure.
 - Dispatch is in `imgui_overlay.cpp:1615` (Save button handler, before the generic fpath/fname-using `else` block).
 - Entry struct in `LodManifest` stores both the raw `.lod` line and the IMGDIR-resolved full path.
-- Public API: `ParseLodFile(const char *lod_path)` returns a `LodManifest` with entries, `ppp_value`, and error state.
+- Public API: `ParseLodFile(const char *lod_path, const char *override_dir)` returns a `LodManifest` with entries, `ppp_value`, and error state.
 
 ### IRW Export (`platform/img_io.cpp:999`)
 - Writes LOAD2-compatible raw binary IRW files from marked sprites.
 - **File > Export > Write IRW...** opens the dialog with options:
   - **ROM Base Address** — starting address in DMA2 image memory (default `0x02000000`)
-  - **Bits Per Pixel** — slider 1-8, controls pixel packing density (default 8)
-  - **Align to 16-bit boundary** — checkbox, ensures each sprite starts on a word boundary
+  - **Bits Per Pixel** — Auto (Image Data), Auto (Palette Size) `/B`, or Fixed slider 1-8.
+  - **Align to 16-bit boundary (/L)** — checkbox, ensures each sprite starts on a word boundary
 - Format: `IRW_HEADER` (version + magic `0x64`) followed by per-sprite `IRW_RECORD` (start_addr, byte_count, checksum, etc.) + pixel data packed at bpp into 16-bit words via `irw_write_bits`.
 - Auto-appends `.IRW` if no extension given.
 - UI state variables: `g_irw_bpp`, `g_irw_base_address`, `g_irw_align_16bit`

@@ -130,7 +130,7 @@ static int first_zero_drift_row(const unsigned char *base,
     return -1;
 }
 
-L2Report VerifyLoad2Packing(int ppp)
+L2Report VerifyLoad2Packing(int ppp, bool limit_scales_to_3)
 {
     L2Report r;
 
@@ -141,6 +141,21 @@ L2Report VerifyLoad2Packing(int ppp)
     int img_idx = 0;
     for (IMG *img = (IMG *)img_p; img; img = (IMG *)img->nxt_p, img_idx++) {
         r.imgs_checked++;
+
+        /* /3 limit scales check: 0x300 is the M_COPIES bitfield in flags.
+         * A value of 3 (0x0300) means 4 scales (full, half, qrtr, eighth).
+         * If the user enables /3, eighth scale is illegal. */
+        if (limit_scales_to_3) {
+            int copies = (img->flags & 0x300) >> 8;
+            if (copies == 3) {
+                char msg[160];
+                snprintf(msg, sizeof(msg),
+                    "/3 constraint violated: M_COPIES is set to %d "
+                    "(generates eighth scale). Limit allows max 2 (qrtr).",
+                    copies);
+                r.issues.push_back({img_idx, img->n_s, L2Severity::Warn, msg});
+            }
+        }
 
         /* Geometry sanity: w<3 gets bumped to 3 by LOAD2; just
          * report if user set something unusual. */
@@ -210,9 +225,9 @@ L2Report VerifyLoad2Packing(int ppp)
     return r;
 }
 
-L2Report VerifyLoad2BeforeSave(int ppp)
+L2Report VerifyLoad2BeforeSave(int ppp, bool limit_scales_to_3)
 {
-    L2Report r = VerifyLoad2Packing(ppp);
+    L2Report r = VerifyLoad2Packing(ppp, limit_scales_to_3);
     if (r.break_count > 0) {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "LOAD2: %d breaking issue%s — Tools > Verify LOAD2 "

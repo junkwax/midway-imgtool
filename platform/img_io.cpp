@@ -341,12 +341,13 @@ void LoadImgFile(void)
  * fighter sprites (≤64 colors per palette). Verifier compares
  * palette numc against (1<<ppp); set to 0 to disable the check. */
 int g_load2_ppp = 6;
+bool g_load2_limit_scales_to_3 = false;
 
 void SaveImgFile(void)
 {
     /* Pre-save advisory: pop a toast if edits will misalign SAGs
      * after LOAD2 processes the saved IMG. Save proceeds either way. */
-    VerifyLoad2BeforeSave(g_load2_ppp);
+    VerifyLoad2BeforeSave(g_load2_ppp, g_load2_limit_scales_to_3);
 
     char full[MAX_PATH];
     build_full_path(full, sizeof(full));
@@ -953,7 +954,7 @@ void WriteAnilstFromMarked(const char* filepath)
  * in the .IMG file)*8 as a placeholder; if you're producing a TBL meant to be
  * linked against a real IRW, run LOAD2 and use its emitted .TBL instead.
  */
-void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal, bool pad_4bit, bool align_16bit)
+void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal, bool pad_4bit, bool align_16bit, bool dual_bank, int bank)
 {
     FILE* f = fopen(filepath, "w");
     if (!f) return;
@@ -985,7 +986,12 @@ void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk
                 current_bit_address = (current_bit_address + 3) & ~3;
             }
 
-            fprintf(f, "\t.long   0%XH\n", current_bit_address);
+            unsigned int sag = current_bit_address;
+            if (dual_bank) {
+                sag += (bank) ? 0x2000000 : (unsigned int)-0x2000000;
+            }
+
+            fprintf(f, "\t.long   0%XH\n", sag);
             fprintf(f, "\t.word   0%04XH\n", p->flags);
             if (include_pal && (int)p->palnum != prev_palnum) {
                 PAL* pal = get_pal(p->palnum);
@@ -1080,9 +1086,6 @@ void WriteIrwFromMarked(const char *filepath, unsigned int base_address,
     }
     if (marked.empty()) { fclose(f); return; }
 
-    if (bpp < 1) bpp = 1;
-    if (bpp > 8) bpp = 8;
-
     /* Write header placeholder */
     IRW_HEADER hdr = {};
     strncpy(hdr.version, IRW_VERSION, sizeof(hdr.version) - 1);
@@ -1096,6 +1099,43 @@ void WriteIrwFromMarked(const char *filepath, unsigned int base_address,
 
     for (size_t i = 0; i < marked.size(); i++) {
         IMG *img = marked[i];
+
+        int current_bpp = bpp;
+        if (current_bpp == 0) {
+            /* Auto (Image Data) */
+            unsigned char max_val = 0;
+            unsigned char *ip = (unsigned char *)img->data_p;
+            int total_pixels = img->w * img->h; /* We just scan the rect, padding zeros don't matter as they are 0 */
+            unsigned short stride = (img->w + 3) & ~3;
+            for (int y = 0; y < img->h; y++) {
+                for (int x = 0; x < img->w; x++) {
+                    if (ip[y * stride + x] > max_val) max_val = ip[y * stride + x];
+                }
+            }
+            if (max_val <= 1) current_bpp = 1;
+            else if (max_val < 4) current_bpp = 2;
+            else if (max_val < 8) current_bpp = 3;
+            else if (max_val < 16) current_bpp = 4;
+            else if (max_val < 32) current_bpp = 5;
+            else if (max_val < 64) current_bpp = 6;
+            else if (max_val < 128) current_bpp = 7;
+            else current_bpp = 8;
+        } else if (current_bpp == -1) {
+            /* Auto (Palette Size) */
+            PAL *pal = get_pal(img->palnum);
+            int cols = pal ? pal->numc : 256;
+            if (cols <= 2) current_bpp = 1;
+            else if (cols <= 4) current_bpp = 2;
+            else if (cols <= 8) current_bpp = 3;
+            else if (cols <= 16) current_bpp = 4;
+            else if (cols <= 32) current_bpp = 5;
+            else if (cols <= 64) current_bpp = 6;
+            else if (cols <= 128) current_bpp = 7;
+            else current_bpp = 8;
+        } else {
+            if (current_bpp < 1) current_bpp = 1;
+            if (current_bpp > 8) current_bpp = 8;
+        }
 
         /* Ensure we start on a 16-bit word boundary */
         irw_flush_word(f, &dataword, &bits_filled, NULL, NULL);

@@ -52,9 +52,23 @@ static bool is_keyword_line(const char *line, const char *kw)
     return strncmp(line, kw, 4) == 0;
 }
 
-static std::string resolve_img_path(const char *raw)
+static std::string resolve_img_path(const char *raw, const char *override_dir)
 {
     std::string path(raw);
+
+    /* If an override directory is provided, force it (ignoring original path dirs) */
+    if (override_dir && override_dir[0] != '\0') {
+        std::string over_str(override_dir);
+        /* Extract just the filename from the raw path */
+        size_t last_slash = path.find_last_of("\\/");
+        if (last_slash != std::string::npos) {
+            path = path.substr(last_slash + 1);
+        }
+        if (over_str.back() == '\\' || over_str.back() == '/')
+            return over_str + path;
+        else
+            return over_str + "\\" + path;
+    }
 
     if (has_dir_separator(path.c_str()))
         return path;
@@ -70,7 +84,7 @@ static std::string resolve_img_path(const char *raw)
     return get_cwd() + "\\" + path;
 }
 
-LodManifest ParseLodFile(const char *lod_path)
+LodManifest ParseLodFile(const char *lod_path, const char *override_dir)
 {
     LodManifest manifest;
 
@@ -131,7 +145,7 @@ LodManifest ParseLodFile(const char *lod_path)
 
         /* Not a keyword: it's an IMG file path */
         LodManifest::Entry entry;
-        entry.resolved_path = resolve_img_path(line);
+        entry.resolved_path = resolve_img_path(line, override_dir);
         manifest.entries.push_back(entry);
     }
 

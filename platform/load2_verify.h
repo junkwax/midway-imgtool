@@ -40,13 +40,14 @@ struct L2Report {
 };
 
 /* Run the full check. ppp = bits-per-pixel from LOD's PPP> directive
- * (6 for MK2MIL.LOD). Pass 0 to use auto (palette's bitspix). */
-L2Report VerifyLoad2Packing(int ppp);
+ * (6 for MK2MIL.LOD). Pass 0 to use auto (palette's bitspix).
+ * limit_scales_to_3 enforces the /3 limit (no eighth scales). */
+L2Report VerifyLoad2Packing(int ppp, bool limit_scales_to_3 = false);
 
 /* Pre-save hook. Runs the check and, if any breaking issues are
  * found, populates g_restore_msg with a summary. Save proceeds
  * either way — this is advisory. Returns the report so callers
  * can display details. */
-L2Report VerifyLoad2BeforeSave(int ppp);
+L2Report VerifyLoad2BeforeSave(int ppp, bool limit_scales_to_3 = false);
 
 #endif /* LOAD2_VERIFY_H */
