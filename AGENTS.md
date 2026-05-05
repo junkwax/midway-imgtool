@@ -3,6 +3,7 @@
 ## Project
 **midway-imgtool** — Editor for 1990s Midway arcade IMG container files (MK2/MK3, NBA Jam, etc.).
 Pure C/C++ port of a ~34k-line x86 assembly DOS tool, now SDL2 + Dear ImGui.
+*(Status: Feature Complete / Wrapped Up. Reached 1:1 parity with DOS LOAD2/LOADIMG pipeline as of v2.2.0).*
 
 ## Build Commands
 
