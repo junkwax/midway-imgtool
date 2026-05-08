@@ -237,6 +237,9 @@ void LoadImgFile(void)
         strncpy(img->n_s, idisk.n_s, 15);
         img->n_s[15] = '\0';
 
+        strncpy(img->src_filename, fname_s, 15);
+        img->src_filename[15] = '\0';
+
         unsigned int stride = ((unsigned int)img->w + 3) & ~3;
         unsigned int pix_sz = stride * img->h;
         img->data_p = PoolAlloc(pix_sz);

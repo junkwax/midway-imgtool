@@ -51,6 +51,8 @@ struct IMG {
      * instead of overwriting hand-tuned per-piece pixels. NULL until load
      * fills it; freed by FreeImg. */
     void          *baseline_p;
+    /* Source filename for UI hierarchy grouping */
+    char           src_filename[16];
 };
 
 struct PAL {

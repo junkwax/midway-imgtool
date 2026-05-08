@@ -3099,47 +3099,59 @@ void imgui_overlay_render(void)
     {
         /* --- Image List --- */
         int n_imgs = count_imgs();
-        char img_header[280];
-        if (fname_s[0]) {
-            const char *basename = fname_s;
-            for (const char *p = fname_s; *p; p++) {
-                if (*p == '\\' || *p == '/') basename = p + 1;
-            }
-            snprintf(img_header, sizeof(img_header), "%s", basename);
-        } else {
-            snprintf(img_header, sizeof(img_header), "Images");
-        }
-        if (ImGui::CollapsingHeader(img_header, ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
             float list_h = panel_h * 0.30f;
             if (ImGui::BeginListBox("##imglist", ImVec2(-1, list_h))) {
+                char current_group[32] = {0};
+                bool group_open = true;
+
                 for (int i = 0; i < n_imgs; i++) {
                     IMG *img = get_img(i);
                     if (!img) break;
-                    bool marked   = (img->flags & 1) != 0;
-                    bool selected = (i == ilselected);
-                    ImGui::PushID(i);
-                    char label[24];
-                    if (marked) snprintf(label, sizeof(label), "* %s", img->n_s);
-                    else        snprintf(label, sizeof(label), "  %s", img->n_s);
-                    
-                    if (selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
-                    if (ImGui::Selectable(label, selected)) {
-                        ilselected = i;
-                        g_palette_nav = false;
-                    }
-                    if (selected) ImGui::PopStyleColor();
 
-                    /* Right-click context menu on image items */
-                    if (ImGui::BeginPopupContextItem("##imgctx")) {
-                        if (ImGui::MenuItem("Mark / Unmark")) { img->flags ^= 1; }
-                        if (ImGui::MenuItem("Rename"))        OpenRenameImage();
-                        if (ImGui::MenuItem("Delete"))        DeleteImage(ilselected);
-                        ImGui::Separator();
-                        if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
-                        if (ImGui::MenuItem("Set Palette"))   SetPaletteOfSelected();
-                        ImGui::EndPopup();
+                    const char *src_name = img->src_filename[0] ? img->src_filename : "Workspace";
+                    if (strcmp(current_group, src_name) != 0) {
+                        if (current_group[0] != '\0' && group_open) {
+                            ImGui::TreePop();
+                        }
+                        strncpy(current_group, src_name, sizeof(current_group) - 1);
+                        current_group[sizeof(current_group) - 1] = '\0';
+                        
+                        ImGui::PushID(current_group);
+                        group_open = ImGui::TreeNodeEx(current_group, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+                        ImGui::PopID();
                     }
-                    ImGui::PopID();
+
+                    if (group_open) {
+                        bool marked   = (img->flags & 1) != 0;
+                        bool selected = (i == ilselected);
+                        ImGui::PushID(i);
+                        char label[24];
+                        if (marked) snprintf(label, sizeof(label), "* %s", img->n_s);
+                        else        snprintf(label, sizeof(label), "  %s", img->n_s);
+                        
+                        if (selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
+                        if (ImGui::Selectable(label, selected)) {
+                            ilselected = i;
+                            g_palette_nav = false;
+                        }
+                        if (selected) ImGui::PopStyleColor();
+
+                        /* Right-click context menu on image items */
+                        if (ImGui::BeginPopupContextItem("##imgctx")) {
+                            if (ImGui::MenuItem("Mark / Unmark")) { img->flags ^= 1; }
+                            if (ImGui::MenuItem("Rename"))        OpenRenameImage();
+                            if (ImGui::MenuItem("Delete"))        DeleteImage(ilselected);
+                            ImGui::Separator();
+                            if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
+                            if (ImGui::MenuItem("Set Palette"))   SetPaletteOfSelected();
+                            ImGui::EndPopup();
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                if (current_group[0] != '\0' && group_open) {
+                    ImGui::TreePop();
                 }
                 ImGui::EndListBox();
             }
