@@ -1240,7 +1240,7 @@ static void LeastSquaresReduceMarked()
 }
 
 /* ---- ImGui Native File Dialog ---- */
-enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ExportPng, WriteAniLst, WriteTbl, WriteIrw };
+enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch, ExportPng, WriteAniLst, WriteTbl, WriteIrw };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
@@ -1516,6 +1516,7 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::SaveTga:
         case FileDialogMode::ExportTga: return "TGA";
         case FileDialogMode::ImportPng:
+        case FileDialogMode::ImportPngMatch:
         case FileDialogMode::ExportPng: return "PNG";
         case FileDialogMode::WriteAniLst: return "ASM";
         case FileDialogMode::WriteTbl:  return "TBL";
@@ -1540,7 +1541,24 @@ static void OpenFileDialog(FileDialogMode mode) {
             g_file_dialog_dir[0] = '\0';
 #endif
     }
-    if (fname_s[0] != '\0') {
+    g_file_dialog_mode = mode;
+    bool is_export = (mode == FileDialogMode::ExportTga || mode == FileDialogMode::SaveTga || mode == FileDialogMode::ExportPng || mode == FileDialogMode::SaveLbm);
+    if (is_export && ilselected >= 0) {
+        IMG *img = get_img(ilselected);
+        if (img) {
+            size_t n = 0;
+            while (n < 16 && img->file_name_raw[n] != '\0') {
+                g_file_dialog_file[n] = img->file_name_raw[n];
+                n++;
+            }
+            g_file_dialog_file[n] = '\0';
+            const char *ext = GetDialogExtension(mode);
+            if (ext && ext[0] != '\0') {
+                strcat(g_file_dialog_file, ".");
+                strcat(g_file_dialog_file, ext);
+            }
+        }
+    } else if (fname_s[0] != '\0') {
         size_t n = 0;
         while (n < 12 && fname_s[n] != '\0') n++;
         memcpy(g_file_dialog_file, fname_s, n);
@@ -1548,7 +1566,6 @@ static void OpenFileDialog(FileDialogMode mode) {
     } else {
         g_file_dialog_file[0] = '\0';
     }
-    g_file_dialog_mode = mode;
     g_show_file_dialog = true;
 }
 
@@ -1565,6 +1582,7 @@ static void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::LoadTga) title = "Load TGA File";
     else if (g_file_dialog_mode == FileDialogMode::SaveTga) title = "Save TGA File";
     else if (g_file_dialog_mode == FileDialogMode::ImportPng) title = "Import PNG File";
+    else if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) title = "Import PNG (Match Palette)";
     else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
     else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) title = "Write ANILST";
     else if (g_file_dialog_mode == FileDialogMode::WriteTbl) title = "Write TBL";
@@ -2758,6 +2776,7 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             if (ImGui::BeginMenu("Import")) {
                 if (ImGui::MenuItem("PNG File..."))                 OpenFileDialog(FileDialogMode::ImportPng);
+                if (ImGui::MenuItem("PNG (Match to Active Palette)...")) OpenFileDialog(FileDialogMode::ImportPngMatch);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Load LBM", "Alt+L"))  OpenFileDialog(FileDialogMode::LoadLbm);
                 if (ImGui::MenuItem("Load TGA", "Ctrl+L")) OpenFileDialog(FileDialogMode::LoadTga);

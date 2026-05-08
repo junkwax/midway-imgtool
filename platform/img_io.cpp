@@ -6,6 +6,10 @@
 #include "img_io.h"
 #include "load2_verify.h"
 #include "compat.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 #include <vector>
 #include <algorithm>
 #include <string>
@@ -1288,32 +1292,31 @@ void SaveTga(void)
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
 
-    PAL *pal = get_pal(img->palnum);
+    PAL *pal = get_pal(0);
+    if (!pal || !pal->data_p) pal = get_pal(img->palnum);
     if (!pal || !pal->data_p) return;
 
-    FILE *f = fopen(fnametmp_s, "wb");
-    if (!f) return;
-
-    TGA_HEADER hdr = {};
-    hdr.cm_type   = 1;
-    hdr.i_type    = 1;
-    hdr.cm_length = pal->numc;
-    hdr.cm_size   = 15;
-    hdr.width     = img->w;
-    hdr.height    = img->h;
-    hdr.bpp       = 8;
-
-    fwrite(&hdr, 1, sizeof(hdr), f);
-    fwrite(pal->data_p, 2, pal->numc, f);
-
-    unsigned short stride = (img->w + 3) & ~3;
-    const unsigned char *src = (const unsigned char *)img->data_p
-                                + (unsigned int)stride * (img->h - 1);
-    for (int y = 0; y < img->h; y++) {
-        fwrite(src, 1, img->w, f);
-        src -= stride;
+    int w = img->w, h = img->h;
+    unsigned short stride = (unsigned short)((w + 3) & ~3);
+    unsigned char *rgba = (unsigned char *)malloc((size_t)w * h * 4);
+    if (!rgba) return;
+    const unsigned char *pal_data = (const unsigned char *)pal->data_p;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = ((const unsigned char *)img->data_p)[y * stride + x];
+            int off = (y * w + x) * 4;
+            if (ci == 0) { rgba[off+0]=0; rgba[off+1]=0; rgba[off+2]=0; rgba[off+3]=0; }
+            else {
+                unsigned short pw = (unsigned short)(pal_data[ci*2] | (pal_data[ci*2+1] << 8));
+                rgba[off+0] = (unsigned char)(((pw >> 10) & 0x1F) << 3);
+                rgba[off+1] = (unsigned char)(((pw >>  5) & 0x1F) << 3);
+                rgba[off+2] = (unsigned char)(( pw        & 0x1F) << 3);
+                rgba[off+3] = 255;
+            }
+        }
     }
-    fclose(f);
+    stbi_write_tga(fnametmp_s, w, h, 4, rgba);
+    free(rgba);
 }
 
 /* ---- Save LBM ---- */
@@ -1648,8 +1651,6 @@ void LoadLbm(void)
 }
 
 /* ---- PNG Import ---- */
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 void ImportPng(const char *path)
 {
@@ -1722,16 +1723,79 @@ void ImportPng(const char *path)
     verbose_log("  -> %dx%d px, %d palette colors", w, h, pal_colors);
 }
 
+void ImportPngMatch(const char *path)
+{
+    verbose_log("ImportPngMatch: %s", path);
+    IMG *active_img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!active_img) { verbose_log("  -> no active image to copy palette from"); return; }
+    PAL *pal = get_pal(active_img->palnum);
+    if (!pal || !pal->data_p) return;
+
+    int w, h, channels;
+    unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
+    if (!data || w == 0 || h == 0) return;
+
+    /* Build a fast lookup cache for palette matching */
+    const unsigned char *pal_data = (const unsigned char *)pal->data_p;
+    struct PalColor { int r, g, b; };
+    PalColor pcolors[256] = {};
+    for (int i = 1; i < pal->numc && i < 256; i++) {
+        unsigned short pw = (unsigned short)(pal_data[i*2] | (pal_data[i*2+1] << 8));
+        pcolors[i].r = ((pw >> 10) & 0x1F) << 3;
+        pcolors[i].g = ((pw >> 5) & 0x1F) << 3;
+        pcolors[i].b = (pw & 0x1F) << 3;
+    }
+
+    IMG *img = AllocImg();
+    if (!img) { stbi_image_free(data); return; }
+    img->w = (unsigned short)w; img->h = (unsigned short)h;
+    img->palnum = active_img->palnum; img->flags = 0;
+    img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
+    img->pttbl_p = NULL; img->opals = (unsigned short)-1;
+    unsigned short stride = (unsigned short)((w + 3) & ~3);
+    img->data_p = PoolAlloc((unsigned int)stride * h);
+    if (!img->data_p) { stbi_image_free(data); return; }
+    memset(img->data_p, 0, (unsigned int)stride * h);
+
+    const char *name = strrchr(path, '/'); if (!name) name = strrchr(path, '\\'); if (!name) name = path; else name++;
+    strncpy(img->n_s, name, 15); img->n_s[15] = '\0';
+    char *dot = strrchr(img->n_s, '.'); if (dot) *dot = '\0';
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char *p = data + (y * w + x) * 4;
+            if (p[3] < 128) continue;
+            int r = p[0], g = p[1], b = p[2];
+            int best_idx = 1;
+            int best_dist = 999999999;
+            for (int j = 1; j < pal->numc && j < 256; j++) {
+                int dr = r - pcolors[j].r;
+                int dg = g - pcolors[j].g;
+                int db = b - pcolors[j].b;
+                int dist = dr*dr + dg*dg + db*db;
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best_idx = j;
+                }
+            }
+            ((unsigned char *)img->data_p)[y * stride + x] = (unsigned char)best_idx;
+        }
+    }
+    stbi_image_free(data);
+    if (imgcnt > 0) ilselected = (int)imgcnt - 1;
+    g_img_tex_idx = -2;
+    verbose_log("  -> %dx%d px, matched to palette %u", w, h, pal->numc);
+}
+
 /* ---- PNG Export ---- */
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
 
 void ExportPng(const char *path)
 {
     verbose_log("ExportPng: %s", path);
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
-    PAL *pal = get_pal(img->palnum);
+    PAL *pal = get_pal(0);
+    if (!pal || !pal->data_p) pal = get_pal(img->palnum);
     if (!pal || !pal->data_p) return;
     int w = img->w, h = img->h;
     unsigned short stride = (unsigned short)((w + 3) & ~3);

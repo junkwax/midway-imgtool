@@ -49,6 +49,7 @@ void SaveLbm(void);
 void LoadTga(void);
 void LoadLbm(void);
 void ImportPng(const char *path);
+void ImportPngMatch(const char *path);
 void ExportPng(const char *path);
 int  RestoreMarkedFromSource(void);
 int  RestoreMarkedFromSourceForce(void);
