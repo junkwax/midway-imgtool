@@ -104,6 +104,9 @@ static bool g_icon_font_loaded = false;
    https://fonts.google.com/icons. When g_icon_font_loaded is false we fall
    back to the *_TXT strings instead. */
 #define ICON_OPEN     "\xEE\x8B\x88"     /* U+E2C8 folder_open */
+#define ICON_FOLDER   "\xEE\x8B\x87"     /* U+E2C7 folder */
+#define ICON_IMAGE    "\xEE\x8F\xB4"     /* U+E3F4 image */
+#define ICON_VIS      "\xEE\xA3\xB4"     /* U+E8F4 visibility */
 #define ICON_SAVE     "\xEE\x85\xA1"     /* U+E161 save */
 #define ICON_MARK     "\xEE\xA2\x92"     /* U+E892 label */
 #define ICON_MARK_ALL "\xEE\x85\xA2"     /* U+E162 select_all */
@@ -115,6 +118,9 @@ static bool g_icon_font_loaded = false;
 #define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
 
 #define ICON_OPEN_TXT     "Op"
+#define ICON_FOLDER_TXT   "D "
+#define ICON_IMAGE_TXT    "I "
+#define ICON_VIS_TXT      "V "
 #define ICON_SAVE_TXT     "Sv"
 #define ICON_MARK_TXT     "Mk"
 #define ICON_MARK_ALL_TXT "MA"
@@ -3118,7 +3124,9 @@ void imgui_overlay_render(void)
                         current_group[sizeof(current_group) - 1] = '\0';
                         
                         ImGui::PushID(current_group);
-                        group_open = ImGui::TreeNodeEx(current_group, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+                        char group_label[64];
+                        snprintf(group_label, sizeof(group_label), "%s  %s", g_icon_font_loaded ? ICON_FOLDER : ICON_FOLDER_TXT, current_group);
+                        group_open = ImGui::TreeNodeEx(group_label, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth);
                         ImGui::PopID();
                     }
 
@@ -3126,16 +3134,28 @@ void imgui_overlay_render(void)
                         bool marked   = (img->flags & 1) != 0;
                         bool selected = (i == ilselected);
                         ImGui::PushID(i);
-                        char label[24];
-                        if (marked) snprintf(label, sizeof(label), "* %s", img->n_s);
-                        else        snprintf(label, sizeof(label), "  %s", img->n_s);
                         
-                        if (selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
-                        if (ImGui::Selectable(label, selected)) {
+                        char label[64];
+                        const char *vis_icon = marked ? (g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT) : "   ";
+                        const char *img_icon = g_icon_font_loaded ? ICON_IMAGE : ICON_IMAGE_TXT;
+                        snprintf(label, sizeof(label), "%s %s  %s", vis_icon, img_icon, img->n_s);
+                        
+                        if (selected) {
+                            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
+                        }
+                        
+                        if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_AllowDoubleClick)) {
                             ilselected = i;
                             g_palette_nav = false;
+                            if (ImGui::IsMouseDoubleClicked(0)) {
+                                img->flags ^= 1;
+                            }
                         }
-                        if (selected) ImGui::PopStyleColor();
+                        
+                        if (selected) {
+                            ImGui::PopStyleColor(2);
+                        }
 
                         /* Right-click context menu on image items */
                         if (ImGui::BeginPopupContextItem("##imgctx")) {
