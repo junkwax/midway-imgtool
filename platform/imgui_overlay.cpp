@@ -2435,10 +2435,12 @@ static void undo_apply(int idx)
 }
 
 /* ---- Copy/Paste helpers (pixel data only) ---- */
-static void copy_image(void)
+static void copy_image(bool cut)
 {
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+
+    if (cut) undo_push();
 
     /* Free previous clipboard if any */
     if (g_clipboard.valid && g_clipboard.data_p) {
@@ -2474,6 +2476,15 @@ static void copy_image(void)
         unsigned char *src = (unsigned char *)img->data_p + (y1 + y) * stride + x1;
         unsigned char *dst = (unsigned char *)g_clipboard.data_p + y * clip_stride;
         memcpy(dst, src, w);
+        if (cut) {
+            memset(src, 0, w);
+        }
+    }
+
+    if (cut) {
+        g_dirty = true;
+        g_img_tex_idx = -2;
+        /* Don't drop the marquee on cut, acts more like Photoshop where selection stays */
     }
 
     g_clipboard.w = w;
@@ -2493,14 +2504,25 @@ static void apply_pasted_region(void)
     int px = g_pasted.paste_x, py = g_pasted.paste_y;
     int pw = g_clipboard.w, ph = g_clipboard.h;
 
-    /* Clamp to image bounds */
-    if (px < 0 || py < 0 || px + pw > (int)img->w || py + ph > (int)img->h) return;
+    /* Adobe-like clipping: allow pasting partially off-canvas */
+    int start_x = (px < 0) ? -px : 0;
+    int start_y = (py < 0) ? -py : 0;
+    int end_x = pw;
+    int end_y = ph;
 
-    /* Copy clipboard data to target location */
-    for (int y = 0; y < ph; y++) {
+    if (px + pw > (int)img->w) end_x = img->w - px;
+    if (py + ph > (int)img->h) end_y = img->h - py;
+
+    /* Copy clipboard data to target location with clipping and transparency support */
+    for (int y = start_y; y < end_y; y++) {
         unsigned char *src = (unsigned char *)g_clipboard.data_p + y * clip_stride;
         unsigned char *dst = (unsigned char *)img->data_p + (py + y) * stride + px;
-        memcpy(dst, src, pw);
+        for (int x = start_x; x < end_x; x++) {
+            /* 0 is transparent in these indexed images, don't overwrite with transparent pixels */
+            if (src[x] != 0) {
+                dst[x] = src[x];
+            }
+        }
     }
     g_img_tex_idx = -2;
 }
@@ -2686,8 +2708,8 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) { if (g_undo_idx < g_undo_count - 1) { g_undo_idx++; undo_apply(g_undo_idx); } }
 
     /* Clipboard */
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) copy_image();
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) { copy_image(); DeleteImage(ilselected); }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) copy_image(false);
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) copy_image(true);
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) paste_image();
 
     /* File I/O */
@@ -2817,11 +2839,8 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Redo", "Ctrl+Y")) { g_undo_idx++; undo_apply(g_undo_idx); }
             if (!can_redo) ImGui::EndDisabled();
             ImGui::Separator();
-            if (ImGui::MenuItem("Copy",  "Ctrl+C", false, ilselected >= 0)) copy_image();
-            if (ImGui::MenuItem("Cut",   "Ctrl+X", false, ilselected >= 0)) {
-                copy_image();
-                DeleteImage(ilselected);
-            }
+            if (ImGui::MenuItem("Copy",  "Ctrl+C", false, ilselected >= 0)) copy_image(false);
+            if (ImGui::MenuItem("Cut",   "Ctrl+X", false, ilselected >= 0)) copy_image(true);
             if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && ilselected >= 0))
                 paste_image();
             ImGui::Separator();
