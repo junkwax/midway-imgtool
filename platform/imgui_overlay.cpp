@@ -176,6 +176,7 @@ static CopiedImage g_clipboard = {false};
 
 /* ---- Editor state ---- */
 static int  g_sel_color   = 0;
+static bool g_palette_selection[256] = {false};
 static bool g_show_points = true;
 static bool g_show_hitbox = false;
 static bool g_show_dma_comp = false;
@@ -1725,7 +1726,7 @@ static void DrawFileDialog() {
                         ilselected = i;
                         memset(fnametmp_s, 0, 13);
                         snprintf(fnametmp_s, 13, "%.8s.LBM", p->n_s);
-                        SaveLbm();
+                        SaveLbm(fnametmp_s);
                     }
                     p = (IMG *)p->nxt_p;
                     i++;
@@ -1867,13 +1868,13 @@ static void DrawFileDialog() {
                     LoadImgFile();
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::LoadLbm) {
-                    LoadLbm();
+                    LoadLbm(full_path.c_str());
                 } else if (g_file_dialog_mode == FileDialogMode::LoadTga) {
-                    LoadTga();
+                    LoadTga(full_path.c_str());
                 } else if (g_file_dialog_mode == FileDialogMode::SaveLbm) {
-                    SaveLbm();
+                    SaveLbm(full_path.c_str());
                 } else if (g_file_dialog_mode == FileDialogMode::SaveTga) {
-                    SaveTga();
+                    SaveTga(full_path.c_str());
                 }
             }
             g_img_tex_idx = -2; /* Force canvas texture refresh */
@@ -2257,7 +2258,12 @@ static void hue_shift_palette(int delta_deg)
     int n = (int)pal->numc;
     if (n > 256) n = 256;
 
+    bool any_sel = false;
+    for (int i = 0; i < n; i++) if (g_palette_selection[i]) { any_sel = true; break; }
+
     for (int i = 0; i < n; i++) {
+        if (any_sel && !g_palette_selection[i]) continue;
+
         float r = (float)g_palette[i].r / 255.0f;
         float g = (float)g_palette[i].g / 255.0f;
         float b = (float)g_palette[i].b / 255.0f;
@@ -2954,6 +2960,8 @@ void imgui_overlay_render(void)
         }
         if (ImGui::BeginMenu("View")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
+            ImGui::MenuItem("Verbose Logging", NULL, &g_verbose);
+            ImGui::Separator();
             ImGui::MenuItem("Anim Points",     NULL, &g_show_points);
             ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
             ImGui::MenuItem("DMA Compression", NULL, &g_show_dma_comp);
@@ -4052,12 +4060,25 @@ void imgui_overlay_render(void)
             dl->AddRectFilled(p0, p1, IM_COL32(c.r, c.g, c.b, 255));
             if (i == g_sel_color)
                 dl->AddRect(p0, p1, IM_COL32(255,255,255,255), 0, 0, 1.5f);
+            else if (g_palette_selection[i])
+                dl->AddRect(p0, p1, IM_COL32(255,255,0,255), 0, 0, 1.5f);
             else if (i == 0)
                 dl->AddRect(p0, p1, IM_COL32(80,80,80,120), 0, 0, 0.5f);
 
             ImGui::SetCursorScreenPos(p0);
             ImGui::InvisibleButton(("##sw" + std::to_string(i)).c_str(), ImVec2(sw16, sh16));
-            if (ImGui::IsItemClicked()) g_sel_color = i;
+            if (ImGui::IsItemClicked()) {
+                if (ImGui::GetIO().KeyCtrl) {
+                    g_palette_selection[i] = !g_palette_selection[i];
+                } else if (ImGui::GetIO().KeyShift) {
+                    int start = g_sel_color < i ? g_sel_color : i;
+                    int end = g_sel_color < i ? i : g_sel_color;
+                    for (int j = start; j <= end; j++) g_palette_selection[j] = true;
+                } else {
+                    memset(g_palette_selection, 0, sizeof(g_palette_selection));
+                }
+                g_sel_color = i;
+            }
         }
 
         /* Selected color index + RGB */
@@ -4065,8 +4086,6 @@ void imgui_overlay_render(void)
         SDL_Color &c = g_palette[g_sel_color];
         ImGui::Text("#%d  R:%d G:%d B:%d", g_sel_color, c.r, c.g, c.b);
             }
-            ImGui::Separator();
-            ImGui::MenuItem("Verbose Logging",  NULL, &g_verbose);
             ImGui::PopStyleVar();
     ImGui::End();
 
@@ -4669,6 +4688,28 @@ void imgui_overlay_render(void)
                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing)) {
             ImGui::TextUnformatted(g_restore_msg);
+        }
+        ImGui::End();
+    }
+
+    /* ===== VERBOSE LOGGING CONSOLE ===== */
+    if (g_verbose) {
+        ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Verbose Logging", &g_verbose)) {
+            if (ImGui::Button("Clear")) { g_log_lines.clear(); }
+            ImGui::SameLine();
+            if (ImGui::Button("Copy to Clipboard")) {
+                std::string all_logs;
+                for (const auto& s : g_log_lines) all_logs += s + "\n";
+                ImGui::SetClipboardText(all_logs.c_str());
+            }
+            ImGui::Separator();
+            ImGui::BeginChild("scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+            for (const auto& s : g_log_lines) {
+                ImGui::TextUnformatted(s.c_str());
+            }
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
+            ImGui::EndChild();
         }
         ImGui::End();
     }

@@ -28,6 +28,7 @@ float g_restore_msg_timer = 0.0f;
 
 /* Verbose logging toggle */
 bool  g_verbose = false;
+std::vector<std::string> g_log_lines;
 
 void verbose_log(const char *fmt, ...)
 {
@@ -37,6 +38,12 @@ void verbose_log(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+
+    g_log_lines.push_back(buf);
+    if (g_log_lines.size() > 2000) {
+        g_log_lines.erase(g_log_lines.begin(), g_log_lines.begin() + 1000);
+    }
+
 #ifdef _WIN32
     OutputDebugStringA(buf);
     OutputDebugStringA("\n");
@@ -1290,7 +1297,7 @@ void BuildTgaFromMarked(const char* filepath)
 }
 
 /* ---- Save TGA ---- */
-void SaveTga(void)
+void SaveTga(const char *filepath)
 {
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
@@ -1318,12 +1325,12 @@ void SaveTga(void)
             }
         }
     }
-    stbi_write_tga(fnametmp_s, w, h, 4, rgba);
+    stbi_write_tga(filepath, w, h, 4, rgba);
     free(rgba);
 }
 
 /* ---- Save LBM ---- */
-void SaveLbm(void)
+void SaveLbm(const char *filepath)
 {
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
@@ -1331,7 +1338,7 @@ void SaveLbm(void)
     PAL *pal = get_pal(img->palnum);
     if (!pal || !pal->data_p) return;
 
-    FILE *f = fopen(fnametmp_s, "wb");
+    FILE *f = fopen(filepath, "wb");
     if (!f) return;
 
     auto wbe32 = [&](unsigned int v) {
@@ -1390,9 +1397,9 @@ void SaveLbm(void)
 }
 
 /* ---- Load TGA ---- */
-void LoadTga(void)
+void LoadTga(const char *filepath)
 {
-    FILE *f = fopen(fnametmp_s, "rb");
+    FILE *f = fopen(filepath, "rb");
     if (!f) return;
 
     IMG *img = NULL;
@@ -1513,9 +1520,9 @@ err:
 }
 
 /* ---- Load LBM ---- */
-void LoadLbm(void)
+void LoadLbm(const char *filepath)
 {
-    FILE *f = fopen(fnametmp_s, "rb");
+    FILE *f = fopen(filepath, "rb");
     if (!f) return;
 
     auto rbe32 = [&](unsigned int *out) -> bool {
