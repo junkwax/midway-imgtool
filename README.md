@@ -12,8 +12,8 @@ Sprite and palette editor for the IMG container files used by 1990s Midway arcad
 
 - **Browse sprites** — open an IMG file and scroll through every sprite frame (Up/Down, PgUp/Dn)
 - **Edit pixels** — draw with pencil, pick colors with eyedropper, flood fill, marquee select
-- **Manage palettes** — 256-color palettes with 15-bit RGB editing; assign, merge, duplicate, and delete. Keyboard navigation for palette list (click a palette then Up/Down to move).
-- **Palette tools** — hue shift with live preview (`Color` panel), create new palette from hue, reset palette to original, palette histogram, delete unused colors, and merge marked palettes
+- **Manage palettes** — 256-color palettes with 15-bit RGB editing; assign, merge, duplicate, copy, paste, and delete. Palette Copy/Paste survives File→Open, so you can lift a palette out of one IMG and apply it after loading another. Keyboard navigation for palette list (click a palette then Up/Down to move).
+- **Palette tools** — hue / saturation / lightness sliders with live preview (`Color` panel), create new palette from HSL, reset palette to original, palette histogram, delete unused colors, and merge marked palettes
 - **Animation points** — edit primary (X/Y) and secondary (X/Y/Z) anchor points for sprites
 - **Hitbox editor** — drag-to-resize collision boxes with live overlay on the canvas
 - **Dual-file mode** — open two IMGs at once (Tab to swap), copy IDs between them
@@ -102,7 +102,7 @@ The build copies `SDL2.dll` (Windows), `it.hlp`, and the Material Symbols icon f
 | **IMG** | Yes | Yes | Primary format. Pre-2.x IMGs auto-converted on open. Up to 2000 sprites/palettes per file. |
 | **TGA** | Yes | Yes | 8-bit color-mapped Truevision Targa. Bottom-up pixel order. |
 | **LBM** | Yes | Yes | IFF/ILBM chunk format. CMAP (palette) + BODY (bitmap). RLE decompression supported. |
-| **PNG** | Yes | Yes | Via stb_image/stb_image_write. Auto-quantizes colors to 15-bit palette on import. |
+| **PNG** | Yes | Yes | Via stb_image/stb_image_write. Import quantizes to a new 255-color palette via median-cut in 15-bit RGB space, then maps every pixel by nearest color. *Import (Match to Active Palette)* skips quantization and maps directly into the currently-selected image's palette. |
 
 ---
 
@@ -149,7 +149,7 @@ Full keyboard reference in the in-app help (`h`).
 - Full 2D sprite editing parity with the DOS tool
 - Modern UI (ImGui), file browser, undo/redo, copy/paste, hitbox editor
 - All MK1/MK2/NBA-era IMG files load, edit, and save correctly
-- PNG import/export with automatic palette quantization
+- PNG import/export with median-cut palette quantization (or matched to an existing palette)
 - Cross-platform Windows + Linux
 - Pure C/C++ build — no assembler required
 

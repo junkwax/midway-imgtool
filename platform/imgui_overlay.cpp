@@ -12,6 +12,7 @@
 #include <cstring>
 #include <string>
 #include <cstdio>
+#include <cstdarg>
 #include <cstdlib>
 #include <vector>
 #include <algorithm>
@@ -175,6 +176,21 @@ struct CopiedImage {
 };
 static CopiedImage g_clipboard = {false};
 
+/* ---- Palette clipboard ----
+   Holds a copy of a palette's color data (15-bit packed words) plus its name,
+   so the user can copy a palette in one .IMG and paste it after opening
+   another. Lives outside g_clipboard (pixel data) so the two clipboards don't
+   stomp on each other. Storage is plain malloc, not the LIB pool, because it
+   must survive a File->Open which resets the pool. */
+struct CopiedPalette {
+    bool           valid;
+    unsigned short numc;
+    unsigned char  bitspix;
+    char           n_s[10];
+    unsigned char *data;     /* numc * 2 bytes, malloc'd */
+};
+static CopiedPalette g_pal_clipboard = {false, 0, 0, {0}, NULL};
+
 /* ---- Editor state ---- */
 static int  g_sel_color   = 0;
 static bool g_palette_selection[256] = {false};
@@ -197,8 +213,34 @@ static char         g_rename_buf[20] = {0};
 
 /* Unsaved changes confirmation */
 static bool g_show_unsaved_confirm = false;
+/* Deferred action that the unsaved-changes dialog should run after the user
+   picks Save or Discard. One of: quit, open-file-dialog, open-specific-path. */
+enum class PendingAction { None, Quit, OpenDialog, OpenPath, OpenLodDialog };
+static PendingAction g_pending_action      = PendingAction::None;
+static std::string   g_pending_action_path; /* only used when action == OpenPath */
 static bool g_pending_quit = false;
 static bool g_dirty = false;
+
+/* Single dirty-marking entry point. Use this instead of `g_dirty = true` so
+   any future side-effects (auto-backup, dirty-bit tracing, etc.) only need
+   to be added in one place — and so it's obvious in a grep which writes are
+   intended to flip the unsaved flag vs. which are clearing it. */
+static inline void mark_dirty(void) { g_dirty = true; }
+
+/* Two-column label/value renderer for the Properties panel. The value column
+   is positioned by ImGui::SameLine(col_x) instead of by padding the label
+   with spaces, so re-labeling a row doesn't break alignment. col_x is the
+   pixel offset within the current window — 90 px lines up roughly with the
+   pre-existing 13-character indent at the default font. */
+static void LabeledValue(const char *label, const char *fmt, ...)
+{
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(90.0f);
+    va_list args;
+    va_start(args, fmt);
+    ImGui::TextV(fmt, args);
+    va_end(args);
+}
 
 /* New IMG / Add Palette confirmations */
 static bool g_show_new_img_confirm = false;
@@ -916,7 +958,7 @@ static void SwitchImageList(void)
    exists for the image, allocate one via the ASM memory pool. */
 static void SetIDFromSecondList(void)
 {
-    g_dirty = true;
+    mark_dirty();
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img) return;
 
@@ -1010,7 +1052,7 @@ err:
  * gives you the first sprite to start drawing on. */
 static void AddNewBlankImage(void)
 {
-    g_dirty = true;
+    mark_dirty();
     IMG *img = AllocImg();
     if (!img) return;
 
@@ -1044,7 +1086,7 @@ static void AddNewBlankImage(void)
    uses the ASM memory pool via thunks (pal_alloc, mem_alloc). */
 static void AddNewPalette(void)
 {
-    g_dirty = true;
+    mark_dirty();
     PAL *pal = (PAL *)AllocPal();
     if (!pal) return;
 
@@ -1067,7 +1109,7 @@ static void DuplicatePalette(void)
     PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
     if (!src || !src->data_p) return;
 
-    g_dirty = true;
+    mark_dirty();
     PAL *pal = (PAL *)AllocPal();
     if (!pal) return;
 
@@ -1082,6 +1124,50 @@ static void DuplicatePalette(void)
     if (!buf) return;
     pal->data_p = buf;
     memcpy(buf, src->data_p, col_sz);
+
+    if (palcnt > 0) plselected = (int)palcnt - 1;
+}
+
+/* Copy the selected palette into the cross-file palette clipboard. The buffer
+   is malloc'd (not pool-allocated) so it survives File->Open. */
+static void CopyPaletteToClipboard(void)
+{
+    PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
+    if (!src || !src->data_p || src->numc == 0) return;
+
+    unsigned int col_sz = (unsigned int)src->numc * 2;
+    unsigned char *buf = (unsigned char *)malloc(col_sz);
+    if (!buf) return;
+    memcpy(buf, src->data_p, col_sz);
+
+    if (g_pal_clipboard.valid && g_pal_clipboard.data) free(g_pal_clipboard.data);
+    g_pal_clipboard.valid   = true;
+    g_pal_clipboard.numc    = src->numc;
+    g_pal_clipboard.bitspix = src->bitspix;
+    memcpy(g_pal_clipboard.n_s, src->n_s, 10);
+    g_pal_clipboard.data    = buf;
+}
+
+/* Paste the clipboard palette as a new palette in the current library. */
+static void PastePaletteFromClipboard(void)
+{
+    if (!g_pal_clipboard.valid || !g_pal_clipboard.data || g_pal_clipboard.numc == 0) return;
+
+    mark_dirty();
+    PAL *pal = (PAL *)AllocPal();
+    if (!pal) return;
+
+    pal->flags   = 0;
+    pal->bitspix = g_pal_clipboard.bitspix ? g_pal_clipboard.bitspix : 8;
+    pal->numc    = g_pal_clipboard.numc;
+    pal->pad     = 0;
+    memcpy(pal->n_s, g_pal_clipboard.n_s, 10);
+
+    unsigned int col_sz = (unsigned int)pal->numc * 2;
+    unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
+    if (!buf) return;
+    pal->data_p = buf;
+    memcpy(buf, g_pal_clipboard.data, col_sz);
 
     if (palcnt > 0) plselected = (int)palcnt - 1;
 }
@@ -1372,7 +1458,7 @@ static void DeleteUnusedPaletteColors()
 /* ---- Strip Edge (DMA Compression Prep) ---- */
 static void StripMarkedImages(int max_transparent_neighbors, int specific_color = -1)
 {
-    g_dirty = true;
+    mark_dirty();
     IMG *img = (IMG *)img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
@@ -1448,7 +1534,7 @@ static void StripMarkedImages(int max_transparent_neighbors, int specific_color 
 /* ---- Dither Replace ---- */
 static void DitherReplaceMarkedImages(int specific_color)
 {
-    g_dirty = true;
+    mark_dirty();
     IMG *img = (IMG *)img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
@@ -1473,7 +1559,7 @@ static void DitherReplaceMarkedImages(int specific_color)
 /* ---- Least-Squares Reduce (Shrink Palette/Auto-Crop) ---- */
 static void LeastSquaresReduceMarked()
 {
-    g_dirty = true;
+    mark_dirty();
     IMG *img = (IMG *)img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
@@ -1856,6 +1942,39 @@ static void OpenFileDialog(FileDialogMode mode) {
     g_show_file_dialog = true;
 }
 
+/* Guarded entry points for "load a different file" operations. If there are
+   unsaved changes, queue the action and show the confirm dialog; otherwise
+   run immediately. Used by File->Open, Open Recent, and Open LOD so the
+   user can't accidentally throw away palette/hue edits by switching files. */
+static void RequestOpenDialog(void)
+{
+    if (g_dirty && imgcnt > 0) {
+        g_pending_action = PendingAction::OpenDialog;
+        g_show_unsaved_confirm = true;
+    } else {
+        OpenFileDialog(FileDialogMode::OpenImg);
+    }
+}
+static void RequestOpenPath(const std::string &path)
+{
+    if (g_dirty && imgcnt > 0) {
+        g_pending_action      = PendingAction::OpenPath;
+        g_pending_action_path = path;
+        g_show_unsaved_confirm = true;
+    } else {
+        OpenImgFile(path);
+    }
+}
+static void RequestOpenLodDialog(void)
+{
+    if (g_dirty && imgcnt > 0) {
+        g_pending_action = PendingAction::OpenLodDialog;
+        g_show_unsaved_confirm = true;
+    } else {
+        OpenFileDialog(FileDialogMode::OpenLod);
+    }
+}
+
 static void DrawFileDialog() {
     const char* title = "Open File";
     if (g_file_dialog_mode == FileDialogMode::SaveImg) title = "Save IMG File";
@@ -1963,6 +2082,7 @@ static void DrawFileDialog() {
         ImGui::SameLine();
         
         const char* btn_text = (g_file_dialog_mode == FileDialogMode::ImportPng ||
+                                g_file_dialog_mode == FileDialogMode::ImportPngMatch ||
                                 g_file_dialog_mode == FileDialogMode::ExportPng) ? "OK" :
                                (g_file_dialog_mode == FileDialogMode::OpenImg ||
                                 g_file_dialog_mode == FileDialogMode::AppendImg ||
@@ -1984,6 +2104,10 @@ static void DrawFileDialog() {
                 ExportPng(full_path.c_str());
             } else if (g_file_dialog_mode == FileDialogMode::ImportPng) {
                 ImportPng(full_path.c_str());
+                mark_dirty();
+            } else if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) {
+                ImportPngMatch(full_path.c_str());
+                mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".ASM";
@@ -2142,15 +2266,18 @@ static void DrawFileDialog() {
     g_dirty = false; /* fresh load = clean baseline */
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
-                    /* Append modifies the in-memory set on top of whatever
-                       was there — leave the dirty bookkeeping alone so the
-                       user is prompted before throwing it away. */
+                    /* Append adds images on top of the current set — even if
+                       the file was clean (matched disk) before, after Append
+                       it no longer does, so mark dirty. */
                     LoadImgFile();
+                    mark_dirty();
                     RecentAdd(full_path);
                 } else if (g_file_dialog_mode == FileDialogMode::LoadLbm) {
                     LoadLbm(full_path.c_str());
+                    mark_dirty();
                 } else if (g_file_dialog_mode == FileDialogMode::LoadTga) {
                     LoadTga(full_path.c_str());
+                    mark_dirty();
                 } else if (g_file_dialog_mode == FileDialogMode::SaveLbm) {
                     SaveLbm(full_path.c_str());
                 } else if (g_file_dialog_mode == FileDialogMode::SaveTga) {
@@ -2519,7 +2646,7 @@ SDL-main branch -- 64-bit build.  github.com/junkwax/midway-imgtool
    Save persists them. */
 static void palette_writeback(int color_idx)
 {
-    g_dirty = true;
+    mark_dirty();
     PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
     if (!pal || !pal->data_p) return;
     if (color_idx < 0 || color_idx >= (int)pal->numc) return;
@@ -2540,7 +2667,7 @@ static void hsl_adjust_palette_from_baseline(int hue_deg, int sat_pct, int light
     PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
     if (!pal || !pal->data_p) return;
     if (g_palette_baseline_nc == 0) return;
-    g_dirty = true;
+    mark_dirty();
 
     float dh = (float)hue_deg / 360.0f;
     float ds = (float)sat_pct  / 100.0f;     /* -1..+1, additive on s */
@@ -2663,7 +2790,7 @@ static void reset_palette_to_baseline(void)
     g_sat_last   = 0;
     g_light_slider = 0;
     g_light_last   = 0;
-    g_dirty = true;
+    mark_dirty();
 }
 
 /* Load the selected palette into g_palette[] so the canvas/swatches reflect it. */
@@ -2719,7 +2846,7 @@ static void rebuild_img_texture(IMG *img)
 /* ---- Undo helpers ---- */
 void undo_push(void)
 {
-    g_dirty = true;
+    mark_dirty();
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img) return;
 
@@ -2824,7 +2951,7 @@ static void copy_image(bool cut)
     }
 
     if (cut) {
-        g_dirty = true;
+        mark_dirty();
         g_img_tex_idx = -2;
         /* Don't drop the marquee on cut, acts more like Photoshop where selection stays */
     }
@@ -2837,7 +2964,7 @@ static void copy_image(bool cut)
 
 static void apply_pasted_region(void)
 {
-    g_dirty = true;
+    mark_dirty();
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
 
@@ -3568,17 +3695,44 @@ static void DrawNewImgConfirm(void)
     ImGui::EndPopup();
 }
 
+/* Run whatever action queued the unsaved-changes confirm. Called once the
+   user has chosen Save or Discard. After running, g_pending_action is reset
+   to None so the dialog never re-fires. */
+static void RunPendingAction(void)
+{
+    PendingAction act = g_pending_action;
+    std::string   path = g_pending_action_path;
+    g_pending_action = PendingAction::None;
+    g_pending_action_path.clear();
+    switch (act) {
+        case PendingAction::Quit:           /* main loop sees imgui_overlay_should_quit() */ break;
+        case PendingAction::OpenDialog:     OpenFileDialog(FileDialogMode::OpenImg); break;
+        case PendingAction::OpenPath:       OpenImgFile(path); break;
+        case PendingAction::OpenLodDialog:  OpenFileDialog(FileDialogMode::OpenLod); break;
+        case PendingAction::None: default:  break;
+    }
+}
+
 static void DrawUnsavedChangesConfirm(void)
 {
-    if (g_pending_quit && !g_show_unsaved_confirm) {
+    /* Legacy: g_pending_quit is set by Esc/window-close; treat it as the
+       Quit pending action if nothing else queued. */
+    if (g_pending_quit && g_pending_action == PendingAction::None && !g_show_unsaved_confirm) {
         if (g_dirty && imgcnt > 0) {
+            g_pending_action = PendingAction::Quit;
             g_show_unsaved_confirm = true;
         }
     }
     if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
     if (!ImGui::BeginPopupModal("Unsaved Changes", &g_show_unsaved_confirm, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    const char *verb =
+        (g_pending_action == PendingAction::OpenDialog ||
+         g_pending_action == PendingAction::OpenPath  ||
+         g_pending_action == PendingAction::OpenLodDialog) ? "before opening another file"
+                                                           : "before quitting";
     ImGui::Text("You have unsaved changes.");
-    ImGui::Text("Do you want to save before quitting?");
+    ImGui::Text("Do you want to save %s?", verb);
     ImGui::Spacing();
     ImGui::Separator();
     if (ImGui::Button("Save", ImVec2(80, 0))) {
@@ -3587,8 +3741,14 @@ static void DrawUnsavedChangesConfirm(void)
         if (fname_s[0] != '\0') {
             SaveImgFile();
             g_dirty = false;
+            RunPendingAction();
         } else {
+            /* No filename yet — fall through to Save dialog, and discard the
+               pending action since the user needs to drive that flow manually.
+               (Avoids racing a fresh Save dialog against an Open dialog.) */
             g_pending_quit = false;
+            g_pending_action = PendingAction::None;
+            g_pending_action_path.clear();
             OpenFileDialog(FileDialogMode::SaveImg);
         }
     }
@@ -3596,11 +3756,15 @@ static void DrawUnsavedChangesConfirm(void)
     if (ImGui::Button("Discard", ImVec2(80, 0))) {
         g_show_unsaved_confirm = false;
         ImGui::CloseCurrentPopup();
+        g_dirty = false; /* user chose to throw the edits away */
+        RunPendingAction();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(80, 0))) {
         g_show_unsaved_confirm = false;
         g_pending_quit = false;
+        g_pending_action = PendingAction::None;
+        g_pending_action_path.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -3747,7 +3911,7 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) paste_image();
 
     /* File I/O */
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, route)) OpenFileDialog(FileDialogMode::OpenImg);
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, route)) RequestOpenDialog();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, route)) OpenFileDialog(FileDialogMode::SaveImg);
     if (ImGui::Shortcut(ImGuiMod_Alt  | ImGuiKey_L, route)) OpenFileDialog(FileDialogMode::LoadLbm);
     if (ImGui::Shortcut(ImGuiMod_Alt  | ImGuiKey_S, route)) OpenFileDialog(FileDialogMode::SaveLbm);
@@ -3784,7 +3948,7 @@ void imgui_overlay_render(void)
 
     /* Image Operations */
     if (ImGui::Shortcut(ImGuiKey_Space, route)) {
-        IMG *img = get_img(ilselected); if (img) { img->flags ^= 1; g_dirty = true; }
+        IMG *img = get_img(ilselected); if (img) { img->flags ^= 1; mark_dirty(); }
     }
     /* Timeline play/pause (K = standard video editor convention). */
     if (ImGui::Shortcut(ImGuiKey_K, route)) imgtool_toggle_timeline_play();
@@ -3846,13 +4010,13 @@ void imgui_overlay_render(void)
         if (ImGui::BeginMenu("File")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("New"))             g_show_new_img_confirm = true;
-            if (ImGui::MenuItem("Open...",  "Ctrl+O")) OpenFileDialog(FileDialogMode::OpenImg);
+            if (ImGui::MenuItem("Open...",  "Ctrl+O")) RequestOpenDialog();
             if (ImGui::BeginMenu("Open Recent", !g_recent_files.empty())) {
                 std::vector<std::string> snap = g_recent_files;
                 for (size_t i = 0; i < snap.size(); i++) {
                     char label[1100];
                     snprintf(label, sizeof(label), "%zu. %s", i + 1, snap[i].c_str());
-                    if (ImGui::MenuItem(label)) OpenImgFile(snap[i]);
+                    if (ImGui::MenuItem(label)) RequestOpenPath(snap[i]);
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Clear Recent")) {
@@ -3863,7 +4027,7 @@ void imgui_overlay_render(void)
             }
             if (ImGui::MenuItem("Save",    "Ctrl+S")) OpenFileDialog(FileDialogMode::SaveImg);
             if (ImGui::MenuItem("Append",  "a"))      OpenFileDialog(FileDialogMode::AppendImg);
-            if (ImGui::MenuItem("Open LOD..."))       OpenFileDialog(FileDialogMode::OpenLod);
+            if (ImGui::MenuItem("Open LOD..."))       RequestOpenLodDialog();
             ImGui::Separator();
             if (ImGui::BeginMenu("Import")) {
                 if (ImGui::MenuItem("PNG File..."))                 OpenFileDialog(FileDialogMode::ImportPng);
@@ -4166,7 +4330,7 @@ void imgui_overlay_render(void)
         ImVec2 btn(TOOLBAR_W - 12, TOOLBAR_W - 12);
         #define TB_LABEL(icon, txt) (g_icon_font_loaded ? (icon) : (txt))
 
-        if (ImGui::Button(TB_LABEL(ICON_OPEN, ICON_OPEN_TXT), btn))  OpenFileDialog(FileDialogMode::OpenImg);
+        if (ImGui::Button(TB_LABEL(ICON_OPEN, ICON_OPEN_TXT), btn))  RequestOpenDialog();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open IMG (Ctrl+O)");
         if (ImGui::Button(TB_LABEL(ICON_SAVE, ICON_SAVE_TXT), btn))  OpenFileDialog(FileDialogMode::SaveImg);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save IMG (Ctrl+S)");
@@ -4510,15 +4674,25 @@ void imgui_overlay_render(void)
             if (ImGui::SmallButton("Dup"))       DuplicatePalette();
             ImGui::SameLine();
             if (ImGui::SmallButton("Del"))       DeletePalette();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Copy"))      CopyPaletteToClipboard();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy selected palette to cross-file clipboard");
+            ImGui::SameLine();
+            if (!g_pal_clipboard.valid) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Paste"))     PastePaletteFromClipboard();
+            if (g_pal_clipboard.valid && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Paste clipboard palette as new (%s, %d colors)",
+                                  g_pal_clipboard.n_s, (int)g_pal_clipboard.numc);
+            if (!g_pal_clipboard.valid) ImGui::EndDisabled();
         }
 
         /* --- Properties --- */
         if (ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
             IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
             if (img) {
-                ImGui::Text("Name:        %.15s", img->n_s);
-                ImGui::Text("Size:        %d x %d", (int)img->w, (int)img->h);
-                
+                LabeledValue("Name:", "%.15s", img->n_s);
+                LabeledValue("Size:", "%d x %d", (int)img->w, (int)img->h);
+
                 if (img->data_p && img->w > 0 && img->h > 0) {
                     int uncomp_size = img->w * img->h;
                     int comp_size = 0;
@@ -4535,17 +4709,17 @@ void imgui_overlay_render(void)
                             comp_size += 1 + (img->w - leading - trailing);
                         }
                     }
-                    ImGui::Text("DMA ROM:  %d B raw", uncomp_size);
-                    ImGui::Text("           %d B compressed", comp_size);
+                    LabeledValue("DMA ROM:", "%d B raw", uncomp_size);
+                    LabeledValue("",         "%d B compressed", comp_size);
                 }
 
                 PAL *pal = get_pal(img->palnum);
-                if (pal) ImGui::Text("Pal:         %d  %.9s", (int)img->palnum, pal->n_s);
-                else     ImGui::Text("Pal:         %d", (int)img->palnum);
+                if (pal) LabeledValue("Pal:", "%d  %.9s", (int)img->palnum, pal->n_s);
+                else     LabeledValue("Pal:", "%d", (int)img->palnum);
 
-                ImGui::Text("AX/AY:       %d, %d", (int)(short)img->anix, (int)(short)img->aniy);
-                ImGui::Text("AX2/AY2:     %d, %d", (int)(short)img->anix2, (int)(short)img->aniy2);
-                ImGui::Text("AZ2:         %d", (int)(short)img->aniz2);
+                LabeledValue("AX/AY:",   "%d, %d", (int)(short)img->anix,  (int)(short)img->aniy);
+                LabeledValue("AX2/AY2:", "%d, %d", (int)(short)img->anix2, (int)(short)img->aniy2);
+                LabeledValue("AZ2:",     "%d",     (int)(short)img->aniz2);
 
                 char flagbuf[48] = {};
                 if (img->flags & 1)  strncat(flagbuf, "Marked ", 47);
@@ -4553,9 +4727,9 @@ void imgui_overlay_render(void)
                 if (img->flags & 4)  strncat(flagbuf, "Changed ", 47);
                 if (img->flags & 8)  strncat(flagbuf, "Delete ", 47);
                 if (!flagbuf[0])     strncpy(flagbuf, "-", 47);
-                ImGui::Text("Flags:       0x%04X  %s", (int)img->flags, flagbuf);
+                LabeledValue("Flags:", "0x%04X  %s", (int)img->flags, flagbuf);
 
-                ImGui::Text("DATA:        %p", img->data_p);
+                LabeledValue("DATA:", "%p", img->data_p);
 
                 ImGui::Spacing();
                 if (g_clipboard.valid) ImGui::TextDisabled("Clip:   %dx%d pixels", g_clipboard.w, g_clipboard.h);
@@ -4653,12 +4827,14 @@ void imgui_overlay_render(void)
                 hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = black, +100 = white.");
-            if (ImGui::SmallButton("Reset")) {
+            if (ImGui::SmallButton("Reset HSL")) {
                 g_hue_slider = g_hue_last = 0;
                 g_sat_slider = g_sat_last = 0;
                 g_light_slider = g_light_last = 0;
                 reset_palette_to_baseline();
             }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Reset Hue/Saturation/Lightness sliders to 0 and restore the palette baseline.");
             ImGui::SameLine();
             if (ImGui::SmallButton("New from HSL")) {
                 PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
@@ -4683,7 +4859,7 @@ void imgui_overlay_render(void)
                             g_sat_last   = 0;
                             g_light_slider = 0;
                             g_light_last   = 0;
-                            g_dirty = true;
+                            mark_dirty();
                         }
                     }
                 }
@@ -4835,7 +5011,7 @@ void imgui_overlay_render(void)
                         if (dx != 0 || dy != 0) {
                             cimg->anix = (unsigned short)((int)(short)cimg->anix - dx);
                             cimg->aniy = (unsigned short)((int)(short)cimg->aniy - dy);
-                            g_dirty = true;
+                            mark_dirty();
                         }
                     }
                     /* Wheel zooms world canvas (changes wscale via origin sizing). */
@@ -5158,7 +5334,7 @@ void imgui_overlay_render(void)
                                         cdata[dy_px * stride + dx_px] = src_col;
                                     }
                                 }
-                                g_dirty = true;
+                                mark_dirty();
                                 g_img_tex_idx = -2;
                                 widget_consumed_click = true;
                             }
@@ -5184,7 +5360,7 @@ void imgui_overlay_render(void)
                                         g_pixel_undo_img = ilselected;
                                     }
                                     *pix = (unsigned char)g_sel_color;
-                                    g_dirty = true;
+                                    mark_dirty();
                                     g_img_tex_idx = -2;
                                 }
                                 widget_consumed_click = true;
@@ -5206,16 +5382,16 @@ void imgui_overlay_render(void)
                                 g_pixel_undo_img = ilselected;
                             }
                             if (g_active_tool == ActiveTool::BackgroundEraser) {
-                                g_dirty = true;
+                                mark_dirty();
                                 SmartErase(cimg, px, py,
                                            g_eraser_tolerance,
                                            g_eraser_contiguous,
                                            g_eraser_defringe);
                             } else if (io.KeyShift) {
-                                g_dirty = true;
+                                mark_dirty();
                                 FloodFill(cimg, px, py, (unsigned char)g_sel_color);
                             } else {
-                                g_dirty = true;
+                                mark_dirty();
                                 *pix = (unsigned char)g_sel_color;
                             }
                             g_img_tex_idx = -2;

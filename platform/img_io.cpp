@@ -12,6 +12,8 @@
 #include "stb_image_write.h"
 #include <vector>
 #include <algorithm>
+#include <utility>
+#include <climits>
 #include <string>
 #include <regex>
 #include <stdarg.h>
@@ -1919,6 +1921,63 @@ void LoadLbm(const char *filepath)
 
 /* ---- PNG Import ---- */
 
+/* Import a PNG into a new image + new palette.
+
+   The arcade IMG format stores 1 byte per pixel into a palette of up to 256
+   entries (index 0 reserved for transparent), with each palette entry being a
+   15-bit packed RGB word. So the source PNG's full-color pixels must be
+   quantized down to <=255 representative colors, and *every* PNG pixel must
+   end up mapped to one of them.
+
+   The previous implementation here was broken in two ways:
+     - It capped the unique-color histogram at 4096 entries, silently dropping
+       any beyond-budget colors (which then mis-mapped to index 0 at draw time).
+     - It selected the palette by raw frequency (top-N most common 15-bit
+       colors), and mapped pixels by exact 15-bit equality only — so any pixel
+       whose color wasn't in the top 255 fell through the match loop and was
+       written as index 0 (transparent).
+
+   This implementation uses median-cut quantization in 15-bit RGB space to
+   pick a representative 255-color palette weighted by pixel count, then maps
+   every opaque pixel to the nearest palette entry by Euclidean RGB distance.
+   No dithering — flat sprite art is the dominant use case and dithering
+   produces speckle that looks wrong against arcade backgrounds. */
+
+namespace {
+
+struct ColorBucket {
+    /* Compact list of (15-bit rgb, pixel-count) pairs that make up this bucket. */
+    std::vector<std::pair<unsigned short, int>> entries;
+    int    pixel_count = 0;       /* sum of entries[i].second */
+    int    r_lo = 31, r_hi = 0;
+    int    g_lo = 31, g_hi = 0;
+    int    b_lo = 31, b_hi = 0;
+};
+
+static inline void unpack15(unsigned short c, int &r5, int &g5, int &b5)
+{
+    r5 = (c >> 10) & 0x1F;
+    g5 = (c >>  5) & 0x1F;
+    b5 =  c        & 0x1F;
+}
+
+static void recompute_bucket_bounds(ColorBucket &b)
+{
+    b.r_lo = b.g_lo = b.b_lo = 31;
+    b.r_hi = b.g_hi = b.b_hi = 0;
+    b.pixel_count = 0;
+    for (auto &e : b.entries) {
+        int r, g, bl;
+        unpack15(e.first, r, g, bl);
+        if (r < b.r_lo) b.r_lo = r; if (r > b.r_hi) b.r_hi = r;
+        if (g < b.g_lo) b.g_lo = g; if (g > b.g_hi) b.g_hi = g;
+        if (bl < b.b_lo) b.b_lo = bl; if (bl > b.b_hi) b.b_hi = bl;
+        b.pixel_count += e.second;
+    }
+}
+
+} /* namespace */
+
 void ImportPng(const char *path)
 {
     verbose_log("ImportPng: %s", path);
@@ -1926,38 +1985,130 @@ void ImportPng(const char *path)
     unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
     if (!data || w == 0 || h == 0) return;
 
-    struct ColorCount { unsigned int rgb; int count; unsigned char idx; };
-    ColorCount hist[4096] = {};
-    int hist_count = 0;
-
+    /* Step 1: histogram all opaque pixels by their 15-bit color.
+       2^15 = 32768 possible colors total, so a flat lookup table is fine. */
+    static int hist[32768];
+    memset(hist, 0, sizeof(hist));
+    int opaque_pixels = 0;
     for (int i = 0; i < w * h; i++) {
-        unsigned char r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2], a = data[i * 4 + 3];
+        unsigned char a = data[i * 4 + 3];
         if (a < 128) continue;
-        unsigned int rgb = ((unsigned int)(r & 0xF8) << 7) | ((unsigned int)(g & 0xF8) << 2) | ((unsigned int)(b >> 3));
-        int found = -1;
-        for (int j = 0; j < hist_count; j++) { if (hist[j].rgb == rgb) { found = j; break; } }
-        if (found >= 0) hist[found].count++;
-        else if (hist_count < 4096) { hist[hist_count].rgb = rgb; hist[hist_count].count = 1; hist_count++; }
+        int r5 = data[i * 4 + 0] >> 3;
+        int g5 = data[i * 4 + 1] >> 3;
+        int b5 = data[i * 4 + 2] >> 3;
+        unsigned short c = (unsigned short)((r5 << 10) | (g5 << 5) | b5);
+        hist[c]++;
+        opaque_pixels++;
     }
-    for (int i = 0; i < hist_count - 1; i++)
-        for (int j = i + 1; j < hist_count; j++)
-            if (hist[j].count > hist[i].count) { ColorCount t = hist[i]; hist[i] = hist[j]; hist[j] = t; }
 
-    int pal_colors = hist_count < 255 ? hist_count : 255;
+    /* Step 2: seed median-cut with one bucket containing every unique color. */
+    std::vector<ColorBucket> buckets;
+    buckets.reserve(256);
+    buckets.emplace_back();
+    {
+        ColorBucket &b0 = buckets.back();
+        for (int c = 0; c < 32768; c++) {
+            if (hist[c] > 0) b0.entries.push_back({ (unsigned short)c, hist[c] });
+        }
+        recompute_bucket_bounds(b0);
+    }
+
+    const int MAX_PAL_COLORS = 255; /* +1 for transparent at index 0 */
+
+    /* Step 3: repeatedly split the bucket with the widest channel range
+       (weighted by that range) until we have MAX_PAL_COLORS buckets or no
+       further splits are possible. */
+    while ((int)buckets.size() < MAX_PAL_COLORS) {
+        int best = -1;
+        int best_range = 0;
+        int best_axis  = 0;   /* 0=r, 1=g, 2=b */
+        for (int i = 0; i < (int)buckets.size(); i++) {
+            ColorBucket &b = buckets[i];
+            if (b.entries.size() < 2) continue;
+            int rr = b.r_hi - b.r_lo;
+            int gr = b.g_hi - b.g_lo;
+            int br = b.b_hi - b.b_lo;
+            int axis = 0, range = rr;
+            if (gr > range) { range = gr; axis = 1; }
+            if (br > range) { range = br; axis = 2; }
+            if (range > best_range) {
+                best_range = range;
+                best       = i;
+                best_axis  = axis;
+            }
+        }
+        if (best < 0) break; /* every remaining bucket is a single color */
+
+        ColorBucket &src = buckets[best];
+        std::sort(src.entries.begin(), src.entries.end(),
+                  [best_axis](const std::pair<unsigned short, int> &a,
+                              const std::pair<unsigned short, int> &b) {
+                      int ar, ag, ab; unpack15(a.first, ar, ag, ab);
+                      int br, bg, bb; unpack15(b.first, br, bg, bb);
+                      int av = (best_axis == 0) ? ar : (best_axis == 1) ? ag : ab;
+                      int bv = (best_axis == 0) ? br : (best_axis == 1) ? bg : bb;
+                      return av < bv;
+                  });
+
+        /* Split at the pixel-weighted median, so both halves hold roughly
+           half the pixel count rather than half the unique colors. */
+        int half = src.pixel_count / 2;
+        int acc  = 0;
+        size_t split = 0;
+        for (; split < src.entries.size() - 1; split++) {
+            acc += src.entries[split].second;
+            if (acc >= half) { split++; break; }
+        }
+        if (split == 0) split = 1;
+        if (split >= src.entries.size()) split = src.entries.size() - 1;
+
+        ColorBucket right;
+        right.entries.assign(src.entries.begin() + split, src.entries.end());
+        src.entries.erase(src.entries.begin() + split, src.entries.end());
+        recompute_bucket_bounds(src);
+        recompute_bucket_bounds(right);
+        buckets.push_back(std::move(right));
+    }
+
+    /* Step 4: compute representative color per bucket = pixel-weighted average
+       of its constituent colors, rounded to the nearest 5-bit value. */
+    int pal_colors = (int)buckets.size();
+    struct PalRGB5 { unsigned char r, g, b; };
+    PalRGB5 pcolors[256] = {};
+    for (int i = 0; i < pal_colors; i++) {
+        long long rs = 0, gs = 0, bs = 0, ws = 0;
+        for (auto &e : buckets[i].entries) {
+            int r, g, b; unpack15(e.first, r, g, b);
+            rs += (long long)r * e.second;
+            gs += (long long)g * e.second;
+            bs += (long long)b * e.second;
+            ws += e.second;
+        }
+        if (ws == 0) ws = 1;
+        pcolors[i + 1].r = (unsigned char)((rs + ws / 2) / ws);
+        pcolors[i + 1].g = (unsigned char)((gs + ws / 2) / ws);
+        pcolors[i + 1].b = (unsigned char)((bs + ws / 2) / ws);
+    }
+
+    /* Step 5: allocate the new palette (index 0 = transparent black). */
     PAL *pal = AllocPal();
     if (!pal) { stbi_image_free(data); return; }
-    pal->flags = 0; pal->bitspix = 8; pal->numc = (unsigned short)(pal_colors + 1);
-    pal->data_p = PoolAlloc((unsigned int)(pal_colors + 1) * 2);
+    pal->flags   = 0;
+    pal->bitspix = 8;
+    pal->numc    = (unsigned short)(pal_colors + 1);
+    pal->data_p  = PoolAlloc((unsigned int)(pal_colors + 1) * 2);
     if (!pal->data_p) { stbi_image_free(data); return; }
-    ((unsigned char *)pal->data_p)[0] = 0; ((unsigned char *)pal->data_p)[1] = 0;
-    for (int i = 0; i < pal_colors; i++) {
-        unsigned int rgb = hist[i].rgb;
-        unsigned short w15 = (unsigned short)((((rgb >> 7) & 0x1F) << 10) | (((rgb >> 2) & 0x1F) << 5) | (rgb & 0x1F));
-        ((unsigned char *)pal->data_p)[(i + 1) * 2] = (unsigned char)(w15 & 0xFF);
-        ((unsigned char *)pal->data_p)[(i + 1) * 2 + 1] = (unsigned char)(w15 >> 8);
-        hist[i].idx = (unsigned char)(i + 1);
+    unsigned char *pal_bytes = (unsigned char *)pal->data_p;
+    pal_bytes[0] = 0; pal_bytes[1] = 0;
+    for (int i = 1; i <= pal_colors; i++) {
+        unsigned short w15 = (unsigned short)(((pcolors[i].r & 0x1F) << 10) |
+                                              ((pcolors[i].g & 0x1F) <<  5) |
+                                              ( pcolors[i].b & 0x1F));
+        pal_bytes[i * 2]     = (unsigned char)(w15 & 0xFF);
+        pal_bytes[i * 2 + 1] = (unsigned char)(w15 >> 8);
     }
 
+    /* Step 6: allocate the new image. */
     IMG *img = AllocImg();
     if (!img) { stbi_image_free(data); return; }
     img->w = (unsigned short)w; img->h = (unsigned short)h;
@@ -1974,20 +2125,44 @@ void ImportPng(const char *path)
     char *dot = strrchr(img->n_s, '.'); if (dot) *dot = '\0';
     strncpy(pal->n_s, img->n_s, 8); pal->n_s[8] = 'P'; pal->n_s[9] = '\0';
 
+    /* Step 7: map every opaque pixel to the nearest palette entry.
+       To avoid the O(w*h*pal) hot loop, cache the lookup per unique 15-bit
+       color so each color is only matched against the palette once. */
+    static unsigned char color_to_idx[32768];
+    static bool          color_resolved[32768];
+    memset(color_resolved, 0, sizeof(color_resolved));
+
+    unsigned char *out = (unsigned char *)img->data_p;
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             unsigned char *p = data + (y * w + x) * 4;
             if (p[3] < 128) continue;
-            unsigned int rgb = ((unsigned int)(p[0] & 0xF8) << 7) | ((unsigned int)(p[1] & 0xF8) << 2) | ((unsigned int)(p[2] >> 3));
-            for (int j = 0; j < pal_colors; j++) {
-                if (hist[j].rgb == rgb) { ((unsigned char *)img->data_p)[y * stride + x] = hist[j].idx; break; }
+            int r5 = p[0] >> 3, g5 = p[1] >> 3, b5 = p[2] >> 3;
+            unsigned short c = (unsigned short)((r5 << 10) | (g5 << 5) | b5);
+            unsigned char idx;
+            if (color_resolved[c]) {
+                idx = color_to_idx[c];
+            } else {
+                int best_idx = 1, best_dist = INT_MAX;
+                for (int j = 1; j <= pal_colors; j++) {
+                    int dr = r5 - pcolors[j].r;
+                    int dg = g5 - pcolors[j].g;
+                    int db = b5 - pcolors[j].b;
+                    int dist = dr*dr + dg*dg + db*db;
+                    if (dist < best_dist) { best_dist = dist; best_idx = j; }
+                }
+                idx = (unsigned char)best_idx;
+                color_to_idx[c] = idx;
+                color_resolved[c] = true;
             }
+            out[y * stride + x] = idx;
         }
     }
     stbi_image_free(data);
     if (imgcnt > 0) ilselected = (int)imgcnt - 1;
     g_img_tex_idx = -2;
-    verbose_log("  -> %dx%d px, %d palette colors", w, h, pal_colors);
+    verbose_log("  -> %dx%d px, %d palette colors from %d unique source colors",
+                w, h, pal_colors, (int)buckets.size());
 }
 
 void ImportPngMatch(const char *path)
