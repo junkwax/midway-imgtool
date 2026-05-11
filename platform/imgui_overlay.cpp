@@ -149,7 +149,7 @@ static int            g_pixel_undo_img = -1;  /* -2 = never built */
 static const float TOOLBAR_W   = 40.0f;
 static const float PANEL_W     = 280.0f;
 static const float PALETTE_H   = 78.0f;
-static const float TIMELINE_H  = 64.0f;
+static const float TIMELINE_H  = 96.0f;
 
 /* ---- Undo system ---- */
 #define UNDO_STACK_SIZE 32
@@ -263,8 +263,7 @@ static std::vector<TimelineThumb> g_thumb_cache;
 static TimelineThumb *EnsureThumb(int idx)
 {
     if (idx < 0 || (unsigned int)idx >= imgcnt) return NULL;
-    if ((int)g_thumb_cache.size() <= idx) g_thumb_cache.resize(imgcnt, {NULL,0,0,0,0,-1});
-    if ((int)g_thumb_cache.size() < (int)imgcnt) g_thumb_cache.resize(imgcnt, {NULL,0,0,0,0,-1});
+    if (g_thumb_cache.size() < imgcnt) g_thumb_cache.resize(imgcnt, {NULL,0,0,0,0,-1});
     IMG *img = get_img(idx);
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return NULL;
     TimelineThumb &t = g_thumb_cache[idx];
@@ -299,20 +298,19 @@ static TimelineThumb *EnsureThumb(int idx)
         for (int x = 0; x < tw; x++) {
             int sx_i = (int)((float)x * img->w / tw);
             unsigned char ci = sp[sy * src_stride + sx_i];
-            Uint32 r=180, g=180, b=180, a=0;
+            Uint32 r=180, g=180, b=180, a=255;
             if (ci == 0) {
-                /* Checker pattern through transparency so transparent thumbs
-                   don't look like black blobs. */
-                a = 255;
-                r = g = b = ((x >> 2) + (y >> 2)) & 1 ? 96 : 64;
+                /* Transparent — leaves the timeline strip / onion-skin host
+                   background showing through. Required for the onion-skin
+                   path which composites the thumb over the canvas. */
+                a = 0; r = g = b = 0;
             } else if (pd) {
                 unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
                 r = (((w15 >> 10) & 0x1F) << 3);
                 g = (((w15 >>  5) & 0x1F) << 3);
                 b = (( w15        & 0x1F) << 3);
-                a = 255;
             } else {
-                r = g = b = 200; a = 255;
+                r = g = b = 200;
             }
             dst[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
         }
@@ -3651,6 +3649,14 @@ void imgui_overlay_render(void)
         g_clone_offset_set = false;
         g_remap_target_color = -1;
         g_snap_bbox.valid = false;
+        /* Abort any in-progress freehand selection — its coords are in the
+           previous image's pixel space and continuing the drag would mix
+           coordinates across sprites. */
+        g_lasso_points.clear();
+        if (g_grid_sel.dragging) {
+            g_grid_sel.dragging = false;
+            g_grid_sel.active = false;
+        }
         g_prev_ilselected = ilselected;
     }
 
