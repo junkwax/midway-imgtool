@@ -14,8 +14,9 @@ permissions:
   contents: write
 
 # A tag push (refs/tags/v*) becomes a Release with all four artifacts attached
-# (Windows x64 zip, Windows x86 zip, Linux x64 tar.gz, macOS DMG). Branch pushes
-# build the same artifacts but only upload them as workflow CI artifacts.
+# (Windows x64 zip, Windows x86 zip, Linux x64 tar.gz, macOS DMG). The Release
+# body is extracted from the matching CHANGELOG.md section. Branch pushes build
+# the same artifacts but only upload them as workflow CI artifacts.
 #
 # To cut a release:
 #   git tag -a v2.1.0 -m "..." && git push origin v2.1.0
@@ -63,6 +64,8 @@ jobs:
           Copy-Item "build/Release/imgtool.exe" $dist
           Copy-Item "build/Release/SDL2.dll"   $dist
           Copy-Item "build/Release/it.hlp"     $dist -ErrorAction SilentlyContinue
+          Copy-Item "README.md"                $dist -ErrorAction SilentlyContinue
+          Copy-Item "CHANGELOG.md"             $dist -ErrorAction SilentlyContinue
           if (Test-Path "build/Release/assets") {
             Copy-Item -Recurse "build/Release/assets" $dist
           }
@@ -76,12 +79,40 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_PATH }}
 
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $header = "^## \[$([regex]::Escape($tag))\](?:\s|$)"
+          $lines = Get-Content "CHANGELOG.md"
+          $start = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match $header) {
+              $start = $i
+              break
+            }
+          }
+          if ($start -lt 0) {
+            "Release notes for $tag were not found in CHANGELOG.md." | Set-Content "RELEASE_NOTES.md" -Encoding utf8
+            exit 0
+          }
+          $body = New-Object System.Collections.Generic.List[string]
+          for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "^## \[") { break }
+            $body.Add($lines[$i])
+          }
+          while ($body.Count -gt 0 -and [string]::IsNullOrWhiteSpace($body[0])) {
+            $body.RemoveAt(0)
+          }
+          $body | Set-Content "RELEASE_NOTES.md" -Encoding utf8
+
       - name: Attach to Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: ${{ env.ZIP_PATH }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
 
   build-linux:
@@ -103,6 +134,8 @@ jobs:
           DIST="dist/imgtool-linux-x64"
           mkdir -p "$DIST"
           cp build/imgtool "$DIST/"
+          [ -f README.md ] && cp README.md "$DIST/"
+          [ -f CHANGELOG.md ] && cp CHANGELOG.md "$DIST/"
           if [ -d "build/assets" ]; then cp -R build/assets "$DIST/"; fi
           tar -C dist -czvf "dist/imgtool-linux-x64.tar.gz" "imgtool-linux-x64"
           echo "TAR_PATH=dist/imgtool-linux-x64.tar.gz" >> $GITHUB_ENV
@@ -113,12 +146,40 @@ jobs:
           name: imgtool-linux-x64
           path: ${{ env.TAR_PATH }}
 
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $header = "^## \[$([regex]::Escape($tag))\](?:\s|$)"
+          $lines = Get-Content "CHANGELOG.md"
+          $start = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match $header) {
+              $start = $i
+              break
+            }
+          }
+          if ($start -lt 0) {
+            "Release notes for $tag were not found in CHANGELOG.md." | Set-Content "RELEASE_NOTES.md" -Encoding utf8
+            exit 0
+          }
+          $body = New-Object System.Collections.Generic.List[string]
+          for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "^## \[") { break }
+            $body.Add($lines[$i])
+          }
+          while ($body.Count -gt 0 -and [string]::IsNullOrWhiteSpace($body[0])) {
+            $body.RemoveAt(0)
+          }
+          $body | Set-Content "RELEASE_NOTES.md" -Encoding utf8
+
       - name: Attach to Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: ${{ env.TAR_PATH }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
 
   build-macos:
@@ -205,6 +266,8 @@ jobs:
           DMG_DIR="build/dmg"
           mkdir -p "$DMG_DIR"
           cp -R "build/ImgTool.app" "$DMG_DIR/"
+          [ -f README.md ] && cp README.md "$DMG_DIR/"
+          [ -f CHANGELOG.md ] && cp CHANGELOG.md "$DMG_DIR/"
           ln -s /Applications "$DMG_DIR/Applications"
           hdiutil create -volname "ImgTool" -srcfolder "$DMG_DIR" -ov -format UDZO "build/ImgTool.dmg"
 
@@ -214,10 +277,38 @@ jobs:
           name: imgtool-macos
           path: build/ImgTool.dmg
 
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $header = "^## \[$([regex]::Escape($tag))\](?:\s|$)"
+          $lines = Get-Content "CHANGELOG.md"
+          $start = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match $header) {
+              $start = $i
+              break
+            }
+          }
+          if ($start -lt 0) {
+            "Release notes for $tag were not found in CHANGELOG.md." | Set-Content "RELEASE_NOTES.md" -Encoding utf8
+            exit 0
+          }
+          $body = New-Object System.Collections.Generic.List[string]
+          for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "^## \[") { break }
+            $body.Add($lines[$i])
+          }
+          while ($body.Count -gt 0 -and [string]::IsNullOrWhiteSpace($body[0])) {
+            $body.RemoveAt(0)
+          }
+          $body | Set-Content "RELEASE_NOTES.md" -Encoding utf8
+
       - name: Attach to Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: build/ImgTool.dmg
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
