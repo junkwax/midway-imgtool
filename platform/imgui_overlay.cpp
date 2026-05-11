@@ -3713,6 +3713,11 @@ void imgui_overlay_render(void)
             g_grid_sel.dragging = false;
             g_grid_sel.active = false;
         }
+        /* Drop multi-swatch selection too. Even if the new image shares a
+           palette with the old one, users perceive image-switch as a
+           fresh context and a stale yellow border on swatches is
+           confusing. They can Ctrl/Shift-click to rebuild it. */
+        memset(g_palette_selection, 0, sizeof(g_palette_selection));
         g_prev_ilselected = ilselected;
     }
 
@@ -4083,6 +4088,25 @@ void imgui_overlay_render(void)
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
+        /* Right-aligned dirty / filename indicator. Gives users a passive
+           reminder that there are unsaved changes — without this, the only
+           "this file is modified" signal is the quit-time confirmation. */
+        {
+            const char *name = (fname_s[0] != '\0') ? fname_s : "(unsaved)";
+            char label[80];
+            snprintf(label, sizeof(label), "%s%s",
+                     g_dirty ? "\xE2\x97\x8F " : "  ",     /* ● bullet when dirty */
+                     name);
+            float text_w = ImGui::CalcTextSize(label).x + 16.0f;
+            float avail_w = ImGui::GetContentRegionAvail().x;
+            if (avail_w > text_w) ImGui::SameLine(ImGui::GetCursorPosX() + (avail_w - text_w));
+            if (g_dirty) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.2f, 1.0f));
+            ImGui::TextUnformatted(label);
+            if (g_dirty) ImGui::PopStyleColor();
+            if (g_dirty && ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Unsaved changes — Ctrl+S to save");
+            }
+        }
         ImGui::PopStyleVar(2);
         ImGui::EndMainMenuBar();
     }
@@ -4114,6 +4138,10 @@ void imgui_overlay_render(void)
         g_sat_last   = 0;
         g_light_slider = 0;
         g_light_last   = 0;
+        /* Clear multi-select on palette change. Indexes from the previous
+           palette don't map cleanly to the new one (different colors at the
+           same index), so persisting the selection is misleading. */
+        memset(g_palette_selection, 0, sizeof(g_palette_selection));
         save_palette_baseline();
     }
 
@@ -5949,12 +5977,19 @@ void imgui_overlay_render(void)
             ImVec2 p1(p0.x + sw16, p0.y + sh16);
             SDL_Color c = g_palette[i];
             dl->AddRectFilled(p0, p1, IM_COL32(c.r, c.g, c.b, 255));
+            /* Borders: the swatch can have multiple states at once
+               (e.g. it's the current color AND in the multi-selection).
+               Draw them as concentric rings so each is visible. */
             if (i == g_sel_color)
                 dl->AddRect(p0, p1, IM_COL32(255,255,255,255), 0, 0, 1.5f);
-            else if (g_palette_selection[i])
-                dl->AddRect(p0, p1, IM_COL32(255,255,0,255), 0, 0, 1.5f);
             else if (i == 0)
                 dl->AddRect(p0, p1, IM_COL32(80,80,80,120), 0, 0, 0.5f);
+            if (g_palette_selection[i]) {
+                /* Inset yellow ring so it coexists with the white current-color ring. */
+                dl->AddRect(ImVec2(p0.x + 2, p0.y + 2),
+                            ImVec2(p1.x - 2, p1.y - 2),
+                            IM_COL32(255, 255, 0, 255), 0, 0, 1.5f);
+            }
 
             /* Isolation badge */
             if (g_isolate_color == i) {
@@ -5964,19 +5999,26 @@ void imgui_overlay_render(void)
             ImGui::SetCursorScreenPos(p0);
             ImGui::InvisibleButton(("##sw" + std::to_string(i)).c_str(), ImVec2(sw16, sh16));
             if (ImGui::IsItemClicked()) {
-                if (ImGui::GetIO().KeyAlt) {
+                ImGuiIO &cio = ImGui::GetIO();
+                if (cio.KeyAlt) {
                     /* Alt-click: toggle color isolation on this index */
                     g_isolate_color = (g_isolate_color == i) ? -1 : i;
-                } else if (ImGui::GetIO().KeyCtrl) {
+                } else if (cio.KeyCtrl) {
+                    /* Ctrl-click: toggle this swatch's membership in the
+                       multi-selection. Doesn't move g_sel_color — Photoshop
+                       convention — so the active color stays put and the
+                       toggle's yellow ring change is visible against an
+                       unchanged white ring (or its absence). */
                     g_palette_selection[i] = !g_palette_selection[i];
-                } else if (ImGui::GetIO().KeyShift) {
+                } else if (cio.KeyShift) {
                     int start = g_sel_color < i ? g_sel_color : i;
                     int end = g_sel_color < i ? i : g_sel_color;
                     for (int j = start; j <= end; j++) g_palette_selection[j] = true;
+                    g_sel_color = i;
                 } else {
                     memset(g_palette_selection, 0, sizeof(g_palette_selection));
+                    g_sel_color = i;
                 }
-                if (!ImGui::GetIO().KeyAlt) g_sel_color = i;
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::BeginTooltip();
