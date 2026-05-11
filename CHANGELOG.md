@@ -8,7 +8,62 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
-## [v2.3.0] — Adobe-feature toolkit
+## [v2.4.0] — PNG import rewrite & palette workflow
+
+Targeted fixes to the parts of the tool that were silently destructive or
+silently lossy. The headline: PNG import is no longer broken.
+
+### PNG import
+- **Median-cut quantization** in 15-bit RGB space. Previously the import
+  capped the unique-color histogram at 4096 entries and picked the
+  palette by raw frequency, with exact-match-only pixel mapping. Any PNG
+  with anti-aliasing or smooth gradients lost most of its colors to
+  index 0 (transparent). Now: full histogram across all 32768 possible
+  15-bit colors, pixel-weighted bucket splits on the widest channel,
+  and every opaque pixel maps to the nearest palette entry by Euclidean
+  RGB distance. The per-source-color lookup is cached so megapixel PNGs
+  stay fast.
+- **Import (Match to Active Palette)** is now actually wired up. The
+  function existed but had no dispatch — the menu item did nothing.
+  Now imports a PNG and maps every pixel into the currently-selected
+  image's palette, no new palette created.
+
+### Palette workflow
+- **Cross-file palette clipboard.** Copy / Paste buttons next to
+  Add/Merge/Dup/Del. The clipboard is malloc-backed (not pool-backed)
+  so it survives File→Open — lift a palette out of one IMG and paste
+  it into another.
+- **Palette-list click now commits.** Clicking a palette in the list,
+  or Up/Down with palette-nav active, now writes the choice onto the
+  active sprite's `palnum`. Previously it was preview-only; switching
+  sprite snapped the selection back to the new sprite's palette,
+  making the click appear to "reset". Undoable, dirty-tracked.
+- **Reset → Reset HSL.** Renamed with a tooltip clarifying that the
+  button resets the three sliders and the palette baseline, not the
+  whole palette.
+
+### Unsaved-changes guard
+- **Confirm dialog now also fires on File→Open / Open Recent / Open LOD**
+  via a PendingAction queue. Previously palette / HSL edits could be
+  silently thrown away by reflex-opening another IMG. Quit-time
+  behavior is unchanged.
+- **Import paths now mark dirty.** Append / Load LBM / Load TGA /
+  Import PNG / Import PNG Match all previously left the dirty flag
+  alone, so freshly-imported work could disappear on the next
+  File→Open. Fixed.
+
+### UI polish
+- **Properties panel column alignment.** New `LabeledValue()` helper
+  renders label + value via `SameLine(col_x)` instead of hand-padded
+  format strings. Fixes the DMA ROM row that was drifting two columns
+  left of the others, and survives future label changes.
+
+### Internal
+- **`mark_dirty()` helper** replaces 25 scattered `g_dirty = true`
+  writes. Single entry point for future side-effects (auto-backup
+  hook, dirty-bit tracing, etc).
+
+
 
 A large round of pixel-art tools and palette workflow. Highlights:
 
