@@ -249,6 +249,8 @@ struct PastedImage {
     bool active;        /* paste is active and can be moved */
     int paste_x, paste_y;  /* top-left corner where paste will go */
     bool dragging;      /* user is dragging the paste boundary */
+    float drag_start_mx, drag_start_my;
+    int drag_start_px, drag_start_py;
 };
 static PastedImage g_pasted = {false};
 
@@ -4259,13 +4261,53 @@ void imgui_overlay_render(void)
 
                 if (!canvas_input_blocked) {
                     /* Start drag: click inside paste rect */
-                    if (hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    if (hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         g_pasted.dragging = true;
+                        g_pasted.drag_start_mx = mouse.x;
+                        g_pasted.drag_start_my = mouse.y;
+                        g_pasted.drag_start_px = g_pasted.paste_x;
+                        g_pasted.drag_start_py = g_pasted.paste_y;
+                    }
 
                     /* Drag to move */
                     if (g_pasted.dragging && mbdn) {
-                        int nx = (int)((mouse.x - img_pos.x) / sx);
-                        int ny = (int)((mouse.y - img_pos.y) / sy);
+                        int dx = (int)((mouse.x - g_pasted.drag_start_mx) / sx);
+                        int dy = (int)((mouse.y - g_pasted.drag_start_my) / sy);
+                        int nx = g_pasted.drag_start_px + dx;
+                        int ny = g_pasted.drag_start_py + dy;
+
+                        if (ImGui::GetIO().KeyShift && ilselected >= 0) {
+                            IMG *cimg = get_img(ilselected);
+                            if (cimg && cimg->data_p) {
+                                int min_x = cimg->w, min_y = cimg->h, max_x = 0, max_y = 0;
+                                unsigned short cw = (cimg->w + 3) & ~3;
+                                bool found = false;
+                                unsigned char *dp = (unsigned char *)cimg->data_p;
+                                for (int y = 0; y < cimg->h; y++) {
+                                    for (int x = 0; x < cimg->w; x++) {
+                                        if (dp[y * cw + x] != 0) {
+                                            if (x < min_x) min_x = x;
+                                            if (x > max_x) max_x = x;
+                                            if (y < min_y) min_y = y;
+                                            if (y > max_y) max_y = y;
+                                            found = true;
+                                        }
+                                    }
+                                }
+                                if (found) {
+                                    if (abs(nx - min_x) < 5) nx = min_x;
+                                    else if (abs((nx + pw) - (max_x + 1)) < 5) nx = (max_x + 1) - pw;
+                                    else if (abs(nx - (max_x + 1)) < 5) nx = max_x + 1;
+                                    else if (abs((nx + pw) - min_x) < 5) nx = min_x - pw;
+
+                                    if (abs(ny - min_y) < 5) ny = min_y;
+                                    else if (abs((ny + ph) - (max_y + 1)) < 5) ny = (max_y + 1) - ph;
+                                    else if (abs(ny - (max_y + 1)) < 5) ny = max_y + 1;
+                                    else if (abs((ny + ph) - min_y) < 5) ny = min_y - ph;
+                                }
+                            }
+                        }
+
                         if (nx < 0) nx = 0;
                         if (ny < 0) ny = 0;
                         if (nx + pw > (int)g_img_tex_w) nx = g_img_tex_w - pw;
@@ -4296,18 +4338,54 @@ void imgui_overlay_render(void)
     static bool  g_is_playing = false;
     static float g_play_speed = 12.0f; /* fps */
     static float g_play_timer = 0.0f;
-    static int   g_anim_start = 0;
-    static int   g_anim_end   = 0;
+    static std::vector<int> g_timeline_frames;
+    static int   g_timeline_play_idx = 0;
+    static unsigned int g_timeline_built_for_imgcnt = 0;
 
-    if (g_is_playing) {
+    /* Drop stale frame indices if the underlying image set shrank or was reloaded */
+    if (imgcnt != g_timeline_built_for_imgcnt) {
+        g_timeline_frames.erase(
+            std::remove_if(g_timeline_frames.begin(), g_timeline_frames.end(),
+                [](int idx){ return idx < 0 || (unsigned int)idx >= imgcnt; }),
+            g_timeline_frames.end());
+        g_timeline_built_for_imgcnt = imgcnt;
+    }
+
+    /* Build default timeline if empty (fresh file, or after Reset Sequence) */
+    if (g_timeline_frames.empty() && imgcnt > 0) {
+        for (unsigned int i = 0; i < imgcnt; i++) {
+            IMG *p = get_img(i);
+            if (p && (p->flags & 1)) g_timeline_frames.push_back(i);
+        }
+        if (g_timeline_frames.empty()) {
+            for (unsigned int i = 0; i < imgcnt; i++) g_timeline_frames.push_back(i);
+        }
+    }
+
+    if (g_timeline_play_idx >= (int)g_timeline_frames.size())
+        g_timeline_play_idx = 0;
+    
+    /* Playback logic */
+    if (g_is_playing && !g_timeline_frames.empty()) {
         g_play_timer += ImGui::GetIO().DeltaTime;
         if (g_play_timer >= 1.0f / g_play_speed) {
             g_play_timer = 0.0f;
-            ilselected++;
-            if (ilselected > g_anim_end || ilselected >= imgcnt) {
-                ilselected = g_anim_start;
+            g_timeline_play_idx++;
+            if (g_timeline_play_idx >= (int)g_timeline_frames.size()) {
+                g_timeline_play_idx = 0;
             }
+            ilselected = g_timeline_frames[g_timeline_play_idx];
             g_zoom_reset = true;
+        }
+    } else if (!g_is_playing && !g_timeline_frames.empty()) {
+        /* Sync play_idx with manual selection if possible */
+        if (ilselected != g_timeline_frames[g_timeline_play_idx]) {
+            for (size_t i = 0; i < g_timeline_frames.size(); i++) {
+                if (g_timeline_frames[i] == ilselected) {
+                    g_timeline_play_idx = (int)i;
+                    break;
+                }
+            }
         }
     }
 
@@ -4329,18 +4407,11 @@ void imgui_overlay_render(void)
             }
         } else {
             if (ImGui::Button("\xEE\x80\xB7 Play", ImVec2(80, 0))) { /* U+E037 play_arrow */
-                if (!g_is_playing) {
-                    if (g_anim_end <= g_anim_start) {
-                        /* Auto-detect sequence: all marked images, or all images in file */
-                        g_anim_start = 0;
-                        g_anim_end = imgcnt > 0 ? imgcnt - 1 : 0;
-                    }
-                    if (ilselected < g_anim_start || ilselected > g_anim_end) {
-                        ilselected = g_anim_start;
-                        g_zoom_reset = true;
-                    }
+                if (!g_is_playing && !g_timeline_frames.empty()) {
                     g_play_timer = 0.0f;
                     g_is_playing = true;
+                    ilselected = g_timeline_frames[g_timeline_play_idx];
+                    g_zoom_reset = true;
                 }
             }
         }
@@ -4348,41 +4419,67 @@ void imgui_overlay_render(void)
         ImGui::PushItemWidth(120);
         ImGui::SliderFloat("FPS", &g_play_speed, 1.0f, 60.0f, "%.1f");
         ImGui::PopItemWidth();
-        ImGui::SameLine();
-        ImGui::PushItemWidth(100);
-        ImGui::InputInt("Start", &g_anim_start);
-        ImGui::SameLine();
-        ImGui::InputInt("End", &g_anim_end);
-        ImGui::PopItemWidth();
-
-        /* Draw a mini scrubber bar */
-        ImGui::Dummy(ImVec2(0, 4));
-        ImVec2 scr_p0 = ImGui::GetCursorScreenPos();
-        float  scr_w  = ImGui::GetContentRegionAvail().x;
-        float  scr_h  = 16.0f;
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(scr_p0, ImVec2(scr_p0.x + scr_w, scr_p0.y + scr_h), IM_COL32(40,40,40,255), 4.0f);
         
-        int range = g_anim_end - g_anim_start;
-        if (range > 0 && imgcnt > 0) {
-            float handle_w = scr_w / (range + 1);
-            float handle_x = scr_p0.x + (ilselected - g_anim_start) * handle_w;
-            dl->AddRectFilled(ImVec2(handle_x, scr_p0.y), ImVec2(handle_x + handle_w, scr_p0.y + scr_h), IM_COL32(100,150,200,255), 4.0f);
-            
-            /* Allow clicking on scrubber to jump */
-            ImGui::InvisibleButton("##scrubber", ImVec2(scr_w, scr_h));
-            if (ImGui::IsItemActive() && ImGui::IsMouseDown(0)) {
-                float mx = ImGui::GetMousePos().x - scr_p0.x;
-                int frame = (int)((mx / scr_w) * (range + 1));
-                if (frame < 0) frame = 0;
-                if (frame > range) frame = range;
-                int tgt = g_anim_start + frame;
-                if (tgt != ilselected && tgt >= 0 && tgt < imgcnt) {
-                    ilselected = tgt;
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Sequence")) {
+            g_timeline_frames.clear();
+        }
+
+        /* Draw a horizontal scrolling list of frames with drag & drop */
+        ImGui::Dummy(ImVec2(0, 4));
+        float scr_w = ImGui::GetContentRegionAvail().x;
+        float scr_h = ImGui::GetContentRegionAvail().y;
+        
+        ImGui::BeginChild("TimelineScrubber", ImVec2(scr_w, scr_h), false, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoBackground);
+        if (!g_timeline_frames.empty()) {
+            for (size_t i = 0; i < g_timeline_frames.size(); i++) {
+                if (i > 0) ImGui::SameLine(0, 4.0f);
+                ImGui::PushID((int)i);
+                
+                int img_idx = g_timeline_frames[i];
+                char label[32];
+                snprintf(label, sizeof(label), "%d", img_idx);
+                
+                bool is_current = (int)i == g_timeline_play_idx;
+                if (is_current) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.8f, 1.0f));
+                }
+                
+                if (ImGui::Button(label, ImVec2(32, 24))) {
+                    g_timeline_play_idx = (int)i;
+                    ilselected = img_idx;
                     g_zoom_reset = true;
                 }
+                
+                if (is_current) {
+                    ImGui::PopStyleColor();
+                }
+                
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                    int payload_idx = (int)i;
+                    ImGui::SetDragDropPayload("TIMELINE_FRAME", &payload_idx, sizeof(int));
+                    ImGui::Text("Move frame %d", img_idx);
+                    ImGui::EndDragDropSource();
+                }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TIMELINE_FRAME")) {
+                        int src_idx = *(const int*)payload->Data;
+                        int dst_idx = (int)i;
+                        if (src_idx != dst_idx) {
+                            int val = g_timeline_frames[src_idx];
+                            g_timeline_frames.erase(g_timeline_frames.begin() + src_idx);
+                            g_timeline_frames.insert(g_timeline_frames.begin() + dst_idx, val);
+                            if (g_timeline_play_idx == src_idx) g_timeline_play_idx = dst_idx;
+                            else if (src_idx < g_timeline_play_idx && dst_idx >= g_timeline_play_idx) g_timeline_play_idx--;
+                            else if (src_idx > g_timeline_play_idx && dst_idx <= g_timeline_play_idx) g_timeline_play_idx++;
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                ImGui::PopID();
             }
         }
+        ImGui::EndChild();
     }
     ImGui::End();
     ImGui::PopStyleVar();
