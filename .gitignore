@@ -33,3 +33,5 @@ Thumbs.db
 
 # AI assistants local config
 .claude/
+AGENTS.md
+ADOBE_FEATURES*.md
