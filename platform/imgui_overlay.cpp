@@ -696,6 +696,23 @@ static void SetPaletteOfSelected(void)
     g_img_tex_idx = -2;
 }
 
+/* Select a palette in the palette list, and commit it onto the active image
+   so the choice sticks when the user switches sprites. Without the commit,
+   plselected was only a preview — moving to another sprite would overwrite
+   it from img->palnum. No-ops when the image already uses this palette to
+   keep the undo stack clean. */
+static void SelectPalette(int idx)
+{
+    if (idx < 0 || (unsigned)idx >= palcnt) return;
+    plselected   = idx;
+    g_palette_nav = true;
+    IMG *cur = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (cur && cur->palnum != (unsigned short)idx) {
+        SetPaletteOfSelected();
+        mark_dirty();
+    }
+}
+
 /* Assign the currently-selected palette to every marked image. */
 static void SetPaletteOfMarked(void)
 {
@@ -3981,11 +3998,11 @@ void imgui_overlay_render(void)
      * was last clicked), matching DOS imgtool muscle memory. */
     if (g_palette_nav && palcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
-            plselected = (plselected + 1) % (int)palcnt;
+            SelectPalette((plselected + 1) % (int)palcnt);
             g_zoom_reset = true;
         }
         if (ImGui::Shortcut(ImGuiKey_UpArrow, route)) {
-            plselected = (plselected <= 0) ? (int)palcnt - 1 : plselected - 1;
+            SelectPalette((plselected <= 0) ? (int)palcnt - 1 : plselected - 1);
             g_zoom_reset = true;
         }
     } else if (imgcnt > 0) {
@@ -4635,8 +4652,7 @@ void imgui_overlay_render(void)
                     
                     if (sel) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
                     if (ImGui::Selectable(label, sel)) {
-                        plselected = i;
-                        g_palette_nav = true;
+                        SelectPalette(i);
                     }
                     if (sel) ImGui::PopStyleColor();
 
