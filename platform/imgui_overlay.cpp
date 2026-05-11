@@ -239,10 +239,146 @@ static int  g_clone_dy = 0;
 
 /* Smart Remap state */
 static int g_remap_target_color = -1;
+static int g_remap_tolerance = 0;       /* 0..16, palette-index distance */
 
-/* Lasso state */
-static int g_lasso_last_x = 0;
-static int g_lasso_last_y = 0;
+/* Color isolation view: when set to a palette index >=0, the canvas dims
+   every pixel that isn't that index so the user can see exactly where a
+   particular color lives in the sprite. -1 = isolation off. */
+static int g_isolate_color = -1;
+
+/* Per-image thumbnail cache for the timeline strip. Keyed by image index; the
+   cached texture is invalidated whenever imgcnt or the source pixels change
+   (we tag with a small generation counter bumped each frame by the texture
+   rebuild path). Thumbnails fit in a 48-pixel square preserving aspect. */
+struct TimelineThumb {
+    SDL_Texture *tex;
+    int w, h;       /* thumbnail texture dims */
+    int src_w, src_h; /* source image dims at time of bake */
+    int gen;        /* matches g_img_tex_idx at bake time */
+};
+static std::vector<TimelineThumb> g_thumb_cache;
+
+/* Build (or rebuild) thumbnail for image idx. Returns the entry pointer or
+   NULL on failure. */
+static TimelineThumb *EnsureThumb(int idx)
+{
+    if (idx < 0 || (unsigned int)idx >= imgcnt) return NULL;
+    if ((int)g_thumb_cache.size() <= idx) g_thumb_cache.resize(imgcnt, {NULL,0,0,0,0,-1});
+    if ((int)g_thumb_cache.size() < (int)imgcnt) g_thumb_cache.resize(imgcnt, {NULL,0,0,0,0,-1});
+    IMG *img = get_img(idx);
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return NULL;
+    TimelineThumb &t = g_thumb_cache[idx];
+    /* Reuse if source dims and pixels haven't changed since bake (cheap proxy:
+       same src dims, same gen). */
+    if (t.tex && t.src_w == (int)img->w && t.src_h == (int)img->h) return &t;
+
+    const int MAX = 48;
+    float aspect = (float)img->w / (float)img->h;
+    int tw, th;
+    if (aspect >= 1.0f) { tw = MAX; th = (int)(MAX / aspect); if (th < 1) th = 1; }
+    else                { th = MAX; tw = (int)(MAX * aspect); if (tw < 1) tw = 1; }
+
+    if (t.tex) { SDL_DestroyTexture(t.tex); t.tex = NULL; }
+    t.tex = SDL_CreateTexture(g_imgui_renderer, SDL_PIXELFORMAT_ARGB8888,
+                              SDL_TEXTUREACCESS_STREAMING, tw, th);
+    if (!t.tex) return NULL;
+    SDL_SetTextureBlendMode(t.tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(t.tex, SDL_ScaleModeNearest);
+
+    void *pixels; int pitch;
+    if (SDL_LockTexture(t.tex, NULL, &pixels, &pitch) != 0) {
+        SDL_DestroyTexture(t.tex); t.tex = NULL; return NULL;
+    }
+    Uint32 *dst = (Uint32 *)pixels;
+    int src_stride = (img->w + 3) & ~3;
+    const unsigned char *sp = (const unsigned char *)img->data_p;
+    PAL *pal = get_pal(img->palnum);
+    const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
+    for (int y = 0; y < th; y++) {
+        int sy = (int)((float)y * img->h / th);
+        for (int x = 0; x < tw; x++) {
+            int sx_i = (int)((float)x * img->w / tw);
+            unsigned char ci = sp[sy * src_stride + sx_i];
+            Uint32 r=180, g=180, b=180, a=0;
+            if (ci == 0) {
+                /* Checker pattern through transparency so transparent thumbs
+                   don't look like black blobs. */
+                a = 255;
+                r = g = b = ((x >> 2) + (y >> 2)) & 1 ? 96 : 64;
+            } else if (pd) {
+                unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
+                r = (((w15 >> 10) & 0x1F) << 3);
+                g = (((w15 >>  5) & 0x1F) << 3);
+                b = (( w15        & 0x1F) << 3);
+                a = 255;
+            } else {
+                r = g = b = 200; a = 255;
+            }
+            dst[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+    SDL_UnlockTexture(t.tex);
+    t.w = tw; t.h = th;
+    t.src_w = img->w; t.src_h = img->h;
+    return &t;
+}
+
+static void InvalidateThumb(int idx)
+{
+    if (idx < 0 || (size_t)idx >= g_thumb_cache.size()) return;
+    if (g_thumb_cache[idx].tex) {
+        SDL_DestroyTexture(g_thumb_cache[idx].tex);
+        g_thumb_cache[idx].tex = NULL;
+    }
+}
+
+/* Timeline state (lifted to file scope so keyboard shortcuts and onion-skin
+   can address it). g_timeline_built_for_imgcnt drives stale-index pruning. */
+static bool             g_is_playing = false;
+static float            g_play_speed = 12.0f; /* fps */
+static float            g_play_timer = 0.0f;
+static std::vector<int> g_timeline_frames;
+static int              g_timeline_play_idx = 0;
+static unsigned int     g_timeline_built_for_imgcnt = 0;
+static bool             g_timeline_onion = false;  /* prev/next frame ghosting */
+
+void imgtool_toggle_timeline_play(void)
+{
+    if (g_timeline_frames.empty()) return;
+    g_is_playing = !g_is_playing;
+    if (g_is_playing) {
+        g_play_timer = 0.0f;
+        ilselected = g_timeline_frames[g_timeline_play_idx];
+        g_img_tex_idx = -2;
+    }
+}
+
+/* Magic Wand state */
+static int  g_wand_tolerance = 0;       /* 0..16, palette-index distance */
+static bool g_wand_contiguous = true;   /* false = select all matching pixels globally */
+
+/* Background Eraser ("Smart Eraser") state */
+static int  g_eraser_tolerance = 0;     /* 0..16, palette-index distance from clicked chroma */
+static bool g_eraser_contiguous = true; /* true = flood from click; false = global by color */
+static bool g_eraser_defringe = true;   /* if true, also nudges edge pixels next to erased area */
+
+/* Lasso state — freehand polygon being drawn this stroke */
+static std::vector<std::pair<int,int>> g_lasso_points;
+
+/* Clone Stamp brush */
+static int g_clone_brush = 1;           /* radius+1; 1 = single pixel, 3/5/7 = round brushes */
+
+/* Snap-to-content cached bbox (recomputed when Shift goes down on a paste drag) */
+struct SnapBBox {
+    bool valid;
+    int min_x, min_y, max_x, max_y;
+    int img_idx;        /* which image the bbox was computed from */
+};
+static SnapBBox g_snap_bbox = {false, 0,0,0,0, -1};
+static bool g_snap_hit_x = false;       /* set during drag when an X snap fires; for guide draw */
+static bool g_snap_hit_y = false;
+static int  g_snap_guide_x = 0;
+static int  g_snap_guide_y = 0;
 
 /* Pasted image placement (with move feedback) */
 struct PastedImage {
@@ -586,6 +722,115 @@ static void FloodFill(IMG *img, int sx, int sy, unsigned char new_color)
         stack.push_back({p.x + 1, p.y}); stack.push_back({p.x - 1, p.y});
         stack.push_back({p.x, p.y + 1}); stack.push_back({p.x, p.y - 1});
     }
+}
+
+/* Smart eraser: removes the clicked chroma color (and anything within
+   `tolerance` palette-index distance of it) by setting it to index 0
+   (transparency). In `contiguous` mode it floods from the click site; in
+   global mode every matching pixel in the image is wiped.
+   When `defringe` is set, after the chroma pass each transparent pixel
+   that touches a still-opaque pixel scans its 8-neighborhood and replaces
+   the opaque neighbor with the average of its own non-chroma neighbors —
+   this kills the 1-pixel blue-spill halo that survives digitized actor
+   bluescreen removal. */
+static void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous, bool defringe)
+{
+    if (!img || !img->data_p || sx < 0 || sy < 0 ||
+        sx >= (int)img->w || sy >= (int)img->h) return;
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *pix = (unsigned char *)img->data_p;
+    int target = pix[sy * stride + sx];
+    if (target == 0) return; /* clicked on existing transparent */
+
+    auto in_range = [&](unsigned char v) {
+        int d = (int)v - target;
+        if (d < 0) d = -d;
+        return d <= tolerance;
+    };
+
+    /* Mark which pixels we'll erase, so defringe can scan against the
+       original neighborhood before zeroing. */
+    std::vector<unsigned char> kill(w * h, 0);
+
+    if (contiguous) {
+        struct Pt { int x, y; };
+        std::vector<Pt> stack; stack.reserve(4096);
+        stack.push_back({sx, sy});
+        kill[sy * w + sx] = 1;
+        while (!stack.empty()) {
+            Pt p = stack.back(); stack.pop_back();
+            const int dx[] = {1, -1, 0, 0};
+            const int dy[] = {0, 0, 1, -1};
+            for (int i = 0; i < 4; i++) {
+                int nx = p.x + dx[i], ny = p.y + dy[i];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                if (kill[ny * w + nx]) continue;
+                if (!in_range(pix[ny * stride + nx])) continue;
+                kill[ny * w + nx] = 1;
+                stack.push_back({nx, ny});
+            }
+        }
+    } else {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (in_range(pix[y * stride + x]))
+                    kill[y * w + x] = 1;
+            }
+        }
+    }
+
+    /* Optionally compute defringe replacements before applying the kill. */
+    std::vector<std::pair<int,unsigned char>> defringe_writes;
+    if (defringe) {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (kill[y * w + x]) continue;
+                unsigned char self = pix[y * stride + x];
+                if (self == 0) continue;
+                /* Edge test: any 8-neighbor will be killed. */
+                bool touches = false;
+                for (int dy = -1; dy <= 1 && !touches; dy++) {
+                    for (int dx = -1; dx <= 1 && !touches; dx++) {
+                        if (!dx && !dy) continue;
+                        int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                        if (kill[ny * w + nx]) touches = true;
+                    }
+                }
+                if (!touches) continue;
+                /* Average palette indices of safe (non-killed, non-zero,
+                   not-itself-the-chroma) neighbors. This is a coarse proxy
+                   for picking the nearest "skin/fabric" color in the
+                   indexed palette — gives a much cleaner edge than just
+                   leaving the blue-spill pixel alone. */
+                int sum = 0, n = 0;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (!dx && !dy) continue;
+                        int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                        if (kill[ny * w + nx]) continue;
+                        unsigned char nv = pix[ny * stride + nx];
+                        if (nv == 0) continue;
+                        if (in_range(nv)) continue;
+                        sum += nv; n++;
+                    }
+                }
+                if (n > 0) {
+                    defringe_writes.push_back({y * stride + x, (unsigned char)(sum / n)});
+                }
+            }
+        }
+    }
+
+    /* Apply the kill, then the defringe overrides. */
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (kill[y * w + x]) pix[y * stride + x] = 0;
+        }
+    }
+    for (auto &w_ : defringe_writes) pix[w_.first] = w_.second;
 }
 
 /* Free all images, palettes, and sequence/script data.  Resets all counters
@@ -2730,6 +2975,18 @@ void imgui_overlay_render(void)
     float sw = io.DisplaySize.x;
     float sh = io.DisplaySize.y;
 
+    /* Reset transient per-image tool state when the selected image changes,
+       so e.g. a Clone Stamp source from sprite A doesn't get re-applied as
+       coords on sprite B (which could OOB-read or just paint garbage). */
+    static int g_prev_ilselected = -2;
+    if (ilselected != g_prev_ilselected) {
+        g_clone_source_set = false;
+        g_clone_offset_set = false;
+        g_remap_target_color = -1;
+        g_snap_bbox.valid = false;
+        g_prev_ilselected = ilselected;
+    }
+
     /* ---- Global keyboard shortcuts ---- */
     ImGuiInputFlags route = ImGuiInputFlags_RouteGlobal;
 
@@ -2775,6 +3032,12 @@ void imgui_overlay_render(void)
         else g_active_tool = ActiveTool::MagicWand;
         if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
     }
+    if (ImGui::Shortcut(ImGuiKey_L,  route)) {
+        if (g_active_tool == ActiveTool::Lasso) g_active_tool = ActiveTool::None;
+        else g_active_tool = ActiveTool::Lasso;
+        g_lasso_points.clear();
+        if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+    }
 
     /* Tool Intercepts */
     if (ImGui::Shortcut(ImGuiKey_Escape, route)) {
@@ -2788,6 +3051,23 @@ void imgui_overlay_render(void)
     /* Image Operations */
     if (ImGui::Shortcut(ImGuiKey_Space, route)) {
         IMG *img = get_img(ilselected); if (img) { img->flags ^= 1; g_dirty = true; }
+    }
+    /* Timeline play/pause (K = standard video editor convention). */
+    if (ImGui::Shortcut(ImGuiKey_K, route)) imgtool_toggle_timeline_play();
+    /* Ctrl+Left/Right nudges the play-head frame within the timeline order. */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, route)) {
+        if (g_timeline_play_idx > 0 && g_timeline_play_idx < (int)g_timeline_frames.size()) {
+            std::swap(g_timeline_frames[g_timeline_play_idx],
+                      g_timeline_frames[g_timeline_play_idx - 1]);
+            g_timeline_play_idx--;
+        }
+    }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, route)) {
+        if (g_timeline_play_idx + 1 < (int)g_timeline_frames.size()) {
+            std::swap(g_timeline_frames[g_timeline_play_idx],
+                      g_timeline_frames[g_timeline_play_idx + 1]);
+            g_timeline_play_idx++;
+        }
     }
     if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_M, route)) {
         IMG *p = (IMG*)img_p; while (p) { p->flags |= 1; p = (IMG*)p->nxt_p; }
@@ -2935,6 +3215,35 @@ void imgui_overlay_render(void)
         if (ImGui::BeginMenu("Operations")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Auto-Chop Sprite...")) g_show_auto_chop = true;
+            if (ImGui::MenuItem("Crop Marked to Content")) {
+                int n = CropMarkedImagesToContent();
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Cropped %d image(s) to non-transparent bbox.", n);
+                g_restore_msg_timer = 4.0f;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Trim each marked image to its non-transparent bounding box.\n"
+                "Anipoints are adjusted so the on-screen position is unchanged.");
+            if (ImGui::MenuItem("Defringe Marked Edges")) {
+                int n = DefringeMarkedImages(1);
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Defringe edited %d pixel(s).", n);
+                g_restore_msg_timer = 4.0f;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "One-pass edge defringe: every pixel touching a transparent\n"
+                "neighbor is averaged toward its non-transparent neighbors,\n"
+                "killing the 1px halo of blue/green-spill on digitized actors.");
+            if (ImGui::MenuItem("Align Marked Anipoints to Selected")) {
+                int n = AlignAnipointsToMarked(ilselected);
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Anchored %d marked image(s) to selected anipoint.", n);
+                g_restore_msg_timer = 4.0f;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Sets the anipoint of every marked image to match the\n"
+                "currently-selected image's anipoint. Useful when several\n"
+                "frames should share one anchor (head, hand, hilt).");
             ImGui::Separator();
             if (ImGui::MenuItem("Least-Squares Reduce", ";"))               LeastSquaresReduceMarked();
             ImGui::Separator();
@@ -3075,9 +3384,12 @@ void imgui_overlay_render(void)
         save_palette_baseline();
     }
 
-    /* Rebuild image texture every frame to pick up palette and data changes */
+    /* Rebuild image texture every frame to pick up palette and data changes.
+       When the texture-idx sentinel signals invalidation (set to -2 by any
+       pixel-modifying tool), drop the matching timeline thumbnail too. */
     {
         IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+        if (g_img_tex_idx == -2 && ilselected >= 0) InvalidateThumb(ilselected);
         rebuild_img_texture(img);
         g_img_tex_idx = ilselected;
     }
@@ -3147,7 +3459,7 @@ void imgui_overlay_render(void)
             if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
         }
         ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Background Eraser Tool (E)");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart Eraser \xE2\x80\x94 chroma-key with tolerance + defringe (E)");
 
         /* Clone Stamp tool */
         ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::CloneStamp ?
@@ -3177,10 +3489,71 @@ void imgui_overlay_render(void)
         if (ImGui::Button(TB_LABEL("\xEE\x94\xB2", "Ls"), btn)) { /* U+E532 gesture */
             if (g_active_tool == ActiveTool::Lasso) g_active_tool = ActiveTool::None;
             else g_active_tool = ActiveTool::Lasso;
+            g_lasso_points.clear();
             if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
         }
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lasso Selection Tool (L)");
+
+        /* Tool-options strip — appears inline when a configurable tool is active. */
+        if (g_active_tool == ActiveTool::MagicWand) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
+            ImGui::SliderInt("Tol##wand", &g_wand_tolerance, 0, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Wand tolerance (palette-index distance)");
+            ImGui::SameLine();
+            ImGui::Checkbox("Contig##wand", &g_wand_contiguous);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("If off: select all matching pixels globally");
+        } else if (g_active_tool == ActiveTool::CloneStamp) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::SliderInt("Brush##clone", &g_clone_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clone Stamp brush radius (1 = single pixel)");
+            ImGui::SameLine();
+            ImGui::TextDisabled(g_clone_source_set ? "src set (Alt+click resets)" : "Alt+click to set source");
+        } else if (g_active_tool == ActiveTool::BackgroundEraser) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
+            ImGui::SliderInt("Tol##eraser", &g_eraser_tolerance, 0, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chroma tolerance (palette-index distance)");
+            ImGui::SameLine();
+            ImGui::Checkbox("Contig##eraser", &g_eraser_contiguous);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("If off: erase every matching pixel globally");
+            ImGui::SameLine();
+            ImGui::Checkbox("Defringe##eraser", &g_eraser_defringe);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("After erase, average-replace 1px halo around transparent edges (kills blue-spill)");
+        } else if (g_active_tool == ActiveTool::SmartRemap) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
+            ImGui::SliderInt("Tol##remap", &g_remap_tolerance, 0, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remap tolerance (palette-index distance)");
+            if (g_remap_target_color >= 0) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("\xE2\x86\x92"); /* right arrow */
+                ImGui::SameLine();
+                ImVec4 c(1,1,1,1);
+                PAL *p = (ilselected >= 0) ? get_pal(get_img(ilselected) ? get_img(ilselected)->palnum : 0) : NULL;
+                if (p && p->data_p) {
+                    unsigned char *pd = (unsigned char *)p->data_p;
+                    int ci = g_remap_target_color;
+                    unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
+                    c = ImVec4(((w15 >> 10) & 0x1F) / 31.f,
+                               ((w15 >>  5) & 0x1F) / 31.f,
+                               ( w15        & 0x1F) / 31.f, 1.0f);
+                }
+                ImGui::ColorButton("##remap_target", c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(16,16));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear##remap")) g_remap_target_color = -1;
+            }
+        }
 
         ImGui::Spacing();
         bool can_undo = g_undo_idx > 0;
@@ -3748,7 +4121,80 @@ void imgui_overlay_render(void)
                     dl->AddRectFilled(ImVec2(cx2, cy), ImVec2(x2, y2), col32);
                 }
             }
+            /* Timeline onion-skin: draw prev/next frames of the current
+               timeline order behind the live sprite, anipoint-aligned and
+               faint, so the user can scrub or play and see motion arcs. */
+            if (g_timeline_onion && !g_timeline_frames.empty()
+                && g_timeline_play_idx >= 0
+                && g_timeline_play_idx < (int)g_timeline_frames.size()
+                && ilselected >= 0)
+            {
+                IMG *cur_img = get_img(ilselected);
+                if (cur_img) {
+                    int cur_ax = (int)(short)cur_img->anix;
+                    int cur_ay = (int)(short)cur_img->aniy;
+                    int neighbors[2] = {
+                        g_timeline_play_idx == 0
+                            ? (int)g_timeline_frames.size() - 1
+                            : g_timeline_play_idx - 1,
+                        (g_timeline_play_idx + 1) % (int)g_timeline_frames.size()
+                    };
+                    ImU32 tints[2] = {
+                        IM_COL32(120, 180, 255, 70), /* prev: cool */
+                        IM_COL32(255, 160, 120, 70)  /* next: warm */
+                    };
+                    for (int side = 0; side < 2; side++) {
+                        if (neighbors[side] == g_timeline_play_idx) continue;
+                        int img_idx = g_timeline_frames[neighbors[side]];
+                        if (img_idx == ilselected) continue;
+                        IMG *nimg = get_img(img_idx);
+                        if (!nimg) continue;
+                        TimelineThumb *t = EnsureThumb(img_idx);
+                        if (!t || !t->tex) continue;
+                        /* Place the neighbor so that its anipoint coincides
+                           with the current sprite's anipoint on screen. */
+                        int n_ax = (int)(short)nimg->anix;
+                        int n_ay = (int)(short)nimg->aniy;
+                        float scale_x = sx * ((float)nimg->w / (float)t->w);
+                        float scale_y = sy * ((float)nimg->h / (float)t->h);
+                        float nw_screen = t->w * scale_x;
+                        float nh_screen = t->h * scale_y;
+                        ImVec2 npos(img_pos.x + (cur_ax - n_ax) * sx,
+                                    img_pos.y + (cur_ay - n_ay) * sy);
+                        dl->AddImage((ImTextureID)(intptr_t)t->tex,
+                                     npos,
+                                     ImVec2(npos.x + nw_screen, npos.y + nh_screen),
+                                     ImVec2(0,0), ImVec2(1,1),
+                                     tints[side]);
+                    }
+                }
+            }
+
             ImGui::Image((ImTextureID)(intptr_t)g_img_texture, img_sz);
+
+            /* Color isolation: dim everything that isn't the target index.
+               Scanline-coalesced so a 256x256 sprite emits at most ~256 rects
+               per row of contiguous non-target pixels, not 65k per-pixel. */
+            if (g_isolate_color >= 0 && ilselected >= 0) {
+                IMG *iimg = get_img(ilselected);
+                if (iimg && iimg->data_p) {
+                    int iw = iimg->w, ih = iimg->h;
+                    int stride = (iw + 3) & ~3;
+                    unsigned char *idp = (unsigned char *)iimg->data_p;
+                    ImU32 dim = IM_COL32(0, 0, 0, 170);
+                    for (int y = 0; y < ih; y++) {
+                        int x = 0;
+                        while (x < iw) {
+                            if (idp[y * stride + x] == g_isolate_color) { x++; continue; }
+                            int x0 = x;
+                            while (x < iw && idp[y * stride + x] != g_isolate_color) x++;
+                            ImVec2 a(img_pos.x + x0 * sx, img_pos.y + y * sy);
+                            ImVec2 b(img_pos.x + x * sx,  img_pos.y + (y + 1) * sy);
+                            dl->AddRectFilled(a, b, dim);
+                        }
+                    }
+                }
+            }
 
             /* --- DMA Compression overlay --- */
             if (g_show_dma_comp) {
@@ -3900,23 +4346,44 @@ void imgui_overlay_render(void)
                                     if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
                                     g_pixel_undo_img = ilselected;
                                 }
-                                int src_px = px + g_clone_dx;
-                                int src_py = py + g_clone_dy;
-                                if (src_px >= 0 && src_px < (int)cimg->w && src_py >= 0 && src_py < (int)cimg->h) {
-                                    unsigned short stride = (cimg->w + 3) & ~3;
-                                    unsigned char src_col = ((unsigned char *)cimg->data_p)[src_py * stride + src_px];
-                                    *pix = src_col;
-                                    g_dirty = true;
-                                    g_img_tex_idx = -2;
+                                /* Round-brush stamp. g_clone_brush is the radius;
+                                   1 = single pixel (kept for sharp work), >1 = soft disc. */
+                                int r = g_clone_brush > 0 ? g_clone_brush : 1;
+                                int r2 = (r - 1) * (r - 1);
+                                unsigned short stride = (cimg->w + 3) & ~3;
+                                unsigned char *cdata = (unsigned char *)cimg->data_p;
+                                for (int by = -(r - 1); by <= (r - 1); by++) {
+                                    for (int bx = -(r - 1); bx <= (r - 1); bx++) {
+                                        if (r > 1 && bx * bx + by * by > r2) continue;
+                                        int dx_px = px + bx;
+                                        int dy_px = py + by;
+                                        if (dx_px < 0 || dy_px < 0 ||
+                                            dx_px >= (int)cimg->w || dy_px >= (int)cimg->h) continue;
+                                        int src_px = dx_px + g_clone_dx;
+                                        int src_py = dy_px + g_clone_dy;
+                                        if (src_px < 0 || src_py < 0 ||
+                                            src_px >= (int)cimg->w || src_py >= (int)cimg->h) continue;
+                                        unsigned char src_col = cdata[src_py * stride + src_px];
+                                        cdata[dy_px * stride + dx_px] = src_col;
+                                    }
                                 }
+                                g_dirty = true;
+                                g_img_tex_idx = -2;
                                 widget_consumed_click = true;
                             }
                         } else if (g_active_tool == ActiveTool::SmartRemap) {
+                            /* On the first click of a stroke, capture the target
+                               color. Hold to paint replacement over every pixel
+                               within tolerance of that target. The target sticks
+                               until mouse-up so a single drag has consistent
+                               behavior even as the brush crosses varied pixels. */
                             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                                 g_remap_target_color = *pix;
                             }
                             if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && g_remap_target_color != -1) {
-                                if (*pix == g_remap_target_color) {
+                                int diff = (int)*pix - g_remap_target_color;
+                                if (diff < 0) diff = -diff;
+                                if (diff <= g_remap_tolerance) {
                                     if (g_pixel_undo_img != ilselected) {
                                         free(g_pixel_undo); g_pixel_undo = NULL;
                                         unsigned short s = (cimg->w + 3) & ~3;
@@ -3931,7 +4398,14 @@ void imgui_overlay_render(void)
                                 }
                                 widget_consumed_click = true;
                             }
-                        } else if (g_active_tool != ActiveTool::CloneStamp && g_active_tool != ActiveTool::SmartRemap && (g_active_tool == ActiveTool::BackgroundEraser ? ImGui::IsMouseClicked(ImGuiMouseButton_Left) : ImGui::IsMouseDown(ImGuiMouseButton_Left))) {
+                            /* Release: forget the target so the next click can pick
+                               a different reference color. */
+                            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                                g_remap_target_color = -1;
+                            }
+                        } else if (g_active_tool == ActiveTool::BackgroundEraser
+                                       ? ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                                       : ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                             if (g_pixel_undo_img != ilselected) {
                                 free(g_pixel_undo); g_pixel_undo = NULL;
                                 unsigned short s = (cimg->w + 3) & ~3;
@@ -3942,7 +4416,10 @@ void imgui_overlay_render(void)
                             }
                             if (g_active_tool == ActiveTool::BackgroundEraser) {
                                 g_dirty = true;
-                                FloodFill(cimg, px, py, 0);
+                                SmartErase(cimg, px, py,
+                                           g_eraser_tolerance,
+                                           g_eraser_contiguous,
+                                           g_eraser_defringe);
                             } else if (io.KeyShift) {
                                 g_dirty = true;
                                 FloodFill(cimg, px, py, (unsigned char)g_sel_color);
@@ -4051,6 +4528,25 @@ void imgui_overlay_render(void)
                 mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                 mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
 
+            /* Clone Stamp visual aids: source crosshair and destination brush ring. */
+            if (g_active_tool == ActiveTool::CloneStamp && g_clone_source_set) {
+                ImVec2 sc(img_pos.x + (g_clone_src_x + 0.5f) * sx,
+                          img_pos.y + (g_clone_src_y + 0.5f) * sy);
+                ImU32 src_col = IM_COL32(0, 255, 255, 230);
+                dl->AddLine(ImVec2(sc.x - 8, sc.y), ImVec2(sc.x + 8, sc.y), src_col, 1.5f);
+                dl->AddLine(ImVec2(sc.x, sc.y - 8), ImVec2(sc.x, sc.y + 8), src_col, 1.5f);
+                dl->AddCircle(sc, 4.0f, src_col, 0, 1.0f);
+                if (mouse_over_sprite && g_clone_brush > 1) {
+                    int r = g_clone_brush - 1;
+                    int mx = (int)((mouse.x - img_pos.x) / sx);
+                    int my = (int)((mouse.y - img_pos.y) / sy);
+                    ImVec2 cc(img_pos.x + (mx + 0.5f) * sx,
+                              img_pos.y + (my + 0.5f) * sy);
+                    float rr = (sx + sy) * 0.5f * r;
+                    dl->AddCircle(cc, rr, IM_COL32(255, 255, 255, 200), 0, 1.0f);
+                }
+            }
+
             /* Start a new selection only on a fresh click that lands on the sprite
                and isn't already being consumed by an anim-point or hitbox-corner drag.
                Once a drag is in progress we keep updating x2/y2 wherever the mouse
@@ -4080,41 +4576,67 @@ void imgui_overlay_render(void)
                             int sh = simg->h;
                             int stride = (sw + 3) & ~3;
                             unsigned char* pdata = (unsigned char*)simg->data_p;
-                            unsigned char target_color = pdata[my * stride + mx];
-                            
+                            int target_color = pdata[my * stride + mx];
+                            int tol = g_wand_tolerance;
+
                             g_grid_sel.active = true;
                             g_grid_sel.is_mask = true;
                             g_grid_sel.mask_w = sw;
                             g_grid_sel.mask_h = sh;
                             g_grid_sel.pixel_mask.assign(sw * sh, false);
-                            
-                            std::vector<std::pair<int, int>> stack;
-                            stack.push_back({mx, my});
-                            g_grid_sel.pixel_mask[my * sw + mx] = true;
-                            
+
                             int min_x = mx, max_x = mx;
                             int min_y = my, max_y = my;
-                            
-                            while(!stack.empty()) {
-                                std::pair<int, int> pt = stack.back();
-                                stack.pop_back();
-                                int cx = pt.first;
-                                int cy = pt.second;
-                                
-                                if (cx < min_x) min_x = cx;
-                                if (cx > max_x) max_x = cx;
-                                if (cy < min_y) min_y = cy;
-                                if (cy > max_y) max_y = cy;
-                                
-                                const int dx[] = {0, 1, 0, -1};
-                                const int dy[] = {-1, 0, 1, 0};
-                                for(int i = 0; i < 4; i++) {
-                                    int nx = cx + dx[i];
-                                    int ny = cy + dy[i];
-                                    if (nx >= 0 && nx < sw && ny >= 0 && ny < sh) {
-                                        if (!g_grid_sel.pixel_mask[ny * sw + nx] && pdata[ny * stride + nx] == target_color) {
-                                            g_grid_sel.pixel_mask[ny * sw + nx] = true;
-                                            stack.push_back({nx, ny});
+
+                            if (g_wand_contiguous) {
+                                std::vector<std::pair<int, int>> stack;
+                                stack.push_back({mx, my});
+                                g_grid_sel.pixel_mask[my * sw + mx] = true;
+
+                                while(!stack.empty()) {
+                                    std::pair<int, int> pt = stack.back();
+                                    stack.pop_back();
+                                    int cx = pt.first;
+                                    int cy = pt.second;
+
+                                    if (cx < min_x) min_x = cx;
+                                    if (cx > max_x) max_x = cx;
+                                    if (cy < min_y) min_y = cy;
+                                    if (cy > max_y) max_y = cy;
+
+                                    const int dx[] = {0, 1, 0, -1};
+                                    const int dy[] = {-1, 0, 1, 0};
+                                    for(int i = 0; i < 4; i++) {
+                                        int nx = cx + dx[i];
+                                        int ny = cy + dy[i];
+                                        if (nx >= 0 && nx < sw && ny >= 0 && ny < sh) {
+                                            int diff = (int)pdata[ny * stride + nx] - target_color;
+                                            if (diff < 0) diff = -diff;
+                                            if (!g_grid_sel.pixel_mask[ny * sw + nx] && diff <= tol) {
+                                                g_grid_sel.pixel_mask[ny * sw + nx] = true;
+                                                stack.push_back({nx, ny});
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                /* Global non-contiguous: every pixel in image within tolerance */
+                                bool first = true;
+                                for (int y = 0; y < sh; y++) {
+                                    for (int x = 0; x < sw; x++) {
+                                        int diff = (int)pdata[y * stride + x] - target_color;
+                                        if (diff < 0) diff = -diff;
+                                        if (diff <= tol) {
+                                            g_grid_sel.pixel_mask[y * sw + x] = true;
+                                            if (first) {
+                                                min_x = max_x = x; min_y = max_y = y;
+                                                first = false;
+                                            } else {
+                                                if (x < min_x) min_x = x;
+                                                if (x > max_x) max_x = x;
+                                                if (y < min_y) min_y = y;
+                                                if (y > max_y) max_y = y;
+                                            }
                                         }
                                     }
                                 }
@@ -4125,6 +4647,14 @@ void imgui_overlay_render(void)
                             g_grid_sel.y2 = max_y;
                             g_grid_sel.dragging = false;
                         }
+                    } else if (g_active_tool == ActiveTool::Lasso) {
+                        g_lasso_points.clear();
+                        g_lasso_points.push_back({mx, my});
+                        g_grid_sel.active = true;
+                        g_grid_sel.dragging = true;
+                        g_grid_sel.is_mask = false; /* becomes a mask on release */
+                        g_grid_sel.x1 = g_grid_sel.x2 = mx;
+                        g_grid_sel.y1 = g_grid_sel.y2 = my;
                     } else {
                         g_grid_sel.active = true;
                         g_grid_sel.dragging = true;
@@ -4141,10 +4671,79 @@ void imgui_overlay_render(void)
                     int my = (int)((mouse.y - img_pos.y) / sy);
                     if (mx < 0) mx = 0; if (mx >= (int)g_img_tex_w) mx = g_img_tex_w - 1;
                     if (my < 0) my = 0; if (my >= (int)g_img_tex_h) my = g_img_tex_h - 1;
-                    g_grid_sel.x2 = mx;
-                    g_grid_sel.y2 = my;
+                    if (g_active_tool == ActiveTool::Lasso) {
+                        /* Append point if it moved at least 1 pixel from the last vertex */
+                        if (g_lasso_points.empty() ||
+                            g_lasso_points.back().first != mx ||
+                            g_lasso_points.back().second != my) {
+                            g_lasso_points.push_back({mx, my});
+                        }
+                    } else {
+                        g_grid_sel.x2 = mx;
+                        g_grid_sel.y2 = my;
+                    }
                 } else if (g_grid_sel.dragging && !mbdn) {
                     g_grid_sel.dragging = false;
+                    if (g_active_tool == ActiveTool::Lasso && ilselected >= 0 && g_lasso_points.size() >= 3) {
+                        /* Rasterize the polygon into a pixel mask using a scanline
+                           even-odd test. */
+                        IMG *simg = get_img(ilselected);
+                        if (simg && simg->data_p) {
+                            int sw = simg->w, sh = simg->h;
+                            int min_x = sw, max_x = -1, min_y = sh, max_y = -1;
+                            for (auto &p : g_lasso_points) {
+                                if (p.first  < min_x) min_x = p.first;
+                                if (p.first  > max_x) max_x = p.first;
+                                if (p.second < min_y) min_y = p.second;
+                                if (p.second > max_y) max_y = p.second;
+                            }
+                            if (min_x < 0) min_x = 0;
+                            if (min_y < 0) min_y = 0;
+                            if (max_x >= sw) max_x = sw - 1;
+                            if (max_y >= sh) max_y = sh - 1;
+
+                            g_grid_sel.is_mask = true;
+                            g_grid_sel.mask_w = sw;
+                            g_grid_sel.mask_h = sh;
+                            g_grid_sel.pixel_mask.assign(sw * sh, false);
+
+                            int n = (int)g_lasso_points.size();
+                            for (int y = min_y; y <= max_y; y++) {
+                                /* Crossings at half-pixel y */
+                                float yf = y + 0.5f;
+                                std::vector<float> xs;
+                                for (int i = 0; i < n; i++) {
+                                    float ax = (float)g_lasso_points[i].first;
+                                    float ay = (float)g_lasso_points[i].second;
+                                    float bx = (float)g_lasso_points[(i + 1) % n].first;
+                                    float by = (float)g_lasso_points[(i + 1) % n].second;
+                                    if ((ay <= yf) != (by <= yf)) {
+                                        float t = (yf - ay) / (by - ay);
+                                        xs.push_back(ax + t * (bx - ax));
+                                    }
+                                }
+                                std::sort(xs.begin(), xs.end());
+                                for (size_t i = 0; i + 1 < xs.size(); i += 2) {
+                                    int x0 = (int)ceilf(xs[i]);
+                                    int x1 = (int)floorf(xs[i + 1]);
+                                    if (x0 < min_x) x0 = min_x;
+                                    if (x1 > max_x) x1 = max_x;
+                                    for (int x = x0; x <= x1; x++) {
+                                        g_grid_sel.pixel_mask[y * sw + x] = true;
+                                    }
+                                }
+                            }
+                            g_grid_sel.x1 = min_x;
+                            g_grid_sel.y1 = min_y;
+                            g_grid_sel.x2 = max_x < min_x ? min_x : max_x;
+                            g_grid_sel.y2 = max_y < min_y ? min_y : max_y;
+                        }
+                        g_lasso_points.clear();
+                    } else if (g_active_tool == ActiveTool::Lasso) {
+                        /* Aborted / too few points */
+                        g_lasso_points.clear();
+                        g_grid_sel.active = false;
+                    }
                     if (ImGui::GetIO().KeyShift && !g_grid_sel.is_mask && ilselected >= 0) {
                         IMG *simg = get_img(ilselected);
                         if (simg && simg->data_p) {
@@ -4182,7 +4781,24 @@ void imgui_overlay_render(void)
                the tool off via the toolbar/R also clears g_grid_sel, but this
                extra gate makes sure no stray green box renders if some other
                code path leaves g_grid_sel.active=true with the tool off. */
-            if (g_grid_sel.active && (g_active_tool == ActiveTool::Marquee || g_active_tool == ActiveTool::MagicWand)) {
+            /* Live lasso path while drawing */
+            if (g_active_tool == ActiveTool::Lasso && g_grid_sel.dragging && g_lasso_points.size() >= 2) {
+                std::vector<ImVec2> screen_pts;
+                screen_pts.reserve(g_lasso_points.size() + 1);
+                for (auto &p : g_lasso_points) {
+                    screen_pts.push_back(ImVec2(img_pos.x + (p.first + 0.5f) * sx,
+                                                img_pos.y + (p.second + 0.5f) * sy));
+                }
+                /* Show closing edge as a dashed-ish thin line */
+                dl->AddPolyline(screen_pts.data(), (int)screen_pts.size(),
+                                IM_COL32(255, 0, 255, 220), 0, 1.5f);
+                if (screen_pts.size() >= 2) {
+                    dl->AddLine(screen_pts.back(), screen_pts.front(),
+                                IM_COL32(255, 0, 255, 110), 1.0f);
+                }
+            }
+
+            if (g_grid_sel.active && (g_active_tool == ActiveTool::Marquee || g_active_tool == ActiveTool::MagicWand || g_active_tool == ActiveTool::Lasso)) {
                 int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
                 int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
                 if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
@@ -4253,6 +4869,21 @@ void imgui_overlay_render(void)
                 ImU32 border_col = hovering ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 255, 0, 255);
                 dl->AddRect(p1, p2, border_col, 0.0f, 0, 2.0f);
 
+                /* Snap guides — drawn while a snap is active this frame so
+                   the user sees exactly which edge their paste locked onto. */
+                if (g_pasted.dragging && g_snap_hit_x) {
+                    float gx = img_pos.x + g_snap_guide_x * sx;
+                    dl->AddLine(ImVec2(gx, img_pos.y),
+                                ImVec2(gx, img_pos.y + g_img_tex_h * sy),
+                                IM_COL32(255, 0, 255, 220), 1.5f);
+                }
+                if (g_pasted.dragging && g_snap_hit_y) {
+                    float gy = img_pos.y + g_snap_guide_y * sy;
+                    dl->AddLine(ImVec2(img_pos.x, gy),
+                                ImVec2(img_pos.x + g_img_tex_w * sx, gy),
+                                IM_COL32(255, 0, 255, 220), 1.5f);
+                }
+
                 /* Instruction text */
                 if (g_pasted.dragging)
                     dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 200, 0, 255), "Moving...");
@@ -4276,36 +4907,56 @@ void imgui_overlay_render(void)
                         int nx = g_pasted.drag_start_px + dx;
                         int ny = g_pasted.drag_start_py + dy;
 
+                        g_snap_hit_x = g_snap_hit_y = false;
                         if (ImGui::GetIO().KeyShift && ilselected >= 0) {
-                            IMG *cimg = get_img(ilselected);
-                            if (cimg && cimg->data_p) {
-                                int min_x = cimg->w, min_y = cimg->h, max_x = 0, max_y = 0;
-                                unsigned short cw = (cimg->w + 3) & ~3;
-                                bool found = false;
-                                unsigned char *dp = (unsigned char *)cimg->data_p;
-                                for (int y = 0; y < cimg->h; y++) {
-                                    for (int x = 0; x < cimg->w; x++) {
-                                        if (dp[y * cw + x] != 0) {
-                                            if (x < min_x) min_x = x;
-                                            if (x > max_x) max_x = x;
-                                            if (y < min_y) min_y = y;
-                                            if (y > max_y) max_y = y;
-                                            found = true;
+                            /* Cache the content bbox of the underlying sprite
+                               on the first frame Shift is held during this
+                               drag; recompute only on image change. */
+                            if (!g_snap_bbox.valid || g_snap_bbox.img_idx != ilselected) {
+                                IMG *cimg = get_img(ilselected);
+                                if (cimg && cimg->data_p) {
+                                    int min_x = cimg->w, min_y = cimg->h, max_x = 0, max_y = 0;
+                                    unsigned short cw = (cimg->w + 3) & ~3;
+                                    bool found = false;
+                                    unsigned char *dp = (unsigned char *)cimg->data_p;
+                                    for (int y = 0; y < cimg->h; y++) {
+                                        for (int x = 0; x < cimg->w; x++) {
+                                            if (dp[y * cw + x] != 0) {
+                                                if (x < min_x) min_x = x;
+                                                if (x > max_x) max_x = x;
+                                                if (y < min_y) min_y = y;
+                                                if (y > max_y) max_y = y;
+                                                found = true;
+                                            }
                                         }
                                     }
-                                }
-                                if (found) {
-                                    if (abs(nx - min_x) < 5) nx = min_x;
-                                    else if (abs((nx + pw) - (max_x + 1)) < 5) nx = (max_x + 1) - pw;
-                                    else if (abs(nx - (max_x + 1)) < 5) nx = max_x + 1;
-                                    else if (abs((nx + pw) - min_x) < 5) nx = min_x - pw;
-
-                                    if (abs(ny - min_y) < 5) ny = min_y;
-                                    else if (abs((ny + ph) - (max_y + 1)) < 5) ny = (max_y + 1) - ph;
-                                    else if (abs(ny - (max_y + 1)) < 5) ny = max_y + 1;
-                                    else if (abs((ny + ph) - min_y) < 5) ny = min_y - ph;
+                                    if (found) {
+                                        g_snap_bbox = {true, min_x, min_y, max_x, max_y, ilselected};
+                                    }
                                 }
                             }
+                            if (g_snap_bbox.valid) {
+                                /* Threshold is screen-relative (~6 screen px)
+                                   then converted into image pixels. */
+                                int tx = (int)(6.0f / sx); if (tx < 1) tx = 1;
+                                int ty = (int)(6.0f / sy); if (ty < 1) ty = 1;
+                                int sx_min = g_snap_bbox.min_x;
+                                int sy_min = g_snap_bbox.min_y;
+                                int sx_max = g_snap_bbox.max_x + 1;
+                                int sy_max = g_snap_bbox.max_y + 1;
+
+                                if (abs(nx - sx_min) < tx)              { nx = sx_min;            g_snap_hit_x = true; g_snap_guide_x = sx_min; }
+                                else if (abs((nx + pw) - sx_max) < tx)  { nx = sx_max - pw;       g_snap_hit_x = true; g_snap_guide_x = sx_max; }
+                                else if (abs(nx - sx_max) < tx)         { nx = sx_max;            g_snap_hit_x = true; g_snap_guide_x = sx_max; }
+                                else if (abs((nx + pw) - sx_min) < tx)  { nx = sx_min - pw;       g_snap_hit_x = true; g_snap_guide_x = sx_min; }
+
+                                if (abs(ny - sy_min) < ty)              { ny = sy_min;            g_snap_hit_y = true; g_snap_guide_y = sy_min; }
+                                else if (abs((ny + ph) - sy_max) < ty)  { ny = sy_max - ph;       g_snap_hit_y = true; g_snap_guide_y = sy_max; }
+                                else if (abs(ny - sy_max) < ty)         { ny = sy_max;            g_snap_hit_y = true; g_snap_guide_y = sy_max; }
+                                else if (abs((ny + ph) - sy_min) < ty)  { ny = sy_min - ph;       g_snap_hit_y = true; g_snap_guide_y = sy_min; }
+                            }
+                        } else {
+                            g_snap_bbox.valid = false;
                         }
 
                         if (nx < 0) nx = 0;
@@ -4334,13 +4985,10 @@ void imgui_overlay_render(void)
     ImGui::End();
     ImGui::PopStyleColor();
 
-    /* ===== BOTTOM TIMELINE BAR ===== */
-    static bool  g_is_playing = false;
-    static float g_play_speed = 12.0f; /* fps */
-    static float g_play_timer = 0.0f;
-    static std::vector<int> g_timeline_frames;
-    static int   g_timeline_play_idx = 0;
-    static unsigned int g_timeline_built_for_imgcnt = 0;
+    /* ===== BOTTOM TIMELINE BAR =====
+       State (g_is_playing/g_play_speed/g_play_timer/g_timeline_frames/
+       g_timeline_play_idx/g_timeline_built_for_imgcnt/g_timeline_onion) is
+       at file scope so keyboard shortcuts and other overlays can address it. */
 
     /* Drop stale frame indices if the underlying image set shrank or was reloaded */
     if (imgcnt != g_timeline_built_for_imgcnt) {
@@ -4348,6 +4996,11 @@ void imgui_overlay_render(void)
             std::remove_if(g_timeline_frames.begin(), g_timeline_frames.end(),
                 [](int idx){ return idx < 0 || (unsigned int)idx >= imgcnt; }),
             g_timeline_frames.end());
+        /* Free thumbnail textures past the new end. */
+        for (size_t i = imgcnt; i < g_thumb_cache.size(); i++) {
+            if (g_thumb_cache[i].tex) SDL_DestroyTexture(g_thumb_cache[i].tex);
+        }
+        if (g_thumb_cache.size() > imgcnt) g_thumb_cache.resize(imgcnt);
         g_timeline_built_for_imgcnt = imgcnt;
     }
 
@@ -4424,33 +5077,58 @@ void imgui_overlay_render(void)
         if (ImGui::Button("Reset Sequence")) {
             g_timeline_frames.clear();
         }
+        ImGui::SameLine();
+        ImGui::Checkbox("Onion", &g_timeline_onion);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ghost prev/next timeline frame at 25% alpha while scrubbing or playing");
 
-        /* Draw a horizontal scrolling list of frames with drag & drop */
+        /* Draw a horizontal scrolling list of frames with drag & drop. Buttons
+           render a per-frame thumbnail so the user can scan visually instead
+           of by numeric index. */
         ImGui::Dummy(ImVec2(0, 4));
         float scr_w = ImGui::GetContentRegionAvail().x;
         float scr_h = ImGui::GetContentRegionAvail().y;
-        
+
         ImGui::BeginChild("TimelineScrubber", ImVec2(scr_w, scr_h), false, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoBackground);
         if (!g_timeline_frames.empty()) {
             for (size_t i = 0; i < g_timeline_frames.size(); i++) {
                 if (i > 0) ImGui::SameLine(0, 4.0f);
                 ImGui::PushID((int)i);
-                
+
                 int img_idx = g_timeline_frames[i];
                 char label[32];
                 snprintf(label, sizeof(label), "%d", img_idx);
-                
+
                 bool is_current = (int)i == g_timeline_play_idx;
                 if (is_current) {
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.8f, 1.0f));
                 }
-                
-                if (ImGui::Button(label, ImVec2(32, 24))) {
+
+                TimelineThumb *t = EnsureThumb(img_idx);
+                bool clicked = false;
+                if (t && t->tex) {
+                    /* Frame: thumb + index label below in same button. We use
+                       an ImageButton with the rendered thumbnail and overlay
+                       text via the drawlist after. */
+                    ImVec2 btn_sz(52, 52);
+                    ImVec2 cursor = ImGui::GetCursorScreenPos();
+                    if (ImGui::ImageButton(label, (ImTextureID)(intptr_t)t->tex,
+                                           btn_sz, ImVec2(0,0), ImVec2(1,1),
+                                           ImVec4(0,0,0,0),
+                                           is_current ? ImVec4(0.4f,0.7f,1.f,1.f) : ImVec4(1,1,1,1))) {
+                        clicked = true;
+                    }
+                    ImDrawList *fdl = ImGui::GetWindowDrawList();
+                    fdl->AddText(ImVec2(cursor.x + 4, cursor.y + 2),
+                                 IM_COL32(255,255,255,200), label);
+                } else {
+                    if (ImGui::Button(label, ImVec2(48, 48))) clicked = true;
+                }
+                if (clicked) {
                     g_timeline_play_idx = (int)i;
                     ilselected = img_idx;
                     g_zoom_reset = true;
                 }
-                
+
                 if (is_current) {
                     ImGui::PopStyleColor();
                 }
@@ -4515,10 +5193,18 @@ void imgui_overlay_render(void)
             else if (i == 0)
                 dl->AddRect(p0, p1, IM_COL32(80,80,80,120), 0, 0, 0.5f);
 
+            /* Isolation badge */
+            if (g_isolate_color == i) {
+                dl->AddRect(p0, p1, IM_COL32(255, 0, 255, 255), 0, 0, 2.0f);
+            }
+
             ImGui::SetCursorScreenPos(p0);
             ImGui::InvisibleButton(("##sw" + std::to_string(i)).c_str(), ImVec2(sw16, sh16));
             if (ImGui::IsItemClicked()) {
-                if (ImGui::GetIO().KeyCtrl) {
+                if (ImGui::GetIO().KeyAlt) {
+                    /* Alt-click: toggle color isolation on this index */
+                    g_isolate_color = (g_isolate_color == i) ? -1 : i;
+                } else if (ImGui::GetIO().KeyCtrl) {
                     g_palette_selection[i] = !g_palette_selection[i];
                 } else if (ImGui::GetIO().KeyShift) {
                     int start = g_sel_color < i ? g_sel_color : i;
@@ -4527,7 +5213,13 @@ void imgui_overlay_render(void)
                 } else {
                     memset(g_palette_selection, 0, sizeof(g_palette_selection));
                 }
-                g_sel_color = i;
+                if (!ImGui::GetIO().KeyAlt) g_sel_color = i;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::Text("Palette index %d", i);
+                ImGui::TextDisabled("Alt+click: isolate this color in the canvas");
+                ImGui::EndTooltip();
             }
         }
 
