@@ -67,4 +67,23 @@ int  ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches)
 
 int  ChopMarkedImages(int grid_w, int grid_h, bool trim);
 
+/* Edge defringe for all marked images.
+ * For each pixel within `radius` pixels of a transparent boundary (8-connected),
+ * if its 8-neighborhood contains both transparent and opaque pixels, replace
+ * it with the average palette index of its non-transparent neighbors. This
+ * kills the 1-2px halo of bluescreen/greenscreen spill that survives chroma
+ * removal on digitized actor sprites. Returns count of edited pixels. */
+int  DefringeMarkedImages(int radius);
+
+/* Crop each marked image to its non-transparent bounding box. Anipoints are
+ * adjusted so the visual rendering stays identical. Returns count of edited
+ * images. */
+int  CropMarkedImagesToContent(void);
+
+/* Align anipoints of all marked images to the anipoint of the image at
+ * reference_idx. Conceptually: pick one frame as the "anchor frame", all
+ * other marked frames are shifted (via anipoint) so they share that anchor.
+ * Returns count of edited images. */
+int  AlignAnipointsToMarked(int reference_idx);
+
 #endif /* IMG_IO_H */

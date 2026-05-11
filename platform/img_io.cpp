@@ -1011,13 +1011,23 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
                 new_img->flags = 0; /* Unmarked */
                 new_img->opals = master->opals;
 
-                std::string base_name = master->n_s;
-                int suffix_len = 3;
-                if (base_name.length() > (size_t)(15 - suffix_len)) {
-                    base_name = base_name.substr(0, 15 - suffix_len);
-                }
+                /* Suffix format: _NL (single-digit row + A..Z column) for the
+                   common case; _NNL for r>=10; AA..AZ wraparound for c>=26 by
+                   adding a second leading letter. n_s is 16 bytes including NUL
+                   so the base gets trimmed to fit. */
                 char suffix[8];
-                snprintf(suffix, sizeof(suffix), "_%d%c", r + 1, 'A' + c);
+                if (c < 26) {
+                    snprintf(suffix, sizeof(suffix), "_%d%c", r + 1, 'A' + c);
+                } else {
+                    int hi = c / 26;        /* 1 = AA..AZ, 2 = BA..BZ, ... */
+                    int lo = c % 26;
+                    snprintf(suffix, sizeof(suffix), "_%d%c%c",
+                             r + 1, 'A' + (hi - 1), 'A' + lo);
+                }
+                size_t suf_len = strlen(suffix);
+                size_t budget = (suf_len < 15) ? (15 - suf_len) : 0;
+                std::string base_name = master->n_s;
+                if (base_name.length() > budget) base_name = base_name.substr(0, budget);
                 base_name += suffix;
                 strncpy(new_img->n_s, base_name.c_str(), 15);
                 new_img->n_s[15] = '\0';
@@ -1033,6 +1043,147 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
 
     if (count > 0) {
         g_img_tex_idx = -2;
+    }
+    return count;
+}
+
+/* ---- Defringe Edges (one-shot) ----
+ * Performs a single-pass 8-neighborhood average on every opaque pixel that
+ * sits next to a transparent one. Run repeatedly (or with radius > 1) to
+ * eat further into the blue spill. */
+int DefringeMarkedImages(int radius)
+{
+    if (radius < 1) radius = 1;
+    if (radius > 4) radius = 4;
+    int total_edited = 0;
+
+    std::vector<IMG*> targets;
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+        if (p->flags & 1) targets.push_back(p);
+    }
+    if (targets.empty()) return 0;
+    undo_push();
+
+    for (IMG *img : targets) {
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+        int w = img->w, h = img->h;
+        int stride = (w + 3) & ~3;
+
+        for (int pass = 0; pass < radius; pass++) {
+            unsigned char *pix = (unsigned char *)img->data_p;
+            std::vector<std::pair<int,unsigned char>> writes;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    unsigned char self = pix[y * stride + x];
+                    if (self == 0) continue;
+                    bool touches_zero = false;
+                    int sum = 0, n = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (!dx && !dy) continue;
+                            int nx = x + dx, ny = y + dy;
+                            if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                            unsigned char nv = pix[ny * stride + nx];
+                            if (nv == 0) touches_zero = true;
+                            else { sum += nv; n++; }
+                        }
+                    }
+                    if (touches_zero && n > 0) {
+                        unsigned char avg = (unsigned char)(sum / n);
+                        if (avg != self) {
+                            writes.push_back({y * stride + x, avg});
+                        }
+                    }
+                }
+            }
+            for (auto &w_ : writes) pix[w_.first] = w_.second;
+            total_edited += (int)writes.size();
+        }
+    }
+    if (total_edited > 0) g_img_tex_idx = -2;
+    return total_edited;
+}
+
+/* ---- Crop to Content (single-image smart trim) ---- */
+int CropMarkedImagesToContent(void)
+{
+    int count = 0;
+    std::vector<IMG*> targets;
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+        if (p->flags & 1) targets.push_back(p);
+    }
+    if (targets.empty()) return 0;
+    undo_push();
+
+    for (IMG *img : targets) {
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+        int w = img->w, h = img->h;
+        int stride = (w + 3) & ~3;
+        unsigned char *src = (unsigned char *)img->data_p;
+
+        int min_x = w, max_x = -1, min_y = h, max_y = -1;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (src[y * stride + x] != 0) {
+                    if (x < min_x) min_x = x;
+                    if (x > max_x) max_x = x;
+                    if (y < min_y) min_y = y;
+                    if (y > max_y) max_y = y;
+                }
+            }
+        }
+        if (max_x < 0) continue; /* fully transparent — leave alone */
+        if (min_x == 0 && min_y == 0 && max_x == w - 1 && max_y == h - 1) continue;
+
+        int new_w = max_x - min_x + 1;
+        int new_h = max_y - min_y + 1;
+        int new_stride = (new_w + 3) & ~3;
+        unsigned char *dst = (unsigned char *)PoolAlloc((unsigned int)new_stride * new_h);
+        if (!dst) continue;
+        memset(dst, 0, (size_t)new_stride * new_h);
+        for (int y = 0; y < new_h; y++) {
+            memcpy(dst + y * new_stride,
+                   src + (y + min_y) * stride + min_x,
+                   new_w);
+        }
+        free(img->data_p);
+        img->data_p = dst;
+        img->w = new_w;
+        img->h = new_h;
+        img->anix = (unsigned short)((short)img->anix - (short)min_x);
+        img->aniy = (unsigned short)((short)img->aniy - (short)min_y);
+        count++;
+    }
+    if (count > 0) g_img_tex_idx = -2;
+    return count;
+}
+
+/* ---- Align Anipoints across marked frames ----
+ * The reference image's anipoint is treated as the canonical anchor; for
+ * every other marked image, both the anix and aniy are set to match the
+ * reference. (Anipoints in IMG are local to each frame, so visually this
+ * shifts where the engine pegs each frame relative to the world anchor —
+ * the user's job afterward is to confirm the anipoint sits on the same
+ * body part across frames.) */
+int AlignAnipointsToMarked(int reference_idx)
+{
+    if (reference_idx < 0 || (unsigned int)reference_idx >= imgcnt) return 0;
+    IMG *ref = NULL;
+    {
+        IMG *p = (IMG *)img_p;
+        for (int i = 0; p && i < reference_idx; i++) p = (IMG *)p->nxt_p;
+        ref = p;
+    }
+    if (!ref) return 0;
+
+    undo_push();
+    int count = 0;
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+        if (!(p->flags & 1)) continue;
+        if (p == ref) continue;
+        p->anix = ref->anix;
+        p->aniy = ref->aniy;
+        count++;
     }
     return count;
 }
