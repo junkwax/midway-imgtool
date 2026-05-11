@@ -209,6 +209,13 @@ static bool g_palette_nav = false;
 /* Hue shift slider state (reset on palette change) */
 static int g_hue_slider = 0;
 static int g_hue_last = 0;
+/* Saturation: -100..+100 maps to a multiplicative scale (e.g. -100 = grayscale,
+   +100 = saturation doubled and clamped). Lightness: -100..+100 maps to an
+   additive shift in HSL L space (e.g. +50 lifts everything halfway to white). */
+static int g_sat_slider = 0;
+static int g_sat_last = 0;
+static int g_light_slider = 0;
+static int g_light_last = 0;
 static unsigned char g_palette_baseline[512];
 static int g_palette_baseline_nc = 0;
 
@@ -887,6 +894,10 @@ static void ClearAll(void)
     g_palette_nav = false;
     g_hue_slider  = 0;
     g_hue_last    = 0;
+    g_sat_slider  = 0;
+    g_sat_last    = 0;
+    g_light_slider = 0;
+    g_light_last   = 0;
     g_palette_baseline_nc = 0;
 }
 
@@ -2517,25 +2528,50 @@ static void palette_writeback(int color_idx)
     rgb8_to_pal_word(c.r, c.g, c.b, (unsigned char *)pal->data_p + color_idx * 2);
 }
 
-static void hue_shift_palette(int delta_deg)
+/* Rebuild the working palette from the baseline by applying the three HSL
+ * sliders' current absolute values. Saturation and lightness must run off
+ * the baseline (not the previous frame) because both are lossy at the
+ * extremes — once a color hits 0% saturation there's no hue info left to
+ * restore, so a delta-based slider would only ratchet one way. Hue is
+ * non-lossy and could be incremental, but doing all three from baseline
+ * means Reset is just sliders -> 0 and the math stays trivial. */
+static void hsl_adjust_palette_from_baseline(int hue_deg, int sat_pct, int light_pct)
 {
     PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
-    if (!pal || !pal->data_p || delta_deg == 0) return;
+    if (!pal || !pal->data_p) return;
+    if (g_palette_baseline_nc == 0) return;
     g_dirty = true;
 
-    float dh = (float)delta_deg / 360.0f;
+    float dh = (float)hue_deg / 360.0f;
+    float ds = (float)sat_pct  / 100.0f;     /* -1..+1, additive on s */
+    float dl = (float)light_pct / 100.0f;    /* -1..+1, additive on l */
+
     int n = (int)pal->numc;
     if (n > 256) n = 256;
+    if (n > g_palette_baseline_nc) n = g_palette_baseline_nc;
 
     bool any_sel = false;
     for (int i = 0; i < n; i++) if (g_palette_selection[i]) { any_sel = true; break; }
 
     for (int i = 0; i < n; i++) {
-        if (any_sel && !g_palette_selection[i]) continue;
+        if (any_sel && !g_palette_selection[i]) {
+            /* Restore this color verbatim from baseline so an active slider
+             * doesn't bleed onto unselected swatches. */
+            unsigned char rr, gg, bb;
+            pal_word_to_rgb8(g_palette_baseline + i * 2, &rr, &gg, &bb);
+            g_palette[i].r = rr;
+            g_palette[i].g = gg;
+            g_palette[i].b = bb;
+            memcpy((unsigned char *)pal->data_p + i * 2,
+                   g_palette_baseline + i * 2, 2);
+            continue;
+        }
 
-        float r = (float)g_palette[i].r / 255.0f;
-        float g = (float)g_palette[i].g / 255.0f;
-        float b = (float)g_palette[i].b / 255.0f;
+        unsigned char br, bg, bb;
+        pal_word_to_rgb8(g_palette_baseline + i * 2, &br, &bg, &bb);
+        float r = (float)br / 255.0f;
+        float g = (float)bg / 255.0f;
+        float b = (float)bb / 255.0f;
 
         float mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
         float mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
@@ -2554,6 +2590,14 @@ static void hue_shift_palette(int delta_deg)
         h += dh;
         if (h < 0.0f) h += 1.0f;
         if (h >= 1.0f) h -= 1.0f;
+
+        s += ds;
+        if (s < 0.0f) s = 0.0f;
+        if (s > 1.0f) s = 1.0f;
+
+        l += dl;
+        if (l < 0.0f) l = 0.0f;
+        if (l > 1.0f) l = 1.0f;
 
         auto hue2rgb = [](float p, float q, float t) -> float {
             if (t < 0.0f) t += 1.0f;
@@ -2586,6 +2630,14 @@ static void hue_shift_palette(int delta_deg)
     }
 }
 
+/* Back-compat shim: existing call sites use hue_shift_palette(delta_deg).
+ * Reroute through the baseline-aware adjuster using the cumulative slider
+ * state already maintained in g_hue_slider. delta_deg is ignored. */
+static void hue_shift_palette(int /*delta_deg*/)
+{
+    hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
+}
+
 static void save_palette_baseline(void)
 {
     PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
@@ -2607,6 +2659,10 @@ static void reset_palette_to_baseline(void)
     ApplyPalette(plselected);
     g_hue_slider = 0;
     g_hue_last   = 0;
+    g_sat_slider = 0;
+    g_sat_last   = 0;
+    g_light_slider = 0;
+    g_light_last   = 0;
     g_dirty = true;
 }
 
@@ -4054,6 +4110,10 @@ void imgui_overlay_render(void)
         g_img_tex_idx = -2; /* Force texture rebuild to use new palette */
         g_hue_slider = 0;
         g_hue_last   = 0;
+        g_sat_slider = 0;
+        g_sat_last   = 0;
+        g_light_slider = 0;
+        g_light_last   = 0;
         save_palette_baseline();
     }
 
@@ -4535,18 +4595,44 @@ void imgui_overlay_render(void)
                 palette_writeback(g_sel_color);
             }
             ImGui::Separator();
+            bool any_sel = false;
+            for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) { any_sel = true; break; }
+            if (any_sel) {
+                int n_sel = 0;
+                for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) n_sel++;
+                ImGui::TextDisabled("HSL adjustments target %d selected swatch%s (Ctrl/Shift-click to add).",
+                                    n_sel, n_sel == 1 ? "" : "es");
+            } else {
+                ImGui::TextDisabled("HSL adjustments target the whole palette. Ctrl/Shift-click swatches to scope to a subset.");
+            }
             ImGui::Text("Hue");
             ImGui::SetNextItemWidth(-1);
             if (ImGui::SliderInt("##hue", &g_hue_slider, -180, 180)) {
-                int delta = g_hue_slider - g_hue_last;
                 g_hue_last = g_hue_slider;
-                hue_shift_palette(delta);
+                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
             }
+            ImGui::Text("Saturation");
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("##sat", &g_sat_slider, -100, 100, "%d%%")) {
+                g_sat_last = g_sat_slider;
+                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = grayscale, +100 = fully saturated. Makes a yellow more yellow at positive values.");
+            ImGui::Text("Lightness");
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("##light", &g_light_slider, -100, 100, "%d%%")) {
+                g_light_last = g_light_slider;
+                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = black, +100 = white.");
             if (ImGui::SmallButton("Reset")) {
+                g_hue_slider = g_hue_last = 0;
+                g_sat_slider = g_sat_last = 0;
+                g_light_slider = g_light_last = 0;
                 reset_palette_to_baseline();
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton("New from Hue")) {
+            if (ImGui::SmallButton("New from HSL")) {
                 PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
                 if (src && src->data_p) {
                     PAL *pal = (PAL *)AllocPal();
@@ -4565,6 +4651,10 @@ void imgui_overlay_render(void)
                             ApplyPalette(plselected);
                             g_hue_slider = 0;
                             g_hue_last   = 0;
+                            g_sat_slider = 0;
+                            g_sat_last   = 0;
+                            g_light_slider = 0;
+                            g_light_last   = 0;
                             g_dirty = true;
                         }
                     }
