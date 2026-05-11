@@ -2969,6 +2969,673 @@ void imgui_overlay_mark_saved(void)
 /* =========================================================
    Main render function — called each frame
    ========================================================= */
+/* ---- Modal dialogs ---- */
+
+static void DrawRenameDialog(void)
+{
+    const char *rename_title =
+        g_rename_target == RenameTarget::Image          ? "Rename Image" :
+        g_rename_target == RenameTarget::Palette        ? "Rename Palette" :
+                                                          "Rename Marked Images";
+    if (g_show_rename) ImGui::OpenPopup(rename_title);
+    if (!ImGui::BeginPopupModal(rename_title, &g_show_rename, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    if (g_rename_target == RenameTarget::MarkedImages) {
+        ImGui::TextWrapped("Base name. Prefix with '+' to prepend "
+                           "to existing names; otherwise the base is "
+                           "used with a numeric suffix (1, 2, 3, ...).");
+    } else if (g_rename_target == RenameTarget::Image) {
+        IMG *img = get_img(g_rename_idx);
+        if (img) ImGui::Text("Rename: %s", img->n_s);
+    } else {
+        PAL *pal = get_pal(g_rename_idx);
+        if (pal) ImGui::Text("Rename: %s", pal->n_s);
+    }
+    const int maxlen = g_rename_target == RenameTarget::Palette ? 10 : 16;
+    ImGui::InputText("##rn", g_rename_buf,
+                     (size_t)maxlen < sizeof(g_rename_buf) ? maxlen : sizeof(g_rename_buf));
+    if (ImGui::Button("OK", ImVec2(100, 0))) {
+        if (g_rename_target == RenameTarget::Image) {
+            IMG *img = get_img(g_rename_idx);
+            if (img) {
+                undo_push();
+                strncpy(img->n_s, g_rename_buf, 15);
+                img->n_s[15] = '\0';
+            }
+        } else if (g_rename_target == RenameTarget::Palette) {
+            PAL *pal = get_pal(g_rename_idx);
+            if (pal) {
+                undo_push();
+                strncpy(pal->n_s, g_rename_buf, 9);
+                pal->n_s[9] = '\0';
+            }
+        } else {
+            ApplyMarkedImageRename(g_rename_buf);
+        }
+        g_show_rename = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_rename = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawLoad2VerifyDialog(void)
+{
+    if (g_show_load2_verify) ImGui::OpenPopup("LOAD2 Packing Verify");
+    if (!ImGui::BeginPopupModal("LOAD2 Packing Verify", &g_show_load2_verify,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::Text("Checked %d image%s against pristine baseline",
+                g_load2_report.imgs_checked,
+                g_load2_report.imgs_checked == 1 ? "" : "s");
+    if (g_load2_report.imgs_no_baseline > 0) {
+        ImGui::TextDisabled("(%d had no baseline — new/duplicated, "
+                            "skipped shape check)",
+                            g_load2_report.imgs_no_baseline);
+    }
+    ImGui::Separator();
+    ImGui::Text("PPP: %d  (palette-colors limit = %d)",
+                g_load2_ppp,
+                g_load2_ppp > 0 ? (1 << g_load2_ppp) : 0);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80.0f);
+    if (ImGui::InputInt("##ppp", &g_load2_ppp, 1, 0)) {
+        if (g_load2_ppp < 0) g_load2_ppp = 0;
+        if (g_load2_ppp > 8) g_load2_ppp = 8;
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("/3 Limit (Max Scales)", &g_load2_limit_scales_to_3);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Warns if any image uses an eighth scale (M_COPIES=3).");
+    ImGui::SameLine();
+    if (ImGui::Button("Re-check")) {
+        g_load2_report = VerifyLoad2Packing(g_load2_ppp, g_load2_limit_scales_to_3);
+        g_load2_selected_idx = -1;
+    }
+    ImGui::Separator();
+
+    if (g_load2_report.issues.empty()) {
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
+                           "OK — no SAG-breaking edits detected.");
+    } else {
+        ImGui::Text("Breaking: %d   Warnings: %d",
+                    g_load2_report.break_count,
+                    g_load2_report.warn_count);
+        ImGui::Spacing();
+        ImGui::BeginChild("l2_issues", ImVec2(640, 280), true);
+        for (size_t i = 0; i < g_load2_report.issues.size(); i++) {
+            auto &iss = g_load2_report.issues[i];
+            bool is_sel = ((int)i == g_load2_selected_idx);
+            ImVec4 col = iss.sev == L2Severity::Break
+                ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f)
+                : ImVec4(1.0f, 0.85f, 0.4f,  1.0f);
+            ImGui::PushID((int)i);
+            char hdr[40];
+            snprintf(hdr, sizeof(hdr), "[%4d] %-15s", iss.img_idx, iss.img_name.c_str());
+            if (ImGui::Selectable("##row", is_sel, ImGuiSelectableFlags_AllowItemOverlap,
+                                  ImVec2(0, 0))) {
+                g_load2_selected_idx = (int)i;
+                if (iss.img_idx >= 0) ilselected = iss.img_idx;
+                if (iss.sev == L2Severity::Break) {
+                    update_drift_texture(get_img(iss.img_idx));
+                }
+            }
+            ImGui::SameLine();
+            ImGui::TextColored(col, "%s", hdr);
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", iss.message.c_str());
+            ImGui::PopID();
+            ImGui::Separator();
+        }
+        ImGui::EndChild();
+
+        if (g_load2_selected_idx >= 0
+            && g_load2_selected_idx < (int)g_load2_report.issues.size())
+        {
+            auto &sel = g_load2_report.issues[g_load2_selected_idx];
+            IMG *si = get_img(sel.img_idx);
+            if (sel.sev == L2Severity::Break && si && si->baseline_p) {
+                if (!g_load2_drift_tex
+                    || g_load2_drift_tex_w != (int)si->w
+                    || g_load2_drift_tex_h != (int)si->h)
+                {
+                    update_drift_texture(si);
+                }
+                if (g_load2_drift_tex) {
+                    ImGui::Spacing();
+                    ImGui::TextDisabled("Red rows = zero-shape drift "
+                                        "(silhouette differs from baseline)");
+                    float scale = (si->w < 64) ? 4.0f : (si->w < 128) ? 3.0f : 2.0f;
+                    ImVec2 sz((float)si->w * scale, (float)si->h * scale);
+                    ImGui::Image((ImTextureID)(intptr_t)g_load2_drift_tex, sz);
+                }
+            } else if (sel.sev != L2Severity::Break) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("(no drift visualization for warnings)");
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Close")) {
+        g_show_load2_verify = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawPaletteHistogramDialog(void)
+{
+    if (g_show_histogram) ImGui::OpenPopup("Palette Histogram");
+    if (!ImGui::BeginPopupModal("Palette Histogram", &g_show_histogram, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::Text("Images using this palette: %d", g_histogram_img_count);
+    ImGui::Text("Max occurrences (excluding index 0): %.0f", g_histogram_max);
+    ImGui::Spacing();
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float width = 512.0f;
+    float height = 150.0f;
+
+    draw_list->AddRectFilled(p, ImVec2(p.x + width, p.y + height), IM_COL32(20, 20, 20, 255));
+
+    float bar_w = width / 256.0f;
+    for (int i = 0; i < 256; i++) {
+        float val = g_histogram_data[i];
+        if (val > 0.0f) {
+            float bar_h = (val / g_histogram_max) * height;
+            if (bar_h > height) bar_h = height;
+            if (bar_h < 1.0f) bar_h = 1.0f;
+
+            ImVec2 p_min = ImVec2(p.x + i * bar_w, p.y + height - bar_h);
+            ImVec2 p_max = ImVec2(p.x + (i + 1) * bar_w, p.y + height);
+
+            SDL_Color c = g_palette[i];
+            draw_list->AddRectFilled(p_min, p_max, IM_COL32(c.r, c.g, c.b, 255));
+        }
+    }
+
+    ImGui::Dummy(ImVec2(width, height));
+
+    ImGui::Spacing();
+    if (ImGui::Button("Close", ImVec2(120, 0))) {
+        g_show_histogram = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawAutoChopDialog(void)
+{
+    if (g_show_auto_chop) ImGui::OpenPopup("Auto-Chop Sprite");
+    if (!ImGui::BeginPopupModal("Auto-Chop Sprite", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::TextWrapped("Slices marked images into a grid, trims empty space,\n"
+                       "and recalculates their ANIX/ANIY so they align perfectly in-game.");
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::InputInt("Grid Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::InputInt("Grid Height", &g_chop_h)) { if (g_chop_h < 1) g_chop_h = 1; }
+    ImGui::Checkbox("Trim empty space (Highly recommended)", &g_chop_trim);
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Chop", ImVec2(100, 0))) {
+        int count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim);
+        if (count > 0) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "Auto-chopped into %d piece(s).", count);
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "No pieces generated (check marks).");
+        }
+        g_restore_msg_timer = 4.0f;
+        g_show_auto_chop = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_auto_chop = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawBulkRestoreRegexDialog(void)
+{
+    if (g_show_restore_regex) ImGui::OpenPopup("Bulk Restore via Regex");
+    if (!ImGui::BeginPopupModal("Bulk Restore via Regex", &g_show_restore_regex, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::TextWrapped("Uses a regex to map child names to parent names across the entire file.\n"
+                       "Capture group 1 (\\1) is used as the parent name.\n"
+                       "Example: ^(.+)[A-Z]$ maps JCJUMPFLIP1A -> JCJUMPFLIP1");
+    ImGui::Spacing();
+
+    ImGui::Text("Mode:");
+    ImGui::SameLine();
+    ImGui::RadioButton("Diff (preserve hand-tuning)", &g_restore_diff_mode, 1);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Only the pixels you EDITED on the master are\n"
+                          "propagated into children. Every untouched\n"
+                          "pixel in each child stays as-is.\n"
+                          "(Right choice for adding a logo, edge tweak, etc.)");
+    ImGui::SameLine();
+    ImGui::RadioButton("Replace (overwrite child bbox)", &g_restore_diff_mode, 0);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Wipes each child to zero, then fills its bbox\n"
+                          "with parent pixels. Clobbers hand-tuned\n"
+                          "per-piece details.");
+    ImGui::SameLine();
+    ImGui::RadioButton("Reconstruct from Parent", &g_restore_diff_mode, 2);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Treats parent as ground truth. For every child\n"
+                          "pixel that diverges from the parent (after\n"
+                          "anipoint-relative shift), copies the parent's\n"
+                          "value into the child.\n"
+                          "Use to restore censored / blacked-out regions\n"
+                          "where the master still has the original detail.");
+    ImGui::Spacing();
+
+    bool pattern_changed = ImGui::InputText("Regex Pattern", g_restore_regex_buf, sizeof(g_restore_regex_buf));
+    if (pattern_changed) {
+        g_restore_regex_tested = false;
+        g_restore_regex_error = false;
+        g_restore_matches.clear();
+    }
+
+    if (!g_restore_regex_tested) {
+        if (ImGui::Button("Preview Matches", ImVec2(120, 0))) {
+            g_restore_matches.clear();
+            g_restore_regex_error = false;
+            std::regex re;
+            try {
+                re = std::regex(g_restore_regex_buf);
+                for (IMG *child = (IMG *)img_p; child; child = (IMG *)child->nxt_p) {
+                    if (!child->data_p || child->w == 0 || child->h == 0) continue;
+                    std::string name(child->n_s);
+                    std::smatch match;
+                    if (std::regex_match(name, match, re) && match.size() > 1) {
+                        std::string parent_name = match[1].str();
+                        IMG *parent = NULL;
+                        for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+                            if (parent_name == p->n_s) {
+                                parent = p;
+                                break;
+                            }
+                        }
+                        if (parent && parent->data_p && parent->w > 0 && parent->h > 0 && parent != child
+                            && parent->palnum == child->palnum) {
+                            g_restore_matches.push_back({child, parent, true, 0, 0});
+                        }
+                    }
+                }
+                std::sort(g_restore_matches.begin(), g_restore_matches.end(), [](const BulkRestoreMatch& a, const BulkRestoreMatch& b) {
+                    int cmp = strcmp(a.parent->n_s, b.parent->n_s);
+                    if (cmp != 0) return cmp < 0;
+                    return strcmp(a.child->n_s, b.child->n_s) < 0;
+                });
+                ComputeBulkRestoreCoverage(g_restore_matches);
+                g_restore_regex_tested = true;
+            } catch (const std::regex_error&) {
+                g_restore_regex_error = true;
+            }
+        }
+        if (g_restore_regex_error) {
+            ImGui::TextColored(ImVec4(1, 0, 0, 1), "Regex Error: invalid pattern");
+        }
+    } else {
+        int partial_count = 0;
+        for (auto& m : g_restore_matches) {
+            if (m.total_pixels > 0 && m.covered_pixels < m.total_pixels) partial_count++;
+        }
+        ImGui::Text("Found %d match(es). Select items to restore:", (int)g_restore_matches.size());
+        if (partial_count > 0) {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                "%d match%s with partial coverage (anipoint shift pushes parent rect "
+                "out of bounds). Pairs mode will zero-fill the uncovered area.",
+                partial_count, partial_count == 1 ? "" : "es");
+        }
+        ImGui::BeginChild("MatchesList", ImVec2(520, 220), true);
+        std::string last_parent = "";
+        for (size_t i = 0; i < g_restore_matches.size(); i++) {
+            BulkRestoreMatch& m = g_restore_matches[i];
+            std::string current_parent = m.parent->n_s;
+            if (current_parent != last_parent) {
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", current_parent.c_str());
+                last_parent = current_parent;
+            }
+            ImGui::Indent(16.0f);
+            char label[128];
+            snprintf(label, sizeof(label), "%s##%zu", m.child->n_s, i);
+            bool partial = m.total_pixels > 0 && m.covered_pixels < m.total_pixels;
+            if (partial) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.55f, 1.0f));
+            ImGui::Checkbox(label, &m.selected);
+            if (partial) ImGui::PopStyleColor();
+            if (m.total_pixels > 0) {
+                ImGui::SameLine();
+                int pct = (int)((100.0 * m.covered_pixels) / m.total_pixels + 0.5);
+                if (partial) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f),
+                                       "(%d%% covered)", pct);
+                } else {
+                    ImGui::TextDisabled("(100%%)");
+                }
+            }
+            ImGui::Unindent(16.0f);
+        }
+        ImGui::EndChild();
+
+        if (ImGui::Button("Select All")) {
+            for (auto& m : g_restore_matches) m.selected = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Deselect All")) {
+            for (auto& m : g_restore_matches) m.selected = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Deselect Partial")) {
+            for (auto& m : g_restore_matches) {
+                if (m.total_pixels > 0 && m.covered_pixels < m.total_pixels) m.selected = false;
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(!g_restore_regex_tested || g_restore_matches.empty());
+    if (ImGui::Button("Start Restore", ImVec2(120, 0))) {
+        int n = 0;
+        const char *verb_done = "Restored";
+        const char *verb_zero = "restored";
+        switch (g_restore_diff_mode) {
+            case 1:
+                n = ExecuteBulkRestoreDiff(g_restore_matches);
+                verb_done = "Diff-restored"; verb_zero = "diffed";
+                break;
+            case 2:
+                n = ExecuteBulkRestoreReconstruct(g_restore_matches);
+                verb_done = "Reconstructed"; verb_zero = "reconstructed";
+                break;
+            default:
+                n = ExecuteBulkRestorePairs(g_restore_matches);
+                break;
+        }
+        if (n > 0) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "%s %d child image(s) from their parents.",
+                     verb_done, n);
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "0 images %s.", verb_zero);
+        }
+        g_restore_msg_timer = 6.0f;
+
+        g_show_restore_regex = false;
+        g_restore_regex_tested = false;
+        g_restore_matches.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_restore_regex = false;
+        g_restore_regex_tested = false;
+        g_restore_matches.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawDebugInfoModal(void)
+{
+    if (g_show_debug) ImGui::OpenPopup("Debug Info");
+    if (!ImGui::BeginPopupModal("Debug Info", &g_show_debug, ImGuiWindowFlags_NoMove)) return;
+    ImGui::SetNextWindowSize(ImVec2(520, 580), ImGuiCond_Always);
+
+    if (ImGui::CollapsingHeader("LIB_HDR", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("IMGCNT:  %u",     imgcnt);
+        ImGui::Text("PALCNT:  %u",     palcnt);
+        ImGui::Text("SEQCNT:  %u",     seqcnt);
+        ImGui::Text("SCRCNT:  %u",     scrcnt);
+        ImGui::Text("DAMCNT:  %u",     damcnt);
+        ImGui::Text("VERSION: 0x%04X", fileversion);
+        ImGui::Separator();
+        ImGui::TextDisabled("SEQSCR/ENTRY blob (load-time, round-trips on save):");
+        if (scrseqmem_p && scrseqbytes > 0) {
+            ImGui::Text("SCRSEQBYTES:  %u bytes", scrseqbytes);
+        } else {
+            ImGui::TextDisabled("SCRSEQBYTES:  0  (no seq/scr in file)");
+        }
+    }
+
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (ImGui::CollapsingHeader("IMAGE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (img) {
+            ImGui::Text("NXT_p:    %p",       img->nxt_p);
+            ImGui::Text("N_s:      %.15s",    img->n_s);
+            ImGui::Text("FLAGS:    0x%04X",   (int)img->flags);
+            ImGui::Text("ANIX:     %d",       (int)(short)img->anix);
+            ImGui::Text("ANIY:     %d",       (int)(short)img->aniy);
+            ImGui::Text("W:        %d",       (int)img->w);
+            ImGui::Text("H:        %d",       (int)img->h);
+            ImGui::Text("PALNUM:   %d",       (int)img->palnum);
+            ImGui::Text("DATA_p:   %p",       img->data_p);
+            if (img->pttbl_p) ImGui::Text("PTTBL_p:  %p", img->pttbl_p);
+            else ImGui::TextDisabled("PTTBL_p:  NULL");
+            ImGui::Text("ANIX2:    %d",       (int)(short)img->anix2);
+            ImGui::Text("ANIY2:    %d",       (int)(short)img->aniy2);
+            ImGui::Text("ANIZ2:    %d",       (int)(short)img->aniz2);
+            ImGui::Text("OPALS:    0x%04X",   (int)img->opals);
+            ImGui::Text("TEMP:     %p",       img->temp);
+        } else {
+            ImGui::TextDisabled("No image selected");
+        }
+    }
+    if (ImGui::CollapsingHeader("IMAGE_disk (load-time)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (img) {
+            ImGui::Text("FILE_OSET:    0x%X (%u)", img->file_oset, img->file_oset);
+            ImGui::Text("FILE_LIB:     %u",        (unsigned)img->file_lib);
+            ImGui::Text("FILE_FRM:     %u",        (unsigned)img->file_frm);
+            if (img->file_pttblnum == 0xFFFF)
+                ImGui::TextDisabled("FILE_PTTBLNUM: 0xFFFF (none)");
+            else
+                ImGui::Text("FILE_PTTBLNUM: %u",  (unsigned)img->file_pttblnum);
+            if (!(img->flags & 0x0080)) {
+                unsigned int stride = ((unsigned int)img->w + 3u) & ~3u;
+                ImGui::Text("PIX_SIZE:     %u bytes (uncompressed, %ux%u)",
+                            stride * (unsigned)img->h,
+                            (unsigned)img->w, (unsigned)img->h);
+            } else {
+                ImGui::TextDisabled("PIX_SIZE:     CMP — variable per row");
+            }
+        } else {
+            ImGui::TextDisabled("No image selected");
+        }
+    }
+
+    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    if (ImGui::CollapsingHeader("PALETTE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (pal) {
+            ImGui::Text("NXT_p:    %p",       pal->nxt_p);
+            ImGui::Text("N_s:      %.9s",     pal->n_s);
+            ImGui::Text("FLAGS:    0x%02X",   pal->flags);
+            ImGui::Text("BITSPIX:  %u",       pal->bitspix);
+            ImGui::Text("NUMC:     %u",       pal->numc);
+            ImGui::Text("PAD:      0x%04X",   pal->pad);
+            ImGui::Text("DATA_p:   %p",       pal->data_p);
+            ImGui::Text("TEMP:     %p",       pal->temp);
+            ImGui::Separator();
+            ImGui::TextDisabled("PALETTE_disk fields (lib/colind/cmap/oset)");
+            ImGui::TextDisabled("are not currently retained at load.");
+        } else {
+            ImGui::TextDisabled("No palette selected");
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Close", ImVec2(120, 0))) {
+        g_show_debug = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("F9 to toggle");
+    ImGui::EndPopup();
+}
+
+static void DrawNewImgConfirm(void)
+{
+    if (g_show_new_img_confirm) ImGui::OpenPopup("New IMG");
+    if (!ImGui::BeginPopupModal("New IMG", &g_show_new_img_confirm, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    ImGui::Text("Discard all loaded images and palettes?");
+    ImGui::Text("This cannot be undone.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("New", ImVec2(80, 0))) {
+        ClearAll();
+        fileversion = 0x0634;
+        fname_s[0]  = 0;
+        g_undo_count = 0;
+        g_undo_idx   = 0;
+        g_show_new_img_confirm = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        g_show_new_img_confirm = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawUnsavedChangesConfirm(void)
+{
+    if (g_pending_quit && !g_show_unsaved_confirm) {
+        if (g_dirty && imgcnt > 0) {
+            g_show_unsaved_confirm = true;
+        }
+    }
+    if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
+    if (!ImGui::BeginPopupModal("Unsaved Changes", &g_show_unsaved_confirm, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    ImGui::Text("You have unsaved changes.");
+    ImGui::Text("Do you want to save before quitting?");
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Save", ImVec2(80, 0))) {
+        g_show_unsaved_confirm = false;
+        ImGui::CloseCurrentPopup();
+        if (fname_s[0] != '\0') {
+            SaveImgFile();
+            g_dirty = false;
+        } else {
+            g_pending_quit = false;
+            OpenFileDialog(FileDialogMode::SaveImg);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Discard", ImVec2(80, 0))) {
+        g_show_unsaved_confirm = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        g_show_unsaved_confirm = false;
+        g_pending_quit = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawHelpModal(void)
+{
+    if (g_show_help) ImGui::OpenPopup("Help");
+    if (!ImGui::BeginPopupModal("Help", &g_show_help,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) return;
+    ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_Always);
+    if (ImGui::BeginChild("##helpscroll", ImVec2(680, 420), true)) {
+        ImGui::TextUnformatted(g_help_text);
+        ImGui::EndChild();
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Close", ImVec2(120, 0))) {
+        g_show_help = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawAboutModal(void)
+{
+    if (g_show_about) ImGui::OpenPopup("About Imgtool");
+    if (ImGui::BeginPopupModal("About Imgtool", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Imgtool");
+        ImGui::Separator();
+        ImGui::Text("A modern port of the 1992 Midway Image Tool.");
+        ImGui::Spacing();
+        ImGui::Text("Build: %s %s", __DATE__, __TIME__);
+#ifdef IMGTOOL_GIT_REV
+        ImGui::Text("Commit: %s", IMGTOOL_GIT_REV);
+#endif
+        ImGui::Text("ImGui: %s", IMGUI_VERSION);
+        ImGui::Spacing();
+        ImGui::TextLinkOpenURL("https://github.com/junkwax/midway-imgtool");
+        ImGui::Spacing();
+        if (ImGui::Button("Close", ImVec2(120, 0))) {
+            g_show_about = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+static void DrawVerboseLogWindow(void)
+{
+    if (!g_verbose) return;
+    ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Verbose Logging", &g_verbose)) {
+        if (ImGui::Button("Clear")) { g_log_lines.clear(); }
+        ImGui::SameLine();
+        if (ImGui::Button("Copy to Clipboard")) {
+            std::string all_logs;
+            for (const auto& s : g_log_lines) all_logs += s + "\n";
+            ImGui::SetClipboardText(all_logs.c_str());
+        }
+        ImGui::Separator();
+        ImGui::BeginChild("scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+        for (const auto& s : g_log_lines) {
+            ImGui::TextUnformatted(s.c_str());
+        }
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
+        ImGui::EndChild();
+    }
+    ImGui::End();
+}
+
+static void DrawTransientToast(float dt)
+{
+    if (g_restore_msg_timer <= 0.0f) return;
+    g_restore_msg_timer -= dt;
+    ImGuiIO &io = ImGui::GetIO();
+    float sw = io.DisplaySize.x;
+    float sh = io.DisplaySize.y;
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    ImGui::SetNextWindowPos(ImVec2(sw * 0.5f, sh - 60), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+    if (ImGui::Begin("##toast", NULL,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing)) {
+        ImGui::TextUnformatted(g_restore_msg);
+    }
+    ImGui::End();
+}
+
 void imgui_overlay_render(void)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -5231,664 +5898,30 @@ void imgui_overlay_render(void)
             ImGui::PopStyleVar();
     ImGui::End();
 
-    /* ===== RENAME DIALOG ===== */
-    const char *rename_title =
-        g_rename_target == RenameTarget::Image          ? "Rename Image" :
-        g_rename_target == RenameTarget::Palette        ? "Rename Palette" :
-                                                          "Rename Marked Images";
-    if (g_show_rename) ImGui::OpenPopup(rename_title);
-    if (ImGui::BeginPopupModal(rename_title, &g_show_rename, ImGuiWindowFlags_AlwaysAutoResize)) {
-        if (g_rename_target == RenameTarget::MarkedImages) {
-            ImGui::TextWrapped("Base name. Prefix with '+' to prepend "
-                               "to existing names; otherwise the base is "
-                               "used with a numeric suffix (1, 2, 3, ...).");
-        } else if (g_rename_target == RenameTarget::Image) {
-            IMG *img = get_img(g_rename_idx);
-            if (img) ImGui::Text("Rename: %s", img->n_s);
-        } else {
-            PAL *pal = get_pal(g_rename_idx);
-            if (pal) ImGui::Text("Rename: %s", pal->n_s);
-        }
-        /* Cap input width to whatever the destination field can hold. */
-        const int maxlen =
-            g_rename_target == RenameTarget::Palette ? 10 : 16;
-        ImGui::InputText("##rn", g_rename_buf,
-                         (size_t)maxlen < sizeof(g_rename_buf) ? maxlen : sizeof(g_rename_buf));
-        if (ImGui::Button("OK", ImVec2(100, 0))) {
-            if (g_rename_target == RenameTarget::Image) {
-                IMG *img = get_img(g_rename_idx);
-                if (img) {
-                    undo_push();
-                    strncpy(img->n_s, g_rename_buf, 15);
-                    img->n_s[15] = '\0';
-                }
-            } else if (g_rename_target == RenameTarget::Palette) {
-                PAL *pal = get_pal(g_rename_idx);
-                if (pal) {
-                    undo_push();
-                    strncpy(pal->n_s, g_rename_buf, 9);
-                    pal->n_s[9] = '\0';
-                }
-            } else {
-                ApplyMarkedImageRename(g_rename_buf);
-            }
-            g_show_rename = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-            g_show_rename = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
+    DrawRenameDialog();
 
-    /* ===== LOAD2 PACKING VERIFY DIALOG ===== */
-    if (g_show_load2_verify) ImGui::OpenPopup("LOAD2 Packing Verify");
-    if (ImGui::BeginPopupModal("LOAD2 Packing Verify", &g_show_load2_verify,
-                               ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("Checked %d image%s against pristine baseline",
-                    g_load2_report.imgs_checked,
-                    g_load2_report.imgs_checked == 1 ? "" : "s");
-        if (g_load2_report.imgs_no_baseline > 0) {
-            ImGui::TextDisabled("(%d had no baseline — new/duplicated, "
-                                "skipped shape check)",
-                                g_load2_report.imgs_no_baseline);
-        }
-        ImGui::Separator();
-        ImGui::Text("PPP: %d  (palette-colors limit = %d)",
-                    g_load2_ppp,
-                    g_load2_ppp > 0 ? (1 << g_load2_ppp) : 0);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::InputInt("##ppp", &g_load2_ppp, 1, 0)) {
-            if (g_load2_ppp < 0) g_load2_ppp = 0;
-            if (g_load2_ppp > 8) g_load2_ppp = 8;
-        }
-        ImGui::SameLine();
-        ImGui::Checkbox("/3 Limit (Max Scales)", &g_load2_limit_scales_to_3);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Warns if any image uses an eighth scale (M_COPIES=3).");
-        ImGui::SameLine();
-        if (ImGui::Button("Re-check")) {
-            g_load2_report = VerifyLoad2Packing(g_load2_ppp, g_load2_limit_scales_to_3);
-            g_load2_selected_idx = -1;
-        }
-        ImGui::Separator();
+    DrawLoad2VerifyDialog();
 
-        if (g_load2_report.issues.empty()) {
-            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
-                               "OK — no SAG-breaking edits detected.");
-        } else {
-            ImGui::Text("Breaking: %d   Warnings: %d",
-                        g_load2_report.break_count,
-                        g_load2_report.warn_count);
-            ImGui::Spacing();
-            ImGui::BeginChild("l2_issues", ImVec2(640, 280), true);
-            for (size_t i = 0; i < g_load2_report.issues.size(); i++) {
-                auto &iss = g_load2_report.issues[i];
-                bool is_sel = ((int)i == g_load2_selected_idx);
-                ImVec4 col = iss.sev == L2Severity::Break
-                    ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f)
-                    : ImVec4(1.0f, 0.85f, 0.4f,  1.0f);
-                ImGui::PushID((int)i);
-                char hdr[40];
-                snprintf(hdr, sizeof(hdr), "[%4d] %-15s", iss.img_idx, iss.img_name.c_str());
-                if (ImGui::Selectable("##row", is_sel, ImGuiSelectableFlags_AllowItemOverlap,
-                                      ImVec2(0, 0))) {
-                    g_load2_selected_idx = (int)i;
-                    if (iss.img_idx >= 0) ilselected = iss.img_idx;
-                    if (iss.sev == L2Severity::Break) {
-                        update_drift_texture(get_img(iss.img_idx));
-                    }
-                }
-                ImGui::SameLine();
-                ImGui::TextColored(col, "%s", hdr);
-                ImGui::SameLine();
-                ImGui::TextWrapped("%s", iss.message.c_str());
-                ImGui::PopID();
-                ImGui::Separator();
-            }
-            ImGui::EndChild();
+    DrawPaletteHistogramDialog();
 
-            /* ---- Drift visualization for the selected issue ---- */
-            if (g_load2_selected_idx >= 0
-                && g_load2_selected_idx < (int)g_load2_report.issues.size())
-            {
-                auto &sel = g_load2_report.issues[g_load2_selected_idx];
-                IMG *si = get_img(sel.img_idx);
-                if (sel.sev == L2Severity::Break && si && si->baseline_p) {
-                    if (!g_load2_drift_tex
-                        || g_load2_drift_tex_w != (int)si->w
-                        || g_load2_drift_tex_h != (int)si->h)
-                    {
-                        update_drift_texture(si);
-                    }
-                    if (g_load2_drift_tex) {
-                        ImGui::Spacing();
-                        ImGui::TextDisabled("Red rows = zero-shape drift "
-                                            "(silhouette differs from baseline)");
-                        float scale = (si->w < 64) ? 4.0f : (si->w < 128) ? 3.0f : 2.0f;
-                        ImVec2 sz((float)si->w * scale, (float)si->h * scale);
-                        ImGui::Image((ImTextureID)(intptr_t)g_load2_drift_tex, sz);
-                    }
-                } else if (sel.sev != L2Severity::Break) {
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("(no drift visualization for warnings)");
-                }
-            }
-        }
+    DrawAutoChopDialog();
 
-        ImGui::Spacing();
-        if (ImGui::Button("Close")) {
-            g_show_load2_verify = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
+    DrawBulkRestoreRegexDialog();
 
-    /* ===== PALETTE HISTOGRAM DIALOG ===== */
-    if (g_show_histogram) ImGui::OpenPopup("Palette Histogram");
-    if (ImGui::BeginPopupModal("Palette Histogram", &g_show_histogram, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Images using this palette: %d", g_histogram_img_count);
-        ImGui::Text("Max occurrences (excluding index 0): %.0f", g_histogram_max);
-        ImGui::Spacing();
-
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        float width = 512.0f; // 2 pixels per color bar
-        float height = 150.0f;
-
-        // Draw dark background for the chart
-        draw_list->AddRectFilled(p, ImVec2(p.x + width, p.y + height), IM_COL32(20, 20, 20, 255));
-
-        // Draw custom colored bars
-        float bar_w = width / 256.0f;
-        for (int i = 0; i < 256; i++) {
-            float val = g_histogram_data[i];
-            if (val > 0.0f) {
-                float bar_h = (val / g_histogram_max) * height;
-                if (bar_h > height) bar_h = height; // Clamp index 0 if it exceeds the max of the other colors
-                if (bar_h < 1.0f) bar_h = 1.0f;     // Guarantee visible colors show at least 1px height
-
-                ImVec2 p_min = ImVec2(p.x + i * bar_w, p.y + height - bar_h);
-                ImVec2 p_max = ImVec2(p.x + (i + 1) * bar_w, p.y + height);
-
-                SDL_Color c = g_palette[i];
-                draw_list->AddRectFilled(p_min, p_max, IM_COL32(c.r, c.g, c.b, 255));
-            }
-        }
-
-        ImGui::Dummy(ImVec2(width, height)); // Advance ImGui layout cursor past our custom draw area
-
-        ImGui::Spacing();
-        if (ImGui::Button("Close", ImVec2(120, 0))) {
-            g_show_histogram = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
-    /* ===== AUTO-CHOP SPRITE DIALOG ===== */
-    if (g_show_auto_chop) ImGui::OpenPopup("Auto-Chop Sprite");
-    if (ImGui::BeginPopupModal("Auto-Chop Sprite", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextWrapped("Slices marked images into a grid, trims empty space,\n"
-                           "and recalculates their ANIX/ANIY so they align perfectly in-game.");
-        ImGui::Spacing();
-        ImGui::SetNextItemWidth(100);
-        if (ImGui::InputInt("Grid Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
-        ImGui::SetNextItemWidth(100);
-        if (ImGui::InputInt("Grid Height", &g_chop_h)) { if (g_chop_h < 1) g_chop_h = 1; }
-        ImGui::Checkbox("Trim empty space (Highly recommended)", &g_chop_trim);
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        if (ImGui::Button("Chop", ImVec2(100, 0))) {
-            int count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim);
-            if (count > 0) {
-                snprintf(g_restore_msg, sizeof(g_restore_msg), "Auto-chopped into %d piece(s).", count);
-            } else {
-                snprintf(g_restore_msg, sizeof(g_restore_msg), "No pieces generated (check marks).");
-            }
-            g_restore_msg_timer = 4.0f;
-            g_show_auto_chop = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-            g_show_auto_chop = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
-    /* ===== BULK RESTORE REGEX DIALOG ===== */
-    if (g_show_restore_regex) ImGui::OpenPopup("Bulk Restore via Regex");
-    if (ImGui::BeginPopupModal("Bulk Restore via Regex", &g_show_restore_regex, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextWrapped("Uses a regex to map child names to parent names across the entire file.\n"
-                           "Capture group 1 (\\1) is used as the parent name.\n"
-                           "Example: ^(.+)[A-Z]$ maps JCJUMPFLIP1A -> JCJUMPFLIP1");
-        ImGui::Spacing();
-
-        ImGui::Text("Mode:");
-        ImGui::SameLine();
-        ImGui::RadioButton("Diff (preserve hand-tuning)", &g_restore_diff_mode, 1);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Only the pixels you EDITED on the master are\n"
-                              "propagated into children. Every untouched\n"
-                              "pixel in each child stays as-is.\n"
-                              "(Right choice for adding a logo, edge tweak, etc.)");
-        ImGui::SameLine();
-        ImGui::RadioButton("Replace (overwrite child bbox)", &g_restore_diff_mode, 0);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Wipes each child to zero, then fills its bbox\n"
-                              "with parent pixels. Clobbers hand-tuned\n"
-                              "per-piece details.");
-        ImGui::SameLine();
-        ImGui::RadioButton("Reconstruct from Parent", &g_restore_diff_mode, 2);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Treats parent as ground truth. For every child\n"
-                              "pixel that diverges from the parent (after\n"
-                              "anipoint-relative shift), copies the parent's\n"
-                              "value into the child.\n"
-                              "Use to restore censored / blacked-out regions\n"
-                              "where the master still has the original detail.");
-        ImGui::Spacing();
-        
-        bool pattern_changed = ImGui::InputText("Regex Pattern", g_restore_regex_buf, sizeof(g_restore_regex_buf));
-        if (pattern_changed) {
-            g_restore_regex_tested = false;
-            g_restore_regex_error = false;
-            g_restore_matches.clear();
-        }
-
-        if (!g_restore_regex_tested) {
-            if (ImGui::Button("Preview Matches", ImVec2(120, 0))) {
-                g_restore_matches.clear();
-                g_restore_regex_error = false;
-                std::regex re;
-                try {
-                    re = std::regex(g_restore_regex_buf);
-                    for (IMG *child = (IMG *)img_p; child; child = (IMG *)child->nxt_p) {
-                        if (!child->data_p || child->w == 0 || child->h == 0) continue;
-                        std::string name(child->n_s);
-                        std::smatch match;
-                        if (std::regex_match(name, match, re) && match.size() > 1) {
-                            std::string parent_name = match[1].str();
-                            IMG *parent = NULL;
-                            for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
-                                if (parent_name == p->n_s) {
-                                    parent = p;
-                                    break;
-                                }
-                            }
-                            if (parent && parent->data_p && parent->w > 0 && parent->h > 0 && parent != child
-                                && parent->palnum == child->palnum) {
-                                /* Same-palette only — pixel indices across different palettes
-                                 * map to different colors, producing garbled output. */
-                                g_restore_matches.push_back({child, parent, true, 0, 0});
-                            }
-                        }
-                    }
-                    std::sort(g_restore_matches.begin(), g_restore_matches.end(), [](const BulkRestoreMatch& a, const BulkRestoreMatch& b) {
-                        int cmp = strcmp(a.parent->n_s, b.parent->n_s);
-                        if (cmp != 0) return cmp < 0;
-                        return strcmp(a.child->n_s, b.child->n_s) < 0;
-                    });
-                    ComputeBulkRestoreCoverage(g_restore_matches);
-                    g_restore_regex_tested = true;
-                } catch (const std::regex_error&) {
-                    g_restore_regex_error = true;
-                }
-            }
-            if (g_restore_regex_error) {
-                ImGui::TextColored(ImVec4(1, 0, 0, 1), "Regex Error: invalid pattern");
-            }
-        } else {
-            int partial_count = 0;
-            for (auto& m : g_restore_matches) {
-                if (m.total_pixels > 0 && m.covered_pixels < m.total_pixels) partial_count++;
-            }
-            ImGui::Text("Found %d match(es). Select items to restore:", (int)g_restore_matches.size());
-            if (partial_count > 0) {
-                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
-                    "%d match%s with partial coverage (anipoint shift pushes parent rect "
-                    "out of bounds). Pairs mode will zero-fill the uncovered area.",
-                    partial_count, partial_count == 1 ? "" : "es");
-            }
-            ImGui::BeginChild("MatchesList", ImVec2(520, 220), true);
-            std::string last_parent = "";
-            for (size_t i = 0; i < g_restore_matches.size(); i++) {
-                BulkRestoreMatch& m = g_restore_matches[i];
-                std::string current_parent = m.parent->n_s;
-                if (current_parent != last_parent) {
-                    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", current_parent.c_str());
-                    last_parent = current_parent;
-                }
-                ImGui::Indent(16.0f);
-                char label[128];
-                snprintf(label, sizeof(label), "%s##%zu", m.child->n_s, i);
-                bool partial = m.total_pixels > 0 && m.covered_pixels < m.total_pixels;
-                if (partial) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.55f, 1.0f));
-                ImGui::Checkbox(label, &m.selected);
-                if (partial) ImGui::PopStyleColor();
-                if (m.total_pixels > 0) {
-                    ImGui::SameLine();
-                    int pct = (int)((100.0 * m.covered_pixels) / m.total_pixels + 0.5);
-                    if (partial) {
-                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f),
-                                           "(%d%% covered)", pct);
-                    } else {
-                        ImGui::TextDisabled("(100%%)");
-                    }
-                }
-                ImGui::Unindent(16.0f);
-            }
-            ImGui::EndChild();
-
-            if (ImGui::Button("Select All")) {
-                for (auto& m : g_restore_matches) m.selected = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Deselect All")) {
-                for (auto& m : g_restore_matches) m.selected = false;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Deselect Partial")) {
-                for (auto& m : g_restore_matches) {
-                    if (m.total_pixels > 0 && m.covered_pixels < m.total_pixels) m.selected = false;
-                }
-            }
-        }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        
-        ImGui::BeginDisabled(!g_restore_regex_tested || g_restore_matches.empty());
-        if (ImGui::Button("Start Restore", ImVec2(120, 0))) {
-            int n = 0;
-            const char *verb_done = "Restored";
-            const char *verb_zero = "restored";
-            switch (g_restore_diff_mode) {
-                case 1:
-                    n = ExecuteBulkRestoreDiff(g_restore_matches);
-                    verb_done = "Diff-restored"; verb_zero = "diffed";
-                    break;
-                case 2:
-                    n = ExecuteBulkRestoreReconstruct(g_restore_matches);
-                    verb_done = "Reconstructed"; verb_zero = "reconstructed";
-                    break;
-                default:
-                    n = ExecuteBulkRestorePairs(g_restore_matches);
-                    break;
-            }
-            if (n > 0) {
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "%s %d child image(s) from their parents.",
-                         verb_done, n);
-            } else {
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "0 images %s.", verb_zero);
-            }
-            g_restore_msg_timer = 6.0f;
-
-            g_show_restore_regex = false;
-            g_restore_regex_tested = false;
-            g_restore_matches.clear();
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndDisabled();
-
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-            g_show_restore_regex = false;
-            g_restore_regex_tested = false;
-            g_restore_matches.clear();
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
-    /* ===== HELP MODAL ===== */
-    /* ---- Debug Info popup ---- */
-    if (g_show_debug) ImGui::OpenPopup("Debug Info");
-    if (ImGui::BeginPopupModal("Debug Info", &g_show_debug, ImGuiWindowFlags_NoMove)) {
-        ImGui::SetNextWindowSize(ImVec2(520, 580), ImGuiCond_Always);
-
-        /* --- Library Header (LIB_HDR + seq/scr blob round-trip status) --- */
-        if (ImGui::CollapsingHeader("LIB_HDR", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Text("IMGCNT:  %u",     imgcnt);
-            ImGui::Text("PALCNT:  %u",     palcnt);
-            ImGui::Text("SEQCNT:  %u",     seqcnt);
-            ImGui::Text("SCRCNT:  %u",     scrcnt);
-            ImGui::Text("DAMCNT:  %u",     damcnt);
-            ImGui::Text("VERSION: 0x%04X", fileversion);
-            ImGui::Separator();
-            ImGui::TextDisabled("SEQSCR/ENTRY blob (load-time, round-trips on save):");
-            if (scrseqmem_p && scrseqbytes > 0) {
-                ImGui::Text("SCRSEQBYTES:  %u bytes", scrseqbytes);
-            } else {
-                ImGui::TextDisabled("SCRSEQBYTES:  0  (no seq/scr in file)");
-            }
-        }
-
-        /* --- Selected IMAGE record (runtime + disk-side) --- */
-        IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
-        if (ImGui::CollapsingHeader("IMAGE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (img) {
-                ImGui::Text("NXT_p:    %p",       img->nxt_p);
-                ImGui::Text("N_s:      %.15s",    img->n_s);
-                ImGui::Text("FLAGS:    0x%04X",   (int)img->flags);
-                ImGui::Text("ANIX:     %d",       (int)(short)img->anix);
-                ImGui::Text("ANIY:     %d",       (int)(short)img->aniy);
-                ImGui::Text("W:        %d",       (int)img->w);
-                ImGui::Text("H:        %d",       (int)img->h);
-                ImGui::Text("PALNUM:   %d",       (int)img->palnum);
-                ImGui::Text("DATA_p:   %p",       img->data_p);
-                if (img->pttbl_p) ImGui::Text("PTTBL_p:  %p", img->pttbl_p);
-                else ImGui::TextDisabled("PTTBL_p:  NULL");
-                ImGui::Text("ANIX2:    %d",       (int)(short)img->anix2);
-                ImGui::Text("ANIY2:    %d",       (int)(short)img->aniy2);
-                ImGui::Text("ANIZ2:    %d",       (int)(short)img->aniz2);
-                ImGui::Text("OPALS:    0x%04X",   (int)img->opals);
-                ImGui::Text("TEMP:     %p",       img->temp);
-            } else {
-                ImGui::TextDisabled("No image selected");
-            }
-        }
-        if (ImGui::CollapsingHeader("IMAGE_disk (load-time)", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (img) {
-                ImGui::Text("FILE_OSET:    0x%X (%u)", img->file_oset, img->file_oset);
-                ImGui::Text("FILE_LIB:     %u",        (unsigned)img->file_lib);
-                ImGui::Text("FILE_FRM:     %u",        (unsigned)img->file_frm);
-                if (img->file_pttblnum == 0xFFFF)
-                    ImGui::TextDisabled("FILE_PTTBLNUM: 0xFFFF (none)");
-                else
-                    ImGui::Text("FILE_PTTBLNUM: %u",  (unsigned)img->file_pttblnum);
-                /* Pixel-data byte size, derived from runtime w/h (CMP variable) */
-                if (!(img->flags & 0x0080)) {
-                    unsigned int stride = ((unsigned int)img->w + 3u) & ~3u;
-                    ImGui::Text("PIX_SIZE:     %u bytes (uncompressed, %ux%u)",
-                                stride * (unsigned)img->h,
-                                (unsigned)img->w, (unsigned)img->h);
-                } else {
-                    ImGui::TextDisabled("PIX_SIZE:     CMP — variable per row");
-                }
-            } else {
-                ImGui::TextDisabled("No image selected");
-            }
-        }
-
-        /* --- Selected PALETTE record (runtime) --- */
-        PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
-        if (ImGui::CollapsingHeader("PALETTE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (pal) {
-                ImGui::Text("NXT_p:    %p",       pal->nxt_p);
-                ImGui::Text("N_s:      %.9s",     pal->n_s);
-                ImGui::Text("FLAGS:    0x%02X",   pal->flags);
-                ImGui::Text("BITSPIX:  %u",       pal->bitspix);
-                ImGui::Text("NUMC:     %u",       pal->numc);
-                ImGui::Text("PAD:      0x%04X",   pal->pad);
-                ImGui::Text("DATA_p:   %p",       pal->data_p);
-                ImGui::Text("TEMP:     %p",       pal->temp);
-                ImGui::Separator();
-                ImGui::TextDisabled("PALETTE_disk fields (lib/colind/cmap/oset)");
-                ImGui::TextDisabled("are not currently retained at load.");
-            } else {
-                ImGui::TextDisabled("No palette selected");
-            }
-        }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        if (ImGui::Button("Close", ImVec2(120, 0))) {
-            g_show_debug = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("F9 to toggle");
-        ImGui::EndPopup();
-    }
+    DrawDebugInfoModal();
 
     /* ===== FILE DIALOG ===== */
     DrawFileDialog();
 
-    /* ===== NEW IMG CONFIRMATION ===== */
-    if (g_show_new_img_confirm) ImGui::OpenPopup("New IMG");
-    if (ImGui::BeginPopupModal("New IMG", &g_show_new_img_confirm, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Discard all loaded images and palettes?");
-        ImGui::Text("This cannot be undone.");
-        ImGui::Spacing();
-        ImGui::Separator();
-        if (ImGui::Button("New", ImVec2(80, 0))) {
-            ClearAll();
-            fileversion = 0x0634;   /* Wimp V6.34 — current format */
-            fname_s[0]  = 0;
-            g_undo_count = 0;
-            g_undo_idx   = 0;
-            g_show_new_img_confirm = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-            g_show_new_img_confirm = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
+    DrawNewImgConfirm();
 
-    /* ===== UNSAVED CHANGES CONFIRMATION ===== */
-    if (g_pending_quit && !g_show_unsaved_confirm) {
-        if (g_dirty && imgcnt > 0) {
-            g_show_unsaved_confirm = true;
-        }
-    }
-    if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
-    if (ImGui::BeginPopupModal("Unsaved Changes", &g_show_unsaved_confirm, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("You have unsaved changes.");
-        ImGui::Text("Do you want to save before quitting?");
-        ImGui::Spacing();
-        ImGui::Separator();
-        if (ImGui::Button("Save", ImVec2(80, 0))) {
-            g_show_unsaved_confirm = false;
-            ImGui::CloseCurrentPopup();
-            if (fname_s[0] != '\0') {
-                SaveImgFile();
-                g_dirty = false;
-            } else {
-                g_pending_quit = false;
-                OpenFileDialog(FileDialogMode::SaveImg);
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Discard", ImVec2(80, 0))) {
-            g_show_unsaved_confirm = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-            g_show_unsaved_confirm = false;
-            g_pending_quit = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
+    DrawUnsavedChangesConfirm();
 
-    if (g_show_help) ImGui::OpenPopup("Help");
-    if (ImGui::BeginPopupModal("Help", &g_show_help,
-            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-        ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_Always);
-        if (ImGui::BeginChild("##helpscroll", ImVec2(680, 420), true)) {
-            ImGui::TextUnformatted(g_help_text);
-            ImGui::EndChild();
-        }
-        ImGui::Spacing();
-        ImGui::Separator();
-        if (ImGui::Button("Close", ImVec2(120, 0))) {
-            g_show_help = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
+    DrawHelpModal();
 
-    /* ===== ABOUT MODAL ===== */
-    if (g_show_about) ImGui::OpenPopup("About Imgtool");
-    if (ImGui::BeginPopupModal("About Imgtool", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Imgtool");
-        ImGui::Separator();
-        ImGui::Text("A modern port of the 1992 Midway Image Tool.");
-        ImGui::Spacing();
-        ImGui::Text("Build: %s %s", __DATE__, __TIME__);
-#ifdef IMGTOOL_GIT_REV
-        ImGui::Text("Commit: %s", IMGTOOL_GIT_REV);
-#endif
-        ImGui::Text("ImGui: %s", IMGUI_VERSION);
-        ImGui::Spacing();
-        ImGui::TextLinkOpenURL("https://github.com/junkwax/midway-imgtool");
-        ImGui::Spacing();
-        if (ImGui::Button("Close", ImVec2(120, 0))) {
-            g_show_about = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
-    /* Transient toast (e.g. RestoreMarkedFromSource result). */
-    if (g_restore_msg_timer > 0.0f) {
-        g_restore_msg_timer -= io.DeltaTime;
-        ImGui::SetNextWindowBgAlpha(0.85f);
-        ImGui::SetNextWindowPos(ImVec2(sw * 0.5f, sh - 60), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
-        if (ImGui::Begin("##toast", NULL,
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
-                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing)) {
-            ImGui::TextUnformatted(g_restore_msg);
-        }
-        ImGui::End();
-    }
-
-    /* ===== VERBOSE LOGGING CONSOLE ===== */
-    if (g_verbose) {
-        ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Verbose Logging", &g_verbose)) {
-            if (ImGui::Button("Clear")) { g_log_lines.clear(); }
-            ImGui::SameLine();
-            if (ImGui::Button("Copy to Clipboard")) {
-                std::string all_logs;
-                for (const auto& s : g_log_lines) all_logs += s + "\n";
-                ImGui::SetClipboardText(all_logs.c_str());
-            }
-            ImGui::Separator();
-            ImGui::BeginChild("scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-            for (const auto& s : g_log_lines) {
-                ImGui::TextUnformatted(s.c_str());
-            }
-            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
-            ImGui::EndChild();
-        }
-        ImGui::End();
-    }
+    DrawAboutModal();
+    DrawTransientToast(io.DeltaTime);
+    DrawVerboseLogWindow();
 
     /* Flush to renderer */
     ImGui::Render();
