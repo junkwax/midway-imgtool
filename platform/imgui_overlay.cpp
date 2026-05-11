@@ -146,9 +146,10 @@ static unsigned char *g_pixel_undo = NULL;
 static int            g_pixel_undo_img = -1;  /* -2 = never built */
 
 /* ---- Layout constants ---- */
-static const float TOOLBAR_W   = 44.0f;
-static const float PANEL_W     = 240.0f;
+static const float TOOLBAR_W   = 40.0f;
+static const float PANEL_W     = 280.0f;
 static const float PALETTE_H   = 78.0f;
+static const float TIMELINE_H  = 64.0f;
 
 /* ---- Undo system ---- */
 #define UNDO_STACK_SIZE 32
@@ -217,12 +218,31 @@ struct GridSelection {
     bool dragging;      /* user is currently click-dragging the rect's far corner */
     int x1, y1;         /* start coords (pixels) */
     int x2, y2;         /* end coords (pixels) */
+
+    bool is_mask;       /* if true, pixel_mask is used instead of just the bounding box */
+    int mask_w, mask_h; /* dimensions of the mask */
+    std::vector<bool> pixel_mask; /* the actual selected pixels */
 };
-static GridSelection g_grid_sel = {false, false, 0, 0, 0, 0};
-/* Marquee tool gate: when false, click-drag on the sprite never starts a
-   selection. Photoshop-style explicit mode toggle — fixes the green box
-   misfiring on stray clicks. Toggled via the toolbar button or 'R' key. */
-static bool g_marquee_active = false;
+static GridSelection g_grid_sel = {false, false, 0, 0, 0, 0, false, 0, 0, {}};
+
+/* Active tool state */
+enum class ActiveTool { None, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso };
+static ActiveTool g_active_tool = ActiveTool::None;
+
+/* Clone Stamp state */
+static bool g_clone_source_set = false;
+static int  g_clone_src_x = 0;
+static int  g_clone_src_y = 0;
+static bool g_clone_offset_set = false;
+static int  g_clone_dx = 0;
+static int  g_clone_dy = 0;
+
+/* Smart Remap state */
+static int g_remap_target_color = -1;
+
+/* Lasso state */
+static int g_lasso_last_x = 0;
+static int g_lasso_last_y = 0;
 
 /* Pasted image placement (with move feedback) */
 struct PastedImage {
@@ -325,6 +345,10 @@ static int   g_histogram_img_count = 0;
 
 /* ---- Bulk Restore Regex state ---- */
 static bool g_show_restore_regex = false;
+static bool g_show_auto_chop = false;
+static int  g_chop_w = 255;
+static int  g_chop_h = 255;
+static bool g_chop_trim = true;
 static char g_restore_regex_buf[256] = "^(.+)[A-Z]$";
 static std::vector<BulkRestoreMatch> g_restore_matches;
 static bool g_restore_regex_tested = false;
@@ -1498,7 +1522,7 @@ static void OpenImgFile(const std::string &full_path)
     }
     g_grid_sel.active = false;
     g_grid_sel.dragging = false;
-    g_marquee_active = false;
+    g_active_tool = ActiveTool::None;
     g_pasted.active = false;
     g_pasted.dragging = false;
 
@@ -1751,7 +1775,7 @@ static void DrawFileDialog() {
                     }
                     g_grid_sel.active = false;
                     g_grid_sel.dragging = false;
-                    g_marquee_active = false;
+                    g_active_tool = ActiveTool::None;
                     g_pasted.active = false;
                     g_pasted.dragging = false;
                     ClearAll();
@@ -1854,7 +1878,7 @@ static void DrawFileDialog() {
                     }
                     g_grid_sel.active = false;
                     g_grid_sel.dragging = false;
-                    g_marquee_active = false;
+                    g_active_tool = ActiveTool::None;
                     g_pasted.active = false;
                     g_pasted.dragging = false;
                     ClearAll();
@@ -2481,9 +2505,20 @@ static void copy_image(bool cut)
     for (int y = 0; y < h; y++) {
         unsigned char *src = (unsigned char *)img->data_p + (y1 + y) * stride + x1;
         unsigned char *dst = (unsigned char *)g_clipboard.data_p + y * clip_stride;
-        memcpy(dst, src, w);
-        if (cut) {
-            memset(src, 0, w);
+        if (g_grid_sel.active && g_grid_sel.is_mask) {
+            for (int x = 0; x < w; x++) {
+                if (g_grid_sel.pixel_mask[(y1 + y) * g_grid_sel.mask_w + (x1 + x)]) {
+                    dst[x] = src[x];
+                    if (cut) src[x] = 0;
+                } else {
+                    dst[x] = 0;
+                }
+            }
+        } else {
+            memcpy(dst, src, w);
+            if (cut) {
+                memset(src, 0, w);
+            }
         }
     }
 
@@ -2729,8 +2764,14 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiKey_H,  route)) g_show_help = true;
     if (ImGui::Shortcut(ImGuiKey_F9, route)) g_show_debug = !g_show_debug;
     if (ImGui::Shortcut(ImGuiKey_R,  route)) {
-        g_marquee_active = !g_marquee_active;
-        if (!g_marquee_active) g_grid_sel.active = false;
+        if (g_active_tool == ActiveTool::Marquee) g_active_tool = ActiveTool::None;
+        else g_active_tool = ActiveTool::Marquee;
+        if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+    }
+    if (ImGui::Shortcut(ImGuiKey_W,  route)) {
+        if (g_active_tool == ActiveTool::MagicWand) g_active_tool = ActiveTool::None;
+        else g_active_tool = ActiveTool::MagicWand;
+        if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
     }
 
     /* Tool Intercepts */
@@ -2891,6 +2932,8 @@ void imgui_overlay_render(void)
         }
         if (ImGui::BeginMenu("Operations")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
+            if (ImGui::MenuItem("Auto-Chop Sprite...")) g_show_auto_chop = true;
+            ImGui::Separator();
             if (ImGui::MenuItem("Least-Squares Reduce", ";"))               LeastSquaresReduceMarked();
             ImGui::Separator();
             if (ImGui::MenuItem("Strip Edge"))                               StripMarkedImages(5);
@@ -3039,7 +3082,7 @@ void imgui_overlay_render(void)
 
     /* ===== LEFT TOOLBAR ===== */
     ImGui::SetNextWindowPos(ImVec2(0, work_y));
-    ImGui::SetNextWindowSize(ImVec2(TOOLBAR_W, work_h - PALETTE_H));
+    ImGui::SetNextWindowSize(ImVec2(TOOLBAR_W, work_h - PALETTE_H - TIMELINE_H));
     ImGui::Begin("##toolbar", NULL,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
@@ -3072,14 +3115,71 @@ void imgui_overlay_render(void)
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Hitbox");
         /* Marquee/select tool — explicit mode toggle. When off, no green-box
            selection ever starts (no more random firing). */
-        ImGui::PushStyleColor(ImGuiCol_Button, g_marquee_active ?
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::Marquee ?
             ImVec4(0.2f,0.4f,0.7f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
         if (ImGui::Button(TB_LABEL(ICON_MARQUEE, ICON_MARQUEE_TXT), btn)) {
-            g_marquee_active = !g_marquee_active;
-            if (!g_marquee_active) g_grid_sel.active = false;
+            if (g_active_tool == ActiveTool::Marquee) g_active_tool = ActiveTool::None;
+            else g_active_tool = ActiveTool::Marquee;
+            if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
         }
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Marquee Select Tool (R)");
+
+        /* Magic Wand tool */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::MagicWand ?
+            ImVec4(0.5f,0.2f,0.7f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEE\xA6\x83", "Wd"), btn)) { /* U+E983 auto_fix_high */
+            if (g_active_tool == ActiveTool::MagicWand) g_active_tool = ActiveTool::None;
+            else g_active_tool = ActiveTool::MagicWand;
+            if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Magic Wand Tool (W)");
+
+        /* Background Eraser tool */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::BackgroundEraser ?
+            ImVec4(0.7f,0.2f,0.2f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEE\x9B\x92", "Er"), btn)) { /* U+E6D2 layers_clear */
+            if (g_active_tool == ActiveTool::BackgroundEraser) g_active_tool = ActiveTool::None;
+            else g_active_tool = ActiveTool::BackgroundEraser;
+            if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Background Eraser Tool (E)");
+
+        /* Clone Stamp tool */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::CloneStamp ?
+            ImVec4(0.2f,0.6f,0.3f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEE\x8E\xA6", "Cl"), btn)) { /* U+E3A6 brush */
+            if (g_active_tool == ActiveTool::CloneStamp) g_active_tool = ActiveTool::None;
+            else g_active_tool = ActiveTool::CloneStamp;
+            if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clone Stamp Tool (C)");
+
+        /* Smart Remap tool */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::SmartRemap ?
+            ImVec4(0.8f,0.4f,0.1f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEE\x8E\xB8", "Rm"), btn)) { /* U+E3B8 format_paint */
+            if (g_active_tool == ActiveTool::SmartRemap) g_active_tool = ActiveTool::None;
+            else g_active_tool = ActiveTool::SmartRemap;
+            if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart Palette Remapper Tool");
+
+        /* Lasso tool */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::Lasso ?
+            ImVec4(0.3f,0.5f,0.8f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEE\x94\xB2", "Ls"), btn)) { /* U+E532 gesture */
+            if (g_active_tool == ActiveTool::Lasso) g_active_tool = ActiveTool::None;
+            else g_active_tool = ActiveTool::Lasso;
+            if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lasso Selection Tool (L)");
+
         ImGui::Spacing();
         bool can_undo = g_undo_idx > 0;
         bool can_redo = g_undo_idx < g_undo_count - 1;
@@ -3120,7 +3220,7 @@ void imgui_overlay_render(void)
     /* ===== RIGHT PANEL STRIP ===== */
     float panel_x = sw - PANEL_W;
     float panel_y = work_y;
-    float panel_h = work_h - PALETTE_H;
+    float panel_h = work_h - PALETTE_H - TIMELINE_H;
 
     ImGui::SetNextWindowPos(ImVec2(panel_x, panel_y));
     ImGui::SetNextWindowSize(ImVec2(PANEL_W, panel_h));
@@ -3441,7 +3541,7 @@ void imgui_overlay_render(void)
     float canvas_x = TOOLBAR_W;
     float canvas_y = work_y;
     float canvas_w = sw - TOOLBAR_W - PANEL_W;
-    float canvas_h = work_h - PALETTE_H;
+    float canvas_h = work_h - PALETTE_H - TIMELINE_H;
 
     ImGui::SetNextWindowPos(ImVec2(canvas_x, canvas_y));
     ImGui::SetNextWindowSize(ImVec2(canvas_w, canvas_h));
@@ -3755,7 +3855,7 @@ void imgui_overlay_render(void)
                 ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
                 widget_consumed_click = true;
             }
-            if (!g_marquee_active && g_zoom > 1.0f &&
+            if (g_active_tool == ActiveTool::None && g_zoom > 1.0f &&
                 ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0f) && over) {
                 ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right, 0.0f);
                 g_pan_x += d.x; g_pan_y += d.y;
@@ -3775,26 +3875,82 @@ void imgui_overlay_render(void)
                         g_sel_color = *pix;
                         widget_consumed_click = true;
                     }
-                    /* Left-click: pencil or fill */
-                    if (!g_marquee_active && !g_pasted.active &&
-                        ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        if (g_pixel_undo_img != ilselected) {
-                            free(g_pixel_undo); g_pixel_undo = NULL;
-                            unsigned short s = (cimg->w + 3) & ~3;
-                            unsigned int sz = (unsigned int)s * cimg->h;
-                            g_pixel_undo = (unsigned char *)malloc(sz);
-                            if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
-                            g_pixel_undo_img = ilselected;
+                    /* Left-click: pencil, fill, background eraser, clone stamp, or smart remap */
+                    if (!g_pasted.active && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
+                        if (g_active_tool == ActiveTool::CloneStamp) {
+                            if (io.KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                g_clone_src_x = px;
+                                g_clone_src_y = py;
+                                g_clone_source_set = true;
+                                g_clone_offset_set = false;
+                                widget_consumed_click = true;
+                            } else if (!io.KeyAlt && ImGui::IsMouseDown(ImGuiMouseButton_Left) && g_clone_source_set) {
+                                if (!g_clone_offset_set) {
+                                    g_clone_dx = g_clone_src_x - px;
+                                    g_clone_dy = g_clone_src_y - py;
+                                    g_clone_offset_set = true;
+                                }
+                                if (g_pixel_undo_img != ilselected) {
+                                    free(g_pixel_undo); g_pixel_undo = NULL;
+                                    unsigned short s = (cimg->w + 3) & ~3;
+                                    unsigned int sz = (unsigned int)s * cimg->h;
+                                    g_pixel_undo = (unsigned char *)malloc(sz);
+                                    if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
+                                    g_pixel_undo_img = ilselected;
+                                }
+                                int src_px = px + g_clone_dx;
+                                int src_py = py + g_clone_dy;
+                                if (src_px >= 0 && src_px < (int)cimg->w && src_py >= 0 && src_py < (int)cimg->h) {
+                                    unsigned short stride = (cimg->w + 3) & ~3;
+                                    unsigned char src_col = ((unsigned char *)cimg->data_p)[src_py * stride + src_px];
+                                    *pix = src_col;
+                                    g_dirty = true;
+                                    g_img_tex_idx = -2;
+                                }
+                                widget_consumed_click = true;
+                            }
+                        } else if (g_active_tool == ActiveTool::SmartRemap) {
+                            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                g_remap_target_color = *pix;
+                            }
+                            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && g_remap_target_color != -1) {
+                                if (*pix == g_remap_target_color) {
+                                    if (g_pixel_undo_img != ilselected) {
+                                        free(g_pixel_undo); g_pixel_undo = NULL;
+                                        unsigned short s = (cimg->w + 3) & ~3;
+                                        unsigned int sz = (unsigned int)s * cimg->h;
+                                        g_pixel_undo = (unsigned char *)malloc(sz);
+                                        if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
+                                        g_pixel_undo_img = ilselected;
+                                    }
+                                    *pix = (unsigned char)g_sel_color;
+                                    g_dirty = true;
+                                    g_img_tex_idx = -2;
+                                }
+                                widget_consumed_click = true;
+                            }
+                        } else if (g_active_tool != ActiveTool::CloneStamp && g_active_tool != ActiveTool::SmartRemap && (g_active_tool == ActiveTool::BackgroundEraser ? ImGui::IsMouseClicked(ImGuiMouseButton_Left) : ImGui::IsMouseDown(ImGuiMouseButton_Left))) {
+                            if (g_pixel_undo_img != ilselected) {
+                                free(g_pixel_undo); g_pixel_undo = NULL;
+                                unsigned short s = (cimg->w + 3) & ~3;
+                                unsigned int sz = (unsigned int)s * cimg->h;
+                                g_pixel_undo = (unsigned char *)malloc(sz);
+                                if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
+                                g_pixel_undo_img = ilselected;
+                            }
+                            if (g_active_tool == ActiveTool::BackgroundEraser) {
+                                g_dirty = true;
+                                FloodFill(cimg, px, py, 0);
+                            } else if (io.KeyShift) {
+                                g_dirty = true;
+                                FloodFill(cimg, px, py, (unsigned char)g_sel_color);
+                            } else {
+                                g_dirty = true;
+                                *pix = (unsigned char)g_sel_color;
+                            }
+                            g_img_tex_idx = -2;
+                            widget_consumed_click = true;
                         }
-                        if (io.KeyShift) {
-                            g_dirty = true;
-                            FloodFill(cimg, px, py, (unsigned char)g_sel_color);
-                        } else {
-                            g_dirty = true;
-                            *pix = (unsigned char)g_sel_color;
-                        }
-                        g_img_tex_idx = -2;
-                        widget_consumed_click = true;
                     }
                 }
             }
@@ -3905,7 +4061,7 @@ void imgui_overlay_render(void)
                Geometric mouse_over_sprite still has to be true. */
             bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
             bool ui_blocking = ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive() || any_popup;
-            if (!g_pasted.active && g_marquee_active) {
+            if (!g_pasted.active && (g_active_tool == ActiveTool::Marquee || g_active_tool == ActiveTool::MagicWand || g_active_tool == ActiveTool::Lasso)) {
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
                         && mouse_over_sprite
                         && !widget_consumed_click
@@ -3914,10 +4070,66 @@ void imgui_overlay_render(void)
                     int my = (int)((mouse.y - img_pos.y) / sy);
                     if (mx < 0) mx = 0; if (mx >= (int)g_img_tex_w) mx = g_img_tex_w - 1;
                     if (my < 0) my = 0; if (my >= (int)g_img_tex_h) my = g_img_tex_h - 1;
-                    g_grid_sel.active = true;
-                    g_grid_sel.dragging = true;
-                    g_grid_sel.x1 = g_grid_sel.x2 = mx;
-                    g_grid_sel.y1 = g_grid_sel.y2 = my;
+                    
+                    if (g_active_tool == ActiveTool::MagicWand && ilselected >= 0) {
+                        IMG* simg = get_img(ilselected);
+                        if (simg && simg->data_p) {
+                            int sw = simg->w;
+                            int sh = simg->h;
+                            int stride = (sw + 3) & ~3;
+                            unsigned char* pdata = (unsigned char*)simg->data_p;
+                            unsigned char target_color = pdata[my * stride + mx];
+                            
+                            g_grid_sel.active = true;
+                            g_grid_sel.is_mask = true;
+                            g_grid_sel.mask_w = sw;
+                            g_grid_sel.mask_h = sh;
+                            g_grid_sel.pixel_mask.assign(sw * sh, false);
+                            
+                            std::vector<std::pair<int, int>> stack;
+                            stack.push_back({mx, my});
+                            g_grid_sel.pixel_mask[my * sw + mx] = true;
+                            
+                            int min_x = mx, max_x = mx;
+                            int min_y = my, max_y = my;
+                            
+                            while(!stack.empty()) {
+                                std::pair<int, int> pt = stack.back();
+                                stack.pop_back();
+                                int cx = pt.first;
+                                int cy = pt.second;
+                                
+                                if (cx < min_x) min_x = cx;
+                                if (cx > max_x) max_x = cx;
+                                if (cy < min_y) min_y = cy;
+                                if (cy > max_y) max_y = cy;
+                                
+                                const int dx[] = {0, 1, 0, -1};
+                                const int dy[] = {-1, 0, 1, 0};
+                                for(int i = 0; i < 4; i++) {
+                                    int nx = cx + dx[i];
+                                    int ny = cy + dy[i];
+                                    if (nx >= 0 && nx < sw && ny >= 0 && ny < sh) {
+                                        if (!g_grid_sel.pixel_mask[ny * sw + nx] && pdata[ny * stride + nx] == target_color) {
+                                            g_grid_sel.pixel_mask[ny * sw + nx] = true;
+                                            stack.push_back({nx, ny});
+                                        }
+                                    }
+                                }
+                            }
+                            g_grid_sel.x1 = min_x;
+                            g_grid_sel.y1 = min_y;
+                            g_grid_sel.x2 = max_x;
+                            g_grid_sel.y2 = max_y;
+                            g_grid_sel.dragging = false;
+                        }
+                    } else {
+                        g_grid_sel.active = true;
+                        g_grid_sel.dragging = true;
+                        g_grid_sel.is_mask = false;
+                        g_grid_sel.x1 = g_grid_sel.x2 = mx;
+                        g_grid_sel.y1 = g_grid_sel.y2 = my;
+                    }
                 } else if (g_grid_sel.dragging && mbdn) {
                     /* Only extend the rect while we're in the user-initiated
                        drag — not on every frame the button happens to be
@@ -3931,6 +4143,36 @@ void imgui_overlay_render(void)
                     g_grid_sel.y2 = my;
                 } else if (g_grid_sel.dragging && !mbdn) {
                     g_grid_sel.dragging = false;
+                    if (ImGui::GetIO().KeyShift && !g_grid_sel.is_mask && ilselected >= 0) {
+                        IMG *simg = get_img(ilselected);
+                        if (simg && simg->data_p) {
+                            int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
+                            int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
+                            if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+                            if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+                            int min_x = x2, max_x = x1, min_y = y2, max_y = y1;
+                            bool found = false;
+                            unsigned short stride = (simg->w + 3) & ~3;
+                            unsigned char *pdata = (unsigned char *)simg->data_p;
+                            for (int y = y1; y <= y2; y++) {
+                                for (int x = x1; x <= x2; x++) {
+                                    if (pdata[y * stride + x] != 0) {
+                                        if (x < min_x) min_x = x;
+                                        if (x > max_x) max_x = x;
+                                        if (y < min_y) min_y = y;
+                                        if (y > max_y) max_y = y;
+                                        found = true;
+                                    }
+                                }
+                            }
+                            if (found) {
+                                g_grid_sel.x1 = min_x;
+                                g_grid_sel.y1 = min_y;
+                                g_grid_sel.x2 = max_x;
+                                g_grid_sel.y2 = max_y;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -3938,15 +4180,31 @@ void imgui_overlay_render(void)
                the tool off via the toolbar/R also clears g_grid_sel, but this
                extra gate makes sure no stray green box renders if some other
                code path leaves g_grid_sel.active=true with the tool off. */
-            if (g_grid_sel.active && g_marquee_active) {
+            if (g_grid_sel.active && (g_active_tool == ActiveTool::Marquee || g_active_tool == ActiveTool::MagicWand)) {
                 int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
                 int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
                 if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
                 if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-                ImVec2 r1(img_pos.x + x1 * sx, img_pos.y + y1 * sy);
-                ImVec2 r2(img_pos.x + (x2 + 1) * sx, img_pos.y + (y2 + 1) * sy);
-                dl->AddRect(r1, r2, IM_COL32(0, 255, 0, 255), 0.0f, 0, 2.0f);
-                dl->AddRectFilled(r1, r2, IM_COL32(0, 255, 0, 30), 0.0f);
+                
+                if (g_grid_sel.is_mask) {
+                    for (int y = y1; y <= y2; y++) {
+                        for (int x = x1; x <= x2; x++) {
+                            if (g_grid_sel.pixel_mask[y * g_grid_sel.mask_w + x]) {
+                                ImVec2 r1(img_pos.x + x * sx, img_pos.y + y * sy);
+                                ImVec2 r2(img_pos.x + (x + 1) * sx, img_pos.y + (y + 1) * sy);
+                                dl->AddRectFilled(r1, r2, IM_COL32(255, 0, 255, 80), 0.0f);
+                            }
+                        }
+                    }
+                    ImVec2 br1(img_pos.x + x1 * sx, img_pos.y + y1 * sy);
+                    ImVec2 br2(img_pos.x + (x2 + 1) * sx, img_pos.y + (y2 + 1) * sy);
+                    dl->AddRect(br1, br2, IM_COL32(255, 0, 255, 255), 0.0f, 0, 1.0f);
+                } else {
+                    ImVec2 r1(img_pos.x + x1 * sx, img_pos.y + y1 * sy);
+                    ImVec2 r2(img_pos.x + (x2 + 1) * sx, img_pos.y + (y2 + 1) * sy);
+                    dl->AddRect(r1, r2, IM_COL32(0, 255, 0, 255), 0.0f, 0, 2.0f);
+                    dl->AddRectFilled(r1, r2, IM_COL32(0, 255, 0, 30), 0.0f);
+                }
             }
 
             /* Paste overlay with pixel preview */
@@ -4033,6 +4291,101 @@ void imgui_overlay_render(void)
     }
     ImGui::End();
     ImGui::PopStyleColor();
+
+    /* ===== BOTTOM TIMELINE BAR ===== */
+    static bool  g_is_playing = false;
+    static float g_play_speed = 12.0f; /* fps */
+    static float g_play_timer = 0.0f;
+    static int   g_anim_start = 0;
+    static int   g_anim_end   = 0;
+
+    if (g_is_playing) {
+        g_play_timer += ImGui::GetIO().DeltaTime;
+        if (g_play_timer >= 1.0f / g_play_speed) {
+            g_play_timer = 0.0f;
+            ilselected++;
+            if (ilselected > g_anim_end || ilselected >= imgcnt) {
+                ilselected = g_anim_start;
+            }
+            g_zoom_reset = true;
+        }
+    }
+
+    float timeline_y = sh - PALETTE_H - TIMELINE_H;
+    ImGui::SetNextWindowPos(ImVec2(0, timeline_y));
+    ImGui::SetNextWindowSize(ImVec2(sw, TIMELINE_H));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
+    ImGui::Begin("##timeline", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
+    {
+        ImGui::Text("Animation Timeline");
+        ImGui::SameLine(180);
+        
+        if (g_is_playing) {
+            if (ImGui::Button("\xEE\x81\x8D Stop", ImVec2(80, 0))) { /* U+E04D stop */
+                g_is_playing = false;
+            }
+        } else {
+            if (ImGui::Button("\xEE\x80\xB7 Play", ImVec2(80, 0))) { /* U+E037 play_arrow */
+                if (!g_is_playing) {
+                    if (g_anim_end <= g_anim_start) {
+                        /* Auto-detect sequence: all marked images, or all images in file */
+                        g_anim_start = 0;
+                        g_anim_end = imgcnt > 0 ? imgcnt - 1 : 0;
+                    }
+                    if (ilselected < g_anim_start || ilselected > g_anim_end) {
+                        ilselected = g_anim_start;
+                        g_zoom_reset = true;
+                    }
+                    g_play_timer = 0.0f;
+                    g_is_playing = true;
+                }
+            }
+        }
+        ImGui::SameLine();
+        ImGui::PushItemWidth(120);
+        ImGui::SliderFloat("FPS", &g_play_speed, 1.0f, 60.0f, "%.1f");
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        ImGui::PushItemWidth(100);
+        ImGui::InputInt("Start", &g_anim_start);
+        ImGui::SameLine();
+        ImGui::InputInt("End", &g_anim_end);
+        ImGui::PopItemWidth();
+
+        /* Draw a mini scrubber bar */
+        ImGui::Dummy(ImVec2(0, 4));
+        ImVec2 scr_p0 = ImGui::GetCursorScreenPos();
+        float  scr_w  = ImGui::GetContentRegionAvail().x;
+        float  scr_h  = 16.0f;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(scr_p0, ImVec2(scr_p0.x + scr_w, scr_p0.y + scr_h), IM_COL32(40,40,40,255), 4.0f);
+        
+        int range = g_anim_end - g_anim_start;
+        if (range > 0 && imgcnt > 0) {
+            float handle_w = scr_w / (range + 1);
+            float handle_x = scr_p0.x + (ilselected - g_anim_start) * handle_w;
+            dl->AddRectFilled(ImVec2(handle_x, scr_p0.y), ImVec2(handle_x + handle_w, scr_p0.y + scr_h), IM_COL32(100,150,200,255), 4.0f);
+            
+            /* Allow clicking on scrubber to jump */
+            ImGui::InvisibleButton("##scrubber", ImVec2(scr_w, scr_h));
+            if (ImGui::IsItemActive() && ImGui::IsMouseDown(0)) {
+                float mx = ImGui::GetMousePos().x - scr_p0.x;
+                int frame = (int)((mx / scr_w) * (range + 1));
+                if (frame < 0) frame = 0;
+                if (frame > range) frame = range;
+                int tgt = g_anim_start + frame;
+                if (tgt != ilselected && tgt >= 0 && tgt < imgcnt) {
+                    ilselected = tgt;
+                    g_zoom_reset = true;
+                }
+            }
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
 
     /* ===== BOTTOM PALETTE BAR ===== */
     float pal_y = sh - PALETTE_H;
@@ -4282,6 +4635,40 @@ void imgui_overlay_render(void)
         ImGui::Spacing();
         if (ImGui::Button("Close", ImVec2(120, 0))) {
             g_show_histogram = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    /* ===== AUTO-CHOP SPRITE DIALOG ===== */
+    if (g_show_auto_chop) ImGui::OpenPopup("Auto-Chop Sprite");
+    if (ImGui::BeginPopupModal("Auto-Chop Sprite", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("Slices marked images into a grid, trims empty space,\n"
+                           "and recalculates their ANIX/ANIY so they align perfectly in-game.");
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt("Grid Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt("Grid Height", &g_chop_h)) { if (g_chop_h < 1) g_chop_h = 1; }
+        ImGui::Checkbox("Trim empty space (Highly recommended)", &g_chop_trim);
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Chop", ImVec2(100, 0))) {
+            int count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim);
+            if (count > 0) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg), "Auto-chopped into %d piece(s).", count);
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg), "No pieces generated (check marks).");
+            }
+            g_restore_msg_timer = 4.0f;
+            g_show_auto_chop = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+            g_show_auto_chop = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

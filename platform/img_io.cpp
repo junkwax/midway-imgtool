@@ -931,6 +931,112 @@ int ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches)
     return imgs_processed;
 }
 
+/* ---- Auto-Sprite Chopper ---- */
+int ChopMarkedImages(int grid_w, int grid_h, bool trim)
+{
+    if (grid_w <= 0 || grid_h <= 0) return 0;
+    int count = 0;
+
+    std::vector<IMG*> targets;
+    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+        if (p->flags & 1) targets.push_back(p);
+    }
+
+    if (targets.empty()) return 0;
+
+    undo_push();
+
+    for (IMG *master : targets) {
+        if (!master->data_p || master->w == 0 || master->h == 0) continue;
+
+        int rows = (master->h + grid_h - 1) / grid_h;
+        int cols = (master->w + grid_w - 1) / grid_w;
+
+        int src_stride = (master->w + 3) & ~3;
+        unsigned char *src_pix = (unsigned char *)master->data_p;
+
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                int cell_x = c * grid_w;
+                int cell_y = r * grid_h;
+                int cell_w = grid_w;
+                int cell_h = grid_h;
+                if (cell_x + cell_w > master->w) cell_w = master->w - cell_x;
+                if (cell_y + cell_h > master->h) cell_h = master->h - cell_y;
+
+                int min_x = cell_w, max_x = -1;
+                int min_y = cell_h, max_y = -1;
+
+                for (int y = 0; y < cell_h; y++) {
+                    for (int x = 0; x < cell_w; x++) {
+                        if (src_pix[(cell_y + y) * src_stride + (cell_x + x)] != 0) {
+                            if (x < min_x) min_x = x;
+                            if (x > max_x) max_x = x;
+                            if (y < min_y) min_y = y;
+                            if (y > max_y) max_y = y;
+                        }
+                    }
+                }
+
+                if (max_x < min_x) continue; /* Empty */
+
+                if (!trim) {
+                    min_x = 0; min_y = 0;
+                    max_x = cell_w - 1; max_y = cell_h - 1;
+                }
+
+                int new_w = max_x - min_x + 1;
+                int new_h = max_y - min_y + 1;
+
+                IMG *new_img = AllocImg();
+                if (!new_img) continue;
+
+                new_img->w = new_w;
+                new_img->h = new_h;
+                int new_stride = (new_w + 3) & ~3;
+                new_img->data_p = (unsigned char *)PoolAlloc((unsigned int)new_stride * new_h);
+                if (!new_img->data_p) continue;
+                memset(new_img->data_p, 0, (size_t)new_stride * new_h);
+
+                unsigned char *dst_pix = (unsigned char *)new_img->data_p;
+                for (int y = 0; y < new_h; y++) {
+                    for (int x = 0; x < new_w; x++) {
+                        dst_pix[y * new_stride + x] = src_pix[(cell_y + min_y + y) * src_stride + (cell_x + min_x + x)];
+                    }
+                }
+
+                new_img->anix = master->anix - (short)(cell_x + min_x);
+                new_img->aniy = master->aniy - (short)(cell_y + min_y);
+                new_img->palnum = master->palnum;
+                new_img->flags = 0; /* Unmarked */
+                new_img->opals = master->opals;
+
+                std::string base_name = master->n_s;
+                int suffix_len = 3;
+                if (base_name.length() > (size_t)(15 - suffix_len)) {
+                    base_name = base_name.substr(0, 15 - suffix_len);
+                }
+                char suffix[8];
+                snprintf(suffix, sizeof(suffix), "_%d%c", r + 1, 'A' + c);
+                base_name += suffix;
+                strncpy(new_img->n_s, base_name.c_str(), 15);
+                new_img->n_s[15] = '\0';
+                
+                strncpy(new_img->src_filename, master->src_filename, 63);
+                new_img->src_filename[63] = '\0';
+
+                count++;
+            }
+        }
+        master->flags &= ~1; /* Unmark master so chopped pieces are easier to handle */
+    }
+
+    if (count > 0) {
+        g_img_tex_idx = -2;
+    }
+    return count;
+}
+
 /* ---- Write ANILST (Export Marked Images to Assembly) ---- */
 void WriteAnilstFromMarked(const char* filepath)
 {

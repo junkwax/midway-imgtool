@@ -65,4 +65,6 @@ int  ExecuteBulkRestoreDiff (const std::vector<BulkRestoreMatch>& matches);
  * untouched (unlike Pairs mode's zero-fill). */
 int  ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches);
 
+int  ChopMarkedImages(int grid_w, int grid_h, bool trim);
+
 #endif /* IMG_IO_H */
