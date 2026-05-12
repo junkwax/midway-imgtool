@@ -189,7 +189,7 @@ static int split_path(const char *full, char *dir, size_t dirsz,
 
 static void show_error(const char *msg)
 {
-    MessageBoxA(NULL, msg, "imgtool", MB_OK | MB_ICONWARNING);
+    MessageBoxA(NULL, msg, "IMGTOOL", MB_OK | MB_ICONWARNING);
 }
 
 void shim_filereq_impl(void)

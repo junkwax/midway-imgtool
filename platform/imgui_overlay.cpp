@@ -388,6 +388,8 @@ static std::vector<int> g_timeline_frames;
 static int              g_timeline_play_idx = 0;
 static unsigned int     g_timeline_built_for_imgcnt = 0;
 static bool             g_timeline_onion = false;  /* prev/next frame ghosting */
+static bool             g_timeline_pingpong = false; /* play forward then reverse, looping */
+static int              g_timeline_play_dir = 1;     /* +1 forward, -1 reverse (used when pingpong) */
 
 void imgtool_toggle_timeline_play(void)
 {
@@ -467,6 +469,7 @@ static FreeTransform g_xform = {false, true, 0,0,0,0, 0,0,0,0, TransformHandle::
 
 static void ApplyPalette(int pal_idx);
 void undo_push(void);
+static void xform_begin(void);  /* forward decl — used by paste_image */
 
 /* ---- Histogram state ---- */
 static bool  g_show_histogram = false;
@@ -1676,26 +1679,57 @@ static int  g_irw_bpp             = 8;
 static unsigned int g_irw_base_address = 0x02000000;
 static bool g_irw_align_16bit     = true;
 
-static const char *get_dialog_config_path(void)
+/* Group file-dialog modes into categories so each remembers its own last
+   directory. Users tend to keep sprites, source PNGs, and TGA dumps in
+   different folders — sharing one "last dir" was annoying for everyone. */
+static const char *dialog_category_for_mode(FileDialogMode m)
 {
-    static char path[MAX_PATH] = "";
-    if (!path[0]) {
-#ifdef _WIN32
-        char appdata[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata))) {
-            _snprintf(path, sizeof(path), "%s\\imgtool\\last_dir.txt", appdata);
-        } else {
-            _snprintf(path, sizeof(path), "last_dir.txt");
-        }
-#else
-        _snprintf(path, sizeof(path), "%s/.imgtool_last_dir",
-            getenv("HOME") ? getenv("HOME") : ".");
-#endif
+    switch (m) {
+        case FileDialogMode::OpenImg:
+        case FileDialogMode::AppendImg:
+        case FileDialogMode::SaveImg:
+        case FileDialogMode::OpenLod:
+        case FileDialogMode::WriteAniLst:
+        case FileDialogMode::WriteTbl:
+        case FileDialogMode::WriteIrw:        return "img";
+        case FileDialogMode::ImportPng:
+        case FileDialogMode::ImportPngMatch:
+        case FileDialogMode::ExportPng:       return "png";
+        case FileDialogMode::LoadTga:
+        case FileDialogMode::SaveTga:
+        case FileDialogMode::ExportTga:       return "tga";
+        case FileDialogMode::LoadLbm:
+        case FileDialogMode::SaveLbm:
+        case FileDialogMode::SaveMarkedLbm:   return "lbm";
     }
+    return "img";
+}
+
+static const char *get_dialog_config_path(const char *category)
+{
+    /* Built lazily into a per-category static buffer so the returned pointer
+       stays valid until the next call with a different category. */
+    static char path[MAX_PATH] = "";
+    static char last_cat[16]   = "";
+    if (!category || !category[0]) category = "img";
+    if (path[0] && strcmp(last_cat, category) == 0) return path;
+    strncpy(last_cat, category, sizeof(last_cat) - 1);
+    last_cat[sizeof(last_cat) - 1] = '\0';
+#ifdef _WIN32
+    char appdata[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata))) {
+        _snprintf(path, sizeof(path), "%s\\imgtool\\last_dir_%s.txt", appdata, category);
+    } else {
+        _snprintf(path, sizeof(path), "last_dir_%s.txt", category);
+    }
+#else
+    _snprintf(path, sizeof(path), "%s/.imgtool_last_dir_%s",
+        getenv("HOME") ? getenv("HOME") : ".", category);
+#endif
     return path;
 }
 
-static void save_last_dir(const char *dir)
+static void save_last_dir(const char *dir, FileDialogMode mode)
 {
     if (!dir || !*dir) return;
 #ifdef _WIN32
@@ -1704,15 +1738,15 @@ static void save_last_dir(const char *dir)
         getenv("APPDATA") ? getenv("APPDATA") : ".");
     CreateDirectoryA(parent, NULL);
 #endif
-    FILE *f = fopen(get_dialog_config_path(), "w");
+    FILE *f = fopen(get_dialog_config_path(dialog_category_for_mode(mode)), "w");
     if (f) { fprintf(f, "%s", dir); fclose(f); }
 }
 
-static void load_last_dir(char *dir, size_t dirsz)
+static void load_last_dir(char *dir, size_t dirsz, FileDialogMode mode)
 {
     if (!dir || !dirsz) return;
     dir[0] = '\0';
-    FILE *f = fopen(get_dialog_config_path(), "r");
+    FILE *f = fopen(get_dialog_config_path(dialog_category_for_mode(mode)), "r");
     if (f) {
         if (fgets(dir, (int)dirsz, f)) {
             size_t len = strlen(dir);
@@ -1722,7 +1756,176 @@ static void load_last_dir(char *dir, size_t dirsz)
     }
 }
 
-struct FileEntry { std::string name; bool is_dir; };
+struct FileEntry {
+    std::string  name;
+    bool         is_dir;
+    long long    size;     /* bytes; 0 for dirs */
+    long long    mtime;    /* unix-epoch-ish seconds; 0 for dirs */
+};
+
+/* File-list sort key. Persists across dialog opens so the user keeps their
+   preferred view. */
+enum class FileSort { Name, Date, Size };
+static FileSort g_file_sort     = FileSort::Name;
+static bool     g_file_sort_desc = false; /* false = asc */
+
+/* ---------------- Preview thumbnail for highlighted file ----------------
+   Holds the most recent decode so we don't reparse every frame while the
+   user hovers the same file. Limited to PNG / TGA today — IMG and LBM
+   need their loaders refactored to not touch globals, which is a bigger
+   change deferred to a later round. */
+struct FilePreview {
+    SDL_Texture *tex;
+    int          w, h;
+    std::string  path;     /* full path that produced the texture */
+};
+static FilePreview g_file_preview = {NULL, 0, 0, ""};
+
+static void file_preview_clear(void)
+{
+    if (g_file_preview.tex) {
+        SDL_DestroyTexture(g_file_preview.tex);
+        g_file_preview.tex = NULL;
+    }
+    g_file_preview.w = g_file_preview.h = 0;
+    g_file_preview.path.clear();
+}
+
+/* Build an SDL texture from a row-major RGBA buffer, scaled to fit inside
+   max_side while preserving aspect ratio. Nearest-neighbor (matches the
+   timeline-thumb path) so pixel art doesn't get blurred. */
+static SDL_Texture *make_preview_texture(const unsigned char *rgba, int sw, int sh, int max_side)
+{
+    if (!rgba || sw <= 0 || sh <= 0 || !g_imgui_renderer) return NULL;
+    int tw, th;
+    if (sw >= sh) { tw = max_side; th = (int)((long long)max_side * sh / sw); if (th < 1) th = 1; }
+    else          { th = max_side; tw = (int)((long long)max_side * sw / sh); if (tw < 1) tw = 1; }
+
+    SDL_Texture *tex = SDL_CreateTexture(g_imgui_renderer, SDL_PIXELFORMAT_ABGR8888,
+                                         SDL_TEXTUREACCESS_STREAMING, tw, th);
+    if (!tex) return NULL;
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
+    void *pixels; int pitch;
+    if (SDL_LockTexture(tex, NULL, &pixels, &pitch) != 0) { SDL_DestroyTexture(tex); return NULL; }
+    Uint32 *dst = (Uint32 *)pixels;
+    for (int y = 0; y < th; y++) {
+        int sy = (int)((long long)y * sh / th);
+        if (sy >= sh) sy = sh - 1;
+        for (int x = 0; x < tw; x++) {
+            int sx_i = (int)((long long)x * sw / tw);
+            if (sx_i >= sw) sx_i = sw - 1;
+            const unsigned char *p = rgba + (sy * sw + sx_i) * 4;
+            dst[y * (pitch / 4) + x] = ((Uint32)p[3] << 24) | ((Uint32)p[2] << 16) | ((Uint32)p[1] << 8) | (Uint32)p[0];
+        }
+    }
+    SDL_UnlockTexture(tex);
+    return tex;
+}
+
+/* Decode a PNG via stb_image (already linked in img_io.cpp) and build a
+   preview texture. Returns NULL if the file isn't a valid PNG. */
+extern "C" unsigned char *stbi_load(const char *, int *, int *, int *, int);
+extern "C" void stbi_image_free(void *);
+static SDL_Texture *load_preview_png(const char *path, int max_side)
+{
+    int w, h, channels;
+    unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
+    if (!data) return NULL;
+    SDL_Texture *tex = make_preview_texture(data, w, h, max_side);
+    stbi_image_free(data);
+    return tex;
+}
+
+/* Self-contained TGA preview. We don't call LoadTga because that one mutates
+   global IMG / PAL lists. Supports the formats LoadTga supports (indexed
+   8-bit, colormap 15/16/24-bit). */
+#pragma pack(push, 1)
+struct TgaPreviewHeader {
+    unsigned char  id_len, cm_type, i_type;
+    unsigned short cm_first, cm_length;
+    unsigned char  cm_size;
+    unsigned short x_origin, y_origin, width, height;
+    unsigned char  bpp, descriptor;
+};
+#pragma pack(pop)
+static SDL_Texture *load_preview_tga(const char *path, int max_side)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    TgaPreviewHeader hdr;
+    if (fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) { fclose(f); return NULL; }
+    if (hdr.id_len > 0) fseek(f, hdr.id_len, SEEK_CUR);
+    if (hdr.i_type != 1 || hdr.cm_type != 1 || hdr.bpp != 8 ||
+        (hdr.cm_size != 15 && hdr.cm_size != 16 && hdr.cm_size != 24)) {
+        fclose(f); return NULL;
+    }
+    int sw = hdr.width, sh = hdr.height;
+    if (sw <= 0 || sh <= 0 || sw > 16384 || sh > 16384) { fclose(f); return NULL; }
+    int ncolors = hdr.cm_length ? hdr.cm_length : 256;
+    unsigned char palette[256][3] = {};
+    for (int i = 0; i < ncolors && i < 256; i++) {
+        if (hdr.cm_size == 24) {
+            unsigned char rgb[3];
+            if (fread(rgb, 1, 3, f) != 3) { fclose(f); return NULL; }
+            palette[i][0] = rgb[2]; palette[i][1] = rgb[1]; palette[i][2] = rgb[0]; /* BGR -> RGB */
+        } else {
+            unsigned char w2[2];
+            if (fread(w2, 1, 2, f) != 2) { fclose(f); return NULL; }
+            unsigned short w15 = (unsigned short)(w2[0] | (w2[1] << 8));
+            palette[i][0] = (unsigned char)(((w15 >> 10) & 0x1F) << 3);
+            palette[i][1] = (unsigned char)(((w15 >>  5) & 0x1F) << 3);
+            palette[i][2] = (unsigned char)(( w15        & 0x1F) << 3);
+        }
+    }
+    /* TGA stores bottom-up by default; descriptor bit 5 set means top-down. */
+    bool top_down = (hdr.descriptor & 0x20) != 0;
+    std::vector<unsigned char> rgba((size_t)sw * sh * 4, 0);
+    for (int y = 0; y < sh; y++) {
+        int dy = top_down ? y : (sh - 1 - y);
+        for (int x = 0; x < sw; x++) {
+            int c = fgetc(f);
+            if (c == EOF) { fclose(f); return NULL; }
+            unsigned char ci = (unsigned char)c;
+            unsigned char *p = &rgba[(dy * sw + x) * 4];
+            if (ci == 0) { p[3] = 0; } /* index 0 = transparent */
+            else { p[0] = palette[ci][0]; p[1] = palette[ci][1]; p[2] = palette[ci][2]; p[3] = 255; }
+        }
+    }
+    fclose(f);
+    return make_preview_texture(rgba.data(), sw, sh, max_side);
+}
+
+/* Refresh the preview for `path`, no-op if it's already cached. */
+static void file_preview_refresh(const std::string &path)
+{
+    if (path.empty()) { file_preview_clear(); return; }
+    if (path == g_file_preview.path && g_file_preview.tex) return; /* cached */
+
+    /* Pick decoder by extension. */
+    size_t dot = path.find_last_of('.');
+    std::string ext;
+    if (dot != std::string::npos) {
+        ext = path.substr(dot + 1);
+        for (auto &c : ext) c = (char)tolower((unsigned char)c);
+    }
+    SDL_Texture *tex = NULL;
+    if (ext == "png")       tex = load_preview_png(path.c_str(), 192);
+    else if (ext == "tga")  tex = load_preview_tga(path.c_str(), 192);
+    /* IMG / LBM previews would require refactoring those loaders to write
+       into a sandbox buffer rather than the global IMG / PAL lists. Saved
+       for a follow-up. */
+
+    file_preview_clear();
+    if (tex) {
+        int w, h;
+        SDL_QueryTexture(tex, NULL, NULL, &w, &h);
+        g_file_preview.tex  = tex;
+        g_file_preview.w    = w;
+        g_file_preview.h    = h;
+        g_file_preview.path = path;
+    }
+}
 
 static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& entries, const char* ext_filter)
 {
@@ -1740,7 +1943,11 @@ static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& en
         do {
             if (strcmp(fd.cFileName, ".") == 0) continue;
             bool is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            entries.push_back({fd.cFileName, is_dir});
+            long long sz = is_dir ? 0LL
+                : ((long long)fd.nFileSizeHigh << 32) | (long long)fd.nFileSizeLow;
+            /* FILETIME -> seconds since some epoch is fine for sort-only use. */
+            long long mt = ((long long)fd.ftLastWriteTime.dwHighDateTime << 32) | (long long)fd.ftLastWriteTime.dwLowDateTime;
+            entries.push_back({fd.cFileName, is_dir, sz, mt});
         } while (FindNextFileA(hFind, &fd));
         FindClose(hFind);
     }
@@ -1755,7 +1962,7 @@ static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& en
                 if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
                 bool dup = false;
                 for (const auto& e : entries) { if (e.name == fd.cFileName) { dup = true; break; } }
-                if (!dup) entries.push_back({fd.cFileName, true});
+                if (!dup) entries.push_back({fd.cFileName, true, 0LL, 0LL});
             } while (FindNextFileA(hDir, &fd));
             FindClose(hDir);
         }
@@ -1766,32 +1973,22 @@ static void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& en
         struct dirent* dir_ent;
         while ((dir_ent = readdir(d)) != NULL) {
             if (strcmp(dir_ent->d_name, ".") == 0) continue;
-            bool is_dir = false;
-            if (dir_ent->d_type == DT_DIR) {
-                is_dir = true;
-            } else if (dir_ent->d_type == DT_UNKNOWN) {
-                struct stat st;
-                std::string full_path = dir;
-                if (!full_path.empty() && full_path.back() != '/') full_path += "/";
-                full_path += dir_ent->d_name;
-                if (stat(full_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
-                    is_dir = true;
-            }
+            std::string full_path = dir;
+            if (!full_path.empty() && full_path.back() != '/') full_path += "/";
+            full_path += dir_ent->d_name;
+            struct stat st = {};
+            bool have_stat = (stat(full_path.c_str(), &st) == 0);
+            bool is_dir = have_stat && S_ISDIR(st.st_mode);
+            long long sz = is_dir ? 0LL : (have_stat ? (long long)st.st_size : 0LL);
+            long long mt = have_stat ? (long long)st.st_mtime : 0LL;
             if (is_dir) {
-                entries.push_back({dir_ent->d_name, true});
+                entries.push_back({dir_ent->d_name, true, 0LL, mt});
             } else if (ext_filter && ext_filter[0]) {
                 const char* dot = strrchr(dir_ent->d_name, '.');
-                if (dot) {
-#ifdef _WIN32
-                    if (_stricmp(dot + 1, ext_filter) == 0)
-                        entries.push_back({dir_ent->d_name, false});
-#else
-                    if (strcasecmp(dot + 1, ext_filter) == 0)
-                        entries.push_back({dir_ent->d_name, false});
-#endif
-                }
+                if (dot && strcasecmp(dot + 1, ext_filter) == 0)
+                    entries.push_back({dir_ent->d_name, false, sz, mt});
             } else {
-                entries.push_back({dir_ent->d_name, false});
+                entries.push_back({dir_ent->d_name, false, sz, mt});
             }
         }
         closedir(d);
@@ -1943,13 +2140,22 @@ static const char* GetDialogExtension(FileDialogMode mode)
 }
 
 static void OpenFileDialog(FileDialogMode mode) {
-    if (fpath_s[0] != '\0') {
+    /* For IMG-category modes, fpath_s (set when an IMG is currently loaded)
+       seeds the dialog so the user starts in the same dir as their open
+       file. For other categories, fpath_s is irrelevant — those have their
+       own per-category remembered directory. Always re-load from disk on
+       mode change so switching from Save IMG to Import PNG lands in the
+       right folder. */
+    const char *cat = dialog_category_for_mode(mode);
+    bool is_img_cat = (strcmp(cat, "img") == 0);
+    g_file_dialog_dir[0] = '\0';
+    if (is_img_cat && fpath_s[0] != '\0') {
         size_t n = 0;
         while (n < 63 && fpath_s[n] != '\0') n++;
         memcpy(g_file_dialog_dir, fpath_s, n);
         g_file_dialog_dir[n] = '\0';
-    } else if (g_file_dialog_dir[0] == '\0') {
-        load_last_dir(g_file_dialog_dir, sizeof(g_file_dialog_dir));
+    } else {
+        load_last_dir(g_file_dialog_dir, sizeof(g_file_dialog_dir), mode);
     }
     if (g_file_dialog_dir[0] == '\0') {
 #ifdef _WIN32
@@ -2045,13 +2251,30 @@ static void DrawFileDialog() {
     if (ImGui::BeginPopupModal(title, &g_show_file_dialog, ImGuiWindowFlags_NoSavedSettings)) {
         
         ImGui::InputText("Directory", g_file_dialog_dir, sizeof(g_file_dialog_dir));
+
+        /* Sort controls. Persistent across dialog opens. */
+        ImGui::SameLine();
+        const char *sort_labels[] = { "Name", "Date", "Size" };
+        int sort_idx = (int)g_file_sort;
+        ImGui::SetNextItemWidth(80);
+        if (ImGui::Combo("##filesort", &sort_idx, sort_labels, 3))
+            g_file_sort = (FileSort)sort_idx;
+        ImGui::SameLine();
+        if (ImGui::SmallButton(g_file_sort_desc ? "v" : "^")) g_file_sort_desc = !g_file_sort_desc;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle ascending / descending");
+
         ImGui::Separator();
-        
-        ImGui::BeginChild("##file_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 4), true);
-        
+
+        /* Two-pane layout: file list on the left, preview thumbnail on the
+           right. Preview lives in the same vertical band as the list. */
+        const float PREVIEW_PANE_W = 208.0f; /* 192 image + 16 padding */
+        float content_h = -ImGui::GetFrameHeightWithSpacing() * 4;
+
+        ImGui::BeginChild("##file_list", ImVec2(-PREVIEW_PANE_W, content_h), true);
+
         std::string current_dir = g_file_dialog_dir;
-        std::string parent_dir = GetParentDirectory(current_dir);
-        
+        std::string parent_dir  = GetParentDirectory(current_dir);
+
         if (current_dir != parent_dir) {
             if (ImGui::Selectable("[..] (Up one level)", false, ImGuiSelectableFlags_AllowDoubleClick)) {
                 if (ImGui::IsMouseDoubleClicked(0)) {
@@ -2059,15 +2282,28 @@ static void DrawFileDialog() {
                 }
             }
         }
-        
+
         std::vector<FileEntry> entries;
         GetDirectoryFiles(current_dir, entries, GetDialogExtension(g_file_dialog_mode));
-        
+
         std::sort(entries.begin(), entries.end(), [](const FileEntry& a, const FileEntry& b) {
+            /* Directories always come first regardless of sort key, so the
+               user can drill down without scrolling past the file list. */
             if (a.is_dir != b.is_dir) return a.is_dir > b.is_dir;
-            return a.name < b.name;
+            bool less;
+            switch (g_file_sort) {
+                case FileSort::Date: less = a.mtime < b.mtime; break;
+                case FileSort::Size: less = a.size  < b.size;  break;
+                case FileSort::Name:
+                default:             less = a.name  < b.name;  break;
+            }
+            return g_file_sort_desc ? !less : less;
         });
-        
+
+        /* Double-click on a file = select + commit, matching native OS
+           file dialogs. The actual commit re-uses the OK/Open/Save button
+           handler below by OR-ing this flag with its click. */
+        bool dbl_click_commit = false;
         for (const auto& entry : entries) {
             std::string label = (entry.is_dir ? "[Dir] " : "      ") + entry.name;
             bool selected = (entry.name == g_file_dialog_file);
@@ -2080,8 +2316,29 @@ static void DrawFileDialog() {
                     }
                 } else {
                     snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s", entry.name.c_str());
+                    if (ImGui::IsMouseDoubleClicked(0)) dbl_click_commit = true;
                 }
             }
+        }
+        ImGui::EndChild();
+
+        /* Preview pane on the right. Decodes the currently-selected file
+           lazily; cache is keyed by full path so cursoring up/down doesn't
+           re-decode the same file. */
+        ImGui::SameLine();
+        ImGui::BeginChild("##file_preview", ImVec2(PREVIEW_PANE_W - 8, content_h), true);
+        if (g_file_dialog_file[0]) {
+            std::string sel_full = PathCombine(g_file_dialog_dir, g_file_dialog_file);
+            file_preview_refresh(sel_full);
+            if (g_file_preview.tex) {
+                ImGui::TextUnformatted("Preview");
+                ImGui::Image((ImTextureID)(intptr_t)g_file_preview.tex,
+                             ImVec2((float)g_file_preview.w, (float)g_file_preview.h));
+            } else {
+                ImGui::TextDisabled("No preview\n(IMG / LBM previews\ncoming soon)");
+            }
+        } else {
+            ImGui::TextDisabled("Select a file");
         }
         ImGui::EndChild();
         
@@ -2134,7 +2391,7 @@ static void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::OpenLod ||
                                 g_file_dialog_mode == FileDialogMode::LoadLbm ||
                                 g_file_dialog_mode == FileDialogMode::LoadTga) ? "Open" : "Save";
-        if (ImGui::Button(btn_text, ImVec2(100, 0))) {
+        if (ImGui::Button(btn_text, ImVec2(100, 0)) || dbl_click_commit) {
             std::string full_path = PathCombine(g_file_dialog_dir, g_file_dialog_file);
 
             if (g_file_dialog_mode == FileDialogMode::ExportTga) {
@@ -2330,13 +2587,15 @@ static void DrawFileDialog() {
                 }
             }
             g_img_tex_idx = -2; /* Force canvas texture refresh */
-            save_last_dir(g_file_dialog_dir);
+            save_last_dir(g_file_dialog_dir, g_file_dialog_mode);
+            file_preview_clear();
             g_show_file_dialog = false;
             ImGui::CloseCurrentPopup();
         }
-        
+
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+            file_preview_clear();
             g_show_file_dialog = false;
             ImGui::CloseCurrentPopup();
         }
@@ -3258,6 +3517,13 @@ static void paste_image(void)
 
     /* Clear grid selection since paste is now active */
     g_grid_sel.active = false;
+
+    /* Auto-enter Free Transform so the user can immediately resize without
+       having to press Ctrl+T as a separate step. Enter / Ctrl+T / click
+       outside the rect all still commit the transform and then commit the
+       paste; Esc reverts the transform first, then a second Esc cancels
+       the paste entirely. */
+    xform_begin();
 }
 
 /* Begin Free Transform on the active floating paste. Captures the rect
@@ -4088,19 +4354,39 @@ static void DrawHelpModal(void)
 
 static void DrawAboutModal(void)
 {
-    if (g_show_about) ImGui::OpenPopup("About Imgtool");
-    if (ImGui::BeginPopupModal("About Imgtool", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Imgtool");
+    if (g_show_about) ImGui::OpenPopup("About IMGTOOL");
+    if (ImGui::BeginPopupModal("About IMGTOOL", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
+        /* Headline: name + version in a slightly larger font weight. */
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.2f, 1.0f));
+        ImGui::Text("IMGTOOL  v%s", IMGTOOL_VERSION);
+        ImGui::PopStyleColor();
         ImGui::Separator();
-        ImGui::Text("A modern port of the 1992 Midway Image Tool.");
+
+        ImGui::TextWrapped("A modern port of the 1992 Midway Image Tool. "
+                           "Sprite + palette editor for the .IMG container files "
+                           "shipped with Mortal Kombat, NBA Jam, NBA Hangtime, "
+                           "and other Williams/Midway arcade titles of the era.");
         ImGui::Spacing();
-        ImGui::Text("Build: %s %s", __DATE__, __TIME__);
+
+        ImGui::Text("Version:  %s",       IMGTOOL_VERSION);
+        ImGui::Text("Built:    %s %s",    __DATE__, __TIME__);
 #ifdef IMGTOOL_GIT_REV
-        ImGui::Text("Commit: %s", IMGTOOL_GIT_REV);
+        ImGui::Text("Commit:   %s",       IMGTOOL_GIT_REV);
 #endif
-        ImGui::Text("ImGui: %s", IMGUI_VERSION);
+        ImGui::Text("Dear ImGui: %s",     IMGUI_VERSION);
+        SDL_version sdlv;
+        SDL_GetVersion(&sdlv);
+        ImGui::Text("SDL2:     %d.%d.%d", sdlv.major, sdlv.minor, sdlv.patch);
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("Original tool: Shawn Liptak, Williams Electronics, 1992");
+        ImGui::TextDisabled("SDL/ImGui modernization & feature work: see git history");
+
         ImGui::Spacing();
         ImGui::TextLinkOpenURL("https://github.com/junkwax/midway-imgtool");
+        ImGui::SameLine();
+        ImGui::TextDisabled(" (issues + releases)");
         ImGui::Spacing();
         if (ImGui::Button("Close", ImVec2(120, 0))) {
             g_show_about = false;
@@ -4406,9 +4692,23 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && ilselected >= 0))
                 paste_image();
             ImGui::Separator();
-            if (ImGui::MenuItem("Rename Image", "Ctrl+R")) OpenRenameImage();
-            if (ImGui::MenuItem("Delete Image", "Shift+Del")) DeleteImage(ilselected);
-            if (ImGui::MenuItem("Duplicate"))              DuplicateImage();
+            /* Selection ops — disabled when nothing's available. */
+            if (ImGui::MenuItem("Select All",       "Ctrl+A",       false, ilselected >= 0))      select_all();
+            if (ImGui::MenuItem("Deselect",         "Ctrl+D",       false, g_grid_sel.active))    deselect_all();
+            if (ImGui::MenuItem("Invert Selection", "Ctrl+Shift+I", false, ilselected >= 0))      invert_selection();
+            ImGui::Separator();
+            /* Floating-paste ops — only meaningful while a paste is active. */
+            if (ImGui::MenuItem("Free Transform",   "Ctrl+T", false, g_pasted.active && !g_xform.active)) xform_begin();
+            if (ImGui::MenuItem("Merge Down",       "Ctrl+E", false, g_pasted.active)) {
+                if (g_xform.active) xform_commit();
+                apply_pasted_region();
+                g_pasted.active = false;
+                g_pasted.dragging = false;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Rename Image",     "Ctrl+R"))     OpenRenameImage();
+            if (ImGui::MenuItem("Delete Image",     "Shift+Del"))  DeleteImage(ilselected);
+            if (ImGui::MenuItem("Duplicate",        "Ctrl+J"))     DuplicateImage();
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
@@ -4870,6 +5170,14 @@ void imgui_overlay_render(void)
         if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
             float list_h = panel_h * 0.30f;
             if (ImGui::BeginListBox("##imglist", ImVec2(-1, list_h))) {
+                /* Auto-scroll: when ilselected changes (typically via Up/Down
+                   keyboard nav, but also Prev/Next-Marked jumps or programmatic
+                   selection), make sure the selected row is visible. Without
+                   this the scroll bar stays put and the user loses track of
+                   where they are in a long sprite list. */
+                static int last_scrolled_to = -2;
+                bool need_scroll = (ilselected != last_scrolled_to);
+
                 char current_group[32] = {0};
                 bool group_open = true;
 
@@ -4913,6 +5221,19 @@ void imgui_overlay_render(void)
                             if (ImGui::IsMouseDoubleClicked(0)) {
                                 img->flags ^= 1;
                             }
+                        }
+                        /* When ilselected changes and the selected row would
+                           be clipped above or below the listbox viewport,
+                           nudge the scroll so the user can see where they
+                           are. We DON'T pin every frame — only when the
+                           selection changed AND the row is currently out of
+                           view (IsItemVisible is false), so manual scrolling
+                           still works once you've found your sprite. */
+                        if (selected && need_scroll && !ImGui::IsItemVisible()) {
+                            ImGui::SetScrollHereY(0.5f);
+                        }
+                        if (selected && need_scroll) {
+                            last_scrolled_to = ilselected;
                         }
                         
                         if (selected) {
@@ -6382,6 +6703,28 @@ void imgui_overlay_render(void)
                     if (g_xform.handle != TransformHandle::None && !mbdn) {
                         g_xform.handle = TransformHandle::None;
                     }
+
+                    /* Click outside the transform rect (but on the sprite,
+                       not on a handle and not on the chain icon) commits the
+                       transform AND applies the paste — matches Photoshop's
+                       "click anywhere outside the bbox to commit" behavior.
+                       Without this, every paste would require an extra
+                       Enter / Ctrl+T keystroke before the user could click
+                       to drop it, because paste auto-enters transform now. */
+                    if (g_xform.handle == TransformHandle::None && !hovering &&
+                        over_sprite && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    {
+                        /* Skip if the click landed on the chain icon — that
+                           click is consumed by the chain toggle above. */
+                        bool on_chain = mouse.x >= ch1.x && mouse.x <= ch2.x &&
+                                        mouse.y >= ch1.y && mouse.y <= ch2.y;
+                        if (!on_chain) {
+                            xform_commit();
+                            apply_pasted_region();
+                            g_pasted.active = false;
+                            g_pasted.dragging = false;
+                        }
+                    }
                 }
 
                 if (!canvas_input_blocked && !g_xform.active) {
@@ -6563,9 +6906,27 @@ void imgui_overlay_render(void)
         g_play_timer += ImGui::GetIO().DeltaTime;
         if (g_play_timer >= 1.0f / g_play_speed) {
             g_play_timer = 0.0f;
-            g_timeline_play_idx++;
-            if (g_timeline_play_idx >= (int)g_timeline_frames.size()) {
-                g_timeline_play_idx = 0;
+            int n = (int)g_timeline_frames.size();
+            if (g_timeline_pingpong && n > 1) {
+                /* Ping-pong: walk in g_timeline_play_dir and bounce at the
+                   endpoints, landing on them once per cycle. e.g. for 7
+                   frames the sequence is 0,1,2,3,4,5,6,5,4,3,2,1,0,1,...
+                   The bounce happens on the frame we'd otherwise overshoot:
+                   when the next step would leave the [0, n-1] range, flip
+                   direction and step inward by 2 instead of out by 1. */
+                int next = g_timeline_play_idx + g_timeline_play_dir;
+                if (next >= n || next < 0) {
+                    g_timeline_play_dir = -g_timeline_play_dir;
+                    next = g_timeline_play_idx + g_timeline_play_dir;
+                    if (next < 0) next = 0;
+                    if (next >= n) next = n - 1;
+                }
+                g_timeline_play_idx = next;
+            } else {
+                g_timeline_play_idx++;
+                if (g_timeline_play_idx >= (int)g_timeline_frames.size()) {
+                    g_timeline_play_idx = 0;
+                }
             }
             ilselected = g_timeline_frames[g_timeline_play_idx];
             g_zoom_reset = true;
@@ -6620,6 +6981,13 @@ void imgui_overlay_render(void)
         ImGui::SameLine();
         ImGui::Checkbox("Onion", &g_timeline_onion);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ghost prev/next timeline frame at 25% alpha while scrubbing or playing");
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Ping-Pong", &g_timeline_pingpong)) {
+            /* Reset direction so the first cycle after enabling always
+               starts forward, regardless of which way we were going. */
+            g_timeline_play_dir = 1;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play forward then reverse and loop (e.g. 1-7 then 7-1, repeating)");
 
         /* Draw a horizontal scrolling list of frames with drag & drop. Buttons
            render a per-frame thumbnail so the user can scan visually instead

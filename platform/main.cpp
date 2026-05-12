@@ -12,6 +12,7 @@
  *****************************************************************************/
 
 #include <cstring>
+#include <cstdio>
 #include <cstdlib>
 #include "compat.h"
 #include <SDL.h>
@@ -72,7 +73,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    SDL_Window *window = SDL_CreateWindow("Imgtool",
+    /* Title bakes in the version so users can tell builds apart at a glance
+       (e.g. when running multiple checkouts side by side). */
+    char title[64];
+    snprintf(title, sizeof(title), "IMGTOOL v%s", IMGTOOL_VERSION);
+    SDL_Window *window = SDL_CreateWindow(title,
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         1024, 768, SDL_WINDOW_RESIZABLE);
     if (!window) { SDL_Quit(); return 1; }

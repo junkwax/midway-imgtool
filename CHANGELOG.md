@@ -8,6 +8,74 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v2.5.0] — Paste pipeline overhaul, Free Transform, file dialog
+
+Major round centered on the paste workflow plus a much-improved file
+dialog. The headline: pasting is now an Adobe-style scale-and-place
+operation, and the file dialog grew thumbnails, sort options, and
+double-click-to-open.
+
+### Free Transform & paste pipeline
+- **Ctrl+T Free Transform** — eight handles (4 corners + 4 edge midpoints)
+  scale the floating paste. Aspect-locked by default; click the chain
+  icon to unlock, or hold Shift to invert the lock for one drag.
+  Enter / Ctrl+T commits (nearest-neighbor resample of the clipboard);
+  Esc reverts.
+- **Paste auto-enters transform** so every Ctrl+V drops you straight
+  into resize mode. Clicking outside the rect is a one-shot
+  commit-transform-and-apply-paste, matching Photoshop.
+- **Tight-bbox crop on cut / copy** — the clipboard is automatically
+  trimmed to its non-transparent content. A small motif inside a large
+  marquee no longer pastes off-center.
+- **Scale-to-fit on paste** — if the clipboard is bigger than the
+  target sprite, nearest-neighbor downscale to fit (preserving aspect
+  ratio). Toast tells the user what happened.
+- **Center snap + passive centering guide** — drag the floating paste
+  near the sprite's center to snap (Shift held), and a magenta guide
+  always lights up when the paste rect's center is exactly on the
+  sprite's center axis even without Shift.
+
+### Adobe-standard shortcuts
+- `Ctrl+A` Select All, `Ctrl+D` Deselect, `Ctrl+Shift+I` Invert Selection
+- `Ctrl+J` Duplicate (image or floating paste), `Ctrl+E` Merge Down
+- `Ctrl+T` Free Transform, `Shift+Del` Delete image (replaces old Ctrl+D)
+- All five new entries land in the Edit menu with the correct accelerator
+  labels and proper enabled/disabled state.
+
+### File dialog
+- **Preview thumbnails** for highlighted PNG and TGA files (192px,
+  nearest-neighbor scaled, cached by full path). IMG and LBM previews
+  are a follow-up — their loaders would need refactoring to write into
+  a sandbox buffer first.
+- **Sort by Name / Date / Size** with asc/desc toggle. Directories
+  always sort first regardless of key. Persistent across opens.
+- **Double-click to open** matches native OS file dialogs.
+- **Per-category last-dir** memory — IMG / PNG / TGA / LBM each
+  remember their own folder. Switching from "Save IMG" to "Import PNG"
+  now lands in the PNG folder, not the IMG folder.
+
+### Timeline
+- **Ping-Pong playback** — new checkbox next to Onion. Plays forward
+  then reverse and loops (e.g. frames 1→7→1→7→…) instead of wrapping.
+
+### Quality of life
+- **Image list auto-scrolls** to keep the selected sprite in view when
+  navigating with Up/Down past the viewport edge.
+- **Palette-list click commits** — clicking a palette now writes it
+  onto the active sprite's palnum, so the choice sticks across sprite
+  switches. Previously it was preview-only.
+- **About dialog** shows the version, build date, git commit, ImGui
+  version, and SDL2 version. Window title now reads `IMGTOOL v2.5.0`.
+
+### Cleanup
+- `IT/it.c` → `platform/main.cpp`, converted to C++. Dead code stripped:
+  `mempool_*` externs, unused SIGINT handler, six write-only env-var
+  buffers, two unused float conversion helpers.
+- `IT/` directory removed entirely; `vcpkg.json` removed (unused by
+  the build); `it.hlp` removed (the `h` key uses the embedded help text).
+- macOS `_NSGetExecutablePath` properly used instead of the Linux-only
+  `/proc/self/exe` fallback.
+
 ## [v2.4.0] — PNG import rewrite & palette workflow
 
 Targeted fixes to the parts of the tool that were silently destructive or

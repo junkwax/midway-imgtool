@@ -6,6 +6,11 @@
 #pragma once
 #include <SDL.h>
 
+/* Single source of truth for the version string shipped in the binary.
+   Used by the window title and the About dialog. Bump alongside the
+   CHANGELOG entry and the git tag at release time. */
+#define IMGTOOL_VERSION "2.5.0"
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -319,7 +319,7 @@ void shim_i21_openr_impl(void)
         const char *fname = strrchr(remapped, '\\');
         fname = fname ? fname + 1 : remapped;
         _snprintf(msg, sizeof(msg), "Ancient format IMG converted:\n%s", fname);
-        MessageBoxA(NULL, msg, "imgtool", MB_OK | MB_ICONINFORMATION);
+        MessageBoxA(NULL, msg, "IMGTOOL", MB_OK | MB_ICONINFORMATION);
     } else rewind(f);  /* detection reads 28 bytes; reset for asm sequential read */
 
     WORD h = handle_alloc(f);
