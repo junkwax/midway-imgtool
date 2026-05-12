@@ -73,7 +73,7 @@ mkdir build && cd build
 cmake .. -DCMAKE_PREFIX_PATH="$(brew --prefix)" && cmake --build .
 ```
 
-The build copies `SDL2.dll` (Windows), `it.hlp`, and the Material Symbols icon font next to the executable.
+The build copies `SDL2.dll` (Windows) and the Material Symbols icon font next to the executable.
 
 ---
 
@@ -81,7 +81,7 @@ The build copies `SDL2.dll` (Windows), `it.hlp`, and the Material Symbols icon f
 
 | Path | Purpose |
 |------|---------|
-| `IT/it.c` | Entry point, SDL2 window creation, main loop |
+| `platform/main.cpp` | Entry point, SDL2 window creation, main loop |
 | `platform/imgui_overlay.cpp` | Main UI: menus, toolbar, canvas, panels, palette, modals |
 | `platform/img_format.h` | IMG/PAL data structures, allocators, palette helpers |
 | `platform/img_io.h` / `img_io.cpp` | File I/O: IMG load/save, TGA/LBM/PNG import/export |

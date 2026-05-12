@@ -43,7 +43,7 @@ else()
 endif()
 
 add_executable(imgtool
-    IT/it.c
+    platform/main.cpp
     platform/globals.c
     platform/shim_vid.c
     platform/shim_input.c
@@ -65,7 +65,6 @@ add_executable(imgtool
 
 target_include_directories(imgtool PRIVATE
     platform
-    IT
     imgui
     imgui/backends
 )

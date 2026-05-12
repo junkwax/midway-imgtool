@@ -63,7 +63,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item "build/Release/imgtool.exe" $dist
           Copy-Item "build/Release/SDL2.dll"   $dist
-          Copy-Item "build/Release/it.hlp"     $dist -ErrorAction SilentlyContinue
           Copy-Item "README.md"                $dist -ErrorAction SilentlyContinue
           Copy-Item "CHANGELOG.md"             $dist -ErrorAction SilentlyContinue
           if (Test-Path "build/Release/assets") {

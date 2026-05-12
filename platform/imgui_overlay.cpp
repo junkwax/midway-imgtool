@@ -437,6 +437,34 @@ struct PastedImage {
 };
 static PastedImage g_pasted = {false};
 
+/* Free Transform (Ctrl+T) state. Engaged only while a paste is floating.
+   The eight handles re-scale the floating clipboard; the user confirms with
+   Enter/Ctrl+T/click-outside, or cancels with Esc (reverts to pre-transform
+   size). Aspect ratio is locked by default; the chain icon toggles the lock
+   for the rest of the session, Shift inverts it temporarily for one drag. */
+enum class TransformHandle {
+    None,
+    TL, T, TR,
+    L,      R,
+    BL, B, BR
+};
+struct FreeTransform {
+    bool         active;
+    bool         aspect_locked;   /* persistent — chain icon toggles */
+    /* The "live" rect we render during the drag. */
+    int          rx, ry, rw, rh;
+    /* Snapshot taken when Ctrl+T was pressed — used to compute the scale
+       factor for the final nearest-neighbor resample, and to revert on Esc. */
+    int          start_x, start_y, start_w, start_h;
+    /* Per-drag state. */
+    TransformHandle handle;
+    float        drag_mx, drag_my;
+    int          drag_rx, drag_ry, drag_rw, drag_rh;
+    /* Reference aspect ratio captured at drag-start (w / h). */
+    float        ref_aspect;
+};
+static FreeTransform g_xform = {false, true, 0,0,0,0, 0,0,0,0, TransformHandle::None, 0,0, 0,0,0,0, 1.0f};
+
 static void ApplyPalette(int pal_idx);
 void undo_push(void);
 
@@ -2389,7 +2417,7 @@ File Operations:
 Image Operations:
   Space                Mark / Unmark current image
   M / m                Mark all / Clear all marks
-  Ctrl+D               Delete image
+  Shift+Del            Delete image
   Ctrl+R               Rename image
   ;                    Least-squares size reduce
   Arrow Up/Dn          Move in image list
@@ -2431,6 +2459,12 @@ Canvas Tools (toolbar):
   Redo (Ctrl+Y)        Redo
 
   Ctrl+C / Ctrl+X / Ctrl+V    Copy / Cut / Paste
+  Ctrl+A                Select all (marquee)
+  Ctrl+D                Deselect
+  Ctrl+Shift+I          Invert selection
+  Ctrl+J                Duplicate image (or duplicate floating paste)
+  Ctrl+E                Commit floating paste in place
+  Ctrl+T                Free Transform floating paste (scale with handles)
   Shift                 Quarter scroll sensitivity
 
 
@@ -2977,6 +3011,52 @@ static void copy_image(bool cut)
     g_clipboard.h = h;
     g_clipboard.stride = clip_stride;
     g_clipboard.valid = true;
+
+    /* Tight-crop the clipboard to its non-transparent content bbox. Adobe
+       behaviour: a cut/copy carries the visible pixels, not the empty
+       transparent padding around them. Without this, a small motif inside a
+       large marquee pastes off-center because the rect is bigger than what
+       the user actually sees. The crop is applied to *all* copies (not just
+       marquee or mask copies) so a full-image copy still drops the empty
+       margin every Midway sprite has around it. */
+    {
+        unsigned char *cd = (unsigned char *)g_clipboard.data_p;
+        int min_x = w, min_y = h, max_x = -1, max_y = -1;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (cd[y * clip_stride + x] != 0) {
+                    if (x < min_x) min_x = x;
+                    if (x > max_x) max_x = x;
+                    if (y < min_y) min_y = y;
+                    if (y > max_y) max_y = y;
+                }
+            }
+        }
+        if (max_x >= 0 && max_y >= 0 &&
+            (min_x > 0 || min_y > 0 || max_x < w - 1 || max_y < h - 1)) {
+            int nw = max_x - min_x + 1;
+            int nh = max_y - min_y + 1;
+            unsigned short nstride = (unsigned short)((nw + 3) & ~3);
+            unsigned int nsize = (unsigned int)nstride * nh;
+            unsigned char *nbuf = (unsigned char *)malloc(nsize);
+            if (nbuf) {
+                memset(nbuf, 0, nsize);
+                for (int y = 0; y < nh; y++) {
+                    memcpy(nbuf + y * nstride,
+                           cd + (min_y + y) * clip_stride + min_x,
+                           nw);
+                }
+                free(g_clipboard.data_p);
+                g_clipboard.data_p = nbuf;
+                g_clipboard.w      = (unsigned short)nw;
+                g_clipboard.h      = (unsigned short)nh;
+                g_clipboard.stride = nstride;
+            }
+        }
+        /* If max_x < 0 the selection was entirely transparent; the clipboard
+           is left as-is (the user explicitly copied empty pixels — possibly
+           intentional for blanking). */
+    }
 }
 
 static void apply_pasted_region(void)
@@ -3013,12 +3093,162 @@ static void apply_pasted_region(void)
     g_img_tex_idx = -2;
 }
 
+/* Nearest-neighbor resample the clipboard to exactly (nw, nh). Used both
+   by paste-to-fit (downscale-only) and free-transform commit (any scale).
+   Nearest-neighbor (not bilinear) is required because the clipboard stores
+   palette indices, not RGB — averaging indices produces garbage colors. */
+static void scale_clipboard_to(int nw, int nh)
+{
+    if (!g_clipboard.valid || !g_clipboard.data_p) return;
+    int sw = g_clipboard.w, sh = g_clipboard.h;
+    if (nw < 1) nw = 1;
+    if (nh < 1) nh = 1;
+    if (nw == sw && nh == sh) return;
+
+    unsigned short src_stride = g_clipboard.stride;
+    unsigned short dst_stride = (unsigned short)((nw + 3) & ~3);
+    unsigned char *src = (unsigned char *)g_clipboard.data_p;
+    unsigned char *dst = (unsigned char *)malloc((size_t)dst_stride * nh);
+    if (!dst) return;
+    memset(dst, 0, (size_t)dst_stride * nh);
+
+    /* Inverse mapping: for each destination pixel, sample the source pixel
+       nearest to the center of that destination cell. Avoids the gaps you
+       get from forward mapping when the ratio isn't integral. Works for
+       both upscale and downscale. */
+    for (int dy = 0; dy < nh; dy++) {
+        int sy_idx = (int)(((long long)dy * sh + sh / 2) / nh);
+        if (sy_idx >= sh) sy_idx = sh - 1;
+        unsigned char *srow = src + sy_idx * src_stride;
+        unsigned char *drow = dst + dy * dst_stride;
+        for (int dx = 0; dx < nw; dx++) {
+            int sx_idx = (int)(((long long)dx * sw + sw / 2) / nw);
+            if (sx_idx >= sw) sx_idx = sw - 1;
+            drow[dx] = srow[sx_idx];
+        }
+    }
+
+    free(g_clipboard.data_p);
+    g_clipboard.data_p = dst;
+    g_clipboard.w      = (unsigned short)nw;
+    g_clipboard.h      = (unsigned short)nh;
+    g_clipboard.stride = dst_stride;
+}
+
+/* Downscale-only convenience wrapper used by paste-to-fit: shrink while
+   preserving aspect ratio, no-op if the clipboard already fits. */
+static void scale_clipboard_to_fit(int max_w, int max_h)
+{
+    if (!g_clipboard.valid || !g_clipboard.data_p) return;
+    int sw = g_clipboard.w, sh = g_clipboard.h;
+    if (sw <= max_w && sh <= max_h) return;
+
+    long long rx = ((long long)max_w << 16) / sw;
+    long long ry = ((long long)max_h << 16) / sh;
+    long long r  = (rx < ry) ? rx : ry;
+    int nw = (int)((long long)sw * r >> 16);
+    int nh = (int)((long long)sh * r >> 16);
+    if (nw < 1) nw = 1;
+    if (nh < 1) nh = 1;
+    if (nw > max_w) nw = max_w;
+    if (nh > max_h) nh = max_h;
+    scale_clipboard_to(nw, nh);
+}
+
+/* Marquee-select the entire current sprite. Adobe's Ctrl+A. Stored as a
+   rectangle (not a mask) since "everything" is trivially representable. */
+static void select_all(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img || img->w == 0 || img->h == 0) return;
+    g_active_tool        = ActiveTool::Marquee;
+    g_grid_sel.active    = true;
+    g_grid_sel.dragging  = false;
+    g_grid_sel.is_mask   = false;
+    g_grid_sel.pixel_mask.clear();
+    g_grid_sel.x1 = 0;             g_grid_sel.y1 = 0;
+    g_grid_sel.x2 = img->w - 1;    g_grid_sel.y2 = img->h - 1;
+}
+
+/* Clear any active marquee / lasso / wand selection. Adobe's Ctrl+D. Does
+   NOT cancel a floating paste — that's Esc's job, and overloading Ctrl+D
+   to do both would be surprising. */
+static void deselect_all(void)
+{
+    g_grid_sel.active   = false;
+    g_grid_sel.dragging = false;
+    g_grid_sel.is_mask  = false;
+    g_grid_sel.pixel_mask.clear();
+    g_lasso_points.clear();
+}
+
+/* Invert the current selection. Adobe's Shift+Ctrl+I. Promotes a rect
+   selection to a pixel mask so the inversion can be expressed precisely. */
+static void invert_selection(void)
+{
+    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (!img || img->w == 0 || img->h == 0) return;
+    int sw = img->w, sh = img->h;
+
+    if (!g_grid_sel.active) {
+        /* Inverting "nothing" = "everything". */
+        select_all();
+        return;
+    }
+
+    /* Build a fresh mask covering the whole sprite, flipping bits inside the
+       current selection. Promotes rect selections to masks transparently. */
+    std::vector<bool> new_mask((size_t)sw * sh, false);
+
+    int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
+    int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
+    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 < 0) x1 = 0; if (x2 >= sw) x2 = sw - 1;
+    if (y1 < 0) y1 = 0; if (y2 >= sh) y2 = sh - 1;
+
+    for (int y = 0; y < sh; y++) {
+        for (int x = 0; x < sw; x++) {
+            bool inside;
+            if (g_grid_sel.is_mask) {
+                inside = g_grid_sel.pixel_mask[(size_t)y * g_grid_sel.mask_w + x];
+            } else {
+                inside = (x >= x1 && x <= x2 && y >= y1 && y <= y2);
+            }
+            new_mask[(size_t)y * sw + x] = !inside;
+        }
+    }
+
+    g_grid_sel.active     = true;
+    g_grid_sel.is_mask    = true;
+    g_grid_sel.mask_w     = sw;
+    g_grid_sel.mask_h     = sh;
+    g_grid_sel.pixel_mask = std::move(new_mask);
+    g_grid_sel.x1 = 0; g_grid_sel.y1 = 0;
+    g_grid_sel.x2 = sw - 1; g_grid_sel.y2 = sh - 1;
+}
+
 static void paste_image(void)
 {
     IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
 
     undo_push();
+
+    /* If the clipboard is larger than the target sprite, nearest-neighbor
+       downscale it to fit (preserving aspect ratio). Without this, the user
+       has to manually clip away anything that hangs off the edge. */
+    int orig_w = g_clipboard.w, orig_h = g_clipboard.h;
+    if (g_clipboard.w > img->w || g_clipboard.h > img->h) {
+        scale_clipboard_to_fit(img->w, img->h);
+        if (g_clipboard.w != orig_w || g_clipboard.h != orig_h) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Paste scaled to fit: %dx%d -> %dx%d",
+                     orig_w, orig_h,
+                     (int)g_clipboard.w, (int)g_clipboard.h);
+            g_restore_msg_timer = 3.0f;
+        }
+    }
 
     /* Show paste boundary and let user position it */
     g_pasted.active = true;
@@ -3028,6 +3258,56 @@ static void paste_image(void)
 
     /* Clear grid selection since paste is now active */
     g_grid_sel.active = false;
+}
+
+/* Begin Free Transform on the active floating paste. Captures the rect
+   geometry at this moment so Esc can revert. The aspect lock persists
+   across invocations (g_xform.aspect_locked is not reset here). */
+static void xform_begin(void)
+{
+    if (!g_pasted.active || !g_clipboard.valid) return;
+    if (g_xform.active) return; /* already transforming */
+    g_xform.active   = true;
+    g_xform.rx       = g_pasted.paste_x;
+    g_xform.ry       = g_pasted.paste_y;
+    g_xform.rw       = g_clipboard.w;
+    g_xform.rh       = g_clipboard.h;
+    g_xform.start_x  = g_xform.rx;
+    g_xform.start_y  = g_xform.ry;
+    g_xform.start_w  = g_xform.rw;
+    g_xform.start_h  = g_xform.rh;
+    g_xform.handle   = TransformHandle::None;
+    g_xform.ref_aspect = (g_xform.rh > 0) ? (float)g_xform.rw / (float)g_xform.rh : 1.0f;
+}
+
+/* Cancel transform — revert rect to its pre-transform geometry; the paste
+   stays floating at its original size. */
+static void xform_cancel(void)
+{
+    if (!g_xform.active) return;
+    g_pasted.paste_x = g_xform.start_x;
+    g_pasted.paste_y = g_xform.start_y;
+    g_xform.active   = false;
+    g_xform.handle   = TransformHandle::None;
+}
+
+/* Commit transform — if the rect dimensions changed, nearest-neighbor
+   resample the clipboard to match, then update the paste position to the
+   final top-left. After this the floating paste continues normally and the
+   user can still move it before final drop. */
+static void xform_commit(void)
+{
+    if (!g_xform.active) return;
+    int nw = g_xform.rw, nh = g_xform.rh;
+    if (nw < 1) nw = 1;
+    if (nh < 1) nh = 1;
+    if (nw != (int)g_clipboard.w || nh != (int)g_clipboard.h) {
+        scale_clipboard_to(nw, nh);
+    }
+    g_pasted.paste_x = g_xform.rx;
+    g_pasted.paste_y = g_xform.ry;
+    g_xform.active   = false;
+    g_xform.handle   = TransformHandle::None;
 }
 
 /* ---- Public C interface ---- */
@@ -3927,6 +4207,35 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) copy_image(true);
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) paste_image();
 
+    /* Adobe-standard selection shortcuts. */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_A, route)) select_all();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_D, route)) deselect_all();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_I, route)) invert_selection();
+    /* Ctrl+J duplicates: a floating paste commits and stays floating as a
+       second copy of itself; otherwise duplicates the current image. */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_J, route)) {
+        if (g_pasted.active) {
+            if (g_xform.active) xform_commit();
+            apply_pasted_region(); /* leave g_pasted.active = true */
+        } else {
+            DuplicateImage();
+        }
+    }
+    /* Ctrl+E commits a floating paste in place (Photoshop "Merge Down"). */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_E, route)) {
+        if (g_pasted.active) {
+            if (g_xform.active) xform_commit();
+            apply_pasted_region();
+            g_pasted.active = false;
+            g_pasted.dragging = false;
+        }
+    }
+    /* Delete Image moves to Shift+Del to free Ctrl+D for Adobe-standard
+       Deselect. The File/Edit menu accelerator label is updated to match. */
+    if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_Delete, route)) {
+        if (ilselected >= 0) DeleteImage(ilselected);
+    }
+
     /* File I/O */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, route)) RequestOpenDialog();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, route)) OpenFileDialog(FileDialogMode::SaveImg);
@@ -3954,13 +4263,22 @@ void imgui_overlay_render(void)
         if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
     }
 
-    /* Tool Intercepts */
+    /* Tool Intercepts. Esc/Enter have a three-level priority: transform
+       takes precedence, then floating paste, then marquee. */
     if (ImGui::Shortcut(ImGuiKey_Escape, route)) {
-        if (g_pasted.active) { g_pasted.active = false; g_pasted.dragging = false; } 
+        if (g_xform.active)         { xform_cancel(); }
+        else if (g_pasted.active)   { g_pasted.active = false; g_pasted.dragging = false; }
         else if (g_grid_sel.active) { g_grid_sel.active = false; }
     }
     if (ImGui::Shortcut(ImGuiKey_Enter, route)) {
-        if (g_pasted.active && !g_pasted.dragging) { apply_pasted_region(); g_pasted.active = false; }
+        if (g_xform.active)                                    xform_commit();
+        else if (g_pasted.active && !g_pasted.dragging)      { apply_pasted_region(); g_pasted.active = false; }
+    }
+    /* Ctrl+T enters Free Transform on the floating paste. Pressing it again
+       while transforming commits and exits — symmetric with Photoshop. */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_T, route)) {
+        if (g_xform.active)        xform_commit();
+        else if (g_pasted.active)  xform_begin();
     }
 
     /* Image Operations */
@@ -4089,7 +4407,7 @@ void imgui_overlay_render(void)
                 paste_image();
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image", "Ctrl+R")) OpenRenameImage();
-            if (ImGui::MenuItem("Delete Image", "Ctrl+D")) DeleteImage(ilselected);
+            if (ImGui::MenuItem("Delete Image", "Shift+Del")) DeleteImage(ilselected);
             if (ImGui::MenuItem("Duplicate"))              DuplicateImage();
             ImGui::PopStyleVar();
             ImGui::EndMenu();
@@ -5808,12 +6126,31 @@ void imgui_overlay_render(void)
                 }
             }
 
+            /* Defensive: transform mode can't exist without a floating paste.
+               Several state-clearing paths (ClearAll, file-open, etc.) drop
+               g_pasted.active without knowing about the transform, so latch
+               g_xform off here rather than scatter g_xform.active = false
+               across every site. */
+            if (g_xform.active && !g_pasted.active) {
+                g_xform.active = false;
+                g_xform.handle = TransformHandle::None;
+            }
+
             /* Paste overlay with pixel preview */
             if (g_pasted.active && g_clipboard.valid && g_clipboard.w > 0 && g_clipboard.h > 0) {
-                int px = g_pasted.paste_x;
-                int py = g_pasted.paste_y;
-                int pw = g_clipboard.w;
-                int ph = g_clipboard.h;
+                /* In transform mode the visible rect is the live transform
+                   rect, not the static clipboard size. The pixel preview is
+                   skipped during transform (interpolated preview would
+                   disagree with the post-commit nearest-neighbor result and
+                   confuse the user). */
+                int px, py, pw, ph;
+                if (g_xform.active) {
+                    px = g_xform.rx; py = g_xform.ry;
+                    pw = g_xform.rw; ph = g_xform.rh;
+                } else {
+                    px = g_pasted.paste_x; py = g_pasted.paste_y;
+                    pw = g_clipboard.w;    ph = g_clipboard.h;
+                }
                 unsigned short cs = g_clipboard.stride;
 
                 ImVec2 p1(img_pos.x + px * sx, img_pos.y + py * sy);
@@ -5822,34 +6159,42 @@ void imgui_overlay_render(void)
                 bool over_sprite = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                                    mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
 
-                /* Render clipboard pixel preview with alpha */
-                IMG *simg = (ilselected >= 0) ? get_img(ilselected) : NULL;
-                PAL *spal = simg ? get_pal(simg->palnum) : NULL;
-                const unsigned char *pald = spal ? (const unsigned char *)spal->data_p : NULL;
-                const unsigned char *src = (const unsigned char *)g_clipboard.data_p;
-                for (int y = 0; y < ph; y++) {
-                    for (int x = 0; x < pw; x++) {
-                        unsigned char ci = src[y * cs + x];
-                        if (ci == 0) continue;
-                        ImU32 col;
-                        if (pald) {
-                            unsigned short w15 = (unsigned short)(pald[ci*2] | (pald[ci*2+1] << 8));
-                            col = IM_COL32(
-                                (unsigned char)(((w15 >> 10) & 0x1F) << 3),
-                                (unsigned char)(((w15 >>  5) & 0x1F) << 3),
-                                (unsigned char)(( w15        & 0x1F) << 3),
-                                160);
-                        } else {
-                            col = IM_COL32(255, 255, 255, 160);
+                /* Render clipboard pixel preview with alpha (move mode only). */
+                if (!g_xform.active) {
+                    IMG *simg = (ilselected >= 0) ? get_img(ilselected) : NULL;
+                    PAL *spal = simg ? get_pal(simg->palnum) : NULL;
+                    const unsigned char *pald = spal ? (const unsigned char *)spal->data_p : NULL;
+                    const unsigned char *src = (const unsigned char *)g_clipboard.data_p;
+                    for (int y = 0; y < ph; y++) {
+                        for (int x = 0; x < pw; x++) {
+                            unsigned char ci = src[y * cs + x];
+                            if (ci == 0) continue;
+                            ImU32 col;
+                            if (pald) {
+                                unsigned short w15 = (unsigned short)(pald[ci*2] | (pald[ci*2+1] << 8));
+                                col = IM_COL32(
+                                    (unsigned char)(((w15 >> 10) & 0x1F) << 3),
+                                    (unsigned char)(((w15 >>  5) & 0x1F) << 3),
+                                    (unsigned char)(( w15        & 0x1F) << 3),
+                                    160);
+                            } else {
+                                col = IM_COL32(255, 255, 255, 160);
+                            }
+                            ImVec2 pp1(img_pos.x + (px + x) * sx, img_pos.y + (py + y) * sy);
+                            ImVec2 pp2(img_pos.x + (px + x + 1) * sx, img_pos.y + (py + y + 1) * sy);
+                            dl->AddRectFilled(pp1, pp2, col);
                         }
-                        ImVec2 pp1(img_pos.x + (px + x) * sx, img_pos.y + (py + y) * sy);
-                        ImVec2 pp2(img_pos.x + (px + x + 1) * sx, img_pos.y + (py + y + 1) * sy);
-                        dl->AddRectFilled(pp1, pp2, col);
                     }
+                } else {
+                    /* Light fill inside the transform rect so it's not
+                       invisible when the underlying sprite has dark pixels. */
+                    dl->AddRectFilled(p1, p2, IM_COL32(80, 130, 200, 40));
                 }
 
-                /* Border — gold when hovering, yellow otherwise */
-                ImU32 border_col = hovering ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 255, 0, 255);
+                /* Border — cyan when transforming, gold when hovering, yellow otherwise */
+                ImU32 border_col = g_xform.active ? IM_COL32(0, 220, 255, 255)
+                                                  : (hovering ? IM_COL32(255, 200, 0, 255)
+                                                              : IM_COL32(255, 255, 0, 255));
                 dl->AddRect(p1, p2, border_col, 0.0f, 0, 2.0f);
 
                 /* Snap guides — drawn while a snap is active this frame so
@@ -5868,12 +6213,178 @@ void imgui_overlay_render(void)
                 }
 
                 /* Instruction text */
-                if (g_pasted.dragging)
+                if (g_xform.active) {
+                    const char *hint = (g_xform.handle != TransformHandle::None)
+                        ? "Scaling..."
+                        : "Drag handles to scale | Enter/Ctrl+T commit | Esc revert | Shift inverts aspect lock";
+                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(0, 220, 255, 255), hint);
+                } else if (g_pasted.dragging)
                     dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 200, 0, 255), "Moving...");
                 else
-                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 255, 0, 255), "Drag to move | Click outside to place | Esc cancel");
+                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 255, 0, 255), "Drag to move | Ctrl+T transform | Click outside to place | Esc cancel");
 
-                if (!canvas_input_blocked) {
+                /* ----- Free Transform handles + interaction ----- */
+                if (g_xform.active && !canvas_input_blocked) {
+                    /* 8 handles positioned at the corners and edge midpoints
+                       of the live rect. Each is a 10x10 screen-pixel square
+                       drawn outside the rect so the rect stroke stays clean. */
+                    const float HSZ = 5.0f; /* half-size in screen pixels */
+                    struct HandleSpec { TransformHandle h; float cx, cy; };
+                    float midx = (p1.x + p2.x) * 0.5f;
+                    float midy = (p1.y + p2.y) * 0.5f;
+                    HandleSpec specs[8] = {
+                        { TransformHandle::TL, p1.x, p1.y },
+                        { TransformHandle::T,  midx, p1.y },
+                        { TransformHandle::TR, p2.x, p1.y },
+                        { TransformHandle::L,  p1.x, midy },
+                        { TransformHandle::R,  p2.x, midy },
+                        { TransformHandle::BL, p1.x, p2.y },
+                        { TransformHandle::B,  midx, p2.y },
+                        { TransformHandle::BR, p2.x, p2.y },
+                    };
+
+                    TransformHandle hover_h = TransformHandle::None;
+                    for (int i = 0; i < 8; i++) {
+                        const HandleSpec &s = specs[i];
+                        bool hov = mouse.x >= s.cx - HSZ && mouse.x <= s.cx + HSZ &&
+                                   mouse.y >= s.cy - HSZ && mouse.y <= s.cy + HSZ;
+                        if (hov && g_xform.handle == TransformHandle::None) hover_h = s.h;
+                        ImU32 fill = (hov || g_xform.handle == s.h) ? IM_COL32(255, 255, 255, 255)
+                                                                    : IM_COL32(0, 220, 255, 255);
+                        dl->AddRectFilled(ImVec2(s.cx - HSZ, s.cy - HSZ),
+                                          ImVec2(s.cx + HSZ, s.cy + HSZ),
+                                          fill);
+                        dl->AddRect(ImVec2(s.cx - HSZ, s.cy - HSZ),
+                                    ImVec2(s.cx + HSZ, s.cy + HSZ),
+                                    IM_COL32(0, 0, 0, 255), 0.0f, 0, 1.0f);
+                    }
+
+                    /* Chain icon at the top-right corner of the rect, offset
+                       upward so it doesn't collide with the TR handle. Click
+                       toggles g_xform.aspect_locked (persistent). Drawn as
+                       two interlocked squares — minimal but recognizable. */
+                    float chain_cx = p2.x + 14;
+                    float chain_cy = p1.y - 14;
+                    float chain_hs = 8;
+                    ImVec2 ch1(chain_cx - chain_hs, chain_cy - chain_hs);
+                    ImVec2 ch2(chain_cx + chain_hs, chain_cy + chain_hs);
+                    bool chain_hov = mouse.x >= ch1.x && mouse.x <= ch2.x &&
+                                     mouse.y >= ch1.y && mouse.y <= ch2.y;
+                    ImU32 chain_bg = chain_hov ? IM_COL32(255, 255, 255, 200)
+                                               : IM_COL32(40, 40, 40, 200);
+                    ImU32 chain_fg = g_xform.aspect_locked ? IM_COL32(0, 220, 255, 255)
+                                                           : IM_COL32(180, 180, 180, 255);
+                    dl->AddRectFilled(ch1, ch2, chain_bg, 2.0f);
+                    dl->AddRect(ch1, ch2, IM_COL32(0, 0, 0, 255), 2.0f, 0, 1.0f);
+                    /* Glyph: two linked rings when locked, two broken arcs when not.
+                       Drawn with primitives — no font dependency. */
+                    if (g_xform.aspect_locked) {
+                        dl->AddCircle(ImVec2(chain_cx - 3, chain_cy), 3.5f, chain_fg, 0, 1.5f);
+                        dl->AddCircle(ImVec2(chain_cx + 3, chain_cy), 3.5f, chain_fg, 0, 1.5f);
+                    } else {
+                        dl->AddCircle(ImVec2(chain_cx - 4, chain_cy - 2), 3.0f, chain_fg, 0, 1.5f);
+                        dl->AddCircle(ImVec2(chain_cx + 4, chain_cy + 2), 3.0f, chain_fg, 0, 1.5f);
+                    }
+                    if (chain_hov) {
+                        ImGui::SetTooltip(g_xform.aspect_locked
+                            ? "Aspect ratio locked. Click to unlock (free scale)."
+                            : "Aspect ratio free. Click to lock (proportional scale).");
+                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                            g_xform.aspect_locked = !g_xform.aspect_locked;
+                        }
+                    }
+
+                    /* Handle drag: pick on click, scale on drag, release commits. */
+                    if (g_xform.handle == TransformHandle::None && hover_h != TransformHandle::None &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        g_xform.handle  = hover_h;
+                        g_xform.drag_mx = mouse.x;
+                        g_xform.drag_my = mouse.y;
+                        g_xform.drag_rx = g_xform.rx;
+                        g_xform.drag_ry = g_xform.ry;
+                        g_xform.drag_rw = g_xform.rw;
+                        g_xform.drag_rh = g_xform.rh;
+                        g_xform.ref_aspect = (g_xform.rh > 0)
+                            ? (float)g_xform.rw / (float)g_xform.rh
+                            : 1.0f;
+                    }
+                    if (g_xform.handle != TransformHandle::None && mbdn) {
+                        /* Convert mouse delta from screen pixels back into
+                           image pixels via the sx/sy zoom factors. */
+                        int dx = (int)((mouse.x - g_xform.drag_mx) / sx);
+                        int dy = (int)((mouse.y - g_xform.drag_my) / sy);
+                        int rx = g_xform.drag_rx, ry = g_xform.drag_ry;
+                        int rw = g_xform.drag_rw, rh = g_xform.drag_rh;
+
+                        /* Apply the delta to the right edge(s) for the chosen
+                           handle. East/south edges move with positive delta,
+                           west/north edges move and shrink the rect. */
+                        TransformHandle h = g_xform.handle;
+                        bool affects_left   = (h == TransformHandle::TL || h == TransformHandle::L || h == TransformHandle::BL);
+                        bool affects_right  = (h == TransformHandle::TR || h == TransformHandle::R || h == TransformHandle::BR);
+                        bool affects_top    = (h == TransformHandle::TL || h == TransformHandle::T || h == TransformHandle::TR);
+                        bool affects_bottom = (h == TransformHandle::BL || h == TransformHandle::B || h == TransformHandle::BR);
+
+                        if (affects_left)   { rx += dx; rw -= dx; }
+                        if (affects_right)  {           rw += dx; }
+                        if (affects_top)    { ry += dy; rh -= dy; }
+                        if (affects_bottom) {           rh += dy; }
+
+                        /* Aspect handling. Adobe convention:
+                            - Corner handles: respect lock (Shift inverts).
+                            - Edge handles: ALWAYS free in Photoshop's classic
+                              behavior, but with the chain locked the user
+                              expects edges to also scale proportionally —
+                              honor the lock there too. Shift still inverts. */
+                        bool is_corner = (h == TransformHandle::TL || h == TransformHandle::TR ||
+                                          h == TransformHandle::BL || h == TransformHandle::BR);
+                        bool shift_inverts = ImGui::GetIO().KeyShift;
+                        bool lock_now = g_xform.aspect_locked ^ shift_inverts;
+
+                        if (lock_now && g_xform.ref_aspect > 0.0f) {
+                            if (is_corner) {
+                                /* Use the dominant axis to drive the other. */
+                                float scale_w = (float)rw / (float)g_xform.drag_rw;
+                                float scale_h = (float)rh / (float)g_xform.drag_rh;
+                                float scale   = (fabsf(scale_w - 1.0f) > fabsf(scale_h - 1.0f)) ? scale_w : scale_h;
+                                int new_w = (int)(g_xform.drag_rw * scale + 0.5f);
+                                int new_h = (int)(new_w / g_xform.ref_aspect + 0.5f);
+                                if (new_w < 1) new_w = 1;
+                                if (new_h < 1) new_h = 1;
+                                if (affects_left)  rx = (g_xform.drag_rx + g_xform.drag_rw) - new_w;
+                                if (affects_top)   ry = (g_xform.drag_ry + g_xform.drag_rh) - new_h;
+                                rw = new_w; rh = new_h;
+                            } else {
+                                /* Edge handle with lock: drive the OTHER axis
+                                   from this one, anchored at the center of the
+                                   non-moving axis. */
+                                if (h == TransformHandle::T || h == TransformHandle::B) {
+                                    int new_w = (int)(rh * g_xform.ref_aspect + 0.5f);
+                                    if (new_w < 1) new_w = 1;
+                                    int cx_old = g_xform.drag_rx + g_xform.drag_rw / 2;
+                                    rx = cx_old - new_w / 2;
+                                    rw = new_w;
+                                } else {
+                                    int new_h = (int)(rw / g_xform.ref_aspect + 0.5f);
+                                    if (new_h < 1) new_h = 1;
+                                    int cy_old = g_xform.drag_ry + g_xform.drag_rh / 2;
+                                    ry = cy_old - new_h / 2;
+                                    rh = new_h;
+                                }
+                            }
+                        }
+
+                        if (rw < 1) rw = 1;
+                        if (rh < 1) rh = 1;
+                        g_xform.rx = rx; g_xform.ry = ry;
+                        g_xform.rw = rw; g_xform.rh = rh;
+                    }
+                    if (g_xform.handle != TransformHandle::None && !mbdn) {
+                        g_xform.handle = TransformHandle::None;
+                    }
+                }
+
+                if (!canvas_input_blocked && !g_xform.active) {
                     /* Start drag: click inside paste rect */
                     if (hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         g_pasted.dragging = true;
@@ -5937,9 +6448,55 @@ void imgui_overlay_render(void)
                                 else if (abs((ny + ph) - sy_max) < ty)  { ny = sy_max - ph;       g_snap_hit_y = true; g_snap_guide_y = sy_max; }
                                 else if (abs(ny - sy_max) < ty)         { ny = sy_max;            g_snap_hit_y = true; g_snap_guide_y = sy_max; }
                                 else if (abs((ny + ph) - sy_min) < ty)  { ny = sy_min - ph;       g_snap_hit_y = true; g_snap_guide_y = sy_min; }
+
+                                /* Center snap: align the paste rect's center
+                                   with the sprite's center. Adobe-style. Only
+                                   engages if no edge snap fired this frame so
+                                   edge alignment takes priority. */
+                                IMG *cimg2 = get_img(ilselected);
+                                if (cimg2 && !g_snap_hit_x) {
+                                    int sprite_cx = cimg2->w / 2;
+                                    int paste_cx  = nx + pw / 2;
+                                    if (abs(paste_cx - sprite_cx) < tx) {
+                                        nx = sprite_cx - pw / 2;
+                                        g_snap_hit_x = true;
+                                        g_snap_guide_x = sprite_cx;
+                                    }
+                                }
+                                if (cimg2 && !g_snap_hit_y) {
+                                    int sprite_cy = cimg2->h / 2;
+                                    int paste_cy  = ny + ph / 2;
+                                    if (abs(paste_cy - sprite_cy) < ty) {
+                                        ny = sprite_cy - ph / 2;
+                                        g_snap_hit_y = true;
+                                        g_snap_guide_y = sprite_cy;
+                                    }
+                                }
                             }
                         } else {
                             g_snap_bbox.valid = false;
+                        }
+
+                        /* Passive centering guide: even without Shift, show a
+                           magenta center line when the paste rect's center
+                           lands exactly on the sprite's center axis. Lets the
+                           user see "I'm centered" without engaging snap. */
+                        {
+                            IMG *cimg3 = get_img(ilselected);
+                            if (cimg3 && !g_snap_hit_x) {
+                                int sprite_cx = cimg3->w / 2;
+                                if (nx + pw / 2 == sprite_cx) {
+                                    g_snap_hit_x   = true;
+                                    g_snap_guide_x = sprite_cx;
+                                }
+                            }
+                            if (cimg3 && !g_snap_hit_y) {
+                                int sprite_cy = cimg3->h / 2;
+                                if (ny + ph / 2 == sprite_cy) {
+                                    g_snap_hit_y   = true;
+                                    g_snap_guide_y = sprite_cy;
+                                }
+                            }
                         }
 
                         if (nx < 0) nx = 0;

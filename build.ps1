@@ -134,12 +134,6 @@ if ($exitCode -eq 0) {
         Copy-Item $sdl2Dll (Split-Path $exe) -Force
         Write-Host "Copied SDL2.dll to output folder" -ForegroundColor Green
     }
-    # it.hlp is loaded by pressing 'h' in the app; it must sit next to the exe
-    $hlp = Join-Path $SourceDir "IT\it.hlp"
-    if (Test-Path $hlp) {
-        Copy-Item $hlp (Split-Path $exe) -Force
-        Write-Host "Copied it.hlp to output folder" -ForegroundColor Green
-    }
 } else {
     Write-Host ""
     Write-Host "*** Build FAILED (exit $exitCode) ***" -ForegroundColor Red

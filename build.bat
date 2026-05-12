@@ -108,7 +108,6 @@ if errorlevel 1 (echo ERROR: cmake configure failed & goto :fail)
 if errorlevel 1 (echo ERROR: cmake build failed & goto :fail)
 
 copy /Y "%SDL2DIR%\lib\%SDL2_ARCH%\SDL2.dll" "%BUILDDIR%\Release\"
-copy /Y "%SOURCE%\IT\it.hlp" "%BUILDDIR%\Release\"
 
 echo.
 echo *** Build succeeded! ***
