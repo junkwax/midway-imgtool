@@ -116,3 +116,27 @@ elseif(NOT WIN32)
         target_link_options(imgtool PRIVATE -no-pie -Wl,-z,noexecstack)
     endif()
 endif()
+
+# ---- Tests -----------------------------------------------------------------
+# mk2_roundtrip_test: load + idempotent round-trip check on a real MKSTK.ASM.
+# Only built when MK2_MKSTK_PATH is set (so a fresh checkout without the mk2
+# source tree doesn't fail to configure). Run after build with:
+#   ctest --output-on-failure
+# or directly:
+#   build\test\Release\mk2_roundtrip_test path\to\MKSTK.ASM
+enable_testing()
+set(MK2_MKSTK_PATH "" CACHE FILEPATH
+    "Path to MKSTK.ASM for the mk2_roundtrip_test. Empty disables the test.")
+if(MK2_MKSTK_PATH AND EXISTS "${MK2_MKSTK_PATH}")
+    add_executable(mk2_roundtrip_test
+        test/mk2_roundtrip_test.cpp
+        platform/mk2_hitbox.cpp
+    )
+    target_include_directories(mk2_roundtrip_test PRIVATE platform)
+    if(MSVC)
+        target_compile_options(mk2_roundtrip_test PRIVATE /W3)
+        target_compile_definitions(mk2_roundtrip_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+    add_test(NAME mk2_roundtrip
+             COMMAND mk2_roundtrip_test "${MK2_MKSTK_PATH}")
+endif()

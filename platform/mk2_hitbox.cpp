@@ -124,15 +124,26 @@ bool load(Document *doc, const char *path, std::string *err)
     std::fclose(f);
     split_lines(text, &doc->raw_lines);
 
-    /* Patterns matched against each line (a la hitbox_edit.py). */
+    /* Patterns matched against each line (a la hitbox_edit.py). The .word
+       and .long directives may appear in either case in MKSTK.ASM (real
+       file has 11 uppercase .WORD lines and would silently break parsing
+       without icase), so the directive regexes are case-insensitive. */
     static const std::regex re_stk_label   (R"(^(stk_[A-Za-z0-9_]+)\s*$)");
     static const std::regex re_char_table  (R"(^([a-z]{2})_strikes\s*$)");
-    static const std::regex re_field       (R"(^\s*\.(word|long)\s+([^;]+?)\s*(?:;.*)?$)");
-    static const std::regex re_char_long   (R"(^\s*\.long\s+(stk_[A-Za-z0-9_]+)\s*(?:;.*)?$)");
+    static const std::regex re_field       (R"(^\s*\.(word|long)\s+([^;]+?)\s*(?:;.*)?$)",
+                                            std::regex::icase);
+    static const std::regex re_char_long   (R"(^\s*\.long\s+(stk_[A-Za-z0-9_]+)\s*(?:;.*)?$)",
+                                            std::regex::icase);
 
-    /* State for strike-record parsing */
-    int    rec_field_idx = 0;
-    int    cur_record    = -1;
+    /* State for strike-record parsing. pending_aliases holds record
+       indices that were just labeled but haven't seen any .word/.long
+       yet — when a record finally gets its fields, every pending alias
+       also receives the same field data (line numbers and parsed
+       values), since multiple consecutive stk_* labels in MKSTK.ASM
+       share the data that follows them. */
+    int               rec_field_idx = 0;
+    int               cur_record    = -1;
+    std::vector<int>  pending_aliases;
     /* State for character-table parsing */
     int    cur_table     = -1;
 
@@ -146,7 +157,14 @@ bool load(Document *doc, const char *path, std::string *err)
             rec.label      = m[1].str();
             rec.label_line = li + 1;
             doc->records.push_back(rec);
-            cur_record    = (int)doc->records.size() - 1;
+            int new_idx = (int)doc->records.size() - 1;
+            /* If the current record hasn't consumed any fields yet, this
+               new label is part of an alias chain — both labels share the
+               .word/.long data that follows. */
+            if (cur_record >= 0 && rec_field_idx == 0) {
+                pending_aliases.push_back(cur_record);
+            }
+            cur_record    = new_idx;
             rec_field_idx = 0;
             cur_table     = -1; /* labels close any open table */
             continue;
@@ -185,15 +203,26 @@ bool load(Document *doc, const char *path, std::string *err)
         if (cur_record >= 0 && rec_field_idx < F_COUNT) {
             if (std::regex_match(line, m, re_field)) {
                 std::string raw = m[2].str();
-                StrikeField &fld = doc->records[cur_record].fields[rec_field_idx];
-                fld.raw  = raw;
-                fld.line = li + 1;
                 int32_t v = 0; bool ok = false;
                 parse_literal(raw, &v, &ok);
-                fld.value     = v;
-                fld.has_value = ok;
+                /* Write the field into the current record AND every
+                   pending alias record that shares this data. All point
+                   at the same .asm line, so editing one will rewrite
+                   the source data for all of them. */
+                auto set_field = [&](int rec_idx) {
+                    StrikeField &fld = doc->records[rec_idx].fields[rec_field_idx];
+                    fld.raw  = raw;
+                    fld.line = li + 1;
+                    fld.value     = v;
+                    fld.has_value = ok;
+                };
+                set_field(cur_record);
+                for (int a : pending_aliases) set_field(a);
                 rec_field_idx++;
-                if (rec_field_idx >= F_COUNT) cur_record = -1;
+                if (rec_field_idx >= F_COUNT) {
+                    cur_record = -1;
+                    pending_aliases.clear();
+                }
                 continue;
             }
             /* blank/comment within a record — skip without consuming a slot */
@@ -230,7 +259,8 @@ bool save(Document *doc, std::string *err)
    directive, indentation, and trailing comment. */
 static void rewrite_field_line(std::string *line, const std::string &new_lit)
 {
-    static const std::regex re(R"(^(\s*\.(?:word|long)\s+)([^;]+?)(\s*(?:;.*)?)$)");
+    static const std::regex re(R"(^(\s*\.(?:word|long)\s+)([^;]+?)(\s*(?:;.*)?)$)",
+                               std::regex::icase);
     std::smatch m;
     if (!std::regex_match(*line, m, re)) return;
     *line = m[1].str() + new_lit + m[3].str();
