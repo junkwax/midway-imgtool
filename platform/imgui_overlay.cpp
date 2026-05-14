@@ -983,8 +983,9 @@ static void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous,
     };
 
     /* Mark which pixels we'll erase, so defringe can scan against the
-       original neighborhood before zeroing. */
-    std::vector<unsigned char> kill(w * h, 0);
+       original neighborhood before zeroing. Multiply in size_t so the
+       computation can't overflow int for pathological sprite sizes. */
+    std::vector<unsigned char> kill((size_t)w * h, 0);
 
     if (contiguous) {
         struct Pt { int x, y; };
@@ -7268,7 +7269,7 @@ void imgui_overlay_render(void)
                             g_grid_sel.is_mask = true;
                             g_grid_sel.mask_w = sw;
                             g_grid_sel.mask_h = sh;
-                            g_grid_sel.pixel_mask.assign(sw * sh, false);
+                            g_grid_sel.pixel_mask.assign((size_t)sw * sh, false);
 
                             int min_x = mx, max_x = mx;
                             int min_y = my, max_y = my;
@@ -7390,7 +7391,7 @@ void imgui_overlay_render(void)
                             g_grid_sel.is_mask = true;
                             g_grid_sel.mask_w = sw;
                             g_grid_sel.mask_h = sh;
-                            g_grid_sel.pixel_mask.assign(sw * sh, false);
+                            g_grid_sel.pixel_mask.assign((size_t)sw * sh, false);
 
                             int n = (int)g_lasso_points.size();
                             for (int y = min_y; y <= max_y; y++) {
@@ -8043,7 +8044,9 @@ void imgui_overlay_render(void)
         }
         ImGui::SameLine();
         ImGui::Checkbox("Onion", &g_timeline_onion);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ghost prev/next timeline frame at 25% alpha while scrubbing or playing");
+        /* SetTooltip is printf-style; escape the literal % so it isn't read
+           as a format specifier (CodeQL cpp/wrong-number-format-arguments). */
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ghost prev/next timeline frame at 25%% alpha while scrubbing or playing");
         ImGui::SameLine();
         if (ImGui::Checkbox("Ping-Pong", &g_timeline_pingpong)) {
             /* Reset direction so the first cycle after enabling always

@@ -196,7 +196,7 @@ static inline void FreePal(PAL *pal)
     free(pal);
 }
 
-static inline void *PoolAlloc(unsigned int n) { return calloc(1, n); }
+static inline void *PoolAlloc(size_t n) { return calloc(1, n); }
 #define PoolFree  free
 #define PoolDup(p, sz) memcpy(malloc(sz), (p), (sz))
 

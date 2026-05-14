@@ -1034,8 +1034,12 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
                 strncpy(new_img->n_s, base_name.c_str(), 15);
                 new_img->n_s[15] = '\0';
                 
-                strncpy(new_img->src_filename, master->src_filename, 63);
-                new_img->src_filename[63] = '\0';
+                /* src_filename is [16]; copy at most 15 chars and NUL-terminate.
+                   Previously this used 63 (a leftover constant from an older
+                   field layout) which clobbered ~48 bytes past the buffer. */
+                strncpy(new_img->src_filename, master->src_filename,
+                        sizeof(new_img->src_filename) - 1);
+                new_img->src_filename[sizeof(new_img->src_filename) - 1] = '\0';
 
                 count++;
             }
@@ -2116,9 +2120,9 @@ void ImportPng(const char *path)
     img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
     img->pttbl_p = NULL; img->opals = (unsigned short)-1;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
-    img->data_p = PoolAlloc((unsigned int)stride * h);
+    img->data_p = PoolAlloc((size_t)stride * h);
     if (!img->data_p) { stbi_image_free(data); return; }
-    memset(img->data_p, 0, (unsigned int)stride * h);
+    memset(img->data_p, 0, (size_t)stride * h);
 
     const char *name = strrchr(path, '/'); if (!name) name = strrchr(path, '\\'); if (!name) name = path; else name++;
     strncpy(img->n_s, name, 15); img->n_s[15] = '\0';
@@ -2195,9 +2199,9 @@ void ImportPngMatch(const char *path)
     img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
     img->pttbl_p = NULL; img->opals = (unsigned short)-1;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
-    img->data_p = PoolAlloc((unsigned int)stride * h);
+    img->data_p = PoolAlloc((size_t)stride * h);
     if (!img->data_p) { stbi_image_free(data); return; }
-    memset(img->data_p, 0, (unsigned int)stride * h);
+    memset(img->data_p, 0, (size_t)stride * h);
 
     const char *name = strrchr(path, '/'); if (!name) name = strrchr(path, '\\'); if (!name) name = path; else name++;
     strncpy(img->n_s, name, 15); img->n_s[15] = '\0';
