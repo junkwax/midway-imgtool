@@ -996,7 +996,7 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
                 new_img->w = new_w;
                 new_img->h = new_h;
                 int new_stride = (new_w + 3) & ~3;
-                new_img->data_p = (unsigned char *)PoolAlloc((unsigned int)new_stride * new_h);
+                new_img->data_p = (unsigned char *)PoolAlloc((size_t)new_stride * new_h);
                 if (!new_img->data_p) continue;
                 memset(new_img->data_p, 0, (size_t)new_stride * new_h);
 
@@ -1144,7 +1144,7 @@ int CropMarkedImagesToContent(void)
         int new_w = max_x - min_x + 1;
         int new_h = max_y - min_y + 1;
         int new_stride = (new_w + 3) & ~3;
-        unsigned char *dst = (unsigned char *)PoolAlloc((unsigned int)new_stride * new_h);
+        unsigned char *dst = (unsigned char *)PoolAlloc((size_t)new_stride * new_h);
         if (!dst) continue;
         memset(dst, 0, (size_t)new_stride * new_h);
         for (int y = 0; y < new_h; y++) {
