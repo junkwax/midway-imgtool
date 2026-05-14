@@ -5097,6 +5097,67 @@ static void DrawTransientToast(float dt)
     ImGui::End();
 }
 
+/* Unified Undo/Redo helpers used by the global shortcut, the Edit menu,
+   and the toolbar buttons. CanUndo/CanRedo report whether *either* stack
+   has something to roll back (pixel-history first, then the legacy
+   anipoint/hitbox stack), so the UI controls light up after a paint
+   stroke. DoUndo/DoRedo dispatch in the same priority order. */
+static bool CanUndo(void) { return !g_pixel_hist.empty() || g_undo_idx > 0; }
+static bool CanRedo(void) { return !g_pixel_redo.empty() || g_undo_idx < g_undo_count - 1; }
+static void DoUndo(void) {
+    if (!g_pixel_hist.empty()) {
+        PixelHist e = g_pixel_hist.back();
+        g_pixel_hist.pop_back();
+        IMG *img = get_img(e.img_idx);
+        if (img && img->data_p && img->w == e.w && img->h == e.h) {
+            unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
+            if (cur_sz == e.size) {
+                PixelHist r = {};
+                r.img_idx = e.img_idx; r.w = img->w; r.h = img->h; r.size = cur_sz;
+                r.data = (unsigned char *)malloc(cur_sz);
+                if (r.data) {
+                    memcpy(r.data, img->data_p, cur_sz);
+                    g_pixel_redo.push_back(r);
+                }
+                memcpy(img->data_p, e.data, cur_sz);
+                g_doc->ilselected = e.img_idx;
+                g_img_tex_idx = -2;
+                g_palette_nav = false;
+            }
+        }
+        pixel_hist_free(&e);
+    } else if (g_undo_idx > 0) {
+        g_undo_idx--;
+        undo_apply(g_undo_idx);
+    }
+}
+static void DoRedo(void) {
+    if (!g_pixel_redo.empty()) {
+        PixelHist e = g_pixel_redo.back();
+        g_pixel_redo.pop_back();
+        IMG *img = get_img(e.img_idx);
+        if (img && img->data_p && img->w == e.w && img->h == e.h) {
+            unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
+            if (cur_sz == e.size) {
+                PixelHist u = {};
+                u.img_idx = e.img_idx; u.w = img->w; u.h = img->h; u.size = cur_sz;
+                u.data = (unsigned char *)malloc(cur_sz);
+                if (u.data) {
+                    memcpy(u.data, img->data_p, cur_sz);
+                    g_pixel_hist.push_back(u);
+                }
+                memcpy(img->data_p, e.data, cur_sz);
+                g_doc->ilselected = e.img_idx;
+                g_img_tex_idx = -2;
+            }
+        }
+        pixel_hist_free(&e);
+    } else if (g_undo_idx < g_undo_count - 1) {
+        g_undo_idx++;
+        undo_apply(g_undo_idx);
+    }
+}
+
 void imgui_overlay_render(void)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -5131,62 +5192,13 @@ void imgui_overlay_render(void)
     /* ---- Global keyboard shortcuts ---- */
     ImGuiInputFlags route = ImGuiInputFlags_RouteGlobal;
 
-    /* Undo / Redo. Two stacks coexist:
-       - g_pixel_hist / g_pixel_redo: per-stroke pixel snapshots for paint
-         tools. Operates on whatever image was active when the stroke began.
-       - g_undo[] / g_undo_idx: the older anipoint/hitbox/palette stack.
-       Pixel history takes priority when non-empty so a paint stroke is
-       always the most-recent thing the user undoes. */
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) {
-        if (!g_pixel_hist.empty()) {
-            PixelHist e = g_pixel_hist.back();
-            g_pixel_hist.pop_back();
-            IMG *img = get_img(e.img_idx);
-            if (img && img->data_p && img->w == e.w && img->h == e.h) {
-                unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
-                if (cur_sz == e.size) {
-                    /* Push current state onto redo, then install snapshot. */
-                    PixelHist r = {};
-                    r.img_idx = e.img_idx; r.w = img->w; r.h = img->h; r.size = cur_sz;
-                    r.data = (unsigned char *)malloc(cur_sz);
-                    if (r.data) {
-                        memcpy(r.data, img->data_p, cur_sz);
-                        g_pixel_redo.push_back(r);
-                    }
-                    memcpy(img->data_p, e.data, cur_sz);
-                    g_doc->ilselected = e.img_idx;
-                    g_img_tex_idx = -2;
-                    g_palette_nav = false;
-                }
-            }
-            pixel_hist_free(&e);
-        } else if (g_undo_idx > 0) { g_undo_idx--; undo_apply(g_undo_idx); }
-    }
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) {
-        if (!g_pixel_redo.empty()) {
-            PixelHist e = g_pixel_redo.back();
-            g_pixel_redo.pop_back();
-            IMG *img = get_img(e.img_idx);
-            if (img && img->data_p && img->w == e.w && img->h == e.h) {
-                unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
-                if (cur_sz == e.size) {
-                    /* Push current state back onto undo so a second Ctrl+Z
-                       can return here. */
-                    PixelHist u = {};
-                    u.img_idx = e.img_idx; u.w = img->w; u.h = img->h; u.size = cur_sz;
-                    u.data = (unsigned char *)malloc(cur_sz);
-                    if (u.data) {
-                        memcpy(u.data, img->data_p, cur_sz);
-                        g_pixel_hist.push_back(u);
-                    }
-                    memcpy(img->data_p, e.data, cur_sz);
-                    g_doc->ilselected = e.img_idx;
-                    g_img_tex_idx = -2;
-                }
-            }
-            pixel_hist_free(&e);
-        } else if (g_undo_idx < g_undo_count - 1) { g_undo_idx++; undo_apply(g_undo_idx); }
-    }
+    /* Undo / Redo. Three call sites share the same logic via DoUndo/DoRedo:
+       the Ctrl+Z/Ctrl+Y shortcuts here, the Edit menu items, and the
+       toolbar buttons. The CanUndo/CanRedo predicates drive both the
+       toolbar enable/disable and the menu enable/disable so a paint
+       stroke immediately makes the buttons clickable. */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) DoUndo();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) DoRedo();
 
     /* Clipboard */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) copy_image(false);
@@ -5410,13 +5422,13 @@ void imgui_overlay_render(void)
         }
         if (ImGui::BeginMenu("Edit")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
-            bool can_undo = g_undo_idx > 0;
-            bool can_redo = g_undo_idx < g_undo_count - 1;
+            bool can_undo = CanUndo();
+            bool can_redo = CanRedo();
             if (!can_undo) ImGui::BeginDisabled();
-            if (ImGui::MenuItem("Undo", "Ctrl+Z")) { g_undo_idx--; undo_apply(g_undo_idx); }
+            if (ImGui::MenuItem("Undo", "Ctrl+Z")) DoUndo();
             if (!can_undo) ImGui::EndDisabled();
             if (!can_redo) ImGui::BeginDisabled();
-            if (ImGui::MenuItem("Redo", "Ctrl+Y")) { g_undo_idx++; undo_apply(g_undo_idx); }
+            if (ImGui::MenuItem("Redo", "Ctrl+Y")) DoRedo();
             if (!can_redo) ImGui::EndDisabled();
             ImGui::Separator();
             if (ImGui::MenuItem("Copy",  "Ctrl+C", false, g_doc->ilselected >= 0)) copy_image(false);
@@ -5880,14 +5892,14 @@ void imgui_overlay_render(void)
         }
 
         ImGui::Spacing();
-        bool can_undo = g_undo_idx > 0;
-        bool can_redo = g_undo_idx < g_undo_count - 1;
+        bool can_undo = CanUndo();
+        bool can_redo = CanRedo();
         if (!can_undo) ImGui::BeginDisabled();
-        if (ImGui::Button(TB_LABEL(ICON_UNDO, ICON_UNDO_TXT), btn)) { g_undo_idx--; undo_apply(g_undo_idx); }
+        if (ImGui::Button(TB_LABEL(ICON_UNDO, ICON_UNDO_TXT), btn)) DoUndo();
         if (!can_undo) ImGui::EndDisabled();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Undo (Ctrl+Z)");
         if (!can_redo) ImGui::BeginDisabled();
-        if (ImGui::Button(TB_LABEL(ICON_REDO, ICON_REDO_TXT), btn)) { g_undo_idx++; undo_apply(g_undo_idx); }
+        if (ImGui::Button(TB_LABEL(ICON_REDO, ICON_REDO_TXT), btn)) DoRedo();
         if (!can_redo) ImGui::EndDisabled();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Redo (Ctrl+Y)");
 
