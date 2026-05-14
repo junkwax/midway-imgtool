@@ -27,6 +27,7 @@
 #include "imgui_overlay.h"
 #include "load2_verify.h"
 #include "lod_parser.h"
+#include "mk2_hitbox.h"
 
 /* PPP setting from img_io.cpp — used to drive the verifier modal. */
 
@@ -262,7 +263,7 @@ struct GridSelection {
 static GridSelection g_grid_sel = {false, false, 0, 0, 0, 0, false, 0, 0, {}};
 
 /* Active tool state */
-enum class ActiveTool { None, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper };
+enum class ActiveTool { None, Pencil, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper };
 static ActiveTool g_active_tool = ActiveTool::None;
 
 /* Clone Stamp state */
@@ -462,6 +463,22 @@ static void xform_begin(void);  /* forward decl — used by paste_image */
 static bool  g_show_histogram = false;
 static bool  g_show_load2_verify = false;
 static L2Report g_load2_report;
+
+/* ---- MK2 strike-table editor state ---- */
+static bool          g_show_mk2 = false;
+static mk2::Document g_mk2_doc;
+static char          g_mk2_path[1024] = "c:\\Users\\xbx\\Workplace\\mk2-main\\src\\MKSTK.ASM";
+static std::string   g_mk2_status;     /* last load/save message */
+static int           g_mk2_char_idx = 0;  /* selected char-table index */
+static int           g_mk2_move_idx = 0;  /* selected move index within that table */
+static int           g_mk2_drag_corner = -1; /* canvas overlay corner drag (0..3) */
+/* Resolve the current MK2 record index, or -1 if no valid selection. */
+static int Mk2CurrentRecord(void) {
+    if (g_mk2_char_idx < 0 || g_mk2_char_idx >= (int)g_mk2_doc.char_tables.size()) return -1;
+    const auto &moves = g_mk2_doc.char_tables[g_mk2_char_idx].moves;
+    if (g_mk2_move_idx < 0 || g_mk2_move_idx >= (int)moves.size()) return -1;
+    return mk2::find_record(&g_mk2_doc, moves[g_mk2_move_idx].c_str());
+}
 
 /* ---- World View mode (DOS-tool-style anipoint alignment workspace) ----
  * When on, renders the sprite inside a fixed black canvas at
@@ -1117,10 +1134,28 @@ static void AddNewBlankImage(void)
     g_img_tex_idx = -2;
 }
 
-/* Add a new blank 256-color palette.  Moved from imgtool_thunks.asm;
-   uses the ASM memory pool via thunks (pal_alloc, mem_alloc). */
+/* Pick a unique 9-char name for a freshly-allocated palette. Format: PAL%02d,
+   bumping the suffix until it doesn't collide with an existing palette name.
+   The name field is 10 bytes including NUL, so cap the digits at 8. */
+static void make_unique_pal_name(char out[10])
+{
+    for (int n = 1; n < 100000000; n++) {
+        char cand[10];
+        snprintf(cand, sizeof(cand), "PAL%d", n);
+        bool clash = false;
+        for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p) {
+            if (strncmp(p->n_s, cand, 10) == 0) { clash = true; break; }
+        }
+        if (!clash) { memcpy(out, cand, 10); return; }
+    }
+    out[0] = '\0';
+}
+
+/* Add a new blank 256-color palette, select it, and commit it onto the active
+   image so the next pixel paint actually uses it. */
 static void AddNewPalette(void)
 {
+    undo_push();
     mark_dirty();
     PAL *pal = (PAL *)AllocPal();
     if (!pal) return;
@@ -1129,14 +1164,17 @@ static void AddNewPalette(void)
     pal->bitspix = 8;
     pal->numc    = 256;
     pal->pad     = 0;
-    pal->n_s[0]  = '\0';
+    make_unique_pal_name(pal->n_s);
 
     unsigned char *buf = (unsigned char *)PoolAlloc(512);
     if (!buf) return;
     pal->data_p = buf;
     memset(buf, 0, 512);
 
-    if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
+    g_doc->plselected = (int)g_doc->palcnt - 1;
+    IMG *cur = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (cur) cur->palnum = (unsigned short)g_doc->plselected;
+    g_img_tex_idx = -2;
 }
 
 static void DuplicatePalette(void)
@@ -1144,6 +1182,7 @@ static void DuplicatePalette(void)
     PAL *src = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!src || !src->data_p) return;
 
+    undo_push();
     mark_dirty();
     PAL *pal = (PAL *)AllocPal();
     if (!pal) return;
@@ -1152,7 +1191,7 @@ static void DuplicatePalette(void)
     pal->bitspix = src->bitspix;
     pal->numc    = src->numc;
     pal->pad     = 0;
-    memcpy(pal->n_s, src->n_s, 10);
+    make_unique_pal_name(pal->n_s);
 
     unsigned int col_sz = (unsigned int)pal->numc * 2;
     unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
@@ -1160,7 +1199,8 @@ static void DuplicatePalette(void)
     pal->data_p = buf;
     memcpy(buf, src->data_p, col_sz);
 
-    if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
+    g_doc->plselected = (int)g_doc->palcnt - 1;
+    g_img_tex_idx = -2;
 }
 
 /* Copy the selected palette into the cross-file palette clipboard. The buffer
@@ -3915,6 +3955,162 @@ static void DrawLoad2VerifyDialog(void)
     ImGui::EndPopup();
 }
 
+/* MK2 strike-table (hitbox) editor. Reads/writes mk2-main/src/MKSTK.ASM
+   directly — the source-of-truth for the strike tables. The MAME stk.bin
+   path is intentionally not used here; rebuilding through the ASM is the
+   permanent route. */
+static void DrawMk2HitboxWindow(void)
+{
+    if (!g_show_mk2) return;
+
+    ImGui::SetNextWindowSize(ImVec2(760, 560), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("MK2 Hitboxes (MKSTK.ASM)", &g_show_mk2)) {
+        ImGui::End();
+        return;
+    }
+
+    /* --- Path / Load / Save row --- */
+    ImGui::SetNextItemWidth(-200);
+    ImGui::InputText("##mk2path", g_mk2_path, sizeof(g_mk2_path));
+    ImGui::SameLine();
+    if (ImGui::Button("Load")) {
+        std::string err;
+        if (mk2::load(&g_mk2_doc, g_mk2_path, &err)) {
+            char buf[160];
+            snprintf(buf, sizeof(buf), "Loaded %d moves, %d char tables",
+                     (int)g_mk2_doc.records.size(), (int)g_mk2_doc.char_tables.size());
+            g_mk2_status = buf;
+            g_mk2_char_idx = 0;
+            g_mk2_move_idx = 0;
+        } else {
+            g_mk2_status = std::string("Load failed: ") + err;
+        }
+    }
+    ImGui::SameLine();
+    bool can_save = g_mk2_doc.dirty && !g_mk2_doc.source_path.empty();
+    if (!can_save) ImGui::BeginDisabled();
+    if (ImGui::Button("Save")) {
+        std::string err;
+        if (mk2::save(&g_mk2_doc, &err)) g_mk2_status = "Saved MKSTK.ASM";
+        else g_mk2_status = std::string("Save failed: ") + err;
+    }
+    if (!can_save) ImGui::EndDisabled();
+
+    if (!g_mk2_status.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", g_mk2_status.c_str());
+    }
+
+    /* If no document loaded yet, stop here. */
+    if (g_mk2_doc.char_tables.empty()) {
+        ImGui::Spacing();
+        ImGui::TextWrapped("Set the path to mk2-main/src/MKSTK.ASM above and click Load.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Separator();
+
+    /* --- Three-pane layout: chars | moves | fields --- */
+    const float row_h = ImGui::GetContentRegionAvail().y - 8.0f;
+    ImGui::BeginChild("##mk2_chars", ImVec2(120, row_h), true);
+    ImGui::TextDisabled("Character");
+    for (int i = 0; i < (int)g_mk2_doc.char_tables.size(); i++) {
+        const auto &t = g_mk2_doc.char_tables[i];
+        char label[40];
+        snprintf(label, sizeof(label), "%s (%d)", t.name.c_str(), (int)t.moves.size());
+        if (ImGui::Selectable(label, g_mk2_char_idx == i)) {
+            g_mk2_char_idx = i;
+            g_mk2_move_idx = 0;
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##mk2_moves", ImVec2(260, row_h), true);
+    ImGui::TextDisabled("Move");
+    if (g_mk2_char_idx >= 0 && g_mk2_char_idx < (int)g_mk2_doc.char_tables.size()) {
+        const auto &moves = g_mk2_doc.char_tables[g_mk2_char_idx].moves;
+        for (int i = 0; i < (int)moves.size(); i++) {
+            char label[80];
+            snprintf(label, sizeof(label), "%2d  %s", i, moves[i].c_str());
+            if (ImGui::Selectable(label, g_mk2_move_idx == i))
+                g_mk2_move_idx = i;
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##mk2_fields", ImVec2(0, row_h), true);
+    /* Resolve selected move to a record index. */
+    int rec_idx = -1;
+    if (g_mk2_char_idx >= 0 && g_mk2_char_idx < (int)g_mk2_doc.char_tables.size()) {
+        const auto &moves = g_mk2_doc.char_tables[g_mk2_char_idx].moves;
+        if (g_mk2_move_idx >= 0 && g_mk2_move_idx < (int)moves.size())
+            rec_idx = mk2::find_record(&g_mk2_doc, moves[g_mk2_move_idx].c_str());
+    }
+    if (rec_idx < 0) {
+        ImGui::TextDisabled("Select a move on the left.");
+    } else {
+        const mk2::StrikeRecord &rec = g_mk2_doc.records[rec_idx];
+        ImGui::Text("%s", rec.label.c_str());
+        ImGui::TextDisabled("MKSTK.ASM line %d", rec.label_line);
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        /* x_offset / y_offset / x_size / y_size — int editors. */
+        for (int fi = mk2::F_X_OFFSET; fi <= mk2::F_Y_SIZE; fi++) {
+            int v = rec.fields[fi].has_value ? (int)rec.fields[fi].value : 0;
+            ImGui::SetNextItemWidth(140);
+            char id[40]; snprintf(id, sizeof(id), "%s##mk2_%d", mk2::kFieldNames[fi], fi);
+            if (ImGui::InputInt(id, &v, 1, 8)) {
+                if (v < -0x8000) v = -0x8000;
+                if (v > 0x7FFF)  v = 0x7FFF;
+                mk2::set_value(&g_mk2_doc, rec_idx, fi, (int32_t)v);
+            }
+        }
+
+        ImGui::Spacing();
+        /* Strike routine and sound — raw token editors (may be symbolic). */
+        for (int fi : { (int)mk2::F_STRIKE, (int)mk2::F_SOUND }) {
+            char buf[64];
+            const std::string &raw = rec.fields[fi].raw;
+            size_t n = raw.size() < sizeof(buf) - 1 ? raw.size() : sizeof(buf) - 1;
+            memcpy(buf, raw.data(), n); buf[n] = '\0';
+            ImGui::SetNextItemWidth(180);
+            char id[40]; snprintf(id, sizeof(id), "%s##mk2_%d", mk2::kFieldNames[fi], fi);
+            if (ImGui::InputText(id, buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue))
+                mk2::set_raw(&g_mk2_doc, rec_idx, fi, buf);
+        }
+
+        ImGui::Spacing();
+        /* Damage word: split into hit (hi byte) and block (lo byte). */
+        int dmg = rec.fields[mk2::F_DAMAGE].has_value ? (int)rec.fields[mk2::F_DAMAGE].value : 0;
+        int hit = mk2::damage_hit(dmg), blk = mk2::damage_block(dmg);
+        ImGui::SetNextItemWidth(80);
+        if (ImGui::InputInt("damage_hit##mk2", &hit, 1, 4)) {
+            if (hit < 0) hit = 0; if (hit > 255) hit = 255;
+            mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_DAMAGE, mk2::pack_damage(hit, blk));
+        }
+        ImGui::SetNextItemWidth(80);
+        if (ImGui::InputInt("damage_block##mk2", &blk, 1, 4)) {
+            if (blk < 0) blk = 0; if (blk > 255) blk = 255;
+            mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_DAMAGE, mk2::pack_damage(hit, blk));
+        }
+        ImGui::TextDisabled("damage word = 0x%04X", dmg & 0xFFFF);
+
+        ImGui::Spacing();
+        /* Score — 32-bit. */
+        int score = rec.fields[mk2::F_SCORE].has_value ? (int)rec.fields[mk2::F_SCORE].value : 0;
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::InputInt("score##mk2", &score, 100, 1000))
+            mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_SCORE, (int32_t)score);
+    }
+    ImGui::EndChild();
+
+    ImGui::End();
+}
+
 static void DrawPaletteHistogramDialog(void)
 {
     if (g_show_histogram) ImGui::OpenPopup("Palette Histogram");
@@ -4282,6 +4478,7 @@ static void DrawNewImgConfirm(void)
     if (g_show_new_img_confirm) ImGui::OpenPopup("New IMG");
     if (!ImGui::BeginPopupModal("New IMG", &g_show_new_img_confirm, ImGuiWindowFlags_AlwaysAutoResize)) return;
     ImGui::Text("Discard all loaded images and palettes?");
+    ImGui::Text("Starts a fresh IMG with one blank palette and one 32x32 image.");
     ImGui::Text("This cannot be undone.");
     ImGui::Spacing();
     ImGui::Separator();
@@ -4289,6 +4486,17 @@ static void DrawNewImgConfirm(void)
         ClearAll();
         g_doc->fileversion = 0x0634;
         g_doc->fname_s[0]  = 0;
+        g_undo_count = 0;
+        g_undo_idx   = 0;
+        /* Bootstrap: a fresh doc with zero palettes/images is unusable —
+           the user can't paint, can't import a TGA target, can't even
+           see the editor properly. Seed one default palette and one
+           blank image so the UI is immediately functional. AddNewPalette
+           handles undo+dirty internally; clear those again so the new
+           doc starts pristine. */
+        AddNewPalette();
+        AddNewBlankImage();
+        g_dirty = false;
         g_undo_count = 0;
         g_undo_idx   = 0;
         g_show_new_img_confirm = false;
@@ -4597,6 +4805,11 @@ void imgui_overlay_render(void)
         else g_active_tool = ActiveTool::Eyedropper;
         if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
     }
+    if (ImGui::Shortcut(ImGuiKey_P, route)) {
+        /* Pencil — Adobe shortcut. Toggles back to None on a second press
+           since the underlying paint behavior is the same as no tool. */
+        g_active_tool = (g_active_tool == ActiveTool::Pencil) ? ActiveTool::None : ActiveTool::Pencil;
+    }
 
     /* Tool Intercepts. Esc/Enter have a three-level priority: transform
        takes precedence, then floating paste, then marquee. */
@@ -4874,6 +5087,9 @@ void imgui_overlay_render(void)
         }
         if (ImGui::BeginMenu("Palette")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
+            if (ImGui::MenuItem("Add Palette"))                    AddNewPalette();
+            if (ImGui::MenuItem("Duplicate Palette"))              DuplicatePalette();
+            ImGui::Separator();
             if (ImGui::MenuItem("Set for Image",       "]"))       SetPaletteOfSelected();
             if (ImGui::MenuItem("Merge Marked into Selected", "*")) MergeMarkedPalettes();
             if (ImGui::MenuItem("Delete Palette",      "Del"))     DeletePalette();
@@ -4924,6 +5140,8 @@ void imgui_overlay_render(void)
                 g_load2_selected_idx = -1;
                 g_show_load2_verify = true;
             }
+            ImGui::Separator();
+            if (ImGui::MenuItem("MK2 Hitboxes (MKSTK.ASM)...")) g_show_mk2 = true;
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
@@ -5014,11 +5232,6 @@ void imgui_overlay_render(void)
         ImVec2 btn(TOOLBAR_W - 12, TOOLBAR_W - 12);
         #define TB_LABEL(icon, txt) (g_icon_font_loaded ? (icon) : (txt))
 
-        if (ImGui::Button(TB_LABEL(ICON_OPEN, ICON_OPEN_TXT), btn))  RequestOpenDialog();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open IMG (Ctrl+O)");
-        if (ImGui::Button(TB_LABEL(ICON_SAVE, ICON_SAVE_TXT), btn))  OpenFileDialog(FileDialogMode::SaveImg);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save IMG (Ctrl+S)");
-        ImGui::Spacing();
         if (ImGui::Button(TB_LABEL(ICON_MARK, ICON_MARK_TXT), btn))  { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark/Unmark (Space)");
         if (ImGui::Button(TB_LABEL(ICON_MARK_ALL, ICON_MARK_ALL_TXT), btn))  { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
@@ -5036,6 +5249,18 @@ void imgui_overlay_render(void)
         if (ImGui::Button(TB_LABEL(ICON_HITBOX, ICON_HITBOX_TXT), btn)) g_show_hitbox = !g_show_hitbox;
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Hitbox");
+        /* Pencil tool — single-pixel paint at the current palette index.
+           Same paint behavior as the "no active tool" state, but exposed
+           as an explicit mode so it's discoverable and pairs with the
+           Adobe `P` shortcut. Click = 1 pixel; drag = continuous line. */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::Pencil ?
+            ImVec4(0.7f,0.6f,0.2f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEE\x8F\x89", "Pn"), btn)) { /* U+E3C9 edit */
+            g_active_tool = (g_active_tool == ActiveTool::Pencil) ? ActiveTool::None : ActiveTool::Pencil;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil - single-pixel paint at current color (P)");
+
         /* Marquee/select tool — explicit mode toggle. When off, no green-box
            selection ever starts (no more random firing). */
         ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::Marquee ?
@@ -5361,6 +5586,9 @@ void imgui_overlay_render(void)
                     if (ImGui::BeginPopupContextItem("##palctx")) {
                         if (ImGui::MenuItem("Mark / Unmark"))             pal->flags ^= 1;
                         ImGui::Separator();
+                        if (ImGui::MenuItem("Add New"))                   AddNewPalette();
+                        if (ImGui::MenuItem("Duplicate"))                 DuplicatePalette();
+                        ImGui::Separator();
                         if (ImGui::MenuItem("Set for Image"))             SetPaletteOfSelected();
                         if (ImGui::MenuItem("Set for Marked Images"))     SetPaletteOfMarked();
                         if (ImGui::MenuItem("Merge Marked into Selected")) MergeMarkedPalettes();
@@ -5381,10 +5609,8 @@ void imgui_overlay_render(void)
             if (ImGui::SmallButton("Clr All"))   { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
-            if (ImGui::SmallButton("Add")) {
-                AddNewPalette();
-                if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
-            }
+            if (ImGui::SmallButton("Add")) AddNewPalette();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank 256-color palette");
             ImGui::SameLine();
             if (ImGui::SmallButton("Merge"))     MergeMarkedPalettes();
             ImGui::SameLine();
@@ -6049,7 +6275,7 @@ void imgui_overlay_render(void)
                         }
                     }
                     if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
-                        && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
+                        && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
                         if (g_active_tool == ActiveTool::CloneStamp) {
                             if (io.KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                                 g_clone_src_x = px;
@@ -6234,8 +6460,11 @@ void imgui_overlay_render(void)
             }
         }
 
-        /* --- Hitbox overlay + corner dragging --- */
-        if (g_show_hitbox && !canvas_input_blocked) {
+        /* --- Hitbox overlay + corner dragging ---
+           Suppressed when the MK2 strike-table overlay is showing a move,
+           so the two hitbox systems don't pile on top of each other. */
+        bool mk2_overlay_active = g_show_mk2 && Mk2CurrentRecord() >= 0;
+        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active) {
             ImDrawList *dl = ImGui::GetWindowDrawList();
             ImVec2 tl(img_pos.x + g_hitbox_x * sx, img_pos.y + g_hitbox_y * sy);
             ImVec2 br(img_pos.x + (g_hitbox_x + g_hitbox_w) * sx,
@@ -6274,6 +6503,77 @@ void imgui_overlay_render(void)
             } else if (!mbdn && g_hitbox_drag_corner >= 0) {
                 undo_push();
                 g_hitbox_drag_corner = -1;
+            }
+        }
+
+        /* --- MK2 strike-table overlay (separate from IMG hitbox) ---
+           Draws the currently-selected MKSTK.ASM move's collision box on
+           the sprite, with corner handles for drag-to-resize. Magenta to
+           distinguish from the cyan IMG-hitbox overlay.
+           Drawing always runs whenever a move is selected — the editor
+           panel can hold focus (which sets canvas_input_blocked) without
+           hiding the box. Only the corner-drag interaction is gated. */
+        int mk2_rec = (g_show_mk2) ? Mk2CurrentRecord() : -1;
+        if (mk2_rec >= 0) {
+            const mk2::StrikeRecord &rec = g_mk2_doc.records[mk2_rec];
+            int hx = rec.fields[mk2::F_X_OFFSET].has_value ? (int)rec.fields[mk2::F_X_OFFSET].value : 0;
+            int hy = rec.fields[mk2::F_Y_OFFSET].has_value ? (int)rec.fields[mk2::F_Y_OFFSET].value : 0;
+            int hw = rec.fields[mk2::F_X_SIZE  ].has_value ? (int)rec.fields[mk2::F_X_SIZE  ].value : 0;
+            int hh = rec.fields[mk2::F_Y_SIZE  ].has_value ? (int)rec.fields[mk2::F_Y_SIZE  ].value : 0;
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            ImVec2 tl(img_pos.x + hx * sx, img_pos.y + hy * sy);
+            ImVec2 br(img_pos.x + (hx + hw) * sx, img_pos.y + (hy + hh) * sy);
+            ImVec2 tr(br.x, tl.y), bl(tl.x, br.y);
+            ImU32 col_line   = IM_COL32(255, 80, 220, 230);
+            ImU32 col_fill   = IM_COL32(255, 80, 220,  40);
+            ImU32 col_hover  = IM_COL32(255, 255, 0, 255);
+            dl->AddRectFilled(tl, br, col_fill);
+            dl->AddRect(tl, br, col_line, 0, 0, 2.f);
+            /* Label above the rect. */
+            char tag[80];
+            snprintf(tag, sizeof(tag), "%s  (%d,%d %dx%d)", rec.label.c_str(), hx, hy, hw, hh);
+            dl->AddText(ImVec2(tl.x, tl.y - 16.f), col_line, tag);
+
+            ImVec2 corners[4] = { tl, tr, br, bl };
+            float hr = 12.f * 12.f;
+            bool  hovering[4] = { false, false, false, false };
+            if (!canvas_input_blocked) {
+                for (int c = 0; c < 4; c++) {
+                    ImVec2 d = mouse - corners[c];
+                    hovering[c] = (d.x * d.x + d.y * d.y < hr);
+                }
+            }
+            for (int c = 0; c < 4; c++) {
+                dl->AddCircleFilled(corners[c], 5.f, hovering[c] ? col_hover : col_line);
+            }
+            if (!canvas_input_blocked) {
+                for (int c = 0; c < 4; c++) {
+                    if (hovering[c] && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        g_mk2_drag_corner = c;
+                        widget_consumed_click = true;
+                    }
+                }
+            }
+            if (g_mk2_drag_corner >= 0 && mbdn) {
+                int mx = (int)((mouse.x - img_pos.x) / sx);
+                int my = (int)((mouse.y - img_pos.y) / sy);
+                int c = g_mk2_drag_corner;
+                int nx = hx, ny = hy, nw = hw, nh = hh;
+                if (c == 0) { nw += hx - mx; nh += hy - my; nx = mx; ny = my; }
+                if (c == 1) { nw  = mx - hx; nh += hy - my;            ny = my; }
+                if (c == 2) { nw  = mx - hx; nh  = my - hy; }
+                if (c == 3) { nw += hx - mx; nx = mx;       nh  = my - hy; }
+                if (nw < 1) nw = 1;
+                if (nh < 1) nh = 1;
+                /* Push values through the document so the .ASM line buffer
+                   stays in sync and Save picks them up. */
+                if (nx != hx) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_X_OFFSET, nx);
+                if (ny != hy) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_Y_OFFSET, ny);
+                if (nw != hw) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_X_SIZE,   nw);
+                if (nh != hh) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_Y_SIZE,   nh);
+                widget_consumed_click = true;
+            } else if (!mbdn && g_mk2_drag_corner >= 0) {
+                g_mk2_drag_corner = -1;
             }
         }
 
@@ -7295,6 +7595,8 @@ void imgui_overlay_render(void)
     DrawLoad2VerifyDialog();
 
     DrawPaletteHistogramDialog();
+
+    DrawMk2HitboxWindow();
 
     DrawAutoChopDialog();
 

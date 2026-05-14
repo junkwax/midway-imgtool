@@ -9,7 +9,7 @@
 /* Single source of truth for the version string shipped in the binary.
    Used by the window title and the About dialog. Bump alongside the
    CHANGELOG entry and the git tag at release time. */
-#define IMGTOOL_VERSION "2.6.0"
+#define IMGTOOL_VERSION "2.7.0"
 
 #ifdef __cplusplus
 extern "C" {

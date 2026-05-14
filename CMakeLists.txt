@@ -60,6 +60,7 @@ add_executable(imgtool
     platform/img_io.cpp
     platform/load2_verify.cpp
     platform/lod_parser.cpp
+    platform/mk2_hitbox.cpp
     ${PLATFORM_RC}
 )
 

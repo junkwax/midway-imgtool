@@ -8,6 +8,66 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v2.7.0] — Phase 7: MK2 hitbox editor, Pencil tool, New IMG bootstrap
+
+Phase 7 wrap-up. Adds the long-planned MK2 strike-table editor (parses
+and writes `MKSTK.ASM` directly, with a magenta on-canvas hitbox
+overlay), a proper Pencil tool with the Adobe `P` shortcut, and makes
+File → New leave you in a usable starting state. No IMG file-format
+changes.
+
+### MK2 strike-table editor
+- New **Tools → MK2 Hitboxes (MKSTK.ASM)...** panel. Parses
+  `mk2-main/src/MKSTK.ASM` directly as the source of truth — no
+  `stk.bin` or `MKSTK.LST` dependency. Three-pane layout:
+  character → move → fields.
+- Edit fields by number (x/y/w/h, score) or by raw token
+  (`strike_routine`, `sound` — preserves symbolic identifiers like
+  `sf_squeeze`). `damage` is split into hit and block bytes.
+- **Save** rewrites `MKSTK.ASM` in place, preserving comments,
+  indentation, and symbolic literals. Hex literals stay hex,
+  decimal stays decimal.
+- **Magenta hitbox overlay** on the main canvas shows the selected
+  move's collision box at `(x_offset, y_offset, x_size, y_size)`
+  with drag-to-resize corner handles that write straight back to the
+  `.ASM` line buffer. Overlay stays visible while the MK2 panel has
+  focus. The IMG-embedded hitbox overlay auto-hides when an MK2
+  move is selected so the two systems don't pile on top of each
+  other.
+- Implemented in [platform/mk2_hitbox.h](platform/mk2_hitbox.h) and
+  [platform/mk2_hitbox.cpp](platform/mk2_hitbox.cpp).
+
+### Pencil tool
+- New explicit **Pencil tool** on the toolbar with the `P` shortcut
+  (Photoshop convention). Single click paints one pixel at the
+  current palette index; drag paints a continuous line. Shift+click
+  flood-fills (carried over from the previous no-tool paint mode).
+- Same paint code path as the v2.6 "no active tool" behavior, just
+  promoted to a real `ActiveTool::Pencil` mode so it's discoverable
+  and the toolbar highlight tells you which tool is active.
+
+### New IMG from scratch
+- **File → New** now bootstraps a usable starting document — one
+  default 256-color palette and one 32×32 blank image — instead of
+  leaving you with an empty void where palette and image lists were
+  both empty.
+- Undo and dirty state are reset after the bootstrap so the new doc
+  starts pristine.
+
+### Palette additions polish
+- **Add Palette** / **Duplicate Palette** are now reachable from the
+  Palette menu and the right-click context menu (previously only on
+  the button row).
+- Both now push undo, auto-select the new palette, and commit it onto
+  the active image. New palettes get a unique `PAL%d` default name
+  instead of an empty name.
+
+### Toolbar cleanup
+- Removed the **Open** and **Save** icons from the left toolbar.
+  Loading and saving stays accessible via the File menu and the
+  `Ctrl+O` / `Ctrl+S` shortcuts. Lets the toolbar focus on actual
+  paint/selection tools.
+
 ## [v2.6.0] — Drag-drop, palette highlight, Eyedropper, multi-doc plumbing
 
 Workflow polish round plus the structural refactor that unlocks multiple
