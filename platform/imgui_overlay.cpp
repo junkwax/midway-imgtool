@@ -127,6 +127,57 @@ static bool  g_zoom_reset = true;
 static unsigned char *g_pixel_undo = NULL;
 static int            g_pixel_undo_img = -1;  /* -2 = never built */
 
+/* Per-stroke pixel history. Stack of pre-stroke snapshots: each entry
+   captures the full pixel buffer of one image at the moment a paint
+   stroke began. Push on the first frame of mouse-down for any pixel
+   tool (Pencil, Clone Stamp, Smart Eraser, Smart Remap, Flood Fill);
+   Ctrl+Z pops the most recent entry, swapping current pixels with the
+   snapshot and pushing the prior state onto the redo stack. */
+struct PixelHist {
+    int            img_idx;     /* index into the IMG list at the time */
+    unsigned short w, h;        /* sentinels for stale-redo protection */
+    unsigned int   size;        /* bytes in `data` */
+    unsigned char *data;        /* owned malloc()'d buffer */
+};
+static std::vector<PixelHist> g_pixel_hist;   /* undo stack */
+static std::vector<PixelHist> g_pixel_redo;   /* redo stack */
+static const size_t kPixelHistMax = 32;
+/* Free the buffer inside a PixelHist (caller still owns the vector slot). */
+static inline void pixel_hist_free(PixelHist *e) {
+    if (e->data) free(e->data);
+    e->data = NULL;
+}
+/* Capture the current pixel buffer of the active image into `out`.
+   Returns true if `out` now owns a valid snapshot. */
+static bool pixel_hist_capture(PixelHist *out) {
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p) return false;
+    unsigned short stride = (img->w + 3) & ~3;
+    unsigned int sz = (unsigned int)stride * img->h;
+    unsigned char *buf = (unsigned char *)malloc(sz);
+    if (!buf) return false;
+    memcpy(buf, img->data_p, sz);
+    out->img_idx = g_doc->ilselected;
+    out->w = img->w; out->h = img->h;
+    out->size = sz;
+    out->data = buf;
+    return true;
+}
+/* Stroke-begin: push a fresh pre-stroke snapshot. Drops the oldest entry
+   if the stack is full; clears the redo stack since a new edit branch
+   invalidates any pending redo. */
+static void pixel_hist_push_stroke(void) {
+    PixelHist e = {};
+    if (!pixel_hist_capture(&e)) return;
+    if (g_pixel_hist.size() >= kPixelHistMax) {
+        pixel_hist_free(&g_pixel_hist.front());
+        g_pixel_hist.erase(g_pixel_hist.begin());
+    }
+    g_pixel_hist.push_back(e);
+    for (auto &r : g_pixel_redo) pixel_hist_free(&r);
+    g_pixel_redo.clear();
+}
+
 /* ---- Layout constants ---- */
 static const float TOOLBAR_W   = 40.0f;
 static const float PANEL_W     = 280.0f;
@@ -4810,22 +4861,62 @@ void imgui_overlay_render(void)
     /* ---- Global keyboard shortcuts ---- */
     ImGuiInputFlags route = ImGuiInputFlags_RouteGlobal;
 
-    /* Undo / Redo */
+    /* Undo / Redo. Two stacks coexist:
+       - g_pixel_hist / g_pixel_redo: per-stroke pixel snapshots for paint
+         tools. Operates on whatever image was active when the stroke began.
+       - g_undo[] / g_undo_idx: the older anipoint/hitbox/palette stack.
+       Pixel history takes priority when non-empty so a paint stroke is
+       always the most-recent thing the user undoes. */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) {
-        if (g_pixel_undo && g_pixel_undo_img == g_doc->ilselected) {
-            IMG *img = get_img(g_doc->ilselected);
-            if (img && img->data_p) {
-                unsigned short s = (img->w + 3) & ~3;
-                unsigned int sz = (unsigned int)s * img->h;
-                unsigned char *tmp = (unsigned char *)malloc(sz);
-                if (tmp) { memcpy(tmp, img->data_p, sz); memcpy(img->data_p, g_pixel_undo, sz);
-                           memcpy(g_pixel_undo, tmp, sz); free(tmp); }
-    g_img_tex_idx = -2;
-    g_palette_nav = false;
-}
+        if (!g_pixel_hist.empty()) {
+            PixelHist e = g_pixel_hist.back();
+            g_pixel_hist.pop_back();
+            IMG *img = get_img(e.img_idx);
+            if (img && img->data_p && img->w == e.w && img->h == e.h) {
+                unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
+                if (cur_sz == e.size) {
+                    /* Push current state onto redo, then install snapshot. */
+                    PixelHist r = {};
+                    r.img_idx = e.img_idx; r.w = img->w; r.h = img->h; r.size = cur_sz;
+                    r.data = (unsigned char *)malloc(cur_sz);
+                    if (r.data) {
+                        memcpy(r.data, img->data_p, cur_sz);
+                        g_pixel_redo.push_back(r);
+                    }
+                    memcpy(img->data_p, e.data, cur_sz);
+                    g_doc->ilselected = e.img_idx;
+                    g_img_tex_idx = -2;
+                    g_palette_nav = false;
+                }
+            }
+            pixel_hist_free(&e);
         } else if (g_undo_idx > 0) { g_undo_idx--; undo_apply(g_undo_idx); }
     }
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) { if (g_undo_idx < g_undo_count - 1) { g_undo_idx++; undo_apply(g_undo_idx); } }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) {
+        if (!g_pixel_redo.empty()) {
+            PixelHist e = g_pixel_redo.back();
+            g_pixel_redo.pop_back();
+            IMG *img = get_img(e.img_idx);
+            if (img && img->data_p && img->w == e.w && img->h == e.h) {
+                unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
+                if (cur_sz == e.size) {
+                    /* Push current state back onto undo so a second Ctrl+Z
+                       can return here. */
+                    PixelHist u = {};
+                    u.img_idx = e.img_idx; u.w = img->w; u.h = img->h; u.size = cur_sz;
+                    u.data = (unsigned char *)malloc(cur_sz);
+                    if (u.data) {
+                        memcpy(u.data, img->data_p, cur_sz);
+                        g_pixel_hist.push_back(u);
+                    }
+                    memcpy(img->data_p, e.data, cur_sz);
+                    g_doc->ilselected = e.img_idx;
+                    g_img_tex_idx = -2;
+                }
+            }
+            pixel_hist_free(&e);
+        } else if (g_undo_idx < g_undo_count - 1) { g_undo_idx++; undo_apply(g_undo_idx); }
+    }
 
     /* Clipboard */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) copy_image(false);
@@ -6370,6 +6461,13 @@ void imgui_overlay_render(void)
                     }
                     if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
                         && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
+                        /* Stroke begin: capture a pre-stroke snapshot of the
+                           image's pixel buffer on the first frame of left-mouse
+                           down for any paint tool. Skipped for Clone Stamp's
+                           Alt-click "set source" which doesn't modify pixels. */
+                        bool stroke_begin = ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                            && !(g_active_tool == ActiveTool::CloneStamp && io.KeyAlt);
+                        if (stroke_begin) pixel_hist_push_stroke();
                         if (g_active_tool == ActiveTool::CloneStamp) {
                             if (io.KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                                 g_clone_src_x = px;
