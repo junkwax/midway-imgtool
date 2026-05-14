@@ -913,7 +913,7 @@ int ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches)
                  *     breaks SAG alignment under ZON+PPP packing.
                  *
                  * Net behavior: re-paint censored INTERIOR regions of the
-                 * child (where Midway replaced logo pixels with a flat
+                 * child (where the publisher replaced logo pixels with a flat
                  * color), but never grow the silhouette. */
                 unsigned char s = src_pix[s_idx];
                 unsigned char d = dst_pix[d_idx];

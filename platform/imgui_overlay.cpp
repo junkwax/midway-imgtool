@@ -20,7 +20,9 @@
 #include "compat.h"
 #ifdef _WIN32
 #include <shlobj.h>
+#include <commdlg.h>
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "comdlg32.lib")
 #endif
 #include "img_format.h"
 #include "img_io.h"
@@ -519,7 +521,7 @@ static L2Report g_load2_report;
 /* ---- MK2 strike-table editor state ---- */
 static bool          g_show_mk2 = false;
 static mk2::Document g_mk2_doc;
-static char          g_mk2_path[1024] = "c:\\Users\\xbx\\Workplace\\mk2-main\\src\\MKSTK.ASM";
+static char          g_mk2_path[1024] = "";   /* user picks via Browse or types directly */
 static std::string   g_mk2_status;     /* last load/save message */
 static int           g_mk2_char_idx = 0;  /* selected char-table index */
 static int           g_mk2_move_idx = 0;  /* selected move index within that table */
@@ -553,18 +555,20 @@ static const char *Mk2CharFromImgName(const char *fname)
     up[n] = '\0';
     if (n == 0) return NULL;
 
-    /* Prefix match table — most specific first (e.g. NUJAX before NU). */
+    /* Prefix match table — most specific first. Codes match the two-
+       letter labels in MKSTK.ASM's character tables (e.g. lk_strikes,
+       jc_strikes); no character names are encoded here. */
     struct { const char *prefix; const char *code; } map[] = {
-        { "CAGE",     "jc" },  /* Johnny Cage */
-        { "HATHED",   "hh" },  /* Kung Lao */
-        { "KANG",     "lk" },  /* Liu Kang */
-        { "NINJAS",   "nj" },  /* Sub-Zero / Reptile / Scorpion / Smoke */
-        { "RAID",     "rd" },  /* Raiden (covers RAIDWALK too) */
-        { "TSUNG",    "st" },  /* Shang Tsung */
+        { "CAGE",     "jc" },
+        { "HATHED",   "hh" },
+        { "KANG",     "lk" },
+        { "NINJAS",   "nj" },
+        { "RAID",     "rd" },
+        { "TSUNG",    "st" },
         { "JAXPRO",   "jx" },
         { "NUJAX",    "jx" },
         { "MKJXARMS", "jx" },
-        { "KAT",      "fn" },  /* Kitana / Mileena / Jade */
+        { "KAT",      "fn" },
         { "BIGGORO",  "go" },
         { "GOROSIZE", "go" },
     };
@@ -3483,7 +3487,7 @@ static void copy_image(bool cut)
        large marquee pastes off-center because the rect is bigger than what
        the user actually sees. The crop is applied to *all* copies (not just
        marquee or mask copies) so a full-image copy still drops the empty
-       margin every Midway sprite has around it. */
+       margin most sprite frames have around them. */
     {
         unsigned char *cd = (unsigned char *)g_clipboard.data_p;
         int min_x = w, min_y = h, max_x = -1, max_y = -1;
@@ -4113,9 +4117,34 @@ static void DrawMk2HitboxWindow(void)
         if (rec >= 0) Mk2SelectRecord(rec);
     }
 
-    /* --- Path / Load / Save row --- */
-    ImGui::SetNextItemWidth(-200);
-    ImGui::InputText("##mk2path", g_mk2_path, sizeof(g_mk2_path));
+    /* --- Path / Browse / Load / Save row --- */
+    ImGui::SetNextItemWidth(-280);
+    ImGui::InputTextWithHint("##mk2path", "path to MKSTK.ASM (use Browse...)", g_mk2_path, sizeof(g_mk2_path));
+    ImGui::SameLine();
+    if (ImGui::Button("Browse...")) {
+#ifdef _WIN32
+        char buf[1024];
+        /* Seed with the current path so the dialog opens at the last
+           location; otherwise it falls back to the OS default. */
+        size_t cur = strlen(g_mk2_path);
+        if (cur >= sizeof(buf)) cur = sizeof(buf) - 1;
+        memcpy(buf, g_mk2_path, cur); buf[cur] = '\0';
+        OPENFILENAMEA ofn = {};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.lpstrFilter = "ASM source\0*.ASM;*.asm\0All files\0*.*\0";
+        ofn.lpstrFile   = buf;
+        ofn.nMaxFile    = sizeof(buf);
+        ofn.lpstrTitle  = "Select MKSTK.ASM";
+        ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (GetOpenFileNameA(&ofn)) {
+            strncpy(g_mk2_path, buf, sizeof(g_mk2_path) - 1);
+            g_mk2_path[sizeof(g_mk2_path) - 1] = '\0';
+        }
+#else
+        g_mk2_status = "Browse not implemented on this platform - type the path manually";
+#endif
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pick MKSTK.ASM from disk");
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
         std::string err;
@@ -4202,7 +4231,7 @@ static void DrawMk2HitboxWindow(void)
     /* If no document loaded yet, stop here. */
     if (g_mk2_doc.char_tables.empty()) {
         ImGui::Spacing();
-        ImGui::TextWrapped("Set the path to mk2-main/src/MKSTK.ASM above and click Load.");
+        ImGui::TextWrapped("Click Browse... to pick MKSTK.ASM, then click Load.");
         ImGui::End();
         return;
     }
