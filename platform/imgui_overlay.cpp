@@ -404,6 +404,7 @@ static std::vector<std::pair<int,int>> g_lasso_points;
 
 /* Clone Stamp brush */
 static int g_clone_brush = 1;           /* radius+1; 1 = single pixel, 3/5/7 = round brushes */
+static int g_pencil_brush = 1;          /* same convention as g_clone_brush — 1 = single pixel */
 
 /* Snap-to-content cached bbox (recomputed when Shift goes down on a paste drag) */
 struct SnapBBox {
@@ -472,6 +473,7 @@ static std::string   g_mk2_status;     /* last load/save message */
 static int           g_mk2_char_idx = 0;  /* selected char-table index */
 static int           g_mk2_move_idx = 0;  /* selected move index within that table */
 static int           g_mk2_drag_corner = -1; /* canvas overlay corner drag (0..3) */
+static char          g_mk2_search[64] = ""; /* filter for the move list */
 /* Resolve the current MK2 record index, or -1 if no valid selection. */
 static int Mk2CurrentRecord(void) {
     if (g_mk2_char_idx < 0 || g_mk2_char_idx >= (int)g_mk2_doc.char_tables.size()) return -1;
@@ -3769,12 +3771,18 @@ int imgui_overlay_wants_keyboard(void)
     return io.WantCaptureKeyboard ? 1 : 0;
 }
 
+/* MK2 strike-table unsaved-changes confirm. Independent of the IMG
+   unsaved-changes flow because it writes a completely different file
+   (MKSTK.ASM, not the IMG container). */
+static bool g_show_mk2_unsaved_confirm = false;
+
 int imgui_overlay_check_unsaved_and_quit(void)
 {
-    if (g_dirty && g_doc->imgcnt > 0) {
-        g_show_unsaved_confirm = true;
-        return 0;
-    }
+    bool img_dirty = g_dirty && g_doc->imgcnt > 0;
+    bool mk2_dirty = g_mk2_doc.dirty && !g_mk2_doc.source_path.empty();
+    if (img_dirty)  g_show_unsaved_confirm = true;
+    if (mk2_dirty)  g_show_mk2_unsaved_confirm = true;
+    if (img_dirty || mk2_dirty) return 0;
     return 1;
 }
 
@@ -3786,7 +3794,7 @@ void imgui_overlay_request_quit(void)
 int imgui_overlay_should_quit(void)
 {
     /* If we're pending quit and no unsaved popup is showing, it's safe to exit */
-    return (g_pending_quit && !g_show_unsaved_confirm) ? 1 : 0;
+    return (g_pending_quit && !g_show_unsaved_confirm && !g_show_mk2_unsaved_confirm) ? 1 : 0;
 }
 
 void imgui_overlay_mark_saved(void)
@@ -3982,6 +3990,10 @@ static void DrawMk2HitboxWindow(void)
             g_mk2_status = buf;
             g_mk2_char_idx = 0;
             g_mk2_move_idx = 0;
+            g_mk2_search[0] = '\0';
+            /* Fresh load wipes any prior undo history — those entries
+               referenced records that may no longer match the new doc. */
+            g_mk2_doc.undo_stack.clear();
         } else {
             g_mk2_status = std::string("Load failed: ") + err;
         }
@@ -3995,6 +4007,29 @@ static void DrawMk2HitboxWindow(void)
         else g_mk2_status = std::string("Save failed: ") + err;
     }
     if (!can_save) ImGui::EndDisabled();
+    ImGui::SameLine();
+    bool can_undo_mk2 = mk2::can_undo(&g_mk2_doc);
+    if (!can_undo_mk2) ImGui::BeginDisabled();
+    if (ImGui::Button("Undo")) {
+        int rec = mk2::undo_pop(&g_mk2_doc);
+        if (rec >= 0) {
+            /* Move selection to whichever record was just restored so
+               the user sees the result. */
+            const std::string &lbl = g_mk2_doc.records[rec].label;
+            for (int ci = 0; ci < (int)g_mk2_doc.char_tables.size(); ci++) {
+                const auto &mv = g_mk2_doc.char_tables[ci].moves;
+                for (int mi = 0; mi < (int)mv.size(); mi++) {
+                    if (mv[mi] == lbl) {
+                        g_mk2_char_idx = ci;
+                        g_mk2_move_idx = mi;
+                        ci = (int)g_mk2_doc.char_tables.size();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!can_undo_mk2) ImGui::EndDisabled();
 
     if (!g_mk2_status.empty()) {
         ImGui::SameLine();
@@ -4029,9 +4064,19 @@ static void DrawMk2HitboxWindow(void)
     ImGui::SameLine();
     ImGui::BeginChild("##mk2_moves", ImVec2(260, row_h), true);
     ImGui::TextDisabled("Move");
+    /* Substring filter — case-insensitive. Empty box matches everything. */
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##mk2_search", "filter...", g_mk2_search, sizeof(g_mk2_search));
+    auto match_filter = [](const std::string &s, const char *needle) {
+        if (!needle || !needle[0]) return true;
+        std::string a = s; for (auto &c : a) c = (char)std::tolower((unsigned char)c);
+        std::string b = needle; for (auto &c : b) c = (char)std::tolower((unsigned char)c);
+        return a.find(b) != std::string::npos;
+    };
     if (g_mk2_char_idx >= 0 && g_mk2_char_idx < (int)g_mk2_doc.char_tables.size()) {
         const auto &moves = g_mk2_doc.char_tables[g_mk2_char_idx].moves;
         for (int i = 0; i < (int)moves.size(); i++) {
+            if (!match_filter(moves[i], g_mk2_search)) continue;
             char label[80];
             snprintf(label, sizeof(label), "%2d  %s", i, moves[i].c_str());
             if (ImGui::Selectable(label, g_mk2_move_idx == i))
@@ -4066,6 +4111,7 @@ static void DrawMk2HitboxWindow(void)
             if (ImGui::InputInt(id, &v, 1, 8)) {
                 if (v < -0x8000) v = -0x8000;
                 if (v > 0x7FFF)  v = 0x7FFF;
+                mk2::undo_push(&g_mk2_doc, rec_idx, false);
                 mk2::set_value(&g_mk2_doc, rec_idx, fi, (int32_t)v);
             }
         }
@@ -4079,8 +4125,10 @@ static void DrawMk2HitboxWindow(void)
             memcpy(buf, raw.data(), n); buf[n] = '\0';
             ImGui::SetNextItemWidth(180);
             char id[40]; snprintf(id, sizeof(id), "%s##mk2_%d", mk2::kFieldNames[fi], fi);
-            if (ImGui::InputText(id, buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue))
+            if (ImGui::InputText(id, buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+                mk2::undo_push(&g_mk2_doc, rec_idx, false);
                 mk2::set_raw(&g_mk2_doc, rec_idx, fi, buf);
+            }
         }
 
         ImGui::Spacing();
@@ -4090,11 +4138,13 @@ static void DrawMk2HitboxWindow(void)
         ImGui::SetNextItemWidth(80);
         if (ImGui::InputInt("damage_hit##mk2", &hit, 1, 4)) {
             if (hit < 0) hit = 0; if (hit > 255) hit = 255;
+            mk2::undo_push(&g_mk2_doc, rec_idx, false);
             mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_DAMAGE, mk2::pack_damage(hit, blk));
         }
         ImGui::SetNextItemWidth(80);
         if (ImGui::InputInt("damage_block##mk2", &blk, 1, 4)) {
             if (blk < 0) blk = 0; if (blk > 255) blk = 255;
+            mk2::undo_push(&g_mk2_doc, rec_idx, false);
             mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_DAMAGE, mk2::pack_damage(hit, blk));
         }
         ImGui::TextDisabled("damage word = 0x%04X", dmg & 0xFFFF);
@@ -4103,8 +4153,10 @@ static void DrawMk2HitboxWindow(void)
         /* Score — 32-bit. */
         int score = rec.fields[mk2::F_SCORE].has_value ? (int)rec.fields[mk2::F_SCORE].value : 0;
         ImGui::SetNextItemWidth(160);
-        if (ImGui::InputInt("score##mk2", &score, 100, 1000))
+        if (ImGui::InputInt("score##mk2", &score, 100, 1000)) {
+            mk2::undo_push(&g_mk2_doc, rec_idx, false);
             mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_SCORE, (int32_t)score);
+        }
     }
     ImGui::EndChild();
 
@@ -4580,6 +4632,41 @@ static void DrawUnsavedChangesConfirm(void)
         g_pending_quit = false;
         g_pending_action = PendingAction::None;
         g_pending_action_path.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+/* MK2-side unsaved-changes confirm. Fires when the user tries to quit
+   with edits pending in MKSTK.ASM. Independent of the IMG dirty flow
+   so the two doc types each get their own prompt. */
+static void DrawMk2UnsavedChangesConfirm(void)
+{
+    if (g_show_mk2_unsaved_confirm) ImGui::OpenPopup("MK2 Hitboxes - Unsaved");
+    if (!ImGui::BeginPopupModal("MK2 Hitboxes - Unsaved", &g_show_mk2_unsaved_confirm,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::Text("You have unsaved edits in MKSTK.ASM.");
+    ImGui::Text("Do you want to save them before quitting?");
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Save", ImVec2(80, 0))) {
+        std::string err;
+        if (mk2::save(&g_mk2_doc, &err)) g_mk2_status = "Saved MKSTK.ASM";
+        else                              g_mk2_status = std::string("Save failed: ") + err;
+        g_show_mk2_unsaved_confirm = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Discard", ImVec2(80, 0))) {
+        g_mk2_doc.dirty = false; /* user chose to throw the MK2 edits away */
+        g_show_mk2_unsaved_confirm = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        g_show_mk2_unsaved_confirm = false;
+        g_pending_quit = false;
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -5343,7 +5430,14 @@ void imgui_overlay_render(void)
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Eyedropper Tool (I) - click to pick palette color");
 
         /* Tool-options strip — appears inline when a configurable tool is active. */
-        if (g_active_tool == ActiveTool::MagicWand) {
+        if (g_active_tool == ActiveTool::Pencil) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::SliderInt("Brush##pencil", &g_pencil_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil brush radius (1 = single pixel)");
+        } else if (g_active_tool == ActiveTool::MagicWand) {
             ImGui::SameLine();
             ImGui::TextDisabled("|");
             ImGui::SameLine();
@@ -6376,7 +6470,27 @@ void imgui_overlay_render(void)
                                 FloodFill(cimg, px, py, (unsigned char)g_sel_color);
                             } else {
                                 mark_dirty();
-                                *pix = (unsigned char)g_sel_color;
+                                /* Pencil with radius >1 stamps a disc. r=1 keeps
+                                   the single-pixel behavior the underlying paint
+                                   path has always had. */
+                                int r = (g_active_tool == ActiveTool::Pencil && g_pencil_brush > 1)
+                                            ? g_pencil_brush : 1;
+                                if (r == 1) {
+                                    *pix = (unsigned char)g_sel_color;
+                                } else {
+                                    int r2 = (r - 1) * (r - 1);
+                                    unsigned short stride = (cimg->w + 3) & ~3;
+                                    unsigned char *cdata = (unsigned char *)cimg->data_p;
+                                    for (int by = -(r - 1); by <= (r - 1); by++)
+                                    for (int bx = -(r - 1); bx <= (r - 1); bx++) {
+                                        if (bx * bx + by * by > r2) continue;
+                                        int dx_px = px + bx, dy_px = py + by;
+                                        if (dx_px < 0 || dy_px < 0
+                                            || dx_px >= (int)cimg->w
+                                            || dy_px >= (int)cimg->h) continue;
+                                        cdata[dy_px * stride + dx_px] = (unsigned char)g_sel_color;
+                                    }
+                                }
                             }
                             g_img_tex_idx = -2;
                             widget_consumed_click = true;
@@ -6549,6 +6663,9 @@ void imgui_overlay_render(void)
             if (!canvas_input_blocked) {
                 for (int c = 0; c < 4; c++) {
                     if (hovering[c] && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        /* Snapshot the pre-drag state once. Subsequent
+                           per-pixel updates during the drag coalesce. */
+                        mk2::undo_push(&g_mk2_doc, mk2_rec, false);
                         g_mk2_drag_corner = c;
                         widget_consumed_click = true;
                     }
@@ -7610,6 +7727,8 @@ void imgui_overlay_render(void)
     DrawNewImgConfirm();
 
     DrawUnsavedChangesConfirm();
+
+    DrawMk2UnsavedChangesConfirm();
 
     DrawHelpModal();
 

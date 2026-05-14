@@ -291,4 +291,48 @@ int find_record(const Document *doc, const char *label)
     return -1;
 }
 
+void undo_push(Document *doc, int record_idx, bool coalesce_with_prev)
+{
+    if (record_idx < 0 || record_idx >= (int)doc->records.size()) return;
+    /* During a continuous drag we don't want one snapshot per pixel. If
+       the caller asks to coalesce and the top of the stack already
+       points at the same record, keep the older snapshot — it's the
+       pre-drag state. */
+    if (coalesce_with_prev && !doc->undo_stack.empty()
+        && doc->undo_stack.back().record_idx == record_idx) return;
+
+    UndoEntry e;
+    e.record_idx = record_idx;
+    const StrikeRecord &rec = doc->records[record_idx];
+    for (int i = 0; i < F_COUNT; i++) {
+        e.fields[i] = rec.fields[i];
+        if (rec.fields[i].line > 0 && rec.fields[i].line <= (int)doc->raw_lines.size())
+            e.line_text[i] = doc->raw_lines[rec.fields[i].line - 1];
+    }
+    /* Bound the stack so a long session doesn't grow without limit. */
+    const size_t kMaxUndo = 200;
+    if (doc->undo_stack.size() >= kMaxUndo)
+        doc->undo_stack.erase(doc->undo_stack.begin());
+    doc->undo_stack.push_back(std::move(e));
+}
+
+int undo_pop(Document *doc)
+{
+    if (doc->undo_stack.empty()) return -1;
+    UndoEntry e = std::move(doc->undo_stack.back());
+    doc->undo_stack.pop_back();
+    if (e.record_idx < 0 || e.record_idx >= (int)doc->records.size()) return -1;
+
+    StrikeRecord &rec = doc->records[e.record_idx];
+    for (int i = 0; i < F_COUNT; i++) {
+        rec.fields[i] = e.fields[i];
+        if (e.fields[i].line > 0 && e.fields[i].line <= (int)doc->raw_lines.size()
+            && !e.line_text[i].empty())
+            doc->raw_lines[e.fields[i].line - 1] = e.line_text[i];
+    }
+    /* Restoring doesn't clean dirty: the file on disk still differs
+       until Save is invoked or the user reloads. */
+    return e.record_idx;
+}
+
 } // namespace mk2

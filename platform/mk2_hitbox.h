@@ -50,12 +50,27 @@ struct CharTable {
     std::vector<std::string> moves; /* labels in slot order */
 };
 
+/* Per-record snapshot used by undo. Stores the 8 fields' raw strings and
+   parsed values *and* the .asm line buffer slice for those fields so we
+   can restore exactly. */
+struct UndoEntry {
+    int          record_idx = -1;
+    StrikeField  fields[8];
+    /* Verbatim line text for each field's line, indexed 0..7. Empty if
+       the field didn't have a parsed line (rare; defensive). */
+    std::string  line_text[8];
+};
+
 struct Document {
     std::string                source_path;     /* absolute path to MKSTK.ASM */
     std::vector<std::string>   raw_lines;       /* file contents, 1-based via raw_lines[i-1] */
     std::vector<StrikeRecord>  records;
     std::vector<CharTable>     char_tables;
     bool                       dirty = false;
+    /* Undo ring. push() captures the current state of a record before a
+       mutation; undo() pops the last entry and restores it. Bounded so a
+       long drag doesn't explode memory. */
+    std::vector<UndoEntry>     undo_stack;
 };
 
 /* Field accessors — index into StrikeRecord::fields. */
@@ -92,6 +107,14 @@ void set_raw  (Document *doc, int record_idx, int field_idx, const char *raw);
 /* Character-table helpers. Returns -1 if not found. */
 int find_char_table(const Document *doc, const char *name);
 int find_record    (const Document *doc, const char *label);
+
+/* Undo: push a snapshot of one record before a mutation, or coalesce
+   with the previous push if it targeted the same record within a short
+   window (so a drag doesn't generate hundreds of entries). undo() pops
+   and restores; returns the record index that was restored, or -1. */
+void undo_push(Document *doc, int record_idx, bool coalesce_with_prev);
+int  undo_pop (Document *doc);
+inline bool can_undo(const Document *doc) { return !doc->undo_stack.empty(); }
 
 /* Decompose / pack the damage word. */
 inline int damage_hit  (int dmg) { return (dmg >> 8) & 0xFF; }
