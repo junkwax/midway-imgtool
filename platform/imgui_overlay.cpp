@@ -2940,8 +2940,12 @@ Edit:
 
 Image list:
   Space                Mark / Unmark current image
-  M  / Shift+M         Mark all / Invert all marks
+  Shift+M              Set all marks (typed as "M")
+  M                    Clear all marks (typed as "m")
   Shift+Del            Delete image
+  Ctrl+R               Rename current image
+  Ctrl+P               Add / Remove point table on current image
+  Alt+PgUp / PgDn      Move current image up / down in the list
   Tab                  Swap image lists (lists 1 and 2)
   ;                    Least-squares size reduce on marked
 
@@ -5263,6 +5267,11 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_Delete, route)) {
         if (g_doc->ilselected >= 0) DeleteImage(g_doc->ilselected);
     }
+    /* Image-list ops the menu advertises but were previously unbound. */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_R, route))     OpenRenameImage();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, route))     TogglePointTable();
+    if (ImGui::Shortcut(ImGuiMod_Alt  | ImGuiKey_PageUp, route))   MoveImageUp();
+    if (ImGui::Shortcut(ImGuiMod_Alt  | ImGuiKey_PageDown, route)) MoveImageDown();
 
     /* File I/O */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, route)) RequestOpenDialog();
@@ -5421,7 +5430,7 @@ void imgui_overlay_render(void)
                 ImGui::EndMenu();
             }
             if (ImGui::MenuItem("Save",    "Ctrl+S")) OpenFileDialog(FileDialogMode::SaveImg);
-            if (ImGui::MenuItem("Append",  "a"))      OpenFileDialog(FileDialogMode::AppendImg);
+            if (ImGui::MenuItem("Append"))            OpenFileDialog(FileDialogMode::AppendImg);
             if (ImGui::MenuItem("Open LOD..."))       RequestOpenLodDialog();
             ImGui::Separator();
             if (ImGui::BeginMenu("Import")) {
@@ -5493,7 +5502,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Clear All Marks",    "m"))      { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
             if (ImGui::MenuItem("Invert All Marks"))             { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
             ImGui::Separator();
-            if (ImGui::MenuItem("Jump to Prev Marked", "Left")) {
+            if (ImGui::MenuItem("Jump to Prev Marked")) {
                 int n_imgs = count_imgs();
                 for (int i = 1; i <= n_imgs; i++) {
                     int idx = (g_doc->ilselected - i + n_imgs) % n_imgs;
@@ -5501,7 +5510,7 @@ void imgui_overlay_render(void)
                     if (img && (img->flags & 1)) { g_doc->ilselected = idx; break; }
                 }
             }
-            if (ImGui::MenuItem("Jump to Next Marked", "Right")) {
+            if (ImGui::MenuItem("Jump to Next Marked")) {
                 int n_imgs = count_imgs();
                 for (int i = 1; i <= n_imgs; i++) {
                     int idx = (g_doc->ilselected + i) % n_imgs;
@@ -5513,9 +5522,9 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Move Down",  "Alt+PgDn")) MoveImageDown();
             ImGui::Separator();
             if (ImGui::MenuItem("Add/Del Point Table",  "Ctrl+P")) TogglePointTable();
-            if (ImGui::MenuItem("Set ID from 2nd List", "i"))      SetIDFromSecondList();
+            if (ImGui::MenuItem("Set ID from 2nd List"))           SetIDFromSecondList();
             if (ImGui::MenuItem("Switch Image List",    "Tab"))    SwitchImageList();
-            if (ImGui::MenuItem("Clear Extra Data",     "Alt+C"))  ClearExtraData();
+            if (ImGui::MenuItem("Clear Extra Data"))               ClearExtraData();
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
@@ -5630,7 +5639,7 @@ void imgui_overlay_render(void)
             ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
             ImGui::MenuItem("DMA Compression", NULL, &g_show_dma_comp);
             ImGui::Separator();
-            ImGui::MenuItem("World View",      "Tab",  &g_world_view);
+            ImGui::MenuItem("World View",      NULL,   &g_world_view);
             if (g_world_view) {
                 ImGui::MenuItem("  Onion-skin prev frame", NULL, &g_world_onion);
                 ImGui::SetNextItemWidth(80);
