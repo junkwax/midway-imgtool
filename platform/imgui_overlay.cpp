@@ -5328,7 +5328,16 @@ void imgui_overlay_render(void)
         if (ImGui::Shortcut(ImGuiKey_LeftBracket,  route)) SetPaletteOfMarked();
         if (ImGui::Shortcut(ImGuiKey_RightBracket, route)) SetPaletteOfSelected();
     }
-    if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_8, route)) MergeMarkedPalettes();
+    /* '*' merges marked palettes. SDL physical-key bindings only fire on
+       US-layout Shift+8, so use ImGui's text-input queue instead — the
+       backend posts the actual typed character regardless of keyboard
+       layout. Only when no widget owns the input focus (text fields
+       would legitimately consume '*'). */
+    if (!io.WantTextInput) {
+        for (ImWchar c : io.InputQueueCharacters) {
+            if (c == '*') { MergeMarkedPalettes(); break; }
+        }
+    }
     if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_R, route)) OpenRenamePalette(g_doc->plselected);
     if (ImGui::Shortcut(ImGuiKey_Delete, route)) DeletePalette();
 
@@ -6943,7 +6952,13 @@ void imgui_overlay_render(void)
         }
 
         /* --- Anim point overlay + dragging --- */
-        if (g_show_points && !canvas_input_blocked) {
+        /* Anipoints + IMG hitbox don't render in World View. The World
+           View canvas anchors the sprite at world-origin-minus-anipoint
+           so the on-sprite anipoint marker would land outside or at the
+           wrong spot, and the IMG hitbox box would visually float
+           detached from the playfield rectangle. Both stay reachable
+           via their normal modes when World View is off. */
+        if (g_show_points && !canvas_input_blocked && !g_world_view) {
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img && img->w > 0) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -7020,7 +7035,7 @@ void imgui_overlay_render(void)
            Suppressed when the MK2 strike-table overlay is showing a move,
            so the two hitbox systems don't pile on top of each other. */
         bool mk2_overlay_active = g_show_mk2 && Mk2CurrentRecord() >= 0;
-        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active) {
+        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active && !g_world_view) {
             ImDrawList *dl = ImGui::GetWindowDrawList();
             ImVec2 tl(img_pos.x + g_hitbox_x * sx, img_pos.y + g_hitbox_y * sy);
             ImVec2 br(img_pos.x + (g_hitbox_x + g_hitbox_w) * sx,
@@ -7069,7 +7084,7 @@ void imgui_overlay_render(void)
            Drawing always runs whenever a move is selected — the editor
            panel can hold focus (which sets canvas_input_blocked) without
            hiding the box. Only the corner-drag interaction is gated. */
-        int mk2_rec = (g_show_mk2) ? Mk2CurrentRecord() : -1;
+        int mk2_rec = (g_show_mk2 && !g_world_view) ? Mk2CurrentRecord() : -1;
         if (mk2_rec >= 0) {
             const mk2::StrikeRecord &rec = g_mk2_doc.records[mk2_rec];
             int hx = rec.fields[mk2::F_X_OFFSET].has_value ? (int)rec.fields[mk2::F_X_OFFSET].value : 0;
@@ -7167,20 +7182,34 @@ void imgui_overlay_render(void)
                 }
                 if (g_pencil_brush > 1) {
                     float rr = (sx + sy) * 0.5f * (g_pencil_brush - 1);
+                    /* Black halo so the ring stays visible against same-
+                       colored pixels. */
+                    dl->AddCircle(cc, rr, IM_COL32(0, 0, 0, 200), 0, 3.0f);
                     dl->AddCircle(cc, rr, col, 0, 1.5f);
                 } else {
-                    /* Half-pixel inset so the crosshair sits *between*
-                       the target pixel and its neighbors, not over them.
-                       Scale-aware: at high zoom the pixel is huge and a
-                       fixed-pixel crosshair would look tiny inside it, so
-                       extend the arms a bit relative to zoom. */
+                    /* Half-pixel inset puts the gap right at the target
+                       pixel's edge so the arms hug it, not float away.
+                       The gap is capped: at high zoom the pixel is huge,
+                       but a 30-px gap would visually disconnect the arms
+                       from the pixel they point at. Cap at 4px. The arm
+                       length stays modest (8px) so the marker doesn't
+                       grow into the rest of the sprite. */
                     float pix = (sx + sy) * 0.5f;
-                    float gap = pix * 0.5f + 1.0f;
-                    float len = pix * 0.5f + 3.0f;
-                    dl->AddLine(ImVec2(cc.x - gap - len, cc.y), ImVec2(cc.x - gap, cc.y), col, 1.5f);
-                    dl->AddLine(ImVec2(cc.x + gap, cc.y), ImVec2(cc.x + gap + len, cc.y), col, 1.5f);
-                    dl->AddLine(ImVec2(cc.x, cc.y - gap - len), ImVec2(cc.x, cc.y - gap), col, 1.5f);
-                    dl->AddLine(ImVec2(cc.x, cc.y + gap), ImVec2(cc.x, cc.y + gap + len), col, 1.5f);
+                    float gap = pix * 0.5f;
+                    if (gap > 4.0f) gap = 4.0f;
+                    if (gap < 1.0f) gap = 1.0f;
+                    float len = 8.0f;
+                    /* 1-px darker halo behind each arm so the cursor stays
+                       legible when its color matches the underlying pixel. */
+                    ImU32 halo = IM_COL32(0, 0, 0, 200);
+                    auto arm = [&](ImVec2 a, ImVec2 b) {
+                        dl->AddLine(a, b, halo, 3.0f);
+                        dl->AddLine(a, b, col,  1.5f);
+                    };
+                    arm(ImVec2(cc.x - gap - len, cc.y), ImVec2(cc.x - gap, cc.y));
+                    arm(ImVec2(cc.x + gap,        cc.y), ImVec2(cc.x + gap + len, cc.y));
+                    arm(ImVec2(cc.x, cc.y - gap - len), ImVec2(cc.x, cc.y - gap));
+                    arm(ImVec2(cc.x, cc.y + gap),        ImVec2(cc.x, cc.y + gap + len));
                 }
             }
 
