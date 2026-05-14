@@ -24,12 +24,8 @@ extern DWORD shim_carry; /* 0 = success (CF=0), 1 = error (CF=1)                
 /* ---- exe directory (populated by main before any file ops) ---- */
 extern char exe_dir[MAX_PATH];
 
-/* ---- asm image/palette lists (from itimg.asm) ---- */
-extern void *img_p;             /* * to first IMG struct or NULL */
-extern unsigned int imgcnt;     /* Number of images */
-extern void *pal_p;             /* * to first PAL struct or NULL */
-extern unsigned int palcnt;     /* Number of palettes */
-extern int ilselected;          /* Currently selected image index (-1 = none) */
+/* Image/palette lists live on Document (see document.h). Older shim
+   code that read these directly has been migrated to g_doc->X. */
 
 /* ---- file I/O impl functions ---- */
 /* Each is called by an asm thunk in shim_file_thunks.asm */

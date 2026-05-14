@@ -4,8 +4,8 @@
  *
  * Replaces the in-app modal file browser (filereq_open) when
  * the user presses 'l', 'a', or 's'. After the dialog returns
- * OK we write the full directory into fpath_s, the chosen
- * basename into fnametmp_s, and chdir so the downstream asm
+ * OK we write the full directory into g_doc->fpath_s, the chosen
+ * basename into g_doc->fnametmp_s, and chdir so the downstream asm
  * callback can open the file via I21OPENR (which uses the
  * current working directory).
  *
@@ -33,20 +33,10 @@
 #  pragma comment(lib, "shell32.lib")
 #endif
 
-/* asm-side globals (13-byte fname_s, 64-byte fpath_s, fnametmp_s).
- * Defined in itos.asm via BSSX. The asm uses `.model flat, syscall`,
- * so symbols are emitted WITHOUT a leading underscore; MSVC C emits
- * _name for externs, which doesn't match. Use linker /alternatename
- * to alias the C-side underscored names to the asm-side bare names. */
-extern char fpath_s[64];
-extern char fname_s[13];
-extern char fnametmp_s[13];
-
-#ifdef _MSC_VER
-#  pragma comment(linker, "/alternatename:_fpath_s=fpath_s")
-#  pragma comment(linker, "/alternatename:_fname_s=fname_s")
-#  pragma comment(linker, "/alternatename:_fnametmp_s=fnametmp_s")
-#endif
+/* Document-state file paths (g_doc->fname_s, g_doc->fpath_s, g_doc->fnametmp_s) live on
+ * Document; pull them in through document.h. The /alternatename
+ * pragmas are obsolete now that no ASM defines these symbols. */
+#include "document.h"
 
 /* Relay output: shim_carry 0=OK (file chosen), 1=cancel/error.
  * Thunk reads this to set CF for the asm caller. */
@@ -199,17 +189,17 @@ void shim_filereq_impl(void)
     int is_save       = (title && (title[0] == 'S' || title[0] == 's'));
 
     char full[MAX_PATH] = "";
-    /* Pre-fill with current fname_s if set — matches asm's fmode.0 behavior */
-    if (!is_save && fname_s[0]) {
-        _snprintf(full, sizeof(full), "%s", fname_s);
-    } else if (is_save && fname_s[0]) {
-        _snprintf(full, sizeof(full), "%s", fname_s);
+    /* Pre-fill with current g_doc->fname_s if set — matches asm's fmode.0 behavior */
+    if (!is_save && g_doc->fname_s[0]) {
+        _snprintf(full, sizeof(full), "%s", g_doc->fname_s);
+    } else if (is_save && g_doc->fname_s[0]) {
+        _snprintf(full, sizeof(full), "%s", g_doc->fname_s);
     }
 
-    /* Start the dialog in fpath_s if it looks valid, otherwise load last saved dir */
+    /* Start the dialog in g_doc->fpath_s if it looks valid, otherwise load last saved dir */
     char initdir[MAX_PATH] = "";
-    if (fpath_s[0]) {
-        _snprintf(initdir, sizeof(initdir), "%s", fpath_s);
+    if (g_doc->fpath_s[0]) {
+        _snprintf(initdir, sizeof(initdir), "%s", g_doc->fpath_s);
     } else {
         load_last_directory(initdir, sizeof(initdir));
     }
@@ -250,25 +240,25 @@ void shim_filereq_impl(void)
 
     upcase(base);
 
-    /* Write fpath_s (64 bytes, zero-padded), fname_s + fnametmp_s (13 bytes). */
+    /* Write g_doc->fpath_s (64 bytes, zero-padded), g_doc->fname_s + g_doc->fnametmp_s (13 bytes). */
     {
         size_t n = strlen(dir);
         if (n > 63) n = 63;
-        memset(fpath_s, 0, 64);
-        memcpy(fpath_s, dir, n);
+        memset(g_doc->fpath_s, 0, 64);
+        memcpy(g_doc->fpath_s, dir, n);
     }
     {
         size_t n = strlen(base);
-        memset(fname_s,    0, 13);
-        memset(fnametmp_s, 0, 13);
-        memcpy(fname_s,    base, n);
-        memcpy(fnametmp_s, base, n);
+        memset(g_doc->fname_s,    0, 13);
+        memset(g_doc->fnametmp_s, 0, 13);
+        memcpy(g_doc->fname_s,    base, n);
+        memcpy(g_doc->fnametmp_s, base, n);
     }
 
     /* Save the directory for next time */
     save_last_directory(dir);
 
-    /* Chdir into the selected folder so I21OPENR ("fname_s") finds it. */
+    /* Chdir into the selected folder so I21OPENR ("g_doc->fname_s") finds it. */
     _chdir(dir);
 
     shim_carry = 0;   /* OK */

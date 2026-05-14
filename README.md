@@ -22,11 +22,13 @@ Imgtool is a sprite-sheet editor for Midway's IMG format. Open a file, browse hu
 ### Palettes
 - **256-color palettes** with 15-bit RGB editing
 - **HSL sliders** — hue / saturation / lightness with live preview, scoped to selected swatches or whole palette
+- **Locate-on-canvas highlight** — multi-select swatches (Ctrl/Shift-click) and every pixel that isn't one of the selected colors dims on the canvas, so you can see where a color lives at a glance
 - **Cross-file palette clipboard** — copy a palette from one IMG, paste it after opening another
 - **Tools** — merge marked, delete unused colors, histogram, duplicate, rename, palette match for PNG import
 
 ### Animation
-- **Animation points** — primary (X/Y) and secondary (X/Y/Z) anchors per sprite, draggable on the canvas
+- **Animation points** — primary (X/Y) and secondary (X/Y/Z) anchors per sprite, rendered as DOS-style crosshairs, draggable on the canvas
+- **Onion-skin registration** — when onion mode is on, the previous frame's anipoint shows as a dim gray crosshair underneath the active one, matching the original DOS tool
 - **Hitbox editor** — drag-to-resize collision boxes with overlay rendering
 - **Timeline strip** — Play/Stop, scrubbable thumbnails, drag-to-reorder, FPS slider, ping-pong playback, onion-skin ghosting
 - **World View** — fixed playfield canvas (default 400×254) with sprite anchored at its anipoint, for aligning body parts across frames
@@ -39,6 +41,7 @@ Imgtool is a sprite-sheet editor for Midway's IMG format. Open a file, browse hu
 - **LOD parser** — read `.lod` manifests, resolve via `IMGDIR` or override (`/O`)
 
 ### File dialog
+- **Drag and drop** `.img` / `.png` / `.tga` / `.lbm` files onto the window to open or import
 - **Per-category last-dir** memory (IMG / PNG / TGA / LBM each remember their own folder)
 - **Preview thumbnails** for PNG and TGA highlighted files
 - **Sort** by name / date / size, asc or desc
@@ -104,6 +107,7 @@ The build copies `SDL2.dll` (Windows) and the Material Symbols icon font next to
 | `Ctrl+A` / `Ctrl+D` / `Ctrl+Shift+I` | Select All / Deselect / Invert |
 | `Ctrl+J` / `Ctrl+E` / `Ctrl+T` | Duplicate / Merge Down / Free Transform |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
+| `R` / `W` / `L` / `I` | Marquee / Magic Wand / Lasso / Eyedropper |
 | `Alt+L` / `Alt+S` / `Ctrl+L` / `Ctrl+B` | Load LBM / Save LBM / Load TGA / Build TGA from marked |
 | `Space` / `M` / `m` | Mark / Unmark / Mark All / Clear All Marks |
 | `Up` / `Down` / `PgUp` / `PgDn` | Navigate image list (or palette list if last clicked) |

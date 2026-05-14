@@ -148,34 +148,13 @@ struct PALETTE_disk {
 
 #define NUMDEFPAL 3
 
-/* Globals defined in platform/globals.c */
+/* Document state — fields live on Document (see document.h) and are
+   reached through g_doc->X. The names below are the new accessor pattern;
+   the rest of the codebase already uses them. */
+#include "document.h"
+
 extern "C" {
-extern void          *img_p;
-extern unsigned int   imgcnt;
-extern int            ilselected;
-extern void          *pal_p;
-extern unsigned int   palcnt;
-extern int            plselected;
-extern void          *img2_p;
-extern unsigned int   img2cnt;
-extern int            il2selected;
-extern unsigned int   il1stprt;
-extern unsigned int   il21stprt;
-extern unsigned int   seqcnt;
-extern unsigned int   scrcnt;
-extern unsigned int   damcnt;
-extern unsigned int   fileversion;
-extern void          *scrseqmem_p;
-extern unsigned int   scrseqbytes;
-extern unsigned char  file_bufscr[4];
-extern unsigned short file_spare1;
-extern unsigned short file_spare2;
-extern unsigned short file_spare3;
-extern int            ilpalloaded;
-extern char           fpath_s[64];
-extern char           fname_s[13];
-extern char           fnametmp_s[13];
-extern char           exe_dir[];
+extern char exe_dir[];
 }
 
 /* Allocator wrappers — switch from ASM pool to C heap. */
@@ -183,10 +162,10 @@ static inline IMG *AllocImg(void)
 {
     IMG *img = (IMG *)calloc(1, sizeof(IMG));
     if (!img) return NULL;
-    IMG **pp = (IMG **)&img_p;
+    IMG **pp = (IMG **)&g_doc->img_p;
     while (*pp) pp = (IMG **)&(*pp)->nxt_p;
     *pp = img;
-    imgcnt++;
+    g_doc->imgcnt++;
     return img;
 }
 
@@ -194,10 +173,10 @@ static inline PAL *AllocPal(void)
 {
     PAL *pal = (PAL *)calloc(1, sizeof(PAL));
     if (!pal) return NULL;
-    PAL **pp = (PAL **)&pal_p;
+    PAL **pp = (PAL **)&g_doc->pal_p;
     while (*pp) pp = (PAL **)&(*pp)->nxt_p;
     *pp = pal;
-    palcnt++;
+    g_doc->palcnt++;
     return pal;
 }
 
@@ -224,7 +203,7 @@ static inline void *PoolAlloc(unsigned int n) { return calloc(1, n); }
 static inline IMG *get_img(int idx)
 {
     if (idx < 0) return NULL;
-    IMG *img = (IMG *)img_p;
+    IMG *img = (IMG *)g_doc->img_p;
     for (int i = 0; i < idx && img; i++) img = (IMG *)img->nxt_p;
     return img;
 }
@@ -232,7 +211,7 @@ static inline IMG *get_img(int idx)
 static inline PAL *get_pal(int idx)
 {
     if (idx < 0) return NULL;
-    PAL *pal = (PAL *)pal_p;
+    PAL *pal = (PAL *)g_doc->pal_p;
     for (int i = 0; i < idx && pal; i++) pal = (PAL *)pal->nxt_p;
     return pal;
 }
@@ -240,14 +219,14 @@ static inline PAL *get_pal(int idx)
 static inline int count_imgs(void)
 {
     int n = 0;
-    for (IMG *img = (IMG *)img_p; img; img = (IMG *)img->nxt_p) n++;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) n++;
     return n;
 }
 
 static inline int count_pals(void)
 {
     int n = 0;
-    for (PAL *pal = (PAL *)pal_p; pal; pal = (PAL *)pal->nxt_p) n++;
+    for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p) n++;
     return n;
 }
 

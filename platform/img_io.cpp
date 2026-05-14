@@ -91,18 +91,18 @@ struct AFACE {
  *   [0 .. 28)               LIB_HDR
  *   [28 .. hdr.oset)        Pixel data + palette data, packed in arbitrary order.
  *                           Reachable only via IMAGE.oset / PALETTE.oset fields.
- *   [hdr.oset ..)           IMAGE_disk records (imgcnt of them)
- *   [.. ..)                 PALETTE_disk records (palcnt - NUMDEFPAL of them)
- *   [.. ..)                 SEQSCR/ENTRY blob (seqcnt sequences + scrcnt scripts)
+ *   [hdr.oset ..)           IMAGE_disk records (g_doc->imgcnt of them)
+ *   [.. ..)                 PALETTE_disk records (g_doc->palcnt - NUMDEFPAL of them)
+ *   [.. ..)                 SEQSCR/ENTRY blob (g_doc->seqcnt sequences + g_doc->scrcnt scripts)
  *   [.. EOF)                PTTBL records (40 bytes each, indexed by IMAGE.pttblnum)
  */
 static void build_full_path(char *dst, int dstsz)
 {
-    size_t plen = strlen(fpath_s);
-    if (plen > 0 && fpath_s[plen - 1] != '\\' && fpath_s[plen - 1] != '/')
-        _snprintf(dst, dstsz, "%s\\%s", fpath_s, fname_s);
+    size_t plen = strlen(g_doc->fpath_s);
+    if (plen > 0 && g_doc->fpath_s[plen - 1] != '\\' && g_doc->fpath_s[plen - 1] != '/')
+        _snprintf(dst, dstsz, "%s\\%s", g_doc->fpath_s, g_doc->fname_s);
     else
-        _snprintf(dst, dstsz, "%s%s", fpath_s, fname_s);
+        _snprintf(dst, dstsz, "%s%s", g_doc->fpath_s, g_doc->fname_s);
 }
 
 void LoadImgFile(void)
@@ -117,28 +117,28 @@ void LoadImgFile(void)
     if (fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) { fclose(f); return; }
 
     if (hdr.temp != 0xABCD || hdr.version < 0x500) { fclose(f); return; }
-    fileversion = hdr.version;
+    g_doc->fileversion = hdr.version;
 
     if (hdr.imgcnt == 0 || hdr.imgcnt > 2000) { fclose(f); return; }
 
-    verbose_log("  version=0x%04X  imgcnt=%u  palcnt=%u  seqcnt=%d  scrcnt=%d",
+    verbose_log("  version=0x%04X  g_doc->imgcnt=%u  g_doc->palcnt=%u  g_doc->seqcnt=%d  g_doc->scrcnt=%d",
         hdr.version, hdr.imgcnt, hdr.palcnt,
         (signed short)hdr.seqcnt, (signed short)hdr.scrcnt);
 
     /* Drop any prior seq/scr blob — we rebuild it from this file's contents. */
-    if (scrseqmem_p) { free(scrseqmem_p); scrseqmem_p = NULL; }
-    scrseqbytes = 0;
+    if (g_doc->scrseqmem_p) { free(g_doc->scrseqmem_p); g_doc->scrseqmem_p = NULL; }
+    g_doc->scrseqbytes = 0;
 
     /* Capture LIB_HDR fields that have to round-trip verbatim. The original
      * DOS imgtool clobbered these on save (bufscr=-1, spare*=0), but real
      * game-asset files have meaningful values that LOAD2 consumes. */
-    memcpy(file_bufscr, hdr.bufscr, 4);
-    file_spare1 = hdr.spare1;
-    file_spare2 = hdr.spare2;
-    file_spare3 = hdr.spare3;
+    memcpy(g_doc->file_bufscr, hdr.bufscr, 4);
+    g_doc->file_spare1 = hdr.spare1;
+    g_doc->file_spare2 = hdr.spare2;
+    g_doc->file_spare3 = hdr.spare3;
 
-    ilpalloaded = -1;
-    damcnt = 0;
+    g_doc->ilpalloaded = -1;
+    g_doc->damcnt = 0;
 
     /* Compute offset to the seq/scr region: it lives just past the
      * IMAGE_disk and PALETTE_disk record arrays. */
@@ -185,26 +185,26 @@ void LoadImgFile(void)
             pos += (long)rec_bytes;
         }
 
-        scrseqbytes = total_bytes;
-        if (scrseqbytes > 0) {
-            scrseqmem_p = malloc(scrseqbytes);
-            if (scrseqmem_p) {
+        g_doc->scrseqbytes = total_bytes;
+        if (g_doc->scrseqbytes > 0) {
+            g_doc->scrseqmem_p = malloc(g_doc->scrseqbytes);
+            if (g_doc->scrseqmem_p) {
                 fseek(f, seqscr_blob_start, SEEK_SET);
-                if (fread(scrseqmem_p, 1, scrseqbytes, f) != scrseqbytes) {
-                    free(scrseqmem_p); scrseqmem_p = NULL; scrseqbytes = 0;
+                if (fread(g_doc->scrseqmem_p, 1, g_doc->scrseqbytes, f) != g_doc->scrseqbytes) {
+                    free(g_doc->scrseqmem_p); g_doc->scrseqmem_p = NULL; g_doc->scrseqbytes = 0;
                 }
             } else {
-                scrseqbytes = 0;
+                g_doc->scrseqbytes = 0;
             }
         }
     }
     /* Point tables follow the seq/scr blob. */
-    long ptoset = seqscr_blob_start + (long)scrseqbytes;
+    long ptoset = seqscr_blob_start + (long)g_doc->scrseqbytes;
 
-    seqcnt = (unsigned int)(signed short)hdr.seqcnt;
-    scrcnt = (unsigned int)(signed short)hdr.scrcnt;
+    g_doc->seqcnt = (unsigned int)(signed short)hdr.seqcnt;
+    g_doc->scrcnt = (unsigned int)(signed short)hdr.scrcnt;
 
-    int pal_base = (int)palcnt;
+    int pal_base = (int)g_doc->palcnt;
     unsigned int img_oset = hdr.oset;
 
     for (int i = 0; i < hdr.imgcnt; i++) {
@@ -246,7 +246,7 @@ void LoadImgFile(void)
         strncpy(img->n_s, idisk.n_s, 15);
         img->n_s[15] = '\0';
 
-        strncpy(img->src_filename, fname_s, 15);
+        strncpy(img->src_filename, g_doc->fname_s, 15);
         img->src_filename[15] = '\0';
 
         unsigned int stride = ((unsigned int)img->w + 3) & ~3;
@@ -334,7 +334,7 @@ void LoadImgFile(void)
 
     fclose(f);
 
-    if (imgcnt > 0) ilselected = 0;
+    if (g_doc->imgcnt > 0) g_doc->ilselected = 0;
 }
 
 /* ---- SaveImgFile: port of img_save (IMG file writer) ----
@@ -348,7 +348,7 @@ void LoadImgFile(void)
  *   4. Snap LIB_HDR.OSET = current file pointer (= start of records).
  *   5. Write all IMAGE_disk records (using IMG.temp for OSET fields).
  *   6. Write all PALETTE_disk records (using PAL.temp for OSET fields).
- *   7. Write the SEQSCR+ENTRY blob verbatim (scrseqmem_p, scrseqbytes).
+ *   7. Write the SEQSCR+ENTRY blob verbatim (g_doc->scrseqmem_p, g_doc->scrseqbytes).
  *   8. Write all per-image PTTBL records (40 bytes each) for any image
  *      that has one.
  *   9. Rewind, rewrite the finalized LIB_HDR.
@@ -370,30 +370,30 @@ void SaveImgFile(void)
     FILE *f = fopen(full, "wb");
     if (!f) return;
 
-    int num_imgs = (int)imgcnt;
-    int num_pals = (int)palcnt;
+    int num_imgs = (int)g_doc->imgcnt;
+    int num_pals = (int)g_doc->palcnt;
 
     /* ---- 1. Header placeholder ---- */
     LIB_HDR hdr = {};
     hdr.imgcnt  = (unsigned short)num_imgs;
     hdr.palcnt  = (unsigned short)(num_pals + NUMDEFPAL);
-    hdr.version = (fileversion != 0) ? (unsigned short)fileversion : 0x0634;
+    hdr.version = (g_doc->fileversion != 0) ? (unsigned short)g_doc->fileversion : 0x0634;
     hdr.temp    = 0xABCD;
     hdr.oset    = 0;  /* finalized in step 4 */
-    hdr.seqcnt  = (unsigned short)seqcnt;
-    hdr.scrcnt  = (unsigned short)scrcnt;
+    hdr.seqcnt  = (unsigned short)g_doc->seqcnt;
+    hdr.scrcnt  = (unsigned short)g_doc->scrcnt;
     hdr.damcnt  = 0;  /* original asm always zeros this on save */
     /* Preserve bufscr + spare1/2/3 from load (real game files use them;
      * LOAD2 consumes bufscr to compute IRW layout). Default is all 0xFF /
      * zero (matches a freshly-created file). */
-    memcpy(hdr.bufscr, file_bufscr, 4);
-    hdr.spare1 = file_spare1;
-    hdr.spare2 = file_spare2;
-    hdr.spare3 = file_spare3;
+    memcpy(hdr.bufscr, g_doc->file_bufscr, 4);
+    hdr.spare1 = g_doc->file_spare1;
+    hdr.spare2 = g_doc->file_spare2;
+    hdr.spare3 = g_doc->file_spare3;
     fwrite(&hdr, 1, sizeof(hdr), f);
 
     /* ---- 2. Palette pixel data ---- */
-    PAL *pal = (PAL *)pal_p;
+    PAL *pal = (PAL *)g_doc->pal_p;
     for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
         unsigned int data_oset = (unsigned int)ftell(f);
         pal->temp = (void *)(uintptr_t)data_oset;
@@ -407,7 +407,7 @@ void SaveImgFile(void)
     }
 
     /* ---- 3. Image pixel data ---- */
-    IMG *img = (IMG *)img_p;
+    IMG *img = (IMG *)g_doc->img_p;
     for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
         unsigned int data_oset = (unsigned int)ftell(f);
         img->temp = (void *)(uintptr_t)data_oset;
@@ -462,7 +462,7 @@ void SaveImgFile(void)
 
     /* ---- 5. IMAGE_disk records ---- */
     int pt_index = 0;
-    img = (IMG *)img_p;
+    img = (IMG *)g_doc->img_p;
     for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
         IMAGE_disk idisk = {};
 
@@ -510,7 +510,7 @@ void SaveImgFile(void)
     }
 
     /* ---- 6. PALETTE_disk records ---- */
-    pal = (PAL *)pal_p;
+    pal = (PAL *)g_doc->pal_p;
     for (int i = 0; i < num_pals && pal; i++, pal = (PAL *)pal->nxt_p) {
         PALETTE_disk pdisk = {};
 
@@ -539,12 +539,12 @@ void SaveImgFile(void)
     }
 
     /* ---- 7. SEQSCR+ENTRY blob ---- */
-    if (scrseqmem_p && scrseqbytes > 0) {
-        fwrite(scrseqmem_p, 1, scrseqbytes, f);
+    if (g_doc->scrseqmem_p && g_doc->scrseqbytes > 0) {
+        fwrite(g_doc->scrseqmem_p, 1, g_doc->scrseqbytes, f);
     }
 
     /* ---- 8. Per-image PTTBL records (40 bytes each) ---- */
-    img = (IMG *)img_p;
+    img = (IMG *)g_doc->img_p;
     for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
         if (img->pttbl_p) {
             fwrite(img->pttbl_p, 1, 40, f);
@@ -556,17 +556,17 @@ void SaveImgFile(void)
     fwrite(&hdr, 1, sizeof(hdr), f);
 
     fclose(f);
-    fileversion = hdr.version;
+    g_doc->fileversion = hdr.version;
 }
 
 /* ---- Restore Marked Images from Source ---- */
 int RestoreMarkedFromSource(void)
 {
-    IMG *src = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *src = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!src || !src->data_p || src->w == 0 || src->h == 0) return 0;
 
     bool any_target = false;
-    for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
+    for (IMG *t = (IMG *)g_doc->img_p; t; t = (IMG *)t->nxt_p) {
         if ((t->flags & 1) && t != src) { any_target = true; break; }
     }
     if (!any_target) return 0;
@@ -577,7 +577,7 @@ int RestoreMarkedFromSource(void)
     int src_stride = (src->w + 3) & ~3;
     int total_written = 0;
 
-    for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
+    for (IMG *t = (IMG *)g_doc->img_p; t; t = (IMG *)t->nxt_p) {
         if (!(t->flags & 1) || t == src || !t->data_p || t->w == 0 || t->h == 0) continue;
         if (t->palnum != src->palnum) continue;
 
@@ -606,8 +606,8 @@ int RestoreMarkedFromSource(void)
     if (total_written > 0) {
         g_img_tex_idx = -2;
         int idx = 0;
-        for (IMG *t2 = (IMG *)img_p; t2; t2 = (IMG *)t2->nxt_p, idx++) {
-            if ((t2->flags & 1) && t2 != src) { ilselected = idx; break; }
+        for (IMG *t2 = (IMG *)g_doc->img_p; t2; t2 = (IMG *)t2->nxt_p, idx++) {
+            if ((t2->flags & 1) && t2 != src) { g_doc->ilselected = idx; break; }
         }
     }
     return total_written;
@@ -619,11 +619,11 @@ int RestoreMarkedFromSource(void)
    from a full unchopped source when the strips have drifted. */
 int RestoreMarkedFromSourceForce(void)
 {
-    IMG *src = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *src = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!src || !src->data_p || src->w == 0 || src->h == 0) return 0;
 
     bool any_target = false;
-    for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
+    for (IMG *t = (IMG *)g_doc->img_p; t; t = (IMG *)t->nxt_p) {
         if ((t->flags & 1) && t != src) { any_target = true; break; }
     }
     if (!any_target) return 0;
@@ -635,7 +635,7 @@ int RestoreMarkedFromSourceForce(void)
     int total_written = 0;
     int imgs_processed = 0;
 
-    for (IMG *t = (IMG *)img_p; t; t = (IMG *)t->nxt_p) {
+    for (IMG *t = (IMG *)g_doc->img_p; t; t = (IMG *)t->nxt_p) {
         if (!(t->flags & 1) || t == src || !t->data_p || t->w == 0 || t->h == 0) continue;
         imgs_processed++;
 
@@ -665,8 +665,8 @@ int RestoreMarkedFromSourceForce(void)
         g_img_tex_idx = -2;
         /* Jump to first marked image so the user sees the result */
         int idx = 0;
-        for (IMG *t2 = (IMG *)img_p; t2; t2 = (IMG *)t2->nxt_p, idx++) {
-            if ((t2->flags & 1) && t2 != src) { ilselected = idx; break; }
+        for (IMG *t2 = (IMG *)g_doc->img_p; t2; t2 = (IMG *)t2->nxt_p, idx++) {
+            if ((t2->flags & 1) && t2 != src) { g_doc->ilselected = idx; break; }
         }
     }
     return total_written;
@@ -708,7 +708,7 @@ void ComputeBulkRestoreCoverage(std::vector<BulkRestoreMatch>& matches)
    Overwrites child pixels with parent pixels (respecting anipoints). */
 int ExecuteBulkRestorePairs(const std::vector<BulkRestoreMatch>& matches)
 {
-    if (!img_p || matches.empty()) return 0;
+    if (!g_doc->img_p || matches.empty()) return 0;
 
     undo_push();
 
@@ -777,7 +777,7 @@ int ExecuteBulkRestorePairs(const std::vector<BulkRestoreMatch>& matches)
  */
 int ExecuteBulkRestoreDiff(const std::vector<BulkRestoreMatch>& matches)
 {
-    if (!img_p || matches.empty()) return 0;
+    if (!g_doc->img_p || matches.empty()) return 0;
 
     undo_push();
 
@@ -860,7 +860,7 @@ int ExecuteBulkRestoreDiff(const std::vector<BulkRestoreMatch>& matches)
  */
 int ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches)
 {
-    if (!img_p || matches.empty()) return 0;
+    if (!g_doc->img_p || matches.empty()) return 0;
 
     undo_push();
 
@@ -940,7 +940,7 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
     int count = 0;
 
     std::vector<IMG*> targets;
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (p->flags & 1) targets.push_back(p);
     }
 
@@ -1060,7 +1060,7 @@ int DefringeMarkedImages(int radius)
     int total_edited = 0;
 
     std::vector<IMG*> targets;
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (p->flags & 1) targets.push_back(p);
     }
     if (targets.empty()) return 0;
@@ -1111,7 +1111,7 @@ int CropMarkedImagesToContent(void)
 {
     int count = 0;
     std::vector<IMG*> targets;
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (p->flags & 1) targets.push_back(p);
     }
     if (targets.empty()) return 0;
@@ -1169,10 +1169,10 @@ int CropMarkedImagesToContent(void)
  * body part across frames.) */
 int AlignAnipointsToMarked(int reference_idx)
 {
-    if (reference_idx < 0 || (unsigned int)reference_idx >= imgcnt) return 0;
+    if (reference_idx < 0 || (unsigned int)reference_idx >= g_doc->imgcnt) return 0;
     IMG *ref = NULL;
     {
-        IMG *p = (IMG *)img_p;
+        IMG *p = (IMG *)g_doc->img_p;
         for (int i = 0; p && i < reference_idx; i++) p = (IMG *)p->nxt_p;
         ref = p;
     }
@@ -1180,7 +1180,7 @@ int AlignAnipointsToMarked(int reference_idx)
 
     undo_push();
     int count = 0;
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (!(p->flags & 1)) continue;
         if (p == ref) continue;
         p->anix = ref->anix;
@@ -1198,7 +1198,7 @@ void WriteAnilstFromMarked(const char* filepath)
 
     fprintf(f, "\t.asg\t1,N\n");
 
-    IMG* p = (IMG*)img_p;
+    IMG* p = (IMG*)g_doc->img_p;
     int aninum = 0;
     while (p) {
         if (p->flags & 1) {
@@ -1234,7 +1234,7 @@ void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk
 
     fprintf(f, "\t.DATA\n");
 
-    IMG* p = (IMG*)img_p;
+    IMG* p = (IMG*)g_doc->img_p;
     int prev_palnum = -1;
     unsigned int current_bit_address = base_address;
 
@@ -1351,7 +1351,7 @@ void WriteIrwFromMarked(const char *filepath, unsigned int base_address,
 
     /* Gather marked images */
     std::vector<IMG*> marked;
-    IMG *p = (IMG*)img_p;
+    IMG *p = (IMG*)g_doc->img_p;
     while (p) {
         if ((p->flags & 1) && p->w > 0 && p->h > 0 && p->data_p)
             marked.push_back(p);
@@ -1472,7 +1472,7 @@ void WriteIrwFromMarked(const char *filepath, unsigned int base_address,
 void BuildTgaFromMarked(const char* filepath)
 {
     std::vector<IMG*> marked_imgs;
-    IMG* p = (IMG*)img_p;
+    IMG* p = (IMG*)g_doc->img_p;
     int pal_num = -1;
     while (p) {
         if ((p->flags & 1) && p->w <= 256 && p->h > 0 && p->data_p) {
@@ -1558,7 +1558,7 @@ void BuildTgaFromMarked(const char* filepath)
 /* ---- Save TGA ---- */
 void SaveTga(const char *filepath)
 {
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
 
     PAL *pal = get_pal(0);
@@ -1591,7 +1591,7 @@ void SaveTga(const char *filepath)
 /* ---- Save LBM ---- */
 void SaveLbm(const char *filepath)
 {
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
 
     PAL *pal = get_pal(img->palnum);
@@ -1689,7 +1689,7 @@ void LoadTga(const char *filepath)
     img->data_p = (unsigned char *)PoolAlloc(pix_sz);
     if (!img->data_p) goto err;
 
-    img->palnum = (unsigned short)palcnt;
+    img->palnum = (unsigned short)g_doc->palcnt;
     img->flags  = 0;
     img->anix   = 0; img->aniy  = 0;
     img->anix2  = 0; img->aniy2 = 0; img->aniz2 = 0;
@@ -1697,7 +1697,7 @@ void LoadTga(const char *filepath)
     img->opals  = (unsigned short)-1;
 
     {
-        std::string name = fnametmp_s;
+        std::string name = g_doc->fnametmp_s;
         size_t dot = name.find_last_of('.');
         if (dot != std::string::npos) name = name.substr(0, dot);
         strncpy(img->n_s, name.c_str(), 15);
@@ -1747,7 +1747,7 @@ void LoadTga(const char *filepath)
     pal->data_p  = pal_buf;
     pal->pad     = 0;
     {
-        std::string name = fnametmp_s;
+        std::string name = g_doc->fnametmp_s;
         size_t dot = name.find_last_of('.');
         if (dot != std::string::npos) name = name.substr(0, dot);
         name += "P";
@@ -1771,7 +1771,7 @@ void LoadTga(const char *filepath)
 
     fclose(f);
 
-    if (imgcnt > 0) ilselected = (int)imgcnt - 1;
+    if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
     return;
 
 err:
@@ -1857,7 +1857,7 @@ void LoadLbm(const char *filepath)
                 unsigned short w15 = (unsigned short)((r5<<10)|(g5<<5)|b5);
                 pal_buf[i*2]=(unsigned char)(w15&0xFF); pal_buf[i*2+1]=(unsigned char)(w15>>8);
             }
-            { std::string n=fnametmp_s; size_t d=n.find_last_of('.'); if(d!=std::string::npos)n=n.substr(0,d); n+="P";
+            { std::string n=g_doc->fnametmp_s; size_t d=n.find_last_of('.'); if(d!=std::string::npos)n=n.substr(0,d); n+="P";
               strncpy(loaded_pal->n_s,n.c_str(),9); loaded_pal->n_s[9]='\0'; }
             have_bmhd |= 2;
             continue;
@@ -1875,10 +1875,10 @@ void LoadLbm(const char *filepath)
             loaded_img->data_p=PoolAlloc((unsigned)stride*bm_h);
             if (!loaded_img->data_p) { try_close(); return; }
 
-            loaded_img->palnum=(unsigned short)(palcnt-1); loaded_img->flags=0;
+            loaded_img->palnum=(unsigned short)(g_doc->palcnt-1); loaded_img->flags=0;
             loaded_img->anix=0; loaded_img->aniy=0; loaded_img->anix2=0; loaded_img->aniy2=0; loaded_img->aniz2=0;
             loaded_img->pttbl_p=NULL; loaded_img->opals=(unsigned short)-1;
-            { std::string n=fnametmp_s; size_t d=n.find_last_of('.'); if(d!=std::string::npos)n=n.substr(0,d);
+            { std::string n=g_doc->fnametmp_s; size_t d=n.find_last_of('.'); if(d!=std::string::npos)n=n.substr(0,d);
               strncpy(loaded_img->n_s,n.c_str(),15); loaded_img->n_s[15]='\0'; }
 
             unsigned short even_w=(unsigned short)((bm_w+1)&~1);
@@ -1915,8 +1915,8 @@ void LoadLbm(const char *filepath)
     }
 
     try_close();
-    if (loaded_img && imgcnt>0) ilselected=(int)imgcnt-1;
-    verbose_log("  -> loaded, total images=%u palettes=%u", imgcnt, palcnt);
+    if (loaded_img && g_doc->imgcnt>0) g_doc->ilselected=(int)g_doc->imgcnt-1;
+    verbose_log("  -> loaded, total images=%u palettes=%u", g_doc->imgcnt, g_doc->palcnt);
 }
 
 /* ---- PNG Import ---- */
@@ -2112,7 +2112,7 @@ void ImportPng(const char *path)
     IMG *img = AllocImg();
     if (!img) { stbi_image_free(data); return; }
     img->w = (unsigned short)w; img->h = (unsigned short)h;
-    img->palnum = (unsigned short)(palcnt - 1); img->flags = 0;
+    img->palnum = (unsigned short)(g_doc->palcnt - 1); img->flags = 0;
     img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
     img->pttbl_p = NULL; img->opals = (unsigned short)-1;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
@@ -2159,7 +2159,7 @@ void ImportPng(const char *path)
         }
     }
     stbi_image_free(data);
-    if (imgcnt > 0) ilselected = (int)imgcnt - 1;
+    if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
     g_img_tex_idx = -2;
     verbose_log("  -> %dx%d px, %d palette colors from %d unique source colors",
                 w, h, pal_colors, (int)buckets.size());
@@ -2168,7 +2168,7 @@ void ImportPng(const char *path)
 void ImportPngMatch(const char *path)
 {
     verbose_log("ImportPngMatch: %s", path);
-    IMG *active_img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *active_img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!active_img) { verbose_log("  -> no active image to copy palette from"); return; }
     PAL *pal = get_pal(active_img->palnum);
     if (!pal || !pal->data_p) return;
@@ -2224,7 +2224,7 @@ void ImportPngMatch(const char *path)
         }
     }
     stbi_image_free(data);
-    if (imgcnt > 0) ilselected = (int)imgcnt - 1;
+    if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
     g_img_tex_idx = -2;
     verbose_log("  -> %dx%d px, matched to palette %u", w, h, pal->numc);
 }
@@ -2234,7 +2234,7 @@ void ImportPngMatch(const char *path)
 void ExportPng(const char *path)
 {
     verbose_log("ExportPng: %s", path);
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
     PAL *pal = get_pal(0);
     if (!pal || !pal->data_p) pal = get_pal(img->palnum);

@@ -139,7 +139,7 @@ L2Report VerifyLoad2Packing(int ppp, bool limit_scales_to_3)
      * palette has more colors than 1<<ppp, LOAD2 falls back to
      * palette bitspix — that's the silent jump we want to catch. */
     int img_idx = 0;
-    for (IMG *img = (IMG *)img_p; img; img = (IMG *)img->nxt_p, img_idx++) {
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, img_idx++) {
         r.imgs_checked++;
 
         /* /3 limit scales check: 0x300 is the M_COPIES bitfield in flags.

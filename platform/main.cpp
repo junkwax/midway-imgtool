@@ -18,6 +18,7 @@
 #include <SDL.h>
 #include "shim_file.h"
 #include "imgui_overlay.h"
+#include "document.h"
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -66,6 +67,9 @@ int main(int argc, char *argv[])
 {
     capture_exe_dir(argc, argv);
 
+    /* ---- Init document storage (must precede any IMG access) ---- */
+    document_init();
+
     /* ---- Init SDL2 ---- */
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -104,6 +108,10 @@ int main(int argc, char *argv[])
      *
      * We unconditionally re-render after the wait — ImGui needs at least
      * one frame to settle after every state change. */
+    /* Subscribe to OS file-drop events. SDL emits SDL_DROPFILE per file
+       dragged onto the window; the string is heap-allocated and we own it. */
+    SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
+
     bool running = true;
     while (running) {
         SDL_Event e;
@@ -112,6 +120,10 @@ int main(int argc, char *argv[])
                 imgui_overlay_process_event(&e);
                 if (e.type == SDL_QUIT)
                     imgui_overlay_request_quit();
+                else if (e.type == SDL_DROPFILE) {
+                    imgui_overlay_open_path(e.drop.file);
+                    SDL_free(e.drop.file);
+                }
             } while (SDL_PollEvent(&e));
         }
 

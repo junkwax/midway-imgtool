@@ -33,5 +33,8 @@ Thumbs.db
 
 # AI assistants local config
 .claude/
-AGENTS.md
-ADOBE_FEATURES*.md
+
+# Ignore all markdown notes by default; whitelist the ones we publish.
+*.md
+!README.md
+!CHANGELOG.md

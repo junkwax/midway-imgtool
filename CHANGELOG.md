@@ -8,6 +8,74 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v2.6.0] — Drag-drop, palette highlight, Eyedropper, multi-doc plumbing
+
+Workflow polish round plus the structural refactor that unlocks multiple
+open IMGs in a future release. No file format changes; everything saves
+and loads bit-identical to v2.5.0.
+
+### Drag and drop file open
+- **Drop `.img` onto the window** to open it (routes through the same
+  unsaved-changes guard as File → Open). Drop `.png`, `.tga`, or `.lbm`
+  to import into the active document.
+- **Empty workspace bootstrap** — dropping a PNG/TGA/LBM with no IMG
+  open silently creates a fresh IMG first, giving the import a palette
+  context to land in. No more "open something first" friction.
+
+### Palette → canvas highlight
+- Multi-selecting palette swatches (Ctrl/Shift-click in the swatch grid)
+  now **dims every pixel on the canvas that isn't one of the selected
+  colors**, leaving the matching pixels at full brightness. Answers
+  "where does this color live in the sprite?" at a glance.
+- Single-color Alt-click isolation still works the same way; the new
+  multi-select path is the same render code, generalized.
+- Dim wash changed from pure black to muted indigo so it stays visible
+  against dark fighter sprites where the old wash blended in.
+
+### Eyedropper tool
+- New explicit **Eyedropper tool** on the toolbar with the `I` shortcut
+  (Photoshop convention). Left-click in this mode picks the underlying
+  palette color and highlights it in the swatch grid.
+- Right-click eyedropper still works in any tool mode (unchanged).
+
+### Anipoint crosshair
+- Anipoints are now drawn as **DOS-style + crosshairs** instead of the
+  v2.5 solid circles. Primary anipoint is white, secondary is cyan,
+  hover state brightens to yellow. Matches the registration-mark idiom
+  of the original 1992 tool.
+- When onion-skin is on, the **previous frame's anipoint** shows
+  underneath as a dim gray crosshair — the same registration reference
+  the DOS tool drew.
+- Bug fix: anipoint drag no longer paints pencil strokes underneath
+  the moving cursor.
+- Bug fix: phantom diagonal line drawn from anipoint 1 to off-screen
+  when the secondary anipoint sentinel was (-1, -1) — was casting the
+  signed -1 to unsigned 0xFFFF.
+
+### Toolbar polish
+- **Icon refresh** — Lasso, Magic Wand, Smart Eraser, Clone Stamp,
+  Smart Remap, Eyedropper, and Hitbox toggles now use Material Symbols
+  glyphs that actually match their tool (lasso loop, sparkle wand,
+  eraser block, control-point duplicate, palette, slanted dropper,
+  activity zone).
+- Icons vertically centered in their buttons (Material Symbols' empty
+  descender space was biasing them upward).
+
+### Internal: document refactor
+- Per-document state (`img_p`, `pal_p`, image/palette counts, selection
+  indices, file paths, sequence/script memory) is now a `Document`
+  struct in [platform/document.h](platform/document.h) reached through
+  a single `g_doc` pointer. ~550 callsites across 8 files renamed from
+  bare globals to `g_doc->X`.
+- Sets the stage for multi-tab editing — Phase 3 is just swapping
+  `g_doc` between entries in a tabs container.
+
+### Cleanup
+- Em-dashes and other non-ASCII glyphs in tooltips were rendering as
+  `?` in the default ImGui font; replaced with ASCII equivalents.
+- Removed obsolete `/alternatename` linker pragmas that aliased C-side
+  `_fpath_s` to long-gone ASM symbols.
+
 ## [v2.5.0] — Paste pipeline overhaul, Free Transform, file dialog
 
 Major round centered on the paste workflow plus a much-improved file

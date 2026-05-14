@@ -1,61 +1,44 @@
 /*************************************************************
  * platform/globals.c
  *
- * Data definitions originally in IT/itimg.asm BSS section.
- * Moved to C so the ASM files can be removed from the build.
+ * Data definitions that used to be loose globals (originally in
+ * IT/itimg.asm BSS) are now fields of `Document`. This file owns
+ * the single-document storage and the `g_doc` pointer that the rest
+ * of the codebase reads/writes through.
+ *
+ * When tabs land (Phase 3), the single `g_doc_storage` here is
+ * replaced with a std::deque<Document> in a .cpp file, and `g_doc`
+ * is re-pointed on tab switch. The rest of the code never has to
+ * change — every callsite already goes through g_doc->X.
  *************************************************************/
 #include "compat.h"
 #include <SDL.h>
+#include <string.h>
+#include "document.h"
 
-/* ---- Image list ---- */
-void         *img_p       = NULL;
-unsigned int  imgcnt      = 0;
-int           ilselected  = -1;
-unsigned int  imgdataw    = 0;
-unsigned int  il1stprt    = 0;
-int           ilpalloaded = -1;
+/* Single-document storage. Replaced by a tabs container in Phase 3.
+   Zero-initialized at file scope; document_init() resets sentinel fields
+   (ilselected = -1, file_bufscr = 0xFF, etc.) at startup. */
+static Document g_doc_storage;
 
-/* ---- Second image list (dual-list switching) ---- */
-void         *img2_p      = NULL;
-unsigned int  img2cnt     = 0;
-int           il2selected = -1;
-unsigned int  il21stprt   = 0;
+Document *g_doc = &g_doc_storage;
 
-/* ---- Palette list ---- */
-void         *pal_p       = NULL;
-unsigned int  palcnt      = 0;
-int           plselected  = -1;
+void document_init(void)
+{
+    /* g_doc already points at g_doc_storage; this is a hook for
+       Phase 3 when initialization becomes "push first tab". */
+    memset(&g_doc_storage, 0, sizeof(g_doc_storage));
+    g_doc_storage.file_bufscr[0] = 0xFF;
+    g_doc_storage.file_bufscr[1] = 0xFF;
+    g_doc_storage.file_bufscr[2] = 0xFF;
+    g_doc_storage.file_bufscr[3] = 0xFF;
+    g_doc_storage.ilselected = -1;
+    g_doc_storage.il2selected = -1;
+    g_doc_storage.plselected = -1;
+    g_doc_storage.ilpalloaded = -1;
+}
 
-/* ---- Counts ---- */
-unsigned int  seqcnt      = 0;
-unsigned int  scrcnt      = 0;
-unsigned int  damcnt      = 0;
-unsigned int  fileversion = 0;
-
-/* ---- Sequence/script memory ----
- * Raw byte blob of all SEQSCR records and their ENTRY arrays, captured
- * verbatim from the source file so save can write it back unchanged.
- * Lives in [oset + imgcnt*IMAGE_disk + (palcnt-NUMDEFPAL)*PALETTE_disk ..)
- * on disk — NOT at the start of the file. */
-void         *scrseqmem_p = NULL;
-unsigned int  scrseqbytes = 0;
-
-/* ---- LIB_HDR fields preserved verbatim from load ----
- * The original DOS imgtool clobbers bufscr to -1 and zeroes spare1/2/3 on
- * save. But real game-asset pipelines populate bufscr with script-buffer
- * indices that LOAD2 reads to compute IRW layout. Clobbering bufscr causes
- * LOAD2 to emit a slightly different IRW size, shifting the start of every
- * subsequent character's sprites in the bank — producing visible "Cage
- * sprites overflow into Baraka" artifacts. Preserve verbatim. */
-unsigned char file_bufscr[4]    = { 0xFF, 0xFF, 0xFF, 0xFF };
-unsigned short file_spare1      = 0;
-unsigned short file_spare2      = 0;
-unsigned short file_spare3      = 0;
-
-/* ---- File I/O paths (DOS-era 8.3 convention) ---- */
-char          fpath_s[64]    = {0};
-char          fname_s[13]    = {0};
-char          fnametmp_s[13] = {0};
-
-/* DOS DTA (Disk Transfer Area) — 43 bytes for findfile/findnext */
-unsigned char dta[43]        = {0};
+/* ---- App-wide (not per-document) ----
+ * DOS DTA (Disk Transfer Area) — 43 bytes for findfile/findnext.
+ * Process-wide scratch, not a document field. */
+unsigned char dta[43] = {0};

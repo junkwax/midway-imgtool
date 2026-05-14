@@ -30,30 +30,10 @@
 
 /* PPP setting from img_io.cpp — used to drive the verifier modal. */
 
-/* Globals defined in platform/globals.c */
+/* Document-state globals are reached through g_doc->X (see document.h),
+   pulled in via img_format.h below. App-wide externs live here. */
 extern "C" {
-extern void          *img_p;
-extern unsigned int   imgcnt;
-extern int            ilselected;
-extern void          *pal_p;
-extern unsigned int   palcnt;
-extern int            plselected;
-extern void          *img2_p;
-extern unsigned int   img2cnt;
-extern int            il2selected;
-extern unsigned int   il1stprt;
-extern unsigned int   il21stprt;
-extern unsigned int   seqcnt;
-extern unsigned int   scrcnt;
-extern unsigned int   damcnt;
-extern unsigned int   fileversion;
-extern void          *scrseqmem_p;
-extern unsigned int   scrseqbytes;
-extern int            ilpalloaded;
-extern char           fpath_s[64];
-extern char           fname_s[13];
-extern char           fnametmp_s[13];
-extern char           exe_dir[];
+extern char             exe_dir[];
 extern struct SDL_Color g_palette[256];
 }
 
@@ -109,11 +89,11 @@ static bool g_icon_font_loaded = false;
 #define ICON_IMAGE    "\xEE\x8F\xB4"     /* U+E3F4 image */
 #define ICON_VIS      "\xEE\xA3\xB4"     /* U+E8F4 visibility */
 #define ICON_SAVE     "\xEE\x85\xA1"     /* U+E161 save */
-#define ICON_MARK     "\xEE\xA2\x92"     /* U+E892 label */
+#define ICON_MARK     "\xEE\xA0\xB4"     /* U+E834 check_box — reads as 'this sprite is checked/marked' */
 #define ICON_MARK_ALL "\xEE\x85\xA2"     /* U+E162 select_all */
-#define ICON_CLEAR    "\xEE\x97\x8D"     /* U+E5CD close */
-#define ICON_POINTS   "\xEE\x95\x9F"     /* U+E55F place */
-#define ICON_HITBOX   "\xEE\x8F\x82"     /* U+E3C2 crop_free */
+#define ICON_CLEAR    "\xEE\xA0\xB5"     /* U+E835 check_box_outline_blank — paired visually with ICON_MARK */
+#define ICON_POINTS   "\xEE\x86\xB3"     /* U+E1B3 gps_fixed — concentric registration target */
+#define ICON_HITBOX   "\xEE\x87\xA6"     /* U+E1E6 activity_zone */
 #define ICON_MARQUEE  "\xEE\xBD\x92"     /* U+EF52 highlight_alt — dashed-rect marquee */
 #define ICON_UNDO     "\xEE\x85\xA6"     /* U+E166 undo */
 #define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
@@ -221,6 +201,13 @@ static std::string   g_pending_action_path; /* only used when action == OpenPath
 static bool g_pending_quit = false;
 static bool g_dirty = false;
 
+/* Anipoint drag state, hoisted to file scope so the pencil branch can
+   gate on it (the anipoint render block runs *after* the pencil block,
+   so widget_consumed_click is too late to suppress the first paint
+   frame of a drag). */
+static bool g_anipoint_drag1 = false;
+static bool g_anipoint_drag2 = false;
+
 /* Single dirty-marking entry point. Use this instead of `g_dirty = true` so
    any future side-effects (auto-backup, dirty-bit tracing, etc.) only need
    to be added in one place — and so it's obvious in a grep which writes are
@@ -275,7 +262,7 @@ struct GridSelection {
 static GridSelection g_grid_sel = {false, false, 0, 0, 0, 0, false, 0, 0, {}};
 
 /* Active tool state */
-enum class ActiveTool { None, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso };
+enum class ActiveTool { None, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper };
 static ActiveTool g_active_tool = ActiveTool::None;
 
 /* Clone Stamp state */
@@ -296,7 +283,7 @@ static int g_remap_tolerance = 0;       /* 0..16, palette-index distance */
 static int g_isolate_color = -1;
 
 /* Per-image thumbnail cache for the timeline strip. Keyed by image index; the
-   cached texture is invalidated whenever imgcnt or the source pixels change
+   cached texture is invalidated whenever g_doc->imgcnt or the source pixels change
    (we tag with a small generation counter bumped each frame by the texture
    rebuild path). Thumbnails fit in a 48-pixel square preserving aspect. */
 struct TimelineThumb {
@@ -311,8 +298,8 @@ static std::vector<TimelineThumb> g_thumb_cache;
    NULL on failure. */
 static TimelineThumb *EnsureThumb(int idx)
 {
-    if (idx < 0 || (unsigned int)idx >= imgcnt) return NULL;
-    if (g_thumb_cache.size() < imgcnt) g_thumb_cache.resize(imgcnt, {NULL,0,0,0,0,-1});
+    if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt) return NULL;
+    if (g_thumb_cache.size() < g_doc->imgcnt) g_thumb_cache.resize(g_doc->imgcnt, {NULL,0,0,0,0,-1});
     IMG *img = get_img(idx);
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return NULL;
     TimelineThumb &t = g_thumb_cache[idx];
@@ -397,7 +384,7 @@ void imgtool_toggle_timeline_play(void)
     g_is_playing = !g_is_playing;
     if (g_is_playing) {
         g_play_timer = 0.0f;
-        ilselected = g_timeline_frames[g_timeline_play_idx];
+        g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
         g_img_tex_idx = -2;
     }
 }
@@ -577,12 +564,12 @@ static int g_restore_diff_mode = 1;
 
 static void DeleteImage(int idx)
 {
-    if (idx < 0 || (unsigned)idx >= imgcnt) return;
+    if (idx < 0 || (unsigned)idx >= g_doc->imgcnt) return;
 
     undo_push();
 
     IMG *prev = NULL;
-    IMG *curr = (IMG *)img_p;
+    IMG *curr = (IMG *)g_doc->img_p;
     for (int i = 0; curr && i < idx; i++) {
         prev = curr;
         curr = (IMG *)curr->nxt_p;
@@ -590,12 +577,12 @@ static void DeleteImage(int idx)
     if (!curr) return;
 
     if (prev) prev->nxt_p = curr->nxt_p;
-    else img_p = curr->nxt_p;
-    imgcnt--;
+    else g_doc->img_p = curr->nxt_p;
+    g_doc->imgcnt--;
 
-    if (idx < ilselected) ilselected--;
-    else if (idx == ilselected && (unsigned)ilselected >= imgcnt)
-        ilselected = (int)imgcnt - 1;
+    if (idx < g_doc->ilselected) g_doc->ilselected--;
+    else if (idx == g_doc->ilselected && (unsigned)g_doc->ilselected >= g_doc->imgcnt)
+        g_doc->ilselected = (int)g_doc->imgcnt - 1;
 
     if (curr->data_p) free(curr->data_p);
     if (curr->pttbl_p) free(curr->pttbl_p);
@@ -609,7 +596,7 @@ static void DeleteMarkedImages(void)
     undo_push();
 
     IMG *prev = NULL;
-    IMG *curr = (IMG *)img_p;
+    IMG *curr = (IMG *)g_doc->img_p;
     int idx = 0;
     int deleted_before_sel = 0;
     bool sel_was_deleted = false;
@@ -618,12 +605,12 @@ static void DeleteMarkedImages(void)
         if (curr->flags & 1) {
             IMG *to_delete = curr;
             if (prev) prev->nxt_p = curr->nxt_p;
-            else img_p = curr->nxt_p;
+            else g_doc->img_p = curr->nxt_p;
             curr = (IMG *)curr->nxt_p;
-            imgcnt--;
+            g_doc->imgcnt--;
 
-            if (idx < ilselected) deleted_before_sel++;
-            else if (idx == ilselected) sel_was_deleted = true;
+            if (idx < g_doc->ilselected) deleted_before_sel++;
+            else if (idx == g_doc->ilselected) sel_was_deleted = true;
 
             if (to_delete->data_p) free(to_delete->data_p);
             if (to_delete->pttbl_p) free(to_delete->pttbl_p);
@@ -637,9 +624,9 @@ static void DeleteMarkedImages(void)
         }
     }
 
-    ilselected -= deleted_before_sel;
-    if (sel_was_deleted || (unsigned)ilselected >= imgcnt)
-        ilselected = imgcnt ? (int)imgcnt - 1 : -1;
+    g_doc->ilselected -= deleted_before_sel;
+    if (sel_was_deleted || (unsigned)g_doc->ilselected >= g_doc->imgcnt)
+        g_doc->ilselected = g_doc->imgcnt ? (int)g_doc->imgcnt - 1 : -1;
 
     g_img_tex_idx = -2;
 }
@@ -652,62 +639,62 @@ static void swap_adjacent_img(IMG *before_a, IMG *a, IMG *b)
     a->nxt_p = b->nxt_p;
     b->nxt_p = a;
     if (before_a) before_a->nxt_p = b;
-    else img_p = b;
+    else g_doc->img_p = b;
 }
 
 static void MoveImageUp(void)
 {
-    if (ilselected <= 0) return;
+    if (g_doc->ilselected <= 0) return;
     undo_push();
 
     IMG *before_prev = NULL;
-    IMG *prev = (IMG *)img_p;
-    for (int i = 0; prev && i < ilselected - 1; i++) {
+    IMG *prev = (IMG *)g_doc->img_p;
+    for (int i = 0; prev && i < g_doc->ilselected - 1; i++) {
         before_prev = prev;
         prev = (IMG *)prev->nxt_p;
     }
     if (!prev || !prev->nxt_p) return;
     swap_adjacent_img(before_prev, prev, (IMG *)prev->nxt_p);
-    ilselected--;
+    g_doc->ilselected--;
     g_img_tex_idx = -2;
 }
 
 static void MoveImageDown(void)
 {
-    if (ilselected < 0) return;
+    if (g_doc->ilselected < 0) return;
     undo_push();
 
     IMG *before_curr = NULL;
-    IMG *curr = (IMG *)img_p;
-    for (int i = 0; curr && i < ilselected; i++) {
+    IMG *curr = (IMG *)g_doc->img_p;
+    for (int i = 0; curr && i < g_doc->ilselected; i++) {
         before_curr = curr;
         curr = (IMG *)curr->nxt_p;
     }
     if (!curr || !curr->nxt_p) return;
     swap_adjacent_img(before_curr, curr, (IMG *)curr->nxt_p);
-    ilselected++;
+    g_doc->ilselected++;
     g_img_tex_idx = -2;
 }
 
 static void DeletePalette(void)
 {
-    if (plselected < 0 || (unsigned)plselected >= palcnt) return;
+    if (g_doc->plselected < 0 || (unsigned)g_doc->plselected >= g_doc->palcnt) return;
     undo_push();
 
     PAL *prev = NULL;
-    PAL *curr = (PAL *)pal_p;
-    for (int i = 0; curr && i < plselected; i++) {
+    PAL *curr = (PAL *)g_doc->pal_p;
+    for (int i = 0; curr && i < g_doc->plselected; i++) {
         prev = curr;
         curr = (PAL *)curr->nxt_p;
     }
     if (!curr) return;
 
     if (prev) prev->nxt_p = curr->nxt_p;
-    else pal_p = curr->nxt_p;
-    palcnt--;
+    else g_doc->pal_p = curr->nxt_p;
+    g_doc->palcnt--;
 
-    if ((unsigned)plselected >= palcnt)
-        plselected = palcnt ? (int)palcnt - 1 : -1;
+    if ((unsigned)g_doc->plselected >= g_doc->palcnt)
+        g_doc->plselected = g_doc->palcnt ? (int)g_doc->palcnt - 1 : -1;
 
     if (curr->data_p) free(curr->data_p);
     free(curr);
@@ -719,25 +706,25 @@ static void DeletePalette(void)
    No-ops on an invalid selection on either side. */
 static void SetPaletteOfSelected(void)
 {
-    if (plselected < 0 || (unsigned)plselected >= palcnt) return;
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    if (g_doc->plselected < 0 || (unsigned)g_doc->plselected >= g_doc->palcnt) return;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img) return;
     undo_push();
-    img->palnum = (unsigned short)plselected;
+    img->palnum = (unsigned short)g_doc->plselected;
     g_img_tex_idx = -2;
 }
 
 /* Select a palette in the palette list, and commit it onto the active image
    so the choice sticks when the user switches sprites. Without the commit,
-   plselected was only a preview — moving to another sprite would overwrite
+   g_doc->plselected was only a preview — moving to another sprite would overwrite
    it from img->palnum. No-ops when the image already uses this palette to
    keep the undo stack clean. */
 static void SelectPalette(int idx)
 {
-    if (idx < 0 || (unsigned)idx >= palcnt) return;
-    plselected   = idx;
+    if (idx < 0 || (unsigned)idx >= g_doc->palcnt) return;
+    g_doc->plselected   = idx;
     g_palette_nav = true;
-    IMG *cur = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *cur = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (cur && cur->palnum != (unsigned short)idx) {
         SetPaletteOfSelected();
         mark_dirty();
@@ -747,14 +734,14 @@ static void SelectPalette(int idx)
 /* Assign the currently-selected palette to every marked image. */
 static void SetPaletteOfMarked(void)
 {
-    if (plselected < 0 || (unsigned)plselected >= palcnt) return;
+    if (g_doc->plselected < 0 || (unsigned)g_doc->plselected >= g_doc->palcnt) return;
     bool any = false;
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p)
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p)
         if (p->flags & 1) { any = true; break; }
     if (!any) return;
     undo_push();
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p)
-        if (p->flags & 1) p->palnum = (unsigned short)plselected;
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p)
+        if (p->flags & 1) p->palnum = (unsigned short)g_doc->plselected;
     g_img_tex_idx = -2;
 }
 
@@ -763,14 +750,14 @@ static void SetPaletteOfMarked(void)
    sure" — matches DeleteImage's no-confirm behavior. */
 static void TogglePointTable(void)
 {
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img) return;
     undo_push();
     if (img->pttbl_p) {
         free(img->pttbl_p);
         img->pttbl_p = NULL;
     } else {
-        AddPointTable(ilselected);  /* cdecl-safe wrapper around img_pttbladd */
+        AddPointTable(g_doc->ilselected);  /* cdecl-safe wrapper around img_pttbladd */
     }
 }
 
@@ -779,9 +766,9 @@ static void TogglePointTable(void)
    freeing the PTTBL itself, so toggle state is preserved). */
 static void ClearExtraData(void)
 {
-    if (!img_p) return;
+    if (!g_doc->img_p) return;
     undo_push();
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         p->anix2 = p->aniy2 = p->aniz2 = 0;
         if (p->pttbl_p) {
             /* PTTBL is 40 bytes per wmpstruc.inc: 8 dw header + 5 PTBOX
@@ -933,52 +920,52 @@ static void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous,
 static void ClearAll(void)
 {
     /* Delete all images (delete index 0 repeatedly, mirroring img_del(0) loop) */
-    while (img_p) {
-        IMG *cur = (IMG *)img_p;
-        img_p = cur->nxt_p;
+    while (g_doc->img_p) {
+        IMG *cur = (IMG *)g_doc->img_p;
+        g_doc->img_p = cur->nxt_p;
         if (cur->data_p)  free(cur->data_p);
         if (cur->pttbl_p) free(cur->pttbl_p);
         free(cur);
     }
-    imgcnt = 0;
-    ilselected = -1;
+    g_doc->imgcnt = 0;
+    g_doc->ilselected = -1;
 
     /* Delete all palettes */
-    while (pal_p) {
-        PAL *cur = (PAL *)pal_p;
-        pal_p = cur->nxt_p;
+    while (g_doc->pal_p) {
+        PAL *cur = (PAL *)g_doc->pal_p;
+        g_doc->pal_p = cur->nxt_p;
         if (cur->data_p) free(cur->data_p);
         free(cur);
     }
-    palcnt = 0;
-    plselected = -1;
+    g_doc->palcnt = 0;
+    g_doc->plselected = -1;
 
     /* Free sequence/script memory */
-    if (scrseqmem_p) {
-        free(scrseqmem_p);
-        scrseqmem_p = NULL;
-        scrseqbytes  = 0;
+    if (g_doc->scrseqmem_p) {
+        free(g_doc->scrseqmem_p);
+        g_doc->scrseqmem_p = NULL;
+        g_doc->scrseqbytes  = 0;
     }
 
-    seqcnt = 0;
-    scrcnt = 0;
-    damcnt = 0;
-    ilpalloaded = -1;
+    g_doc->seqcnt = 0;
+    g_doc->scrcnt = 0;
+    g_doc->damcnt = 0;
+    g_doc->ilpalloaded = -1;
 
     /* Reset second image list */
-    if (img2_p) {
-        while (img2_p) {
-            IMG *cur = (IMG *)img2_p;
-            img2_p = cur->nxt_p;
+    if (g_doc->img2_p) {
+        while (g_doc->img2_p) {
+            IMG *cur = (IMG *)g_doc->img2_p;
+            g_doc->img2_p = cur->nxt_p;
             if (cur->data_p)  free(cur->data_p);
             if (cur->pttbl_p) free(cur->pttbl_p);
             free(cur);
         }
     }
-    img2cnt     = 0;
-    il2selected = -1;
-    il1stprt    = 0;
-    il21stprt   = 0;
+    g_doc->img2cnt     = 0;
+    g_doc->il2selected = -1;
+    g_doc->il1stprt    = 0;
+    g_doc->il21stprt   = 0;
 
     g_img_tex_idx = -2;
     g_palette_nav = false;
@@ -995,30 +982,30 @@ static void ClearAll(void)
    no ASM dependencies. */
 static void SwitchImageList(void)
 {
-    void *tmp_p = img_p;  img_p = img2_p;  img2_p = tmp_p;
-    unsigned int tmp_cnt = imgcnt;  imgcnt = img2cnt;  img2cnt = tmp_cnt;
-    int tmp_sel = ilselected;  ilselected = il2selected;  il2selected = tmp_sel;
-    unsigned int tmp_prt = il1stprt;  il1stprt = il21stprt;  il21stprt = tmp_prt;
+    void *tmp_p = g_doc->img_p;  g_doc->img_p = g_doc->img2_p;  g_doc->img2_p = tmp_p;
+    unsigned int tmp_cnt = g_doc->imgcnt;  g_doc->imgcnt = g_doc->img2cnt;  g_doc->img2cnt = tmp_cnt;
+    int tmp_sel = g_doc->ilselected;  g_doc->ilselected = g_doc->il2selected;  g_doc->il2selected = tmp_sel;
+    unsigned int tmp_prt = g_doc->il1stprt;  g_doc->il1stprt = g_doc->il21stprt;  g_doc->il21stprt = tmp_prt;
     g_img_tex_idx = -2;
 }
 
-/* Set the selected image's PTTBL.ID to (il2selected + 1).  If no PTTBL
+/* Set the selected image's PTTBL.ID to (g_doc->il2selected + 1).  If no PTTBL
    exists for the image, allocate one via the ASM memory pool. */
 static void SetIDFromSecondList(void)
 {
     mark_dirty();
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img) return;
 
     if (!img->pttbl_p) {
-        AddPointTable(ilselected);
-        img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+        AddPointTable(g_doc->ilselected);
+        img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
         if (!img || !img->pttbl_p) return;
     }
 
     /* PTTBL.ID is at struct offset 14 (dw aligned, pack-2) */
     unsigned char *pttbl = (unsigned char *)img->pttbl_p;
-    unsigned short new_id = (unsigned short)(il2selected + 1);
+    unsigned short new_id = (unsigned short)(g_doc->il2selected + 1);
     pttbl[14] = (unsigned char)(new_id & 0xFF);
     pttbl[15] = (unsigned char)(new_id >> 8);
 }
@@ -1028,7 +1015,7 @@ static void SetIDFromSecondList(void)
    ImGui rename dialog so the user can name the copy. */
 static void DuplicateImage(void)
 {
-    IMG *src = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *src = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!src) return;
 
     undo_push();
@@ -1070,7 +1057,7 @@ static void DuplicateImage(void)
     dst->n_s[15] = '\0';
 
     /* Select the new image and open rename */
-    ilselected = (int)imgcnt - 1;
+    g_doc->ilselected = (int)g_doc->imgcnt - 1;
     g_img_tex_idx = -2;
     OpenRenameImage();
     return;
@@ -1082,12 +1069,12 @@ err:
     /* img_alloc appended the node — unlink it */
     {
         IMG *prev = NULL;
-        IMG *cur = (IMG *)img_p;
+        IMG *cur = (IMG *)g_doc->img_p;
         while (cur && cur != dst) { prev = cur; cur = (IMG *)cur->nxt_p; }
         if (cur == dst) {
             if (prev) prev->nxt_p = cur->nxt_p;
-            else img_p = cur->nxt_p;
-            imgcnt--;
+            else g_doc->img_p = cur->nxt_p;
+            g_doc->imgcnt--;
         }
     }
     free(dst);
@@ -1114,7 +1101,7 @@ static void AddNewBlankImage(void)
     img->aniz2    = 0;
     img->opals    = (unsigned short)-1;
     img->pttbl_p  = NULL;
-    img->palnum   = (plselected >= 0) ? (unsigned short)plselected : 0;
+    img->palnum   = (g_doc->plselected >= 0) ? (unsigned short)g_doc->plselected : 0;
 
     unsigned int stride = ((unsigned int)img->w + 3) & ~3;
     unsigned int sz = stride * img->h;
@@ -1126,7 +1113,7 @@ static void AddNewBlankImage(void)
     static int next_id = 1;
     snprintf(img->n_s, sizeof(img->n_s), "NEW%d", next_id++);
 
-    if (imgcnt > 0) ilselected = (int)imgcnt - 1;
+    if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
     g_img_tex_idx = -2;
 }
 
@@ -1149,12 +1136,12 @@ static void AddNewPalette(void)
     pal->data_p = buf;
     memset(buf, 0, 512);
 
-    if (palcnt > 0) plselected = (int)palcnt - 1;
+    if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
 }
 
 static void DuplicatePalette(void)
 {
-    PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
+    PAL *src = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!src || !src->data_p) return;
 
     mark_dirty();
@@ -1173,14 +1160,14 @@ static void DuplicatePalette(void)
     pal->data_p = buf;
     memcpy(buf, src->data_p, col_sz);
 
-    if (palcnt > 0) plselected = (int)palcnt - 1;
+    if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
 }
 
 /* Copy the selected palette into the cross-file palette clipboard. The buffer
    is malloc'd (not pool-allocated) so it survives File->Open. */
 static void CopyPaletteToClipboard(void)
 {
-    PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
+    PAL *src = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!src || !src->data_p || src->numc == 0) return;
 
     unsigned int col_sz = (unsigned int)src->numc * 2;
@@ -1217,7 +1204,7 @@ static void PastePaletteFromClipboard(void)
     pal->data_p = buf;
     memcpy(buf, g_pal_clipboard.data, col_sz);
 
-    if (palcnt > 0) plselected = (int)palcnt - 1;
+    if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
 }
 
 /* Merge marked palettes into the selected palette.
@@ -1227,12 +1214,12 @@ static void PastePaletteFromClipboard(void)
    Finally, the marked palettes are deleted.  Ported from plst_merge. */
 static void MergeMarkedPalettes(void)
 {
-    PAL *sel = (plselected >= 0) ? get_pal(plselected) : NULL;
+    PAL *sel = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!sel || !sel->data_p || sel->numc == 0) return;
 
     /* Count marked palettes (excluding the selected one) */
     bool any_marked = false;
-    for (PAL *p = (PAL *)pal_p; p; p = (PAL *)p->nxt_p)
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p)
         if ((p->flags & 1) && p != sel) { any_marked = true; break; }
     if (!any_marked) return;
 
@@ -1245,7 +1232,7 @@ static void MergeMarkedPalettes(void)
     unsigned char *dst_colors = (unsigned char *)sel->data_p;
 
     /* Phase 1: build remap and remap images for each marked palette */
-    PAL *pal = (PAL *)pal_p;
+    PAL *pal = (PAL *)g_doc->pal_p;
     while (pal) {
         if (!(pal->flags & 1) || pal == sel || !pal->data_p || pal->numc == 0) {
             pal = (PAL *)pal->nxt_p;
@@ -1281,12 +1268,12 @@ static void MergeMarkedPalettes(void)
 
         /* Find this palette's index in the linked list */
         int pal_idx = 0;
-        for (PAL *q = (PAL *)pal_p; q && q != pal; q = (PAL *)q->nxt_p) pal_idx++;
+        for (PAL *q = (PAL *)g_doc->pal_p; q && q != pal; q = (PAL *)q->nxt_p) pal_idx++;
 
         /* Remap all images that use this palette */
-        for (IMG *img = (IMG *)img_p; img; img = (IMG *)img->nxt_p) {
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
             if (img->palnum != pal_idx) continue;
-            img->palnum = (unsigned short)plselected;
+            img->palnum = (unsigned short)g_doc->plselected;
 
             if (!img->data_p || img->w == 0 || img->h == 0) continue;
             unsigned short stride = (img->w + 3) & ~3;
@@ -1301,7 +1288,7 @@ static void MergeMarkedPalettes(void)
 
     /* Phase 2: delete marked palettes and fix up image palette indices */
     PAL *prev = NULL;
-    PAL *cur  = (PAL *)pal_p;
+    PAL *cur  = (PAL *)g_doc->pal_p;
     int del_idx = 0;
 
     while (cur) {
@@ -1309,16 +1296,16 @@ static void MergeMarkedPalettes(void)
             PAL *to_del = cur;
             /* Unlink */
             if (prev) prev->nxt_p = cur->nxt_p;
-            else pal_p = cur->nxt_p;
+            else g_doc->pal_p = cur->nxt_p;
             cur = (PAL *)cur->nxt_p;
-            palcnt--;
+            g_doc->palcnt--;
 
             /* Any image pointing to palette index > del_idx shifts down */
-            for (IMG *img = (IMG *)img_p; img; img = (IMG *)img->nxt_p) {
+            for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
                 if ((int)img->palnum > del_idx) img->palnum--;
             }
-            /* plselected also shifts if the deleted palette was before it */
-            if ((int)plselected > del_idx) plselected--;
+            /* g_doc->plselected also shifts if the deleted palette was before it */
+            if ((int)g_doc->plselected > del_idx) g_doc->plselected--;
 
             if (to_del->data_p) free(to_del->data_p);
             free(to_del);
@@ -1331,18 +1318,18 @@ static void MergeMarkedPalettes(void)
     }
 
     /* Fix selection if it went out of bounds */
-    if ((unsigned)plselected >= palcnt)
-        plselected = palcnt ? (int)palcnt - 1 : -1;
+    if ((unsigned)g_doc->plselected >= g_doc->palcnt)
+        g_doc->plselected = g_doc->palcnt ? (int)g_doc->palcnt - 1 : -1;
 
     g_img_tex_idx = -2;
 }
 
 static void OpenRenameImage(void)
 {
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img) return;
     g_rename_target = RenameTarget::Image;
-    g_rename_idx = ilselected;
+    g_rename_idx = g_doc->ilselected;
     strncpy(g_rename_buf, img->n_s, 15);
     g_rename_buf[15] = '\0';
     g_show_rename = true;
@@ -1363,7 +1350,7 @@ static void OpenRenameMarkedImages(void)
 {
     /* Find first marked image to seed the buffer with its name. */
     IMG *first = NULL;
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (p->flags & 1) { first = p; break; }
     }
     if (!first) return;
@@ -1381,7 +1368,7 @@ static void ApplyMarkedImageRename(const char *base)
     bool prepend = (base[0] == '+');
     const char *core = prepend ? base + 1 : base;
     int n = 0;
-    for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (!(p->flags & 1)) continue;
         if (prepend) {
             char old[16];
@@ -1401,11 +1388,11 @@ static void CalculatePaletteHistogram()
     g_histogram_max = 0.0f;
     g_histogram_img_count = 0;
 
-    if (plselected < 0) return;
+    if (g_doc->plselected < 0) return;
 
-    IMG *img = (IMG *)img_p;
+    IMG *img = (IMG *)g_doc->img_p;
     while (img) {
-        if (img->palnum == plselected && img->data_p && img->w > 0 && img->h > 0) {
+        if (img->palnum == g_doc->plselected && img->data_p && img->w > 0 && img->h > 0) {
             g_histogram_img_count++;
             unsigned short stride = (img->w + 3) & ~3; // DMA hardware alignment
             unsigned char *pixels = (unsigned char *)img->data_p;
@@ -1428,17 +1415,17 @@ static void CalculatePaletteHistogram()
 
 static void DeleteUnusedPaletteColors()
 {
-    if (plselected < 0) return;
-    PAL *pal = get_pal(plselected);
+    if (g_doc->plselected < 0) return;
+    PAL *pal = get_pal(g_doc->plselected);
     if (!pal || !pal->data_p) return;
 
     bool used[256] = {false};
     used[0] = true; /* Transparent index 0 is always preserved */
 
     /* 1. Find used colors across all images sharing this palette */
-    IMG *img = (IMG *)img_p;
+    IMG *img = (IMG *)g_doc->img_p;
     while (img) {
-        if (img->palnum == plselected && img->data_p && img->w > 0 && img->h > 0) {
+        if (img->palnum == g_doc->plselected && img->data_p && img->w > 0 && img->h > 0) {
             unsigned short stride = (img->w + 3) & ~3;
             unsigned char *pixels = (unsigned char *)img->data_p;
             int total_pixels = stride * img->h;
@@ -1483,9 +1470,9 @@ static void DeleteUnusedPaletteColors()
     pal->numc = next_avail;
 
     /* 4. Remap pixel indices in all affected images */
-    img = (IMG *)img_p;
+    img = (IMG *)g_doc->img_p;
     while (img) {
-        if (img->palnum == plselected && img->data_p && img->w > 0 && img->h > 0) {
+        if (img->palnum == g_doc->plselected && img->data_p && img->w > 0 && img->h > 0) {
             unsigned short stride = (img->w + 3) & ~3;
             unsigned char *pixels = (unsigned char *)img->data_p;
             int total_pixels = stride * img->h;
@@ -1497,7 +1484,7 @@ static void DeleteUnusedPaletteColors()
     }
 
     /* 5. Update global SDL palette so the UI reflects changes instantly */
-    ApplyPalette(plselected);
+    ApplyPalette(g_doc->plselected);
 
     /* 6. Force canvas texture rebuild */
     g_img_tex_idx = -2;
@@ -1507,7 +1494,7 @@ static void DeleteUnusedPaletteColors()
 static void StripMarkedImages(int max_transparent_neighbors, int specific_color = -1)
 {
     mark_dirty();
-    IMG *img = (IMG *)img_p;
+    IMG *img = (IMG *)g_doc->img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
             int w = img->w;
@@ -1583,7 +1570,7 @@ static void StripMarkedImages(int max_transparent_neighbors, int specific_color 
 static void DitherReplaceMarkedImages(int specific_color)
 {
     mark_dirty();
-    IMG *img = (IMG *)img_p;
+    IMG *img = (IMG *)g_doc->img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
             int h = img->h;
@@ -1608,7 +1595,7 @@ static void DitherReplaceMarkedImages(int specific_color)
 static void LeastSquaresReduceMarked()
 {
     mark_dirty();
-    IMG *img = (IMG *)img_p;
+    IMG *img = (IMG *)g_doc->img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
             int w = img->w;
@@ -2071,7 +2058,7 @@ static void RecentAdd(const std::string &full_path)
 }
 
 /* Load an IMG by absolute path. Mirrors the Open-button branch of the file
-   dialog: split into dir+file, populate the asm-side fpath_s/fname_s globals,
+   dialog: split into dir+file, populate the asm-side g_doc->fpath_s/g_doc->fname_s globals,
    chdir, then img_clearall + img_load. Used by both the dialog and the
    Recent Files menu. */
 static void OpenImgFile(const std::string &full_path)
@@ -2082,18 +2069,18 @@ static void OpenImgFile(const std::string &full_path)
 
     size_t n_dir = dir.size();
     if (n_dir > 63) n_dir = 63;
-    memset(fpath_s, 0, 64);
-    memcpy(fpath_s, dir.data(), n_dir);
+    memset(g_doc->fpath_s, 0, 64);
+    memcpy(g_doc->fpath_s, dir.data(), n_dir);
 
     size_t n_file = file.size();
     if (n_file > 12) n_file = 12;
-    memset(fname_s, 0, 13);
-    memset(fnametmp_s, 0, 13);
-    memcpy(fname_s, file.data(), n_file);
-    memcpy(fnametmp_s, file.data(), n_file);
+    memset(g_doc->fname_s, 0, 13);
+    memset(g_doc->fnametmp_s, 0, 13);
+    memcpy(g_doc->fname_s, file.data(), n_file);
+    memcpy(g_doc->fnametmp_s, file.data(), n_file);
     for (size_t i = 0; i < n_file; i++) {
-        fname_s[i] = (char)toupper((unsigned char)fname_s[i]);
-        fnametmp_s[i] = (char)toupper((unsigned char)fnametmp_s[i]);
+        g_doc->fname_s[i] = (char)toupper((unsigned char)g_doc->fname_s[i]);
+        g_doc->fnametmp_s[i] = (char)toupper((unsigned char)g_doc->fnametmp_s[i]);
     }
     _chdir(dir.c_str());
 
@@ -2140,19 +2127,19 @@ static const char* GetDialogExtension(FileDialogMode mode)
 }
 
 static void OpenFileDialog(FileDialogMode mode) {
-    /* For IMG-category modes, fpath_s (set when an IMG is currently loaded)
+    /* For IMG-category modes, g_doc->fpath_s (set when an IMG is currently loaded)
        seeds the dialog so the user starts in the same dir as their open
-       file. For other categories, fpath_s is irrelevant — those have their
+       file. For other categories, g_doc->fpath_s is irrelevant — those have their
        own per-category remembered directory. Always re-load from disk on
        mode change so switching from Save IMG to Import PNG lands in the
        right folder. */
     const char *cat = dialog_category_for_mode(mode);
     bool is_img_cat = (strcmp(cat, "img") == 0);
     g_file_dialog_dir[0] = '\0';
-    if (is_img_cat && fpath_s[0] != '\0') {
+    if (is_img_cat && g_doc->fpath_s[0] != '\0') {
         size_t n = 0;
-        while (n < 63 && fpath_s[n] != '\0') n++;
-        memcpy(g_file_dialog_dir, fpath_s, n);
+        while (n < 63 && g_doc->fpath_s[n] != '\0') n++;
+        memcpy(g_file_dialog_dir, g_doc->fpath_s, n);
         g_file_dialog_dir[n] = '\0';
     } else {
         load_last_dir(g_file_dialog_dir, sizeof(g_file_dialog_dir), mode);
@@ -2167,8 +2154,8 @@ static void OpenFileDialog(FileDialogMode mode) {
     }
     g_file_dialog_mode = mode;
     bool is_export = (mode == FileDialogMode::ExportTga || mode == FileDialogMode::SaveTga || mode == FileDialogMode::ExportPng || mode == FileDialogMode::SaveLbm);
-    if (is_export && ilselected >= 0) {
-        IMG *img = get_img(ilselected);
+    if (is_export && g_doc->ilselected >= 0) {
+        IMG *img = get_img(g_doc->ilselected);
         if (img) {
             size_t n = 0;
             while (n < 16 && img->file_name_raw[n] != '\0') {
@@ -2182,10 +2169,10 @@ static void OpenFileDialog(FileDialogMode mode) {
                 strcat(g_file_dialog_file, ext);
             }
         }
-    } else if (fname_s[0] != '\0') {
+    } else if (g_doc->fname_s[0] != '\0') {
         size_t n = 0;
-        while (n < 12 && fname_s[n] != '\0') n++;
-        memcpy(g_file_dialog_file, fname_s, n);
+        while (n < 12 && g_doc->fname_s[n] != '\0') n++;
+        memcpy(g_file_dialog_file, g_doc->fname_s, n);
         g_file_dialog_file[n] = '\0';
     } else {
         g_file_dialog_file[0] = '\0';
@@ -2199,7 +2186,7 @@ static void OpenFileDialog(FileDialogMode mode) {
    user can't accidentally throw away palette/hue edits by switching files. */
 static void RequestOpenDialog(void)
 {
-    if (g_dirty && imgcnt > 0) {
+    if (g_dirty && g_doc->imgcnt > 0) {
         g_pending_action = PendingAction::OpenDialog;
         g_show_unsaved_confirm = true;
     } else {
@@ -2208,7 +2195,7 @@ static void RequestOpenDialog(void)
 }
 static void RequestOpenPath(const std::string &path)
 {
-    if (g_dirty && imgcnt > 0) {
+    if (g_dirty && g_doc->imgcnt > 0) {
         g_pending_action      = PendingAction::OpenPath;
         g_pending_action_path = path;
         g_show_unsaved_confirm = true;
@@ -2218,11 +2205,64 @@ static void RequestOpenPath(const std::string &path)
 }
 static void RequestOpenLodDialog(void)
 {
-    if (g_dirty && imgcnt > 0) {
+    if (g_dirty && g_doc->imgcnt > 0) {
         g_pending_action = PendingAction::OpenLodDialog;
         g_show_unsaved_confirm = true;
     } else {
         OpenFileDialog(FileDialogMode::OpenLod);
+    }
+}
+
+/* Drag-and-drop entry point. Extension dispatch:
+     .img → RequestOpenPath (unsaved-changes guard + full reset)
+     .tga → LoadTga import into the active document
+     .lbm → LoadLbm import into the active document
+     .png → ImportPng if an IMG is open (palette context required), else toast
+   Unknown extensions toast and return. */
+extern "C" void imgui_overlay_open_path(const char *path)
+{
+    if (!path || !*path) return;
+    std::string p = path;
+    size_t dot = p.find_last_of('.');
+    std::string ext;
+    if (dot != std::string::npos) {
+        ext = p.substr(dot + 1);
+        for (char &c : ext) c = (char)tolower((unsigned char)c);
+    }
+
+    /* Import paths (TGA/LBM/PNG) need a document to import *into*. Drop on
+       an empty workspace → bootstrap a fresh IMG, matching File → New. */
+    auto ensure_new_doc_if_empty = []() {
+        if (g_doc->imgcnt == 0) {
+            ClearAll();
+            g_doc->fileversion = 0x0634;
+            g_doc->fname_s[0]  = 0;
+            g_undo_count = 0;
+            g_undo_idx   = 0;
+        }
+    };
+
+    if (ext == "img") {
+        RequestOpenPath(p);
+    } else if (ext == "tga") {
+        ensure_new_doc_if_empty();
+        LoadTga(p.c_str());
+        mark_dirty();
+        g_img_tex_idx = -2;
+    } else if (ext == "lbm") {
+        ensure_new_doc_if_empty();
+        LoadLbm(p.c_str());
+        mark_dirty();
+        g_img_tex_idx = -2;
+    } else if (ext == "png") {
+        ensure_new_doc_if_empty();
+        ImportPng(p.c_str());
+        mark_dirty();
+        g_img_tex_idx = -2;
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Unsupported file type: .%s", ext.empty() ? "(none)" : ext.c_str());
+        g_restore_msg_timer = 4.0f;
     }
 }
 
@@ -2424,20 +2464,20 @@ static void DrawFileDialog() {
                 WriteIrwFromMarked(full_path.c_str(), g_irw_base_address, g_irw_bpp, g_irw_align_16bit);
             } else if (g_file_dialog_mode == FileDialogMode::SaveMarkedLbm) {
                 _chdir(g_file_dialog_dir);
-                IMG *p = (IMG *)img_p;
-                int original_selection = ilselected;
+                IMG *p = (IMG *)g_doc->img_p;
+                int original_selection = g_doc->ilselected;
                 int i = 0;
                 while (p) {
                     if ((p->flags & 1) && p->w > 0 && p->h > 0) {
-                        ilselected = i;
-                        memset(fnametmp_s, 0, 13);
-                        snprintf(fnametmp_s, 13, "%.8s.LBM", p->n_s);
-                        SaveLbm(fnametmp_s);
+                        g_doc->ilselected = i;
+                        memset(g_doc->fnametmp_s, 0, 13);
+                        snprintf(g_doc->fnametmp_s, 13, "%.8s.LBM", p->n_s);
+                        SaveLbm(g_doc->fnametmp_s);
                     }
                     p = (IMG *)p->nxt_p;
                     i++;
                 }
-                ilselected = original_selection;
+                g_doc->ilselected = original_selection;
             } else if (g_file_dialog_mode == FileDialogMode::OpenLod) {
                 LodManifest manifest = ParseLodFile(full_path.c_str());
                 verbose_log("OpenLod: %s -> %zu entries, PPP=%d", full_path.c_str(), manifest.entries.size(), manifest.ppp_value);
@@ -2484,18 +2524,18 @@ static void DrawFileDialog() {
                         auto try_load = [&](const std::string &d) -> bool {
                             size_t nd = d.length();
                             if (nd > 63) nd = 63;
-                            memset(fpath_s, 0, 64);
-                            memcpy(fpath_s, d.c_str(), nd);
+                            memset(g_doc->fpath_s, 0, 64);
+                            memcpy(g_doc->fpath_s, d.c_str(), nd);
 
-                            memset(fname_s, 0, 13);
-                            memcpy(fname_s, file.c_str(), n_file);
+                            memset(g_doc->fname_s, 0, 13);
+                            memcpy(g_doc->fname_s, file.c_str(), n_file);
                             for (size_t j = 0; j < n_file; j++)
-                                fname_s[j] = (char)toupper((unsigned char)fname_s[j]);
+                                g_doc->fname_s[j] = (char)toupper((unsigned char)g_doc->fname_s[j]);
 
-                            unsigned int prev = imgcnt;
+                            unsigned int prev = g_doc->imgcnt;
                             _chdir(d.c_str());
                             LoadImgFile();
-                            return imgcnt > prev;
+                            return g_doc->imgcnt > prev;
                         };
 
                         if (try_load(dir)) {
@@ -2510,7 +2550,7 @@ static void DrawFileDialog() {
                         }
                     }
 
-                    ilselected = imgcnt > 0 ? 0 : -1;
+                    g_doc->ilselected = g_doc->imgcnt > 0 ? 0 : -1;
                     g_dirty = false;
                     RecentAdd(full_path);
 
@@ -2531,18 +2571,18 @@ static void DrawFileDialog() {
             } else {
                 size_t n_dir = strlen(g_file_dialog_dir);
                 if (n_dir > 63) n_dir = 63;
-                memset(fpath_s, 0, 64);
-                memcpy(fpath_s, g_file_dialog_dir, n_dir);
+                memset(g_doc->fpath_s, 0, 64);
+                memcpy(g_doc->fpath_s, g_file_dialog_dir, n_dir);
                 
                 size_t n_file = strlen(g_file_dialog_file);
                 if (n_file > 12) n_file = 12;
-                memset(fname_s, 0, 13);
-                memset(fnametmp_s, 0, 13);
-                memcpy(fname_s, g_file_dialog_file, n_file);
-                memcpy(fnametmp_s, g_file_dialog_file, n_file);
+                memset(g_doc->fname_s, 0, 13);
+                memset(g_doc->fnametmp_s, 0, 13);
+                memcpy(g_doc->fname_s, g_file_dialog_file, n_file);
+                memcpy(g_doc->fnametmp_s, g_file_dialog_file, n_file);
                 for (size_t i = 0; i < n_file; i++) {
-                    fname_s[i] = (char)toupper((unsigned char)fname_s[i]);
-                    fnametmp_s[i] = (char)toupper((unsigned char)fnametmp_s[i]);
+                    g_doc->fname_s[i] = (char)toupper((unsigned char)g_doc->fname_s[i]);
+                    g_doc->fnametmp_s[i] = (char)toupper((unsigned char)g_doc->fnametmp_s[i]);
                 }
                 _chdir(g_file_dialog_dir);
                 
@@ -2732,7 +2772,7 @@ FILE FORMATS
 ------------
 
 IMG (Image Library) -- Primary format. Binary, little-endian, packed structs.
-  LIB_HDR (28 bytes): imgcnt, palcnt, version (0x634+)
+  LIB_HDR (28 bytes): g_doc->imgcnt, g_doc->palcnt, version (0x634+)
   IMAGE records (50 bytes each): name[16], flags, anix/y, w, h, palnum
   PALETTE records (26 bytes each): name[10], flags, bitspix, numc
   BLOB: raw pixel data (stride = (w+3)&~3) + 15-bit packed RGB palettes
@@ -2957,7 +2997,7 @@ SDL-main branch -- 64-bit build.  github.com/junkwax/midway-imgtool
 static void palette_writeback(int color_idx)
 {
     mark_dirty();
-    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!pal || !pal->data_p) return;
     if (color_idx < 0 || color_idx >= (int)pal->numc) return;
 
@@ -2974,7 +3014,7 @@ static void palette_writeback(int color_idx)
  * means Reset is just sliders -> 0 and the math stays trivial. */
 static void hsl_adjust_palette_from_baseline(int hue_deg, int sat_pct, int light_pct)
 {
-    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!pal || !pal->data_p) return;
     if (g_palette_baseline_nc == 0) return;
     mark_dirty();
@@ -3077,7 +3117,7 @@ static void hue_shift_palette(int /*delta_deg*/)
 
 static void save_palette_baseline(void)
 {
-    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!pal || !pal->data_p) { g_palette_baseline_nc = 0; return; }
     int nc = (int)pal->numc;
     if (nc > 256) nc = 256;
@@ -3087,13 +3127,13 @@ static void save_palette_baseline(void)
 
 static void reset_palette_to_baseline(void)
 {
-    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!pal || !pal->data_p || g_palette_baseline_nc == 0) return;
     int nc = (int)pal->numc;
     if (nc > 256) nc = 256;
     if (nc > g_palette_baseline_nc) nc = g_palette_baseline_nc;
     memcpy(pal->data_p, g_palette_baseline, nc * 2);
-    ApplyPalette(plselected);
+    ApplyPalette(g_doc->plselected);
     g_hue_slider = 0;
     g_hue_last   = 0;
     g_sat_slider = 0;
@@ -3157,12 +3197,12 @@ static void rebuild_img_texture(IMG *img)
 void undo_push(void)
 {
     mark_dirty();
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img) return;
 
     if (g_undo_idx >= 0) {
         EditSnapshot *last = &g_undo[g_undo_idx];
-        if (last->image_idx == ilselected &&
+        if (last->image_idx == g_doc->ilselected &&
             last->anix == img->anix && last->aniy == img->aniy &&
             last->anix2 == img->anix2 && last->aniy2 == img->aniy2 &&
             last->hitbox_x == g_hitbox_x && last->hitbox_y == g_hitbox_y &&
@@ -3178,7 +3218,7 @@ void undo_push(void)
     }
 
     EditSnapshot *s = &g_undo[g_undo_idx];
-    s->image_idx = ilselected;
+    s->image_idx = g_doc->ilselected;
     s->anix  = img->anix;  s->aniy  = img->aniy;
     s->anix2 = img->anix2; s->aniy2 = img->aniy2;
     s->w = img->w; s->h = img->h;
@@ -3205,7 +3245,7 @@ static void undo_apply(int idx)
 /* ---- Copy/Paste helpers (pixel data only) ---- */
 static void copy_image(bool cut)
 {
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
 
     if (cut) undo_push();
@@ -3321,7 +3361,7 @@ static void copy_image(bool cut)
 static void apply_pasted_region(void)
 {
     mark_dirty();
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
 
     unsigned short stride = (img->w + 3) & ~3;
@@ -3418,7 +3458,7 @@ static void scale_clipboard_to_fit(int max_w, int max_h)
    rectangle (not a mask) since "everything" is trivially representable. */
 static void select_all(void)
 {
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || img->w == 0 || img->h == 0) return;
     g_active_tool        = ActiveTool::Marquee;
     g_grid_sel.active    = true;
@@ -3445,7 +3485,7 @@ static void deselect_all(void)
    selection to a pixel mask so the inversion can be expressed precisely. */
 static void invert_selection(void)
 {
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || img->w == 0 || img->h == 0) return;
     int sw = img->w, sh = img->h;
 
@@ -3489,7 +3529,7 @@ static void invert_selection(void)
 
 static void paste_image(void)
 {
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
 
     undo_push();
@@ -3652,7 +3692,11 @@ void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture 
         cfg.MergeMode = true;
         cfg.PixelSnapH = true;
         cfg.GlyphMinAdvanceX = 22.0f;
-        cfg.GlyphOffset = ImVec2(0, 3.0f);
+        /* Material Symbols glyphs have empty descender space, so ImGui's
+           text-bbox centering biases the visual mass toward the top of the
+           button. Nudge down so the icon's optical center sits at button
+           center. 5px lands cleanly inside the 28x28 toolbar button. */
+        cfg.GlyphOffset = ImVec2(0, 5.0f);
         ImFont *icons = io.Fonts->AddFontFromFileTTF(fontpath, 20.0f, &cfg, icon_ranges);
         if (icons) g_icon_font_loaded = true;
     }
@@ -3687,7 +3731,7 @@ int imgui_overlay_wants_keyboard(void)
 
 int imgui_overlay_check_unsaved_and_quit(void)
 {
-    if (g_dirty && imgcnt > 0) {
+    if (g_dirty && g_doc->imgcnt > 0) {
         g_show_unsaved_confirm = true;
         return 0;
     }
@@ -3822,7 +3866,7 @@ static void DrawLoad2VerifyDialog(void)
             if (ImGui::Selectable("##row", is_sel, ImGuiSelectableFlags_AllowItemOverlap,
                                   ImVec2(0, 0))) {
                 g_load2_selected_idx = (int)i;
-                if (iss.img_idx >= 0) ilselected = iss.img_idx;
+                if (iss.img_idx >= 0) g_doc->ilselected = iss.img_idx;
                 if (iss.sev == L2Severity::Break) {
                     update_drift_texture(get_img(iss.img_idx));
                 }
@@ -3998,14 +4042,14 @@ static void DrawBulkRestoreRegexDialog(void)
             std::regex re;
             try {
                 re = std::regex(g_restore_regex_buf);
-                for (IMG *child = (IMG *)img_p; child; child = (IMG *)child->nxt_p) {
+                for (IMG *child = (IMG *)g_doc->img_p; child; child = (IMG *)child->nxt_p) {
                     if (!child->data_p || child->w == 0 || child->h == 0) continue;
                     std::string name(child->n_s);
                     std::smatch match;
                     if (std::regex_match(name, match, re) && match.size() > 1) {
                         std::string parent_name = match[1].str();
                         IMG *parent = NULL;
-                        for (IMG *p = (IMG *)img_p; p; p = (IMG *)p->nxt_p) {
+                        for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
                             if (parent_name == p->n_s) {
                                 parent = p;
                                 break;
@@ -4143,22 +4187,22 @@ static void DrawDebugInfoModal(void)
     ImGui::SetNextWindowSize(ImVec2(520, 580), ImGuiCond_Always);
 
     if (ImGui::CollapsingHeader("LIB_HDR", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text("IMGCNT:  %u",     imgcnt);
-        ImGui::Text("PALCNT:  %u",     palcnt);
-        ImGui::Text("SEQCNT:  %u",     seqcnt);
-        ImGui::Text("SCRCNT:  %u",     scrcnt);
-        ImGui::Text("DAMCNT:  %u",     damcnt);
-        ImGui::Text("VERSION: 0x%04X", fileversion);
+        ImGui::Text("IMGCNT:  %u",     g_doc->imgcnt);
+        ImGui::Text("PALCNT:  %u",     g_doc->palcnt);
+        ImGui::Text("SEQCNT:  %u",     g_doc->seqcnt);
+        ImGui::Text("SCRCNT:  %u",     g_doc->scrcnt);
+        ImGui::Text("DAMCNT:  %u",     g_doc->damcnt);
+        ImGui::Text("VERSION: 0x%04X", g_doc->fileversion);
         ImGui::Separator();
         ImGui::TextDisabled("SEQSCR/ENTRY blob (load-time, round-trips on save):");
-        if (scrseqmem_p && scrseqbytes > 0) {
-            ImGui::Text("SCRSEQBYTES:  %u bytes", scrseqbytes);
+        if (g_doc->scrseqmem_p && g_doc->scrseqbytes > 0) {
+            ImGui::Text("SCRSEQBYTES:  %u bytes", g_doc->scrseqbytes);
         } else {
             ImGui::TextDisabled("SCRSEQBYTES:  0  (no seq/scr in file)");
         }
     }
 
-    IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (ImGui::CollapsingHeader("IMAGE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (img) {
             ImGui::Text("NXT_p:    %p",       img->nxt_p);
@@ -4203,7 +4247,7 @@ static void DrawDebugInfoModal(void)
         }
     }
 
-    PAL *pal = (plselected >= 0) ? get_pal(plselected) : NULL;
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (ImGui::CollapsingHeader("PALETTE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (pal) {
             ImGui::Text("NXT_p:    %p",       pal->nxt_p);
@@ -4243,8 +4287,8 @@ static void DrawNewImgConfirm(void)
     ImGui::Separator();
     if (ImGui::Button("New", ImVec2(80, 0))) {
         ClearAll();
-        fileversion = 0x0634;
-        fname_s[0]  = 0;
+        g_doc->fileversion = 0x0634;
+        g_doc->fname_s[0]  = 0;
         g_undo_count = 0;
         g_undo_idx   = 0;
         g_show_new_img_confirm = false;
@@ -4281,7 +4325,7 @@ static void DrawUnsavedChangesConfirm(void)
     /* Legacy: g_pending_quit is set by Esc/window-close; treat it as the
        Quit pending action if nothing else queued. */
     if (g_pending_quit && g_pending_action == PendingAction::None && !g_show_unsaved_confirm) {
-        if (g_dirty && imgcnt > 0) {
+        if (g_dirty && g_doc->imgcnt > 0) {
             g_pending_action = PendingAction::Quit;
             g_show_unsaved_confirm = true;
         }
@@ -4301,7 +4345,7 @@ static void DrawUnsavedChangesConfirm(void)
     if (ImGui::Button("Save", ImVec2(80, 0))) {
         g_show_unsaved_confirm = false;
         ImGui::CloseCurrentPopup();
-        if (fname_s[0] != '\0') {
+        if (g_doc->fname_s[0] != '\0') {
             SaveImgFile();
             g_dirty = false;
             RunPendingAction();
@@ -4447,7 +4491,7 @@ void imgui_overlay_render(void)
        so e.g. a Clone Stamp source from sprite A doesn't get re-applied as
        coords on sprite B (which could OOB-read or just paint garbage). */
     static int g_prev_ilselected = -2;
-    if (ilselected != g_prev_ilselected) {
+    if (g_doc->ilselected != g_prev_ilselected) {
         g_clone_source_set = false;
         g_clone_offset_set = false;
         g_remap_target_color = -1;
@@ -4465,7 +4509,7 @@ void imgui_overlay_render(void)
            fresh context and a stale yellow border on swatches is
            confusing. They can Ctrl/Shift-click to rebuild it. */
         memset(g_palette_selection, 0, sizeof(g_palette_selection));
-        g_prev_ilselected = ilselected;
+        g_prev_ilselected = g_doc->ilselected;
     }
 
     /* ---- Global keyboard shortcuts ---- */
@@ -4473,8 +4517,8 @@ void imgui_overlay_render(void)
 
     /* Undo / Redo */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) {
-        if (g_pixel_undo && g_pixel_undo_img == ilselected) {
-            IMG *img = get_img(ilselected);
+        if (g_pixel_undo && g_pixel_undo_img == g_doc->ilselected) {
+            IMG *img = get_img(g_doc->ilselected);
             if (img && img->data_p) {
                 unsigned short s = (img->w + 3) & ~3;
                 unsigned int sz = (unsigned int)s * img->h;
@@ -4519,7 +4563,7 @@ void imgui_overlay_render(void)
     /* Delete Image moves to Shift+Del to free Ctrl+D for Adobe-standard
        Deselect. The File/Edit menu accelerator label is updated to match. */
     if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_Delete, route)) {
-        if (ilselected >= 0) DeleteImage(ilselected);
+        if (g_doc->ilselected >= 0) DeleteImage(g_doc->ilselected);
     }
 
     /* File I/O */
@@ -4548,6 +4592,11 @@ void imgui_overlay_render(void)
         g_lasso_points.clear();
         if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
     }
+    if (ImGui::Shortcut(ImGuiKey_I,  route)) {
+        if (g_active_tool == ActiveTool::Eyedropper) g_active_tool = ActiveTool::None;
+        else g_active_tool = ActiveTool::Eyedropper;
+        if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+    }
 
     /* Tool Intercepts. Esc/Enter have a three-level priority: transform
        takes precedence, then floating paste, then marquee. */
@@ -4569,7 +4618,7 @@ void imgui_overlay_render(void)
 
     /* Image Operations */
     if (ImGui::Shortcut(ImGuiKey_Space, route)) {
-        IMG *img = get_img(ilselected); if (img) { img->flags ^= 1; mark_dirty(); }
+        IMG *img = get_img(g_doc->ilselected); if (img) { img->flags ^= 1; mark_dirty(); }
     }
     /* Timeline play/pause (K = standard video editor convention). */
     if (ImGui::Shortcut(ImGuiKey_K, route)) imgtool_toggle_timeline_play();
@@ -4589,10 +4638,10 @@ void imgui_overlay_render(void)
         }
     }
     if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_M, route)) {
-        IMG *p = (IMG*)img_p; while (p) { p->flags |= 1; p = (IMG*)p->nxt_p; }
+        IMG *p = (IMG*)g_doc->img_p; while (p) { p->flags |= 1; p = (IMG*)p->nxt_p; }
     }
     if (ImGui::Shortcut(ImGuiKey_M, route)) {
-        IMG *p = (IMG*)img_p; while (p) { p->flags &= ~1; p = (IMG*)p->nxt_p; }
+        IMG *p = (IMG*)g_doc->img_p; while (p) { p->flags &= ~1; p = (IMG*)p->nxt_p; }
     }
     if (ImGui::Shortcut(ImGuiKey_Semicolon, route)) LeastSquaresReduceMarked();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_B, route)) OpenFileDialog(FileDialogMode::ExportTga);
@@ -4600,22 +4649,22 @@ void imgui_overlay_render(void)
     /* Sprite / palette list navigation: cursor up/down flicks
      * between images (default) or palettes (when palette panel
      * was last clicked), matching DOS imgtool muscle memory. */
-    if (g_palette_nav && palcnt > 0) {
+    if (g_palette_nav && g_doc->palcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
-            SelectPalette((plselected + 1) % (int)palcnt);
+            SelectPalette((g_doc->plselected + 1) % (int)g_doc->palcnt);
             g_zoom_reset = true;
         }
         if (ImGui::Shortcut(ImGuiKey_UpArrow, route)) {
-            SelectPalette((plselected <= 0) ? (int)palcnt - 1 : plselected - 1);
+            SelectPalette((g_doc->plselected <= 0) ? (int)g_doc->palcnt - 1 : g_doc->plselected - 1);
             g_zoom_reset = true;
         }
-    } else if (imgcnt > 0) {
+    } else if (g_doc->imgcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
-            ilselected = (ilselected + 1) % (int)imgcnt;
+            g_doc->ilselected = (g_doc->ilselected + 1) % (int)g_doc->imgcnt;
             g_zoom_reset = true;
         }
         if (ImGui::Shortcut(ImGuiKey_UpArrow, route)) {
-            ilselected = (ilselected <= 0) ? (int)imgcnt - 1 : ilselected - 1;
+            g_doc->ilselected = (g_doc->ilselected <= 0) ? (int)g_doc->imgcnt - 1 : g_doc->ilselected - 1;
             g_zoom_reset = true;
         }
     }
@@ -4687,15 +4736,15 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Redo", "Ctrl+Y")) { g_undo_idx++; undo_apply(g_undo_idx); }
             if (!can_redo) ImGui::EndDisabled();
             ImGui::Separator();
-            if (ImGui::MenuItem("Copy",  "Ctrl+C", false, ilselected >= 0)) copy_image(false);
-            if (ImGui::MenuItem("Cut",   "Ctrl+X", false, ilselected >= 0)) copy_image(true);
-            if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && ilselected >= 0))
+            if (ImGui::MenuItem("Copy",  "Ctrl+C", false, g_doc->ilselected >= 0)) copy_image(false);
+            if (ImGui::MenuItem("Cut",   "Ctrl+X", false, g_doc->ilselected >= 0)) copy_image(true);
+            if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && g_doc->ilselected >= 0))
                 paste_image();
             ImGui::Separator();
             /* Selection ops — disabled when nothing's available. */
-            if (ImGui::MenuItem("Select All",       "Ctrl+A",       false, ilselected >= 0))      select_all();
+            if (ImGui::MenuItem("Select All",       "Ctrl+A",       false, g_doc->ilselected >= 0))      select_all();
             if (ImGui::MenuItem("Deselect",         "Ctrl+D",       false, g_grid_sel.active))    deselect_all();
-            if (ImGui::MenuItem("Invert Selection", "Ctrl+Shift+I", false, ilselected >= 0))      invert_selection();
+            if (ImGui::MenuItem("Invert Selection", "Ctrl+Shift+I", false, g_doc->ilselected >= 0))      invert_selection();
             ImGui::Separator();
             /* Floating-paste ops — only meaningful while a paste is active. */
             if (ImGui::MenuItem("Free Transform",   "Ctrl+T", false, g_pasted.active && !g_xform.active)) xform_begin();
@@ -4707,32 +4756,32 @@ void imgui_overlay_render(void)
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",     "Ctrl+R"))     OpenRenameImage();
-            if (ImGui::MenuItem("Delete Image",     "Shift+Del"))  DeleteImage(ilselected);
+            if (ImGui::MenuItem("Delete Image",     "Shift+Del"))  DeleteImage(g_doc->ilselected);
             if (ImGui::MenuItem("Duplicate",        "Ctrl+J"))     DuplicateImage();
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Image")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
-            if (ImGui::MenuItem("Mark / Unmark",      "Space"))  { IMG *img = get_img(ilselected); if (img) img->flags ^= 1; }
-            if (ImGui::MenuItem("Set All Marks",      "M"))      { IMG *p=(IMG*)img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
-            if (ImGui::MenuItem("Clear All Marks",    "m"))      { IMG *p=(IMG*)img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
-            if (ImGui::MenuItem("Invert All Marks"))             { IMG *p=(IMG*)img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
+            if (ImGui::MenuItem("Mark / Unmark",      "Space"))  { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
+            if (ImGui::MenuItem("Set All Marks",      "M"))      { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
+            if (ImGui::MenuItem("Clear All Marks",    "m"))      { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
+            if (ImGui::MenuItem("Invert All Marks"))             { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
             ImGui::Separator();
             if (ImGui::MenuItem("Jump to Prev Marked", "Left")) {
                 int n_imgs = count_imgs();
                 for (int i = 1; i <= n_imgs; i++) {
-                    int idx = (ilselected - i + n_imgs) % n_imgs;
+                    int idx = (g_doc->ilselected - i + n_imgs) % n_imgs;
                     IMG *img = get_img(idx);
-                    if (img && (img->flags & 1)) { ilselected = idx; break; }
+                    if (img && (img->flags & 1)) { g_doc->ilselected = idx; break; }
                 }
             }
             if (ImGui::MenuItem("Jump to Next Marked", "Right")) {
                 int n_imgs = count_imgs();
                 for (int i = 1; i <= n_imgs; i++) {
-                    int idx = (ilselected + i) % n_imgs;
+                    int idx = (g_doc->ilselected + i) % n_imgs;
                     IMG *img = get_img(idx);
-                    if (img && (img->flags & 1)) { ilselected = idx; break; }
+                    if (img && (img->flags & 1)) { g_doc->ilselected = idx; break; }
                 }
             }
             if (ImGui::MenuItem("Move Up",    "Alt+PgUp")) MoveImageUp();
@@ -4768,7 +4817,7 @@ void imgui_overlay_render(void)
                 "neighbor is averaged toward its non-transparent neighbors,\n"
                 "killing the 1px halo of blue/green-spill on digitized actors.");
             if (ImGui::MenuItem("Align Marked Anipoints to Selected")) {
-                int n = AlignAnipointsToMarked(ilselected);
+                int n = AlignAnipointsToMarked(g_doc->ilselected);
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          "Anchored %d marked image(s) to selected anipoint.", n);
                 g_restore_msg_timer = 4.0f;
@@ -4799,7 +4848,7 @@ void imgui_overlay_render(void)
                 "Uses anipoints to align; same palette required.");
             if (ImGui::MenuItem("Bulk Restore from Source (overwrite)")) {
                 int n = RestoreMarkedFromSourceForce();
-                IMG *s = get_img(ilselected);
+                IMG *s = get_img(g_doc->ilselected);
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          n > 0 ? "Rebuilt %d px from source. Source anipt (%d,%d) %dx%d"
                                : "0 px restored. Source anipt (%d,%d) %dx%d. Check marks/anipoints.",
@@ -4828,19 +4877,19 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Set for Image",       "]"))       SetPaletteOfSelected();
             if (ImGui::MenuItem("Merge Marked into Selected", "*")) MergeMarkedPalettes();
             if (ImGui::MenuItem("Delete Palette",      "Del"))     DeletePalette();
-            if (ImGui::MenuItem("Rename Palette",      "Shift+R")) OpenRenamePalette(plselected);
+            if (ImGui::MenuItem("Rename Palette",      "Shift+R")) OpenRenamePalette(g_doc->plselected);
             ImGui::Separator();
             if (ImGui::MenuItem("Show Histogram"))               { CalculatePaletteHistogram(); g_show_histogram = true; }
             if (ImGui::MenuItem("Delete Unused Colors"))         DeleteUnusedPaletteColors();
             ImGui::Separator();
             if (ImGui::MenuItem("Mark All")) {
-                PAL *p=(PAL*)pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;}
+                PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;}
             }
             if (ImGui::MenuItem("Clear Marks")) {
-                PAL *p=(PAL*)pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;}
+                PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;}
             }
             if (ImGui::MenuItem("Invert Marks")) {
-                PAL *p=(PAL*)pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;}
+                PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;}
             }
             ImGui::PopStyleVar();
             ImGui::EndMenu();
@@ -4891,10 +4940,10 @@ void imgui_overlay_render(void)
            reminder that there are unsaved changes — without this, the only
            "this file is modified" signal is the quit-time confirmation. */
         {
-            const char *name = (fname_s[0] != '\0') ? fname_s : "(unsaved)";
+            const char *name = (g_doc->fname_s[0] != '\0') ? g_doc->fname_s : "(unsaved)";
             char label[80];
             snprintf(label, sizeof(label), "%s%s",
-                     g_dirty ? "\xE2\x97\x8F " : "  ",     /* ● bullet when dirty */
+                     g_dirty ? "* " : "  ",     /* ASCII asterisk — universal 'modified' convention */
                      name);
             float text_w = ImGui::CalcTextSize(label).x + 16.0f;
             float avail_w = ImGui::GetContentRegionAvail().x;
@@ -4919,17 +4968,17 @@ void imgui_overlay_render(void)
     static int last_plselected = -1;
     static void* last_pal_p = NULL;
 
-    if (ilselected != last_ilselected || pal_p != last_pal_p) {
-        last_ilselected = ilselected;
-        last_pal_p = pal_p;
-        IMG* img = get_img(ilselected);
-        if (img) plselected = img->palnum;
-        last_plselected = -1; /* force palette reapply when pal_p changes */
+    if (g_doc->ilselected != last_ilselected || g_doc->pal_p != last_pal_p) {
+        last_ilselected = g_doc->ilselected;
+        last_pal_p = g_doc->pal_p;
+        IMG* img = get_img(g_doc->ilselected);
+        if (img) g_doc->plselected = img->palnum;
+        last_plselected = -1; /* force palette reapply when g_doc->pal_p changes */
     }
 
-    if (plselected != last_plselected) {
-        last_plselected = plselected;
-        ApplyPalette(plselected);
+    if (g_doc->plselected != last_plselected) {
+        last_plselected = g_doc->plselected;
+        ApplyPalette(g_doc->plselected);
         g_img_tex_idx = -2; /* Force texture rebuild to use new palette */
         g_hue_slider = 0;
         g_hue_last   = 0;
@@ -4948,10 +4997,10 @@ void imgui_overlay_render(void)
        When the texture-idx sentinel signals invalidation (set to -2 by any
        pixel-modifying tool), drop the matching timeline thumbnail too. */
     {
-        IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
-        if (g_img_tex_idx == -2 && ilselected >= 0) InvalidateThumb(ilselected);
+        IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+        if (g_img_tex_idx == -2 && g_doc->ilselected >= 0) InvalidateThumb(g_doc->ilselected);
         rebuild_img_texture(img);
-        g_img_tex_idx = ilselected;
+        g_img_tex_idx = g_doc->ilselected;
     }
 
     /* ===== LEFT TOOLBAR ===== */
@@ -4970,11 +5019,11 @@ void imgui_overlay_render(void)
         if (ImGui::Button(TB_LABEL(ICON_SAVE, ICON_SAVE_TXT), btn))  OpenFileDialog(FileDialogMode::SaveImg);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save IMG (Ctrl+S)");
         ImGui::Spacing();
-        if (ImGui::Button(TB_LABEL(ICON_MARK, ICON_MARK_TXT), btn))  { IMG *img = get_img(ilselected); if (img) img->flags ^= 1; }
+        if (ImGui::Button(TB_LABEL(ICON_MARK, ICON_MARK_TXT), btn))  { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark/Unmark (Space)");
-        if (ImGui::Button(TB_LABEL(ICON_MARK_ALL, ICON_MARK_ALL_TXT), btn))  { IMG *p=(IMG*)img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
+        if (ImGui::Button(TB_LABEL(ICON_MARK_ALL, ICON_MARK_ALL_TXT), btn))  { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set All Marks (M)");
-        if (ImGui::Button(TB_LABEL(ICON_CLEAR, ICON_CLEAR_TXT), btn))  { IMG *p=(IMG*)img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
+        if (ImGui::Button(TB_LABEL(ICON_CLEAR, ICON_CLEAR_TXT), btn))  { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear All Marks (m)");
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Button, g_show_points ?
@@ -5002,7 +5051,7 @@ void imgui_overlay_render(void)
         /* Magic Wand tool */
         ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::MagicWand ?
             ImVec4(0.5f,0.2f,0.7f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
-        if (ImGui::Button(TB_LABEL("\xEE\xA6\x83", "Wd"), btn)) { /* U+E983 auto_fix_high */
+        if (ImGui::Button(TB_LABEL("\xEF\x8C\x9F", "Wd"), btn)) { /* U+F31F wand_shine */
             if (g_active_tool == ActiveTool::MagicWand) g_active_tool = ActiveTool::None;
             else g_active_tool = ActiveTool::MagicWand;
             if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
@@ -5013,18 +5062,18 @@ void imgui_overlay_render(void)
         /* Background Eraser tool */
         ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::BackgroundEraser ?
             ImVec4(0.7f,0.2f,0.2f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
-        if (ImGui::Button(TB_LABEL("\xEE\x9B\x92", "Er"), btn)) { /* U+E6D2 layers_clear */
+        if (ImGui::Button(TB_LABEL("\xEE\x9B\x90", "Er"), btn)) { /* U+E6D0 ink_eraser */
             if (g_active_tool == ActiveTool::BackgroundEraser) g_active_tool = ActiveTool::None;
             else g_active_tool = ActiveTool::BackgroundEraser;
             if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
         }
         ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart Eraser \xE2\x80\x94 chroma-key with tolerance + defringe (E)");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart Eraser - chroma-key with tolerance + defringe (E)");
 
         /* Clone Stamp tool */
         ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::CloneStamp ?
             ImVec4(0.2f,0.6f,0.3f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
-        if (ImGui::Button(TB_LABEL("\xEE\x8E\xA6", "Cl"), btn)) { /* U+E3A6 brush */
+        if (ImGui::Button(TB_LABEL("\xEE\x8E\xBB", "Cl"), btn)) { /* U+E3BB control_point_duplicate */
             if (g_active_tool == ActiveTool::CloneStamp) g_active_tool = ActiveTool::None;
             else g_active_tool = ActiveTool::CloneStamp;
             if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
@@ -5035,7 +5084,7 @@ void imgui_overlay_render(void)
         /* Smart Remap tool */
         ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::SmartRemap ?
             ImVec4(0.8f,0.4f,0.1f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
-        if (ImGui::Button(TB_LABEL("\xEE\x8E\xB8", "Rm"), btn)) { /* U+E3B8 format_paint */
+        if (ImGui::Button(TB_LABEL("\xEE\x90\x8A", "Rm"), btn)) { /* U+E40A palette */
             if (g_active_tool == ActiveTool::SmartRemap) g_active_tool = ActiveTool::None;
             else g_active_tool = ActiveTool::SmartRemap;
             if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
@@ -5046,7 +5095,7 @@ void imgui_overlay_render(void)
         /* Lasso tool */
         ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::Lasso ?
             ImVec4(0.3f,0.5f,0.8f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
-        if (ImGui::Button(TB_LABEL("\xEE\x94\xB2", "Ls"), btn)) { /* U+E532 gesture */
+        if (ImGui::Button(TB_LABEL("\xEE\xAC\x83", "Ls"), btn)) { /* U+EB03 lasso_select */
             if (g_active_tool == ActiveTool::Lasso) g_active_tool = ActiveTool::None;
             else g_active_tool = ActiveTool::Lasso;
             g_lasso_points.clear();
@@ -5054,6 +5103,19 @@ void imgui_overlay_render(void)
         }
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lasso Selection Tool (L)");
+
+        /* Eyedropper tool — left-click picks the underlying palette color
+           (same as right-click in any tool mode, but as the explicit primary
+           action). Matches Photoshop's `I` shortcut. */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::Eyedropper ?
+            ImVec4(0.6f,0.7f,0.2f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEF\x8D\x91", "Ey"), btn)) { /* U+F351 dropper_eye */
+            if (g_active_tool == ActiveTool::Eyedropper) g_active_tool = ActiveTool::None;
+            else g_active_tool = ActiveTool::Eyedropper;
+            if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Eyedropper Tool (I) - click to pick palette color");
 
         /* Tool-options strip — appears inline when a configurable tool is active. */
         if (g_active_tool == ActiveTool::MagicWand) {
@@ -5097,10 +5159,10 @@ void imgui_overlay_render(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remap tolerance (palette-index distance)");
             if (g_remap_target_color >= 0) {
                 ImGui::SameLine();
-                ImGui::TextDisabled("\xE2\x86\x92"); /* right arrow */
+                ImGui::TextDisabled("->");
                 ImGui::SameLine();
                 ImVec4 c(1,1,1,1);
-                PAL *p = (ilselected >= 0) ? get_pal(get_img(ilselected) ? get_img(ilselected)->palnum : 0) : NULL;
+                PAL *p = (g_doc->ilselected >= 0) ? get_pal(get_img(g_doc->ilselected) ? get_img(g_doc->ilselected)->palnum : 0) : NULL;
                 if (p && p->data_p) {
                     unsigned char *pd = (unsigned char *)p->data_p;
                     int ci = g_remap_target_color;
@@ -5170,13 +5232,13 @@ void imgui_overlay_render(void)
         if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
             float list_h = panel_h * 0.30f;
             if (ImGui::BeginListBox("##imglist", ImVec2(-1, list_h))) {
-                /* Auto-scroll: when ilselected changes (typically via Up/Down
+                /* Auto-scroll: when g_doc->ilselected changes (typically via Up/Down
                    keyboard nav, but also Prev/Next-Marked jumps or programmatic
                    selection), make sure the selected row is visible. Without
                    this the scroll bar stays put and the user loses track of
                    where they are in a long sprite list. */
                 static int last_scrolled_to = -2;
-                bool need_scroll = (ilselected != last_scrolled_to);
+                bool need_scroll = (g_doc->ilselected != last_scrolled_to);
 
                 char current_group[32] = {0};
                 bool group_open = true;
@@ -5202,7 +5264,7 @@ void imgui_overlay_render(void)
 
                     if (group_open) {
                         bool marked   = (img->flags & 1) != 0;
-                        bool selected = (i == ilselected);
+                        bool selected = (i == g_doc->ilselected);
                         ImGui::PushID(i);
                         
                         char label[64];
@@ -5216,13 +5278,13 @@ void imgui_overlay_render(void)
                         }
                         
                         if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_AllowDoubleClick)) {
-                            ilselected = i;
+                            g_doc->ilselected = i;
                             g_palette_nav = false;
                             if (ImGui::IsMouseDoubleClicked(0)) {
                                 img->flags ^= 1;
                             }
                         }
-                        /* When ilselected changes and the selected row would
+                        /* When g_doc->ilselected changes and the selected row would
                            be clipped above or below the listbox viewport,
                            nudge the scroll so the user can see where they
                            are. We DON'T pin every frame — only when the
@@ -5233,7 +5295,7 @@ void imgui_overlay_render(void)
                             ImGui::SetScrollHereY(0.5f);
                         }
                         if (selected && need_scroll) {
-                            last_scrolled_to = ilselected;
+                            last_scrolled_to = g_doc->ilselected;
                         }
                         
                         if (selected) {
@@ -5244,7 +5306,7 @@ void imgui_overlay_render(void)
                         if (ImGui::BeginPopupContextItem("##imgctx")) {
                             if (ImGui::MenuItem("Mark / Unmark")) { img->flags ^= 1; }
                             if (ImGui::MenuItem("Rename"))        OpenRenameImage();
-                            if (ImGui::MenuItem("Delete"))        DeleteImage(ilselected);
+                            if (ImGui::MenuItem("Delete"))        DeleteImage(g_doc->ilselected);
                             ImGui::Separator();
                             if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
                             if (ImGui::MenuItem("Set Palette"))   SetPaletteOfSelected();
@@ -5259,13 +5321,13 @@ void imgui_overlay_render(void)
                 ImGui::EndListBox();
             }
             /* Mark buttons inline below list */
-            if (ImGui::SmallButton("Mk All"))   { IMG *p=(IMG*)img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
+            if (ImGui::SmallButton("Mk All"))   { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Clr All"))  { IMG *p=(IMG*)img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
+            if (ImGui::SmallButton("Clr All"))  { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Invert"))   { IMG *p=(IMG*)img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
+            if (ImGui::SmallButton("Invert"))   { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Mk"))       { IMG *img = get_img(ilselected); if (img) img->flags ^= 1; }
+            if (ImGui::SmallButton("Mk"))       { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
             ImGui::SameLine();
             if (ImGui::SmallButton("Add"))      { AddNewBlankImage(); }
             if (ImGui::IsItemHovered())
@@ -5282,7 +5344,7 @@ void imgui_overlay_render(void)
                 for (int i = 0; i < n_pals; i++) {
                     PAL *pal = get_pal(i);
                     if (!pal) break;
-                    bool sel    = (i == plselected);
+                    bool sel    = (i == g_doc->plselected);
                     bool marked = (pal->flags & 1) != 0;
                     ImGui::PushID(1000 + i);
                     char label[16];
@@ -5314,14 +5376,14 @@ void imgui_overlay_render(void)
                 ImGui::EndListBox();
             }
             /* Palette mark buttons (wrapped to 2 rows) */
-            if (ImGui::SmallButton("Mk All"))    { PAL *p=(PAL*)pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;} }
+            if (ImGui::SmallButton("Mk All"))    { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;} }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Clr All"))   { PAL *p=(PAL*)pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;} }
+            if (ImGui::SmallButton("Clr All"))   { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;} }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
+            if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
             if (ImGui::SmallButton("Add")) {
                 AddNewPalette();
-                if (palcnt > 0) plselected = (int)palcnt - 1;
+                if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
             }
             ImGui::SameLine();
             if (ImGui::SmallButton("Merge"))     MergeMarkedPalettes();
@@ -5343,7 +5405,7 @@ void imgui_overlay_render(void)
 
         /* --- Properties --- */
         if (ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
-            IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img) {
                 LabeledValue("Name:", "%.15s", img->n_s);
                 LabeledValue("Size:", "%d x %d", (int)img->w, (int)img->h);
@@ -5396,7 +5458,7 @@ void imgui_overlay_render(void)
 
         /* --- Anim Point Editor --- */
         if (ImGui::CollapsingHeader("Anim Points")) {
-            IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img) {
                 int ax = (short)img->anix, ay = (short)img->aniy;
                 int ax2 = (short)img->anix2, ay2 = (short)img->aniy2;
@@ -5492,7 +5554,7 @@ void imgui_overlay_render(void)
                 ImGui::SetTooltip("Reset Hue/Saturation/Lightness sliders to 0 and restore the palette baseline.");
             ImGui::SameLine();
             if (ImGui::SmallButton("New from HSL")) {
-                PAL *src = (plselected >= 0) ? get_pal(plselected) : NULL;
+                PAL *src = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
                 if (src && src->data_p) {
                     PAL *pal = (PAL *)AllocPal();
                     if (pal) {
@@ -5506,8 +5568,8 @@ void imgui_overlay_render(void)
                         if (buf) {
                             pal->data_p = buf;
                             memcpy(buf, src->data_p, col_sz);
-                            if (palcnt > 0) plselected = (int)palcnt - 1;
-                            ApplyPalette(plselected);
+                            if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
+                            ApplyPalette(g_doc->plselected);
                             g_hue_slider = 0;
                             g_hue_last   = 0;
                             g_sat_slider = 0;
@@ -5523,12 +5585,12 @@ void imgui_overlay_render(void)
 
         /* --- Library Info --- */
         if (ImGui::CollapsingHeader("Library")) {
-            ImGui::Text("Images:   %u", imgcnt);
-            ImGui::Text("Palettes: %u", palcnt);
-            ImGui::Text("Seqs:     %u", seqcnt);
-            ImGui::Text("Scripts:  %u", scrcnt);
-            ImGui::Text("DamTbls:  %u", damcnt);
-            ImGui::Text("Version:  0x%04X", fileversion);
+            ImGui::Text("Images:   %u", g_doc->imgcnt);
+            ImGui::Text("Palettes: %u", g_doc->palcnt);
+            ImGui::Text("Seqs:     %u", g_doc->seqcnt);
+            ImGui::Text("Scripts:  %u", g_doc->scrcnt);
+            ImGui::Text("DamTbls:  %u", g_doc->damcnt);
+            ImGui::Text("Version:  0x%04X", g_doc->fileversion);
         }
     }
     ImGui::End();
@@ -5563,7 +5625,7 @@ void imgui_overlay_render(void)
          * paint, marquee, anim-point handles, hitboxes, DMA overlay,
          * grid-selection) is skipped. */
         if (g_world_view && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
-            IMG *cimg = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (cimg) {
                 /* Auto-fit the world canvas inside the available area. */
                 float fit_x = avail.x / (float)g_world_w;
@@ -5591,8 +5653,8 @@ void imgui_overlay_render(void)
                             IM_COL32(120, 120, 120, 255));
 
                 /* Onion-skin: faintly draw the previous sprite. */
-                if (g_world_onion && imgcnt > 1) {
-                    int prev_idx = (ilselected <= 0) ? (int)imgcnt - 1 : ilselected - 1;
+                if (g_world_onion && g_doc->imgcnt > 1) {
+                    int prev_idx = (g_doc->ilselected <= 0) ? (int)g_doc->imgcnt - 1 : g_doc->ilselected - 1;
                     IMG *pimg = get_img(prev_idx);
                     if (pimg && pimg->data_p && pimg->w > 0 && pimg->h > 0) {
                         if (!g_world_onion_tex
@@ -5676,7 +5738,7 @@ void imgui_overlay_render(void)
                 char buf[64];
                 snprintf(buf, sizeof(buf),
                          "[%d] %s   anix=%d aniy=%d   world=%dx%d",
-                         ilselected, cimg->n_s, ax, ay, g_world_w, g_world_h);
+                         g_doc->ilselected, cimg->n_s, ax, ay, g_world_w, g_world_h);
                 dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
                                   ImVec2(wpos.x + 320, wpos.y + 18),
                                   IM_COL32(0, 0, 0, 180));
@@ -5707,7 +5769,7 @@ void imgui_overlay_render(void)
             }
 
             if (g_zoom_reset) { g_zoom = 1.0f; g_pan_x = 0; g_pan_y = 0; g_zoom_reset = false; }
-            else if (ilselected != g_img_tex_idx) g_zoom_reset = true;
+            else if (g_doc->ilselected != g_img_tex_idx) g_zoom_reset = true;
 
             float scale = g_zoom;
             if (g_zoom == 1.0f) {
@@ -5749,9 +5811,9 @@ void imgui_overlay_render(void)
             if (g_timeline_onion && !g_timeline_frames.empty()
                 && g_timeline_play_idx >= 0
                 && g_timeline_play_idx < (int)g_timeline_frames.size()
-                && ilselected >= 0)
+                && g_doc->ilselected >= 0)
             {
-                IMG *cur_img = get_img(ilselected);
+                IMG *cur_img = get_img(g_doc->ilselected);
                 if (cur_img) {
                     int cur_ax = (int)(short)cur_img->anix;
                     int cur_ay = (int)(short)cur_img->aniy;
@@ -5768,7 +5830,7 @@ void imgui_overlay_render(void)
                     for (int side = 0; side < 2; side++) {
                         if (neighbors[side] == g_timeline_play_idx) continue;
                         int img_idx = g_timeline_frames[neighbors[side]];
-                        if (img_idx == ilselected) continue;
+                        if (img_idx == g_doc->ilselected) continue;
                         IMG *nimg = get_img(img_idx);
                         if (!nimg) continue;
                         TimelineThumb *t = EnsureThumb(img_idx);
@@ -5794,22 +5856,40 @@ void imgui_overlay_render(void)
 
             ImGui::Image((ImTextureID)(intptr_t)g_img_texture, img_sz);
 
-            /* Color isolation: dim everything that isn't the target index.
+            /* Color isolation: dim everything that isn't in the "kept" set.
+               The set is either (a) the single Alt-clicked isolate index, or
+               (b) the multi-selected swatch set (yellow rings in the palette
+               grid). Alt-isolate wins when both are active.
                Scanline-coalesced so a 256x256 sprite emits at most ~256 rects
                per row of contiguous non-target pixels, not 65k per-pixel. */
-            if (g_isolate_color >= 0 && ilselected >= 0) {
-                IMG *iimg = get_img(ilselected);
+            bool kept[256];
+            bool any_kept = false;
+            if (g_isolate_color >= 0) {
+                memset(kept, 0, sizeof(kept));
+                kept[g_isolate_color] = true;
+                any_kept = true;
+            } else {
+                for (int ki = 0; ki < 256; ki++) {
+                    kept[ki] = g_palette_selection[ki];
+                    if (kept[ki]) any_kept = true;
+                }
+            }
+            if (any_kept && g_doc->ilselected >= 0) {
+                IMG *iimg = get_img(g_doc->ilselected);
                 if (iimg && iimg->data_p) {
                     int iw = iimg->w, ih = iimg->h;
                     int stride = (iw + 3) & ~3;
                     unsigned char *idp = (unsigned char *)iimg->data_p;
-                    ImU32 dim = IM_COL32(0, 0, 0, 170);
+                    /* Muted indigo wash — visible against both dark and light
+                       sprite content, where pure-black ~67% alpha got lost in
+                       dark fighter sprites. Same alpha, just tinted. */
+                    ImU32 dim = IM_COL32(40, 30, 80, 180);
                     for (int y = 0; y < ih; y++) {
                         int x = 0;
                         while (x < iw) {
-                            if (idp[y * stride + x] == g_isolate_color) { x++; continue; }
+                            if (kept[idp[y * stride + x]]) { x++; continue; }
                             int x0 = x;
-                            while (x < iw && idp[y * stride + x] != g_isolate_color) x++;
+                            while (x < iw && !kept[idp[y * stride + x]]) x++;
                             ImVec2 a(img_pos.x + x0 * sx, img_pos.y + y * sy);
                             ImVec2 b(img_pos.x + x * sx,  img_pos.y + (y + 1) * sy);
                             dl->AddRectFilled(a, b, dim);
@@ -5820,7 +5900,7 @@ void imgui_overlay_render(void)
 
             /* --- DMA Compression overlay --- */
             if (g_show_dma_comp) {
-                IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+                IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
                 if (img && img->data_p) {
                     unsigned short stride = (img->w + 3) & ~3;
                     unsigned char *pixels = (unsigned char *)img->data_p;
@@ -5908,7 +5988,7 @@ void imgui_overlay_render(void)
 
         /* ---- Pencil + eyedropper + fill + pan tools ---- */
         if (!canvas_input_blocked) {
-            IMG *cimg = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                         mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
 
@@ -5940,13 +6020,36 @@ void imgui_overlay_render(void)
                     unsigned short stride = (cimg->w + 3) & ~3;
                     unsigned char *pix = (unsigned char *)cimg->data_p + py * stride + px;
 
-                    /* Right-click: eyedropper */
+                    /* Right-click: eyedropper (works in any tool mode) */
                     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                         g_sel_color = *pix;
                         widget_consumed_click = true;
                     }
-                    /* Left-click: pencil, fill, background eraser, clone stamp, or smart remap */
-                    if (!g_pasted.active && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
+                    /* Eyedropper tool active: left-click also picks color.
+                       Consumes the click so the pencil branch below is skipped. */
+                    if (g_active_tool == ActiveTool::Eyedropper &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        g_sel_color = *pix;
+                        widget_consumed_click = true;
+                    }
+                    /* Left-click: pencil, fill, background eraser, clone stamp, or smart remap.
+                       Suppress when the cursor is over (or dragging) an anipoint or hitbox
+                       handle. The anipoint render block runs *after* this branch, so the
+                       in-progress drag flag isn't enough on the first click frame — we
+                       need to also detect "about to start dragging" via a fresh hover test. */
+                    bool over_anipoint = false;
+                    if (g_show_points && cimg) {
+                        ImVec2 a1(img_pos.x + (short)cimg->anix * sx, img_pos.y + (short)cimg->aniy * sy);
+                        ImVec2 da1 = mouse - a1;
+                        if (da1.x*da1.x + da1.y*da1.y < 10*10) over_anipoint = true;
+                        if (!over_anipoint && (short)cimg->anix2 >= 0 && (short)cimg->aniy2 >= 0) {
+                            ImVec2 a2(img_pos.x + (short)cimg->anix2 * sx, img_pos.y + (short)cimg->aniy2 * sy);
+                            ImVec2 da2 = mouse - a2;
+                            if (da2.x*da2.x + da2.y*da2.y < 10*10) over_anipoint = true;
+                        }
+                    }
+                    if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
+                        && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
                         if (g_active_tool == ActiveTool::CloneStamp) {
                             if (io.KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                                 g_clone_src_x = px;
@@ -5960,13 +6063,13 @@ void imgui_overlay_render(void)
                                     g_clone_dy = g_clone_src_y - py;
                                     g_clone_offset_set = true;
                                 }
-                                if (g_pixel_undo_img != ilselected) {
+                                if (g_pixel_undo_img != g_doc->ilselected) {
                                     free(g_pixel_undo); g_pixel_undo = NULL;
                                     unsigned short s = (cimg->w + 3) & ~3;
                                     unsigned int sz = (unsigned int)s * cimg->h;
                                     g_pixel_undo = (unsigned char *)malloc(sz);
                                     if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
-                                    g_pixel_undo_img = ilselected;
+                                    g_pixel_undo_img = g_doc->ilselected;
                                 }
                                 /* Round-brush stamp. g_clone_brush is the radius;
                                    1 = single pixel (kept for sharp work), >1 = soft disc. */
@@ -6006,13 +6109,13 @@ void imgui_overlay_render(void)
                                 int diff = (int)*pix - g_remap_target_color;
                                 if (diff < 0) diff = -diff;
                                 if (diff <= g_remap_tolerance) {
-                                    if (g_pixel_undo_img != ilselected) {
+                                    if (g_pixel_undo_img != g_doc->ilselected) {
                                         free(g_pixel_undo); g_pixel_undo = NULL;
                                         unsigned short s = (cimg->w + 3) & ~3;
                                         unsigned int sz = (unsigned int)s * cimg->h;
                                         g_pixel_undo = (unsigned char *)malloc(sz);
                                         if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
-                                        g_pixel_undo_img = ilselected;
+                                        g_pixel_undo_img = g_doc->ilselected;
                                     }
                                     *pix = (unsigned char)g_sel_color;
                                     mark_dirty();
@@ -6028,13 +6131,13 @@ void imgui_overlay_render(void)
                         } else if (g_active_tool == ActiveTool::BackgroundEraser
                                        ? ImGui::IsMouseClicked(ImGuiMouseButton_Left)
                                        : ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                            if (g_pixel_undo_img != ilselected) {
+                            if (g_pixel_undo_img != g_doc->ilselected) {
                                 free(g_pixel_undo); g_pixel_undo = NULL;
                                 unsigned short s = (cimg->w + 3) & ~3;
                                 unsigned int sz = (unsigned int)s * cimg->h;
                                 g_pixel_undo = (unsigned char *)malloc(sz);
                                 if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
-                                g_pixel_undo_img = ilselected;
+                                g_pixel_undo_img = g_doc->ilselected;
                             }
                             if (g_active_tool == ActiveTool::BackgroundEraser) {
                                 mark_dirty();
@@ -6059,41 +6162,74 @@ void imgui_overlay_render(void)
 
         /* --- Anim point overlay + dragging --- */
         if (g_show_points && !canvas_input_blocked) {
-            IMG *img = (ilselected >= 0) ? get_img(ilselected) : NULL;
+            IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img && img->w > 0) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
 
-                ImVec2 s1(img_pos.x + img->anix * sx, img_pos.y + img->aniy * sy);
+                /* DOS-style anipoint crosshair: long thin lines, optional
+                   center dot. Reads as a registration mark, not a button.
+                   The previous frame's anipoint is drawn dimmer underneath
+                   when onion-skin is on, mirroring the gray crosshair in
+                   the original DOS tool. */
+                auto draw_crosshair = [&](ImVec2 p, ImU32 col, float len, float thick) {
+                    dl->AddLine(ImVec2(p.x - len, p.y), ImVec2(p.x + len, p.y), col, thick);
+                    dl->AddLine(ImVec2(p.x, p.y - len), ImVec2(p.x, p.y + len), col, thick);
+                    /* small center gap fill so the cross stays readable on
+                       busy sprite content */
+                    dl->AddCircleFilled(p, 1.5f, col);
+                };
+
+                /* Previous-frame anipoint ghost — gray crosshair when onion-skin
+                   is on, mirroring the DOS tool's registration reference. */
+                if (g_timeline_onion && g_doc->ilselected > 0) {
+                    int prev_idx = g_doc->ilselected - 1;
+                    IMG *prev = get_img(prev_idx);
+                    if (prev) {
+                        ImVec2 sp(img_pos.x + (short)prev->anix * sx, img_pos.y + (short)prev->aniy * sy);
+                        draw_crosshair(sp, IM_COL32(160, 160, 160, 180), 12.f, 1.f);
+                        if ((short)prev->anix2 >= 0 && (short)prev->aniy2 >= 0) {
+                            ImVec2 sp2(img_pos.x + (short)prev->anix2 * sx, img_pos.y + (short)prev->aniy2 * sy);
+                            draw_crosshair(sp2, IM_COL32(160, 160, 160, 140), 9.f, 1.f);
+                        }
+                    }
+                }
+
+                ImVec2 s1(img_pos.x + (short)img->anix * sx, img_pos.y + (short)img->aniy * sy);
                 ImVec2 d1 = mouse - s1;
                 bool h1 = (d1.x*d1.x + d1.y*d1.y) < 10*10;
-                dl->AddCircleFilled(s1, 6.f, h1 ? IM_COL32(255,120,0,255) : IM_COL32(255,0,0,255));
-                dl->AddCircle(s1, 6.f, IM_COL32(255,255,255,255), 0, 1.5f);
+                /* Primary anipoint: white crosshair, brightens on hover. */
+                ImU32 col1 = h1 ? IM_COL32(255, 220, 60, 255) : IM_COL32(255, 255, 255, 255);
+                draw_crosshair(s1, col1, 14.f, h1 ? 2.f : 1.5f);
 
-                static bool drag1 = false;
-                if (h1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { drag1 = true; undo_push(); widget_consumed_click = true; }
-                if (drag1 && mbdn) {
+                if (h1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag1 = true; undo_push(); widget_consumed_click = true; }
+                if (g_anipoint_drag1 && mbdn) {
                     int nx = (int)((mouse.x - img_pos.x) / sx);
                     int ny = (int)((mouse.y - img_pos.y) / sy);
                     img->anix = (unsigned short)(short)nx;
                     img->aniy = (unsigned short)(short)ny;
-                } else if (!mbdn && drag1) { drag1 = false; undo_push(); }
+                    widget_consumed_click = true;
+                } else if (!mbdn && g_anipoint_drag1) { g_anipoint_drag1 = false; undo_push(); }
 
-                if (img->anix2 || img->aniy2) {
-                    ImVec2 s2(img_pos.x + img->anix2 * sx, img_pos.y + img->aniy2 * sy);
+                /* Secondary anipoint sentinel is signed -1; cast first so
+                   (-1, -1) doesn't read as 0xFFFF and emit a phantom line. */
+                if ((short)img->anix2 >= 0 && (short)img->aniy2 >= 0) {
+                    ImVec2 s2(img_pos.x + (short)img->anix2 * sx, img_pos.y + (short)img->aniy2 * sy);
                     ImVec2 d2 = mouse - s2;
                     bool h2 = (d2.x*d2.x + d2.y*d2.y) < 10*10;
-                    dl->AddCircleFilled(s2, 6.f, h2 ? IM_COL32(0,255,120,255) : IM_COL32(0,255,0,255));
-                    dl->AddCircle(s2, 6.f, IM_COL32(255,255,255,255), 0, 1.5f);
-                    dl->AddLine(s1, s2, IM_COL32(255,255,0,192), 1.f);
+                    /* Secondary anipoint: cyan crosshair (distinct from primary). */
+                    ImU32 col2 = h2 ? IM_COL32(120, 255, 255, 255) : IM_COL32(60, 200, 220, 255);
+                    draw_crosshair(s2, col2, 10.f, h2 ? 2.f : 1.5f);
+                    /* Thin connector line between the two anipoints. */
+                    dl->AddLine(s1, s2, IM_COL32(255, 255, 0, 140), 1.f);
 
-                    static bool drag2 = false;
-                    if (h2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { drag2 = true; undo_push(); widget_consumed_click = true; }
-                    if (drag2 && mbdn) {
+                    if (h2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag2 = true; undo_push(); widget_consumed_click = true; }
+                    if (g_anipoint_drag2 && mbdn) {
                         int nx = (int)((mouse.x - img_pos.x) / sx);
                         int ny = (int)((mouse.y - img_pos.y) / sy);
                         img->anix2 = (unsigned short)(short)nx;
                         img->aniy2 = (unsigned short)(short)ny;
-                    } else if (!mbdn && drag2) { drag2 = false; undo_push(); }
+                        widget_consumed_click = true;
+                    } else if (!mbdn && g_anipoint_drag2) { g_anipoint_drag2 = false; undo_push(); }
                 }
             }
         }
@@ -6191,8 +6327,8 @@ void imgui_overlay_render(void)
                     if (mx < 0) mx = 0; if (mx >= (int)g_img_tex_w) mx = g_img_tex_w - 1;
                     if (my < 0) my = 0; if (my >= (int)g_img_tex_h) my = g_img_tex_h - 1;
                     
-                    if (g_active_tool == ActiveTool::MagicWand && ilselected >= 0) {
-                        IMG* simg = get_img(ilselected);
+                    if (g_active_tool == ActiveTool::MagicWand && g_doc->ilselected >= 0) {
+                        IMG* simg = get_img(g_doc->ilselected);
                         if (simg && simg->data_p) {
                             int sw = simg->w;
                             int sh = simg->h;
@@ -6306,10 +6442,10 @@ void imgui_overlay_render(void)
                     }
                 } else if (g_grid_sel.dragging && !mbdn) {
                     g_grid_sel.dragging = false;
-                    if (g_active_tool == ActiveTool::Lasso && ilselected >= 0 && g_lasso_points.size() >= 3) {
+                    if (g_active_tool == ActiveTool::Lasso && g_doc->ilselected >= 0 && g_lasso_points.size() >= 3) {
                         /* Rasterize the polygon into a pixel mask using a scanline
                            even-odd test. */
-                        IMG *simg = get_img(ilselected);
+                        IMG *simg = get_img(g_doc->ilselected);
                         if (simg && simg->data_p) {
                             int sw = simg->w, sh = simg->h;
                             int min_x = sw, max_x = -1, min_y = sh, max_y = -1;
@@ -6366,8 +6502,8 @@ void imgui_overlay_render(void)
                         g_lasso_points.clear();
                         g_grid_sel.active = false;
                     }
-                    if (ImGui::GetIO().KeyShift && !g_grid_sel.is_mask && ilselected >= 0) {
-                        IMG *simg = get_img(ilselected);
+                    if (ImGui::GetIO().KeyShift && !g_grid_sel.is_mask && g_doc->ilselected >= 0) {
+                        IMG *simg = get_img(g_doc->ilselected);
                         if (simg && simg->data_p) {
                             int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
                             int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
@@ -6482,7 +6618,7 @@ void imgui_overlay_render(void)
 
                 /* Render clipboard pixel preview with alpha (move mode only). */
                 if (!g_xform.active) {
-                    IMG *simg = (ilselected >= 0) ? get_img(ilselected) : NULL;
+                    IMG *simg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
                     PAL *spal = simg ? get_pal(simg->palnum) : NULL;
                     const unsigned char *pald = spal ? (const unsigned char *)spal->data_p : NULL;
                     const unsigned char *src = (const unsigned char *)g_clipboard.data_p;
@@ -6745,12 +6881,12 @@ void imgui_overlay_render(void)
                         int ny = g_pasted.drag_start_py + dy;
 
                         g_snap_hit_x = g_snap_hit_y = false;
-                        if (ImGui::GetIO().KeyShift && ilselected >= 0) {
+                        if (ImGui::GetIO().KeyShift && g_doc->ilselected >= 0) {
                             /* Cache the content bbox of the underlying sprite
                                on the first frame Shift is held during this
                                drag; recompute only on image change. */
-                            if (!g_snap_bbox.valid || g_snap_bbox.img_idx != ilselected) {
-                                IMG *cimg = get_img(ilselected);
+                            if (!g_snap_bbox.valid || g_snap_bbox.img_idx != g_doc->ilselected) {
+                                IMG *cimg = get_img(g_doc->ilselected);
                                 if (cimg && cimg->data_p) {
                                     int min_x = cimg->w, min_y = cimg->h, max_x = 0, max_y = 0;
                                     unsigned short cw = (cimg->w + 3) & ~3;
@@ -6768,7 +6904,7 @@ void imgui_overlay_render(void)
                                         }
                                     }
                                     if (found) {
-                                        g_snap_bbox = {true, min_x, min_y, max_x, max_y, ilselected};
+                                        g_snap_bbox = {true, min_x, min_y, max_x, max_y, g_doc->ilselected};
                                     }
                                 }
                             }
@@ -6796,7 +6932,7 @@ void imgui_overlay_render(void)
                                    with the sprite's center. Adobe-style. Only
                                    engages if no edge snap fired this frame so
                                    edge alignment takes priority. */
-                                IMG *cimg2 = get_img(ilselected);
+                                IMG *cimg2 = get_img(g_doc->ilselected);
                                 if (cimg2 && !g_snap_hit_x) {
                                     int sprite_cx = cimg2->w / 2;
                                     int paste_cx  = nx + pw / 2;
@@ -6825,7 +6961,7 @@ void imgui_overlay_render(void)
                            lands exactly on the sprite's center axis. Lets the
                            user see "I'm centered" without engaging snap. */
                         {
-                            IMG *cimg3 = get_img(ilselected);
+                            IMG *cimg3 = get_img(g_doc->ilselected);
                             if (cimg3 && !g_snap_hit_x) {
                                 int sprite_cx = cimg3->w / 2;
                                 if (nx + pw / 2 == sprite_cx) {
@@ -6874,27 +7010,27 @@ void imgui_overlay_render(void)
        at file scope so keyboard shortcuts and other overlays can address it. */
 
     /* Drop stale frame indices if the underlying image set shrank or was reloaded */
-    if (imgcnt != g_timeline_built_for_imgcnt) {
+    if (g_doc->imgcnt != g_timeline_built_for_imgcnt) {
         g_timeline_frames.erase(
             std::remove_if(g_timeline_frames.begin(), g_timeline_frames.end(),
-                [](int idx){ return idx < 0 || (unsigned int)idx >= imgcnt; }),
+                [](int idx){ return idx < 0 || (unsigned int)idx >= g_doc->imgcnt; }),
             g_timeline_frames.end());
         /* Free thumbnail textures past the new end. */
-        for (size_t i = imgcnt; i < g_thumb_cache.size(); i++) {
+        for (size_t i = g_doc->imgcnt; i < g_thumb_cache.size(); i++) {
             if (g_thumb_cache[i].tex) SDL_DestroyTexture(g_thumb_cache[i].tex);
         }
-        if (g_thumb_cache.size() > imgcnt) g_thumb_cache.resize(imgcnt);
-        g_timeline_built_for_imgcnt = imgcnt;
+        if (g_thumb_cache.size() > g_doc->imgcnt) g_thumb_cache.resize(g_doc->imgcnt);
+        g_timeline_built_for_imgcnt = g_doc->imgcnt;
     }
 
     /* Build default timeline if empty (fresh file, or after Reset Sequence) */
-    if (g_timeline_frames.empty() && imgcnt > 0) {
-        for (unsigned int i = 0; i < imgcnt; i++) {
+    if (g_timeline_frames.empty() && g_doc->imgcnt > 0) {
+        for (unsigned int i = 0; i < g_doc->imgcnt; i++) {
             IMG *p = get_img(i);
             if (p && (p->flags & 1)) g_timeline_frames.push_back(i);
         }
         if (g_timeline_frames.empty()) {
-            for (unsigned int i = 0; i < imgcnt; i++) g_timeline_frames.push_back(i);
+            for (unsigned int i = 0; i < g_doc->imgcnt; i++) g_timeline_frames.push_back(i);
         }
     }
 
@@ -6928,14 +7064,14 @@ void imgui_overlay_render(void)
                     g_timeline_play_idx = 0;
                 }
             }
-            ilselected = g_timeline_frames[g_timeline_play_idx];
+            g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
             g_zoom_reset = true;
         }
     } else if (!g_is_playing && !g_timeline_frames.empty()) {
         /* Sync play_idx with manual selection if possible */
-        if (ilselected != g_timeline_frames[g_timeline_play_idx]) {
+        if (g_doc->ilselected != g_timeline_frames[g_timeline_play_idx]) {
             for (size_t i = 0; i < g_timeline_frames.size(); i++) {
-                if (g_timeline_frames[i] == ilselected) {
+                if (g_timeline_frames[i] == g_doc->ilselected) {
                     g_timeline_play_idx = (int)i;
                     break;
                 }
@@ -6964,7 +7100,7 @@ void imgui_overlay_render(void)
                 if (!g_is_playing && !g_timeline_frames.empty()) {
                     g_play_timer = 0.0f;
                     g_is_playing = true;
-                    ilselected = g_timeline_frames[g_timeline_play_idx];
+                    g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
                     g_zoom_reset = true;
                 }
             }
@@ -7033,7 +7169,7 @@ void imgui_overlay_render(void)
                 }
                 if (clicked) {
                     g_timeline_play_idx = (int)i;
-                    ilselected = img_idx;
+                    g_doc->ilselected = img_idx;
                     g_zoom_reset = true;
                 }
 
@@ -7141,6 +7277,7 @@ void imgui_overlay_render(void)
                 ImGui::BeginTooltip();
                 ImGui::Text("Palette index %d", i);
                 ImGui::TextDisabled("Alt+click: isolate this color in the canvas");
+                ImGui::TextDisabled("Ctrl/Shift+click: multi-select — selected swatches stay lit, rest dim on canvas");
                 ImGui::EndTooltip();
             }
         }
