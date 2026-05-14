@@ -5258,15 +5258,28 @@ void imgui_overlay_render(void)
            since the underlying paint behavior is the same as no tool. */
         g_active_tool = (g_active_tool == ActiveTool::Pencil) ? ActiveTool::None : ActiveTool::Pencil;
     }
-    /* Brush size: [ shrinks, ] grows. Photoshop convention. Only active
-       while the Pencil tool is selected so it doesn't collide with other
-       palette-related menu hints that advertise the same keys. */
+    /* [ and ] do double duty depending on context:
+         - Pencil active: [ shrinks brush, ] grows brush (Photoshop convention).
+         - Otherwise:     [ Set Palette for Marked, ] Set for Image
+                          (matches the menu-item hint advertised next to those entries).
+       Other one-key palette shortcuts advertised in the menus:
+         *        — Merge Marked Palettes into Selected
+         Shift+R  — Rename selected palette
+         Del      — Delete selected palette
+       All of these were previously advertised in tooltips but never actually
+       wired; they're real shortcuts now. */
     if (g_active_tool == ActiveTool::Pencil) {
         if (ImGui::Shortcut(ImGuiKey_LeftBracket,  route))
             { if (g_pencil_brush > 1)  g_pencil_brush--; }
         if (ImGui::Shortcut(ImGuiKey_RightBracket, route))
             { if (g_pencil_brush < 16) g_pencil_brush++; }
+    } else {
+        if (ImGui::Shortcut(ImGuiKey_LeftBracket,  route)) SetPaletteOfMarked();
+        if (ImGui::Shortcut(ImGuiKey_RightBracket, route)) SetPaletteOfSelected();
     }
+    if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_8, route)) MergeMarkedPalettes();
+    if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_R, route)) OpenRenamePalette(g_doc->plselected);
+    if (ImGui::Shortcut(ImGuiKey_Delete, route)) DeletePalette();
 
     /* Tool Intercepts. Esc/Enter have a three-level priority: transform
        takes precedence, then floating paste, then marquee. */
