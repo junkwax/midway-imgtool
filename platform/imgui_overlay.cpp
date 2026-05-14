@@ -527,7 +527,8 @@ static L2Report g_load2_report;
 static bool          g_show_mk2 = false;
 static mk2::Document g_mk2_doc;
 static char          g_mk2_path[1024] = "";   /* user picks via Browse or types directly */
-static std::string   g_mk2_status;     /* last load/save message */
+static std::string   g_mk2_status;        /* last load/save message */
+static bool          g_mk2_status_sticky = false; /* errors stay until next action; success messages clear on edit */
 static int           g_mk2_char_idx = 0;  /* selected char-table index */
 static int           g_mk2_move_idx = 0;  /* selected move index within that table */
 static int           g_mk2_drag_corner = -1; /* canvas overlay corner drag (0..3) */
@@ -4148,6 +4149,12 @@ static void DrawMk2HitboxWindow(void)
         return;
     }
 
+    /* Auto-clear the "Loaded N moves" / "Saved" success message once the
+       user has started editing again. Errors keep their sticky flag so
+       they stay visible until the next action explicitly resolves them. */
+    if (!g_mk2_status_sticky && g_mk2_doc.dirty && !g_mk2_status.empty())
+        g_mk2_status.clear();
+
     /* Window-scoped shortcuts. RouteFocused makes these fire only when
        the MK2 panel (or one of its child widgets) holds focus, so they
        don't hijack the pixel-undo path on the main canvas. */
@@ -4202,6 +4209,7 @@ static void DrawMk2HitboxWindow(void)
         }
 #else
         g_mk2_status = "Browse not implemented on this platform - type the path manually";
+        g_mk2_status_sticky = true;
 #endif
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pick MKSTK.ASM from disk");
@@ -4213,6 +4221,7 @@ static void DrawMk2HitboxWindow(void)
             snprintf(buf, sizeof(buf), "Loaded %d moves, %d char tables",
                      (int)g_mk2_doc.records.size(), (int)g_mk2_doc.char_tables.size());
             g_mk2_status = buf;
+            g_mk2_status_sticky = false;
             g_mk2_char_idx = 0;
             g_mk2_move_idx = 0;
             g_mk2_search[0] = '\0';
@@ -4226,6 +4235,7 @@ static void DrawMk2HitboxWindow(void)
             Mk2AutoSelectFromImg();
         } else {
             g_mk2_status = std::string("Load failed: ") + err;
+            g_mk2_status_sticky = true;
         }
     }
     ImGui::SameLine();
@@ -4233,8 +4243,8 @@ static void DrawMk2HitboxWindow(void)
     if (!can_save) ImGui::BeginDisabled();
     if (ImGui::Button("Save")) {
         std::string err;
-        if (mk2::save(&g_mk2_doc, &err)) g_mk2_status = "Saved MKSTK.ASM";
-        else g_mk2_status = std::string("Save failed: ") + err;
+        if (mk2::save(&g_mk2_doc, &err)) { g_mk2_status = "Saved MKSTK.ASM"; g_mk2_status_sticky = false; }
+        else { g_mk2_status = std::string("Save failed: ") + err; g_mk2_status_sticky = true; }
     }
     if (!can_save) ImGui::EndDisabled();
     ImGui::SameLine();
@@ -4251,6 +4261,7 @@ static void DrawMk2HitboxWindow(void)
             snprintf(buf, sizeof(buf), "Reloaded %d moves, %d char tables",
                      (int)g_mk2_doc.records.size(), (int)g_mk2_doc.char_tables.size());
             g_mk2_status = buf;
+            g_mk2_status_sticky = false;
             /* Keep the selection if the labels still resolve, otherwise
                fall back to the first move. */
             int new_char = g_mk2_char_idx;
@@ -4260,6 +4271,7 @@ static void DrawMk2HitboxWindow(void)
                 g_mk2_move_idx = 0;
         } else {
             g_mk2_status = std::string("Reload failed: ") + err;
+            g_mk2_status_sticky = true;
         }
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Re-read MKSTK.ASM from disk, discarding unsaved edits");
@@ -4942,8 +4954,8 @@ static void DrawMk2UnsavedChangesConfirm(void)
     ImGui::Separator();
     if (ImGui::Button("Save", ImVec2(80, 0))) {
         std::string err;
-        if (mk2::save(&g_mk2_doc, &err)) g_mk2_status = "Saved MKSTK.ASM";
-        else                              g_mk2_status = std::string("Save failed: ") + err;
+        if (mk2::save(&g_mk2_doc, &err)) { g_mk2_status = "Saved MKSTK.ASM"; g_mk2_status_sticky = false; }
+        else                              { g_mk2_status = std::string("Save failed: ") + err; g_mk2_status_sticky = true; }
         g_show_mk2_unsaved_confirm = false;
         ImGui::CloseCurrentPopup();
     }
