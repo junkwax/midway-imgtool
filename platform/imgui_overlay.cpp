@@ -6703,6 +6703,19 @@ void imgui_overlay_render(void)
                 mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                 mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
 
+            /* Pencil cursor ring — only when brush is wider than one pixel.
+               Single-pixel pencil intentionally has no overlay so it doesn't
+               obscure the pixel being targeted. */
+            if (g_active_tool == ActiveTool::Pencil && g_pencil_brush > 1 && mouse_over_sprite) {
+                int r = g_pencil_brush - 1;
+                int mx = (int)((mouse.x - img_pos.x) / sx);
+                int my = (int)((mouse.y - img_pos.y) / sy);
+                ImVec2 cc(img_pos.x + (mx + 0.5f) * sx,
+                          img_pos.y + (my + 0.5f) * sy);
+                float rr = (sx + sy) * 0.5f * r;
+                dl->AddCircle(cc, rr, IM_COL32(255, 255, 255, 200), 0, 1.0f);
+            }
+
             /* Clone Stamp visual aids: source crosshair and destination brush ring. */
             if (g_active_tool == ActiveTool::CloneStamp && g_clone_source_set) {
                 ImVec2 sc(img_pos.x + (g_clone_src_x + 0.5f) * sx,

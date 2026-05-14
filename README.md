@@ -33,6 +33,12 @@ Imgtool is a sprite-sheet editor for Midway's IMG format. Open a file, browse hu
 - **Timeline strip** — Play/Stop, scrubbable thumbnails, drag-to-reorder, FPS slider, ping-pong playback, onion-skin ghosting
 - **World View** — fixed playfield canvas (default 400×254) with sprite anchored at its anipoint, for aligning body parts across frames
 
+### MK2 strike-table editor
+- **Direct `MKSTK.ASM` editor** (`Tools → MK2 Hitboxes`) — parses the Mortal Kombat 2 source-of-truth strike-table file and edits in place. No `stk.bin` round-trip required; saves write back through the same `.ASM` line buffer, preserving comments, indentation, and symbolic literals like `sf_squeeze`.
+- **3-pane navigator** — character → move → fields. Each strike record exposes `x_offset` / `y_offset` / `x_size` / `y_size`, `strike_routine` (raw token), `damage` (split into hit / block bytes), `score` (32-bit), and `sound`.
+- **Magenta on-canvas overlay** — the selected move's collision box renders on the active MK2 sprite with drag-to-resize corner handles; coordinates flow straight back into the `.ASM`. The IMG-embedded hitbox overlay suppresses itself while an MK2 move is selected.
+- **Per-record undo + unsaved-changes guard** on quit (separate from the IMG dirty flow).
+
 ### Import / Export
 - **TGA, LBM, PNG** load and save. PNG import quantizes via median-cut in 15-bit RGB space, then maps every pixel by nearest color. Import-into-active-palette mode skips quantization.
 - **Build TGA** from marked sprites, **Export PNG**, **ANILST** (assembly animation lists)
@@ -107,7 +113,7 @@ The build copies `SDL2.dll` (Windows) and the Material Symbols icon font next to
 | `Ctrl+A` / `Ctrl+D` / `Ctrl+Shift+I` | Select All / Deselect / Invert |
 | `Ctrl+J` / `Ctrl+E` / `Ctrl+T` | Duplicate / Merge Down / Free Transform |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
-| `R` / `W` / `L` / `I` | Marquee / Magic Wand / Lasso / Eyedropper |
+| `P` / `R` / `W` / `L` / `I` | Pencil / Marquee / Magic Wand / Lasso / Eyedropper |
 | `Alt+L` / `Alt+S` / `Ctrl+L` / `Ctrl+B` | Load LBM / Save LBM / Load TGA / Build TGA from marked |
 | `Space` / `M` / `m` | Mark / Unmark / Mark All / Clear All Marks |
 | `Up` / `Down` / `PgUp` / `PgDn` | Navigate image list (or palette list if last clicked) |
@@ -140,6 +146,7 @@ Full keyboard reference in the in-app help (`h`).
 | `platform/imgui_overlay.cpp` | Main UI: menus, toolbar, canvas, panels, palette, modals |
 | `platform/img_format.h` | IMG/PAL data structures, allocators, palette helpers |
 | `platform/img_io.{h,cpp}` | File I/O: IMG load/save, TGA/LBM/PNG import/export |
+| `platform/mk2_hitbox.{h,cpp}` | MK2 strike-table (MKSTK.ASM) parser/writer |
 | `platform/shim_vid.c` | SDL2 renderer init, palette tables |
 | `platform/shim_input.c` | Keyboard input, DOS scan code mapping |
 | `platform/shim_file.c` | File system emulation, path remapping, old-format conversion |
