@@ -6118,14 +6118,14 @@ void imgui_overlay_render(void)
                         if (ImGui::MenuItem("Add New"))                   AddNewPalette();
                         if (ImGui::MenuItem("Duplicate"))                 DuplicatePalette();
                         ImGui::Separator();
-                        if (ImGui::MenuItem("Set for Image"))             SetPaletteOfSelected();
-                        if (ImGui::MenuItem("Set for Marked Images"))     SetPaletteOfMarked();
-                        if (ImGui::MenuItem("Merge Marked into Selected")) MergeMarkedPalettes();
+                        if (ImGui::MenuItem("Set for Image",         "]"))       SetPaletteOfSelected();
+                        if (ImGui::MenuItem("Set for Marked Images", "["))       SetPaletteOfMarked();
+                        if (ImGui::MenuItem("Merge Marked into Selected", "*"))  MergeMarkedPalettes();
                         ImGui::Separator();
                         if (ImGui::MenuItem("Delete Unused Colors")) DeleteUnusedPaletteColors();
                         if (ImGui::MenuItem("Show Histogram")) { CalculatePaletteHistogram(); g_show_histogram = true; }
-                        if (ImGui::MenuItem("Rename")) OpenRenamePalette(i);
-                        if (ImGui::MenuItem("Delete")) DeletePalette();
+                        if (ImGui::MenuItem("Rename", "Shift+R")) OpenRenamePalette(i);
+                        if (ImGui::MenuItem("Delete", "Del")) DeletePalette();
                         ImGui::EndPopup();
                     }
                     ImGui::PopID();
