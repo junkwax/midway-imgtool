@@ -2902,17 +2902,15 @@ Step 3 -- Browse: Up/Down moves one sprite. PgUp/PgDn jumps a page.
 Step 4 -- Mark sprites: Space toggles mark. M marks all, m clears all.
   Marking is how you select sprites for batch operations.
 
-Step 5 -- Zoom: d doubles size, D halves size. F11/F12 fine zoom.
-  Mouse wheel also zooms. Middle-mouse drag pans.
+Step 5 -- Zoom: mouse wheel zooms. Middle-mouse drag pans. Space + left
+  drag also pans (Photoshop hand-tool style).
 
-Step 6 -- Palettes: ' / scroll through palettes.
-  ] assigns current palette to current sprite
-  [ assigns palette to all marked sprites
-  t toggles "true palette" display
+Step 6 -- Palettes: click a palette in the Palette list to set it on the
+  active sprite. [ sets palette for marked sprites, ] for the current one
+  (when no paint tool is active - Pencil reassigns [ and ] to brush size).
 
-Step 7 -- Two IMGs at once (Tab): Swap between list 1 and list 2.
-  Load a second IMG after hitting Tab, swap with Tab.
-  i grabs ID from list 2's selected sprite for list 1's current sprite.
+Step 7 -- Two IMGs at once: Tab swaps between list 1 and list 2. Open a
+  second IMG after pressing Tab, then swap back with Tab.
 
 Step 8 -- Save: Ctrl+S saves. Pre-2.x IMGs are auto-converted on load.
 
@@ -2921,64 +2919,96 @@ Step 8 -- Save: Ctrl+S saves. Pre-2.x IMGs are auto-converted on load.
 KEYBOARD REFERENCE
 ------------------
 
-File Operations:
-  Ctrl+O / Ctrl+S      Open / Save IMG
+File:
+  Ctrl+O               Open IMG
+  Ctrl+S               Save IMG
   Alt+L  / Alt+S       Load / Save LBM
-  Ctrl+L / Ctrl+S      Load / Save TGA
+  Ctrl+L               Load TGA
   Ctrl+B               Build TGA from marked images
+  Esc                  Quit (prompts on unsaved changes)
 
-Image Operations:
+Edit:
+  Ctrl+Z               Undo (paint stroke, anipoint, hitbox, palette ops)
+  Ctrl+Y               Redo
+  Ctrl+C / Ctrl+X / Ctrl+V   Copy / Cut / Paste
+  Ctrl+A               Select all
+  Ctrl+D               Deselect
+  Ctrl+Shift+I         Invert selection
+  Ctrl+J               Duplicate image (or duplicate floating paste)
+  Ctrl+E               Merge Down: commit floating paste in place
+  Ctrl+T               Free Transform floating paste (scale with handles)
+
+Image list:
   Space                Mark / Unmark current image
-  M / m                Mark all / Clear all marks
+  M  / Shift+M         Mark all / Invert all marks
   Shift+Del            Delete image
-  Ctrl+R               Rename image
-  ;                    Least-squares size reduce
-  Arrow Up/Dn          Move in image list
-  PgUp/Dn              Page up/down
-  Alt+PgUp/PgDn        Move image in list
-  Tab                  Swap image lists
-  i                    Set ID from 2nd list
+  Tab                  Swap image lists (lists 1 and 2)
+  ;                    Least-squares size reduce on marked
 
-Palette Operations:
-  ' /                  Move up/down in palette list
-  " / ?                Page up/down palette
-  ]                    Set palette for current image
+Tools (toolbar shortcuts):
+  P                    Pencil   - paint at current color
+  R                    Marquee  - rectangular selection
+  W                    Magic Wand
+  L                    Lasso
+  I                    Eyedropper - pick color from canvas
+  (no shortcut)        Smart Eraser, Clone Stamp, Smart Remap (toolbar buttons)
+
+Pencil-specific (only fire while Pencil is active):
+  [ / ]                Shrink / grow brush radius (1..16)
+
+Palette (only fire when no paint tool is active):
   [                    Set palette for marked images
-  *                    Merge marked palettes
-  Shift+R              Rename palette
+  ]                    Set palette for current image
+  Shift+8 (`*`)        Merge marked palettes
+  Shift+R              Rename selected palette
+  Del                  Delete selected palette
 
-View Controls:
-  h                    Show this help
-  f                    Redraw screen
-  d / D                Double / Halve view size
-  F11 / F12            Fine zoom out / in
-  t                    Toggle true palette colors
-  T                    Toggle animation points
+Timeline / Anim:
+  K                    Toggle timeline play / stop
+  Ctrl+Left / Right    Step prev / next animation frame
+
+View / Help:
+  H                    Show this help
   F9                   Debug info popup
 
-Animation Points:
-  Alt+U/D/L/R          Move primary anim point
-  Ctrl+U/D/L/R         Move secondary anim point
-  Ctrl+Del             Clear 2nd anim XYZ
-  Ctrl+Y               Clear 2nd anim Y
-  Ctrl+Z               Clear 2nd anim Z
+Mouse on canvas:
+  Mouse wheel          Zoom
+  Middle drag          Pan
+  Space + left drag    Pan (Photoshop hand-tool style)
+  Right-click          Eyedrop (any tool mode)
+  Shift + left-click   Flood fill (when no select tool active)
 
-Canvas Tools (toolbar):
-  Pencil (P)           Draw with current color
-  Eyedropper (E)       Pick color from canvas
-  Fill (F)             Flood fill with current color
-  Marquee               Select pixels for copy/cut/paste
-  Undo (Ctrl+Z)        Undo pixel/animation changes
-  Redo (Ctrl+Y)        Redo
 
-  Ctrl+C / Ctrl+X / Ctrl+V    Copy / Cut / Paste
-  Ctrl+A                Select all (marquee)
-  Ctrl+D                Deselect
-  Ctrl+Shift+I          Invert selection
-  Ctrl+J                Duplicate image (or duplicate floating paste)
-  Ctrl+E                Commit floating paste in place
-  Ctrl+T                Free Transform floating paste (scale with handles)
-  Shift                 Quarter scroll sensitivity
+================================================================================
+MK2 STRIKE-TABLE EDITOR
+-----------------------
+Tools - MK2 Hitboxes (MKSTK.ASM)... opens an editor for the strike-table
+source file used by the MK2 source tree. Imgtool parses MKSTK.ASM directly
+and writes back in place, preserving comments, indentation, and symbolic
+literals (e.g. sf_squeeze).
+
+Workflow:
+  Browse... - native file picker, remembers last directory
+  Load      - parse the .asm into memory
+  Save      - write the in-memory edits back to disk
+  Reload    - re-read from disk, dropping unsaved edits
+  Undo / Redo (and Ctrl+Z / Ctrl+Shift+Z when the panel has focus)
+
+3-pane navigator:
+  Left  - character codes (jc, lk, hh, nj, etc. - the two-letter labels
+          MKSTK.ASM itself uses). The panel auto-jumps to the matching
+          character when you open a sprite IMG with a recognized prefix
+          (CAGE -> jc, KANG -> lk, HATHED -> hh, NINJAS -> nj, etc.).
+  Mid   - moves for the selected character. Filter box at the top.
+  Right - fields for the selected move: x/y/w/h, strike_routine (raw
+          token), damage split into hit/block bytes, score (32-bit),
+          sound (raw token).
+
+Canvas overlay:
+  The selected move's collision box draws on the active sprite as a
+  magenta rectangle with drag-to-resize corner handles. The IMG-embedded
+  hitbox overlay auto-hides while an MK2 move is selected so the two
+  systems don't pile on top of each other.
 
 
 ================================================================================
