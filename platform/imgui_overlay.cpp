@@ -532,6 +532,22 @@ static int Mk2CurrentRecord(void) {
     if (g_mk2_move_idx < 0 || g_mk2_move_idx >= (int)moves.size()) return -1;
     return mk2::find_record(&g_mk2_doc, moves[g_mk2_move_idx].c_str());
 }
+/* Move the char/move selection to whichever character table contains
+   the given record index, so the user sees the result of an undo/redo. */
+static void Mk2SelectRecord(int rec_idx) {
+    if (rec_idx < 0 || rec_idx >= (int)g_mk2_doc.records.size()) return;
+    const std::string &lbl = g_mk2_doc.records[rec_idx].label;
+    for (int ci = 0; ci < (int)g_mk2_doc.char_tables.size(); ci++) {
+        const auto &mv = g_mk2_doc.char_tables[ci].moves;
+        for (int mi = 0; mi < (int)mv.size(); mi++) {
+            if (mv[mi] == lbl) {
+                g_mk2_char_idx = ci;
+                g_mk2_move_idx = mi;
+                return;
+            }
+        }
+    }
+}
 
 /* ---- World View mode (DOS-tool-style anipoint alignment workspace) ----
  * When on, renders the sprite inside a fixed black canvas at
@@ -4028,6 +4044,18 @@ static void DrawMk2HitboxWindow(void)
         return;
     }
 
+    /* Window-scoped shortcuts. RouteFocused makes these fire only when
+       the MK2 panel (or one of its child widgets) holds focus, so they
+       don't hijack the pixel-undo path on the main canvas. */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteFocused)) {
+        int rec = mk2::undo_pop(&g_mk2_doc);
+        if (rec >= 0) Mk2SelectRecord(rec);
+    }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteFocused)) {
+        int rec = mk2::redo_pop(&g_mk2_doc);
+        if (rec >= 0) Mk2SelectRecord(rec);
+    }
+
     /* --- Path / Load / Save row --- */
     ImGui::SetNextItemWidth(-200);
     ImGui::InputText("##mk2path", g_mk2_path, sizeof(g_mk2_path));
@@ -4042,9 +4070,10 @@ static void DrawMk2HitboxWindow(void)
             g_mk2_char_idx = 0;
             g_mk2_move_idx = 0;
             g_mk2_search[0] = '\0';
-            /* Fresh load wipes any prior undo history — those entries
+            /* Fresh load wipes any prior undo/redo history — those entries
                referenced records that may no longer match the new doc. */
             g_mk2_doc.undo_stack.clear();
+            g_mk2_doc.redo_stack.clear();
         } else {
             g_mk2_status = std::string("Load failed: ") + err;
         }
@@ -4059,28 +4088,50 @@ static void DrawMk2HitboxWindow(void)
     }
     if (!can_save) ImGui::EndDisabled();
     ImGui::SameLine();
+    bool can_reload = !g_mk2_doc.source_path.empty();
+    if (!can_reload) ImGui::BeginDisabled();
+    if (ImGui::Button("Reload")) {
+        /* Re-read MKSTK.ASM from disk, discarding any in-memory edits.
+           Uses the previously-resolved source_path rather than the input
+           box content so a stray edit there can't redirect the reload. */
+        std::string err;
+        std::string path = g_mk2_doc.source_path;
+        if (mk2::load(&g_mk2_doc, path.c_str(), &err)) {
+            char buf[160];
+            snprintf(buf, sizeof(buf), "Reloaded %d moves, %d char tables",
+                     (int)g_mk2_doc.records.size(), (int)g_mk2_doc.char_tables.size());
+            g_mk2_status = buf;
+            /* Keep the selection if the labels still resolve, otherwise
+               fall back to the first move. */
+            int new_char = g_mk2_char_idx;
+            if (new_char >= (int)g_mk2_doc.char_tables.size()) new_char = 0;
+            g_mk2_char_idx = new_char;
+            if (g_mk2_move_idx >= (int)g_mk2_doc.char_tables[new_char].moves.size())
+                g_mk2_move_idx = 0;
+        } else {
+            g_mk2_status = std::string("Reload failed: ") + err;
+        }
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Re-read MKSTK.ASM from disk, discarding unsaved edits");
+    if (!can_reload) ImGui::EndDisabled();
+
+    ImGui::SameLine();
     bool can_undo_mk2 = mk2::can_undo(&g_mk2_doc);
     if (!can_undo_mk2) ImGui::BeginDisabled();
     if (ImGui::Button("Undo")) {
         int rec = mk2::undo_pop(&g_mk2_doc);
-        if (rec >= 0) {
-            /* Move selection to whichever record was just restored so
-               the user sees the result. */
-            const std::string &lbl = g_mk2_doc.records[rec].label;
-            for (int ci = 0; ci < (int)g_mk2_doc.char_tables.size(); ci++) {
-                const auto &mv = g_mk2_doc.char_tables[ci].moves;
-                for (int mi = 0; mi < (int)mv.size(); mi++) {
-                    if (mv[mi] == lbl) {
-                        g_mk2_char_idx = ci;
-                        g_mk2_move_idx = mi;
-                        ci = (int)g_mk2_doc.char_tables.size();
-                        break;
-                    }
-                }
-            }
-        }
+        if (rec >= 0) Mk2SelectRecord(rec);
     }
     if (!can_undo_mk2) ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    bool can_redo_mk2 = mk2::can_redo(&g_mk2_doc);
+    if (!can_redo_mk2) ImGui::BeginDisabled();
+    if (ImGui::Button("Redo")) {
+        int rec = mk2::redo_pop(&g_mk2_doc);
+        if (rec >= 0) Mk2SelectRecord(rec);
+    }
+    if (!can_redo_mk2) ImGui::EndDisabled();
 
     if (!g_mk2_status.empty()) {
         ImGui::SameLine();

@@ -67,10 +67,12 @@ struct Document {
     std::vector<StrikeRecord>  records;
     std::vector<CharTable>     char_tables;
     bool                       dirty = false;
-    /* Undo ring. push() captures the current state of a record before a
-       mutation; undo() pops the last entry and restores it. Bounded so a
-       long drag doesn't explode memory. */
+    /* Undo / redo. push() captures the current state of a record before a
+       mutation; undo() pops the last entry and pushes the state it
+       replaced onto redo_stack. A fresh push from user code (i.e. a new
+       edit branch) wipes redo, matching editor convention. */
     std::vector<UndoEntry>     undo_stack;
+    std::vector<UndoEntry>     redo_stack;
 };
 
 /* Field accessors — index into StrikeRecord::fields. */
@@ -111,10 +113,14 @@ int find_record    (const Document *doc, const char *label);
 /* Undo: push a snapshot of one record before a mutation, or coalesce
    with the previous push if it targeted the same record within a short
    window (so a drag doesn't generate hundreds of entries). undo() pops
-   and restores; returns the record index that was restored, or -1. */
+   and restores; returns the record index that was restored, or -1.
+   redo() reverses the most recent undo. A new undo_push wipes the redo
+   stack since the user has branched the edit history. */
 void undo_push(Document *doc, int record_idx, bool coalesce_with_prev);
 int  undo_pop (Document *doc);
+int  redo_pop (Document *doc);
 inline bool can_undo(const Document *doc) { return !doc->undo_stack.empty(); }
+inline bool can_redo(const Document *doc) { return !doc->redo_stack.empty(); }
 
 /* Decompose / pack the damage word. */
 inline int damage_hit  (int dmg) { return (dmg >> 8) & 0xFF; }

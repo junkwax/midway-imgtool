@@ -291,6 +291,32 @@ int find_record(const Document *doc, const char *label)
     return -1;
 }
 
+/* Snapshot record_idx's current state (fields + .asm line text) into out. */
+static void capture_record(const Document *doc, int record_idx, UndoEntry *out)
+{
+    out->record_idx = record_idx;
+    const StrikeRecord &rec = doc->records[record_idx];
+    for (int i = 0; i < F_COUNT; i++) {
+        out->fields[i] = rec.fields[i];
+        out->line_text[i].clear();
+        if (rec.fields[i].line > 0 && rec.fields[i].line <= (int)doc->raw_lines.size())
+            out->line_text[i] = doc->raw_lines[rec.fields[i].line - 1];
+    }
+}
+
+/* Apply the snapshot in `e` back onto its record. */
+static void apply_snapshot(Document *doc, const UndoEntry &e)
+{
+    if (e.record_idx < 0 || e.record_idx >= (int)doc->records.size()) return;
+    StrikeRecord &rec = doc->records[e.record_idx];
+    for (int i = 0; i < F_COUNT; i++) {
+        rec.fields[i] = e.fields[i];
+        if (e.fields[i].line > 0 && e.fields[i].line <= (int)doc->raw_lines.size()
+            && !e.line_text[i].empty())
+            doc->raw_lines[e.fields[i].line - 1] = e.line_text[i];
+    }
+}
+
 void undo_push(Document *doc, int record_idx, bool coalesce_with_prev)
 {
     if (record_idx < 0 || record_idx >= (int)doc->records.size()) return;
@@ -302,18 +328,14 @@ void undo_push(Document *doc, int record_idx, bool coalesce_with_prev)
         && doc->undo_stack.back().record_idx == record_idx) return;
 
     UndoEntry e;
-    e.record_idx = record_idx;
-    const StrikeRecord &rec = doc->records[record_idx];
-    for (int i = 0; i < F_COUNT; i++) {
-        e.fields[i] = rec.fields[i];
-        if (rec.fields[i].line > 0 && rec.fields[i].line <= (int)doc->raw_lines.size())
-            e.line_text[i] = doc->raw_lines[rec.fields[i].line - 1];
-    }
+    capture_record(doc, record_idx, &e);
     /* Bound the stack so a long session doesn't grow without limit. */
     const size_t kMaxUndo = 200;
     if (doc->undo_stack.size() >= kMaxUndo)
         doc->undo_stack.erase(doc->undo_stack.begin());
     doc->undo_stack.push_back(std::move(e));
+    /* New edit branch — invalidate redo. */
+    doc->redo_stack.clear();
 }
 
 int undo_pop(Document *doc)
@@ -323,15 +345,31 @@ int undo_pop(Document *doc)
     doc->undo_stack.pop_back();
     if (e.record_idx < 0 || e.record_idx >= (int)doc->records.size()) return -1;
 
-    StrikeRecord &rec = doc->records[e.record_idx];
-    for (int i = 0; i < F_COUNT; i++) {
-        rec.fields[i] = e.fields[i];
-        if (e.fields[i].line > 0 && e.fields[i].line <= (int)doc->raw_lines.size()
-            && !e.line_text[i].empty())
-            doc->raw_lines[e.fields[i].line - 1] = e.line_text[i];
-    }
+    /* Capture current state into the redo stack before restoring the
+       snapshot, so Ctrl+Shift+Z can return here. */
+    UndoEntry r;
+    capture_record(doc, e.record_idx, &r);
+    doc->redo_stack.push_back(std::move(r));
+
+    apply_snapshot(doc, e);
     /* Restoring doesn't clean dirty: the file on disk still differs
        until Save is invoked or the user reloads. */
+    return e.record_idx;
+}
+
+int redo_pop(Document *doc)
+{
+    if (doc->redo_stack.empty()) return -1;
+    UndoEntry e = std::move(doc->redo_stack.back());
+    doc->redo_stack.pop_back();
+    if (e.record_idx < 0 || e.record_idx >= (int)doc->records.size()) return -1;
+
+    /* Push current state back onto undo so the next Ctrl+Z returns here. */
+    UndoEntry u;
+    capture_record(doc, e.record_idx, &u);
+    doc->undo_stack.push_back(std::move(u));
+
+    apply_snapshot(doc, e);
     return e.record_idx;
 }
 
