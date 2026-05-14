@@ -109,19 +109,30 @@ The build copies `SDL2.dll` (Windows) and the Material Symbols icon font next to
 | Key | Action |
 |-----|--------|
 | `Ctrl+O` / `Ctrl+S` | Open / Save IMG |
+| `Alt+L` / `Alt+S` / `Ctrl+L` / `Ctrl+B` | Load LBM / Save LBM / Load TGA / Build TGA from marked |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / Redo (paint, anipoint, hitbox, palette) |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste |
 | `Ctrl+A` / `Ctrl+D` / `Ctrl+Shift+I` | Select All / Deselect / Invert |
 | `Ctrl+J` / `Ctrl+E` / `Ctrl+T` | Duplicate / Merge Down / Free Transform |
-| `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 | `P` / `R` / `W` / `L` / `I` | Pencil / Marquee / Magic Wand / Lasso / Eyedropper |
-| `Alt+L` / `Alt+S` / `Ctrl+L` / `Ctrl+B` | Load LBM / Save LBM / Load TGA / Build TGA from marked |
-| `Space` / `M` / `m` | Mark / Unmark / Mark All / Clear All Marks |
-| `Up` / `Down` / `PgUp` / `PgDn` | Navigate image list (or palette list if last clicked) |
-| `Tab` | Toggle World View |
-| `d` / `D` / `K` | Double zoom / halve zoom / play timeline |
+| `[` / `]` (Pencil mode) | Shrink / grow brush radius |
+| `[` / `]` (no paint tool) | Set palette for marked / for current image |
+| `Shift+R` / `Shift+8` / `Del` | Rename / Merge marked into / Delete palette |
+| `Space` | Mark / Unmark current image |
+| `Shift+M` / `M` | Set all marks (type "M") / Clear all marks (type "m") |
 | `Shift+Del` | Delete image |
-| `h` / `F9` | Help / Debug info |
+| `Ctrl+R` / `Ctrl+P` | Rename image / Toggle point table |
+| `Alt+PgUp` / `Alt+PgDn` | Move image up / down in list |
+| `Tab` | Swap between image lists 1 and 2 |
+| `K` | Toggle timeline play |
+| `Ctrl+Left` / `Ctrl+Right` | Step prev / next frame |
+| `;` | Least-squares size reduce on marked |
+| `Up` / `Down` / `PgUp` / `PgDn` | Navigate image list (or palette list if last clicked) |
+| `H` / `F9` | Help / Debug info |
 | `Esc` | Cancel current action |
+| Mouse wheel / Middle drag / Space+drag | Zoom / Pan / Pan |
+| Right-click on canvas | Eyedrop |
+| Shift + left-click | Flood fill |
 
 Full keyboard reference in the in-app help (`h`).
 
