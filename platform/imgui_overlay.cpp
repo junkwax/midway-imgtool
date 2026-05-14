@@ -1911,6 +1911,37 @@ static void load_last_dir(char *dir, size_t dirsz, FileDialogMode mode)
     }
 }
 
+/* Category-string overloads used by code paths that aren't routed through
+   the FileDialogMode enum (e.g. the MK2 Browse button which calls the
+   native Win32 picker directly). Reuses the same on-disk format and
+   per-category file layout so users see a single coherent system. */
+static void save_last_dir_cat(const char *dir, const char *category)
+{
+    if (!dir || !*dir) return;
+#ifdef _WIN32
+    char parent[MAX_PATH];
+    _snprintf(parent, sizeof(parent), "%s\\imgtool",
+        getenv("APPDATA") ? getenv("APPDATA") : ".");
+    CreateDirectoryA(parent, NULL);
+#endif
+    FILE *f = fopen(get_dialog_config_path(category), "w");
+    if (f) { fprintf(f, "%s", dir); fclose(f); }
+}
+
+static void load_last_dir_cat(char *dir, size_t dirsz, const char *category)
+{
+    if (!dir || !dirsz) return;
+    dir[0] = '\0';
+    FILE *f = fopen(get_dialog_config_path(category), "r");
+    if (f) {
+        if (fgets(dir, (int)dirsz, f)) {
+            size_t len = strlen(dir);
+            if (len > 0 && dir[len - 1] == '\n') dir[len - 1] = '\0';
+        }
+        fclose(f);
+    }
+}
+
 struct FileEntry {
     std::string  name;
     bool         is_dir;
@@ -4124,21 +4155,38 @@ static void DrawMk2HitboxWindow(void)
     if (ImGui::Button("Browse...")) {
 #ifdef _WIN32
         char buf[1024];
-        /* Seed with the current path so the dialog opens at the last
-           location; otherwise it falls back to the OS default. */
+        /* Seed the filename buffer with the current path so the dialog
+           opens at the last location. lpstrFile doubles as input on
+           open-mode. */
         size_t cur = strlen(g_mk2_path);
         if (cur >= sizeof(buf)) cur = sizeof(buf) - 1;
         memcpy(buf, g_mk2_path, cur); buf[cur] = '\0';
+        /* Initial directory from the persisted last-dir, used only when
+           lpstrFile doesn't already contain a directory component. */
+        char init_dir[MAX_PATH] = "";
+        load_last_dir_cat(init_dir, sizeof(init_dir), "mk2");
         OPENFILENAMEA ofn = {};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.lpstrFilter = "ASM source\0*.ASM;*.asm\0All files\0*.*\0";
-        ofn.lpstrFile   = buf;
-        ofn.nMaxFile    = sizeof(buf);
-        ofn.lpstrTitle  = "Select MKSTK.ASM";
-        ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        ofn.lStructSize     = sizeof(ofn);
+        ofn.lpstrFilter     = "ASM source\0*.ASM;*.asm\0All files\0*.*\0";
+        ofn.lpstrFile       = buf;
+        ofn.nMaxFile        = sizeof(buf);
+        ofn.lpstrInitialDir = init_dir[0] ? init_dir : NULL;
+        ofn.lpstrTitle      = "Select MKSTK.ASM";
+        ofn.Flags           = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if (GetOpenFileNameA(&ofn)) {
             strncpy(g_mk2_path, buf, sizeof(g_mk2_path) - 1);
             g_mk2_path[sizeof(g_mk2_path) - 1] = '\0';
+            /* Persist the directory (everything up to the last separator). */
+            const char *last_sep = NULL;
+            for (const char *p = buf; *p; p++)
+                if (*p == '\\' || *p == '/') last_sep = p;
+            if (last_sep && last_sep > buf) {
+                char dir[MAX_PATH];
+                size_t n = (size_t)(last_sep - buf);
+                if (n >= sizeof(dir)) n = sizeof(dir) - 1;
+                memcpy(dir, buf, n); dir[n] = '\0';
+                save_last_dir_cat(dir, "mk2");
+            }
         }
 #else
         g_mk2_status = "Browse not implemented on this platform - type the path manually";
