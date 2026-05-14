@@ -285,6 +285,11 @@ static void LabeledValue(const char *label, const char *fmt, ...)
 
 /* New IMG / Add Palette confirmations */
 static bool g_show_new_img_confirm = false;
+/* New-image dialog state. Width/height persist between opens so the user
+   doesn't have to retype after a stream of additions at the same size. */
+static bool g_show_new_blank_dialog = false;
+static int  g_new_blank_w = 32;
+static int  g_new_blank_h = 32;
 
 /* Keyboard navigation focus: up/down arrows navigate palettes when true */
 static bool g_palette_nav = false;
@@ -1225,19 +1230,26 @@ err:
     free(dst);
 }
 
-/* Add a new blank IMG (32x32, 8bpp, transparent) to the current library.
- * Uses the currently selected palette if any, otherwise palette 0.
+/* Add a new blank IMG of the given size (8bpp, transparent) to the current
+ * library. Uses the currently selected palette if any, otherwise palette 0.
  * Useful when starting a new library from scratch — File → New gives you
  * an empty library, "Add" on palettes makes a blank palette, then this
- * gives you the first sprite to start drawing on. */
-static void AddNewBlankImage(void)
+ * gives you the first sprite to start drawing on.
+ * Width and height are clamped to 1..1024 — the IMAGE_disk fields are 16-bit
+ * but the legacy toolchain breaks well below that, and a 1024×1024 sprite is
+ * already four MiB so larger sizes are unlikely to be useful for authoring. */
+static void AddNewBlankImage(int w = 32, int h = 32)
 {
+    if (w < 1)    w = 1;
+    if (w > 1024) w = 1024;
+    if (h < 1)    h = 1;
+    if (h > 1024) h = 1024;
     mark_dirty();
     IMG *img = AllocImg();
     if (!img) return;
 
-    img->w        = 32;
-    img->h        = 32;
+    img->w        = (unsigned short)w;
+    img->h        = (unsigned short)h;
     img->flags    = 0;
     img->anix     = 0;
     img->aniy     = 0;
@@ -4802,6 +4814,44 @@ static void DrawNewImgConfirm(void)
     ImGui::EndPopup();
 }
 
+/* "Add new blank image" — small modal that prompts for width and height
+   before allocating, replacing the previous fixed 32x32 path. */
+static void DrawNewBlankImageDialog(void)
+{
+    if (g_show_new_blank_dialog) ImGui::OpenPopup("Add Blank Image");
+    if (!ImGui::BeginPopupModal("Add Blank Image", &g_show_new_blank_dialog,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::Text("Pick the size of the new image.");
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::InputInt("Width",  &g_new_blank_w)) {
+        if (g_new_blank_w < 1)    g_new_blank_w = 1;
+        if (g_new_blank_w > 1024) g_new_blank_w = 1024;
+    }
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::InputInt("Height", &g_new_blank_h)) {
+        if (g_new_blank_h < 1)    g_new_blank_h = 1;
+        if (g_new_blank_h > 1024) g_new_blank_h = 1024;
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    /* Enter commits, Esc cancels — matches the rest of the modals. */
+    bool commit = ImGui::Button("Add", ImVec2(80, 0))
+               || ImGui::IsKeyPressed(ImGuiKey_Enter);
+    if (commit) {
+        AddNewBlankImage(g_new_blank_w, g_new_blank_h);
+        g_show_new_blank_dialog = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        g_show_new_blank_dialog = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 /* Run whatever action queued the unsaved-changes confirm. Called once the
    user has chosen Save or Discard. After running, g_pending_action is reset
    to None so the dialog never re-fires. */
@@ -5928,7 +5978,8 @@ void imgui_overlay_render(void)
             ImGui::SameLine();
             if (ImGui::SmallButton("Mk"))       { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Add"))      { AddNewBlankImage(); }
+            if (ImGui::SmallButton("Add"))      { g_show_new_blank_dialog = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank image (W/H prompt)");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Add a blank 32x32 sprite using the\n"
                                   "currently selected palette. Rename via\n"
@@ -8025,6 +8076,8 @@ void imgui_overlay_render(void)
     DrawFileDialog();
 
     DrawNewImgConfirm();
+
+    DrawNewBlankImageDialog();
 
     DrawUnsavedChangesConfirm();
 
