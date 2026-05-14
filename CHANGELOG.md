@@ -8,6 +8,119 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v2.8.0] — Editor polish, parser correctness, layout-independent shortcuts
+
+Twenty-commit round focused on tightening everything Phase 7 introduced.
+No IMG file-format changes. Two real parser bugs in the MK2 editor were
+caught and fixed by a new round-trip test; the editor gains undo / redo
+/ reload / search / auto-character-pick / unsaved-quit guard; pencil
+becomes a fully discoverable tool; menus and Help are aligned with what
+the code actually does.
+
+### MK2 strike-table editor
+- **Undo / Redo** — per-record snapshot stack inside `mk2::Document`
+  (bounded to 200 entries, drag-coalescing). Ctrl+Z and Ctrl+Shift+Z
+  fire only while the panel has focus so they don't hijack the main
+  canvas's pixel-undo path. Toolbar buttons mirror the keyboard.
+- **Reload button** — re-reads MKSTK.ASM from the previously-resolved
+  source path (not the input box, so a stray edit there can't redirect
+  the reload). Drops in-memory edits and undo/redo history.
+- **Browse… button + last-dir memory** — native Win32 file picker
+  filtered to `.ASM`. Picked directory persists per-category alongside
+  the existing IMG/PNG/TGA/LBM dirs. Defaults to empty path (was
+  hardcoded to one developer's machine).
+- **Move filter** — case-insensitive substring search box in the
+  middle pane so finding a move across ~200 records doesn't require
+  scrolling.
+- **Auto-pick character from IMG filename** — prefix table maps the
+  loaded sprite's filename (CAGE / HATHED / KANG / NINJAS / RAID /
+  TSUNG / JAXPRO / NUJAX / MKJXARMS / KAT / BIGGORO / GOROSIZE) to the
+  two-letter character code MKSTK.ASM uses. Silent no-op when nothing
+  matches.
+- **Unsaved-changes guard on quit** — separate modal from the IMG dirty
+  flow since MK2 writes a different file (MKSTK.ASM).
+- **Stale-status auto-clear** — "Loaded N moves" / "Saved" disappears
+  on the first edit after a clean baseline; error messages stay sticky
+  until the next action resolves them.
+
+### MK2 parser correctness
+- **Case-insensitive `.word` / `.long` regex** — MKSTK.ASM has 11
+  uppercase `.WORD` lines (e.g. on `stk_jxuppercut`). Previous parser
+  silently dropped them, shifted subsequent fields by a slot, and lost
+  the trailing `sound` field on 43 records.
+- **Stacked `stk_*` labels** — multiple consecutive `stk_*` labels with
+  no `.word`/`.long` between them (e.g. `stk_sazap1` immediately
+  followed by `stk_sazap4`) are aliases for the same strike record.
+  Previously the first label allocated empty records and consumed the
+  data for the second. Now tracks `pending_aliases`: every
+  freshly-labeled record that hasn't seen field data yet receives the
+  same field references when data finally arrives.
+- **`mk2_roundtrip_test`** — new CMake test target (guarded by
+  `-DMK2_MKSTK_PATH=…`). Loads, verifies every record has all 8 fields
+  tracked, then does load → save A → load A → save B and asserts
+  A == B byte for byte. Both parser bugs above were caught by this
+  test on first run.
+
+### Pencil tool
+- **Explicit `ActiveTool::Pencil` mode** with toolbar button and the
+  Photoshop `P` shortcut. Toolbar Open/Save icons removed (File menu
+  and Ctrl+O / Ctrl+S unchanged).
+- **`[` / `]` shrink / grow brush radius** (1..16). Photoshop convention.
+- **Cursor preview tracks the selected palette color** — brush ring for
+  radius > 1, offset crosshair for radius = 1. Both have a black halo so
+  they stay legible against same-colored pixels.
+- **Per-stroke pixel undo / redo** — replaces the previous single-slot
+  swap (which silently overwrote itself on each new stroke and had no
+  redo). Up to 32 strokes back, with branch-on-edit. Covers Pencil,
+  Clone Stamp, Smart Eraser, Smart Remap, Shift+click Flood Fill.
+- **Undo/Redo unification** — toolbar buttons, Edit menu items, and the
+  Ctrl+Z / Ctrl+Y shortcuts all route through `DoUndo` / `DoRedo` so the
+  controls correctly light up after a paint stroke.
+
+### Menu and shortcut audit
+- **Wired previously-vestigial palette shortcuts as real:** `[` Set
+  Palette for Marked, `]` Set for Image, `*` Merge Marked (typed
+  character — works on any keyboard layout), `Shift+R` Rename Palette,
+  `Del` Delete Palette. `[` and `]` yield to Pencil brush size when
+  Pencil is active.
+- **Wired four previously-vestigial Image shortcuts as real:** `Ctrl+R`
+  Rename Image, `Ctrl+P` Toggle Point Table, `Alt+PgUp` / `Alt+PgDn`
+  Move Up / Down in list.
+- **Stripped misleading hints** that advertised keys without bindings:
+  `a` Append, `i` Set ID from 2nd List, `Alt+C` Clear Extra Data,
+  `Left`/`Right` Jump Prev/Next Marked, `Tab` World View.
+- **Help modal rewritten** to match what's actually bound. The old
+  text mixed DOS-tool keys (`d/D/F11/F12` zoom, `t` true-palette,
+  `Ctrl+Y`/`Ctrl+Z` for anim-point clears that now collide with
+  Redo/Undo, Eyedropper as E when it's actually I, `'`/`/` palette
+  nav, `i` ID-from-2nd-list, `Alt+U/D/L/R` and `Ctrl+U/D/L/R` anipoint
+  moves) with one inverted (M/m which sets/clears all marks — the
+  hint was backward). New Help also has a dedicated MK2 Strike-Table
+  Editor section.
+- **README keys table synced** to the same ground truth as Help.
+
+### Canvas polish
+- **World View hides overlays** — anipoint crosshair, IMG hitbox, and
+  MK2 hitbox box all suppress while World View is on. World View
+  re-anchors the sprite relative to its anipoint, so on-sprite markers
+  would otherwise float detached from the playfield rectangle.
+- **About modal** uses a 2-column table for the key/value rows
+  (Version / Built / Commit / Dear ImGui / SDL2). ImGui's proportional
+  font made the previous space-padded labels drift.
+
+### New IMG creation
+- **New-image dialog** prompts for width and height before allocating
+  (1..1024 clamped). Replaces the hardcoded 32x32. Defaults persist
+  between opens. Enter commits, Esc cancels.
+- **File → New** bootstrap still uses 32x32 to keep the path identical.
+
+### Source hygiene
+- **Trademarked character names stripped from source** — the MK2
+  auto-pick map now uses only the two-letter codes MKSTK.ASM itself
+  defines (no fighter names in code or comments). README, About
+  dialog, and CHANGELOG keep factual references under nominative fair
+  use.
+
 ## [v2.7.0] — Phase 7: MK2 hitbox editor, Pencil tool, New IMG bootstrap
 
 Phase 7 wrap-up. Adds the long-planned MK2 strike-table editor (parses
