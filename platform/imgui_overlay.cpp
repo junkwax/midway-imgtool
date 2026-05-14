@@ -7094,27 +7094,43 @@ void imgui_overlay_render(void)
                 mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                 mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
 
-            /* Pencil cursor ring — only when brush is wider than one pixel.
-               Single-pixel pencil intentionally has no overlay so it doesn't
-               obscure the pixel being targeted. Ring color tracks the
-               currently-selected palette entry so the user previews what
-               they're about to paint with. Index 0 (transparent) falls back
-               to white since it has no visible RGB. */
-            if (g_active_tool == ActiveTool::Pencil && g_pencil_brush > 1 && mouse_over_sprite) {
-                int r = g_pencil_brush - 1;
+            /* Pencil cursor indicator — color tracks the currently-selected
+               palette entry so the user previews what they're about to paint.
+               Index 0 (transparent) falls back to white. Two render modes:
+                 brush > 1: ring around the round-disc stamp footprint.
+                 brush = 1: small offset crosshair so the single target pixel
+                            stays visible underneath. The crosshair lives
+                            outside the pixel rect itself so it never hides
+                            the pixel it points at. */
+            if (g_active_tool == ActiveTool::Pencil && mouse_over_sprite) {
                 int mx = (int)((mouse.x - img_pos.x) / sx);
                 int my = (int)((mouse.y - img_pos.y) / sy);
                 ImVec2 cc(img_pos.x + (mx + 0.5f) * sx,
                           img_pos.y + (my + 0.5f) * sy);
-                float rr = (sx + sy) * 0.5f * r;
-                ImU32 ring;
+                ImU32 col;
                 if (g_sel_color > 0) {
                     SDL_Color &c = g_palette[g_sel_color];
-                    ring = IM_COL32(c.r, c.g, c.b, 230);
+                    col = IM_COL32(c.r, c.g, c.b, 230);
                 } else {
-                    ring = IM_COL32(255, 255, 255, 200);
+                    col = IM_COL32(255, 255, 255, 200);
                 }
-                dl->AddCircle(cc, rr, ring, 0, 1.5f);
+                if (g_pencil_brush > 1) {
+                    float rr = (sx + sy) * 0.5f * (g_pencil_brush - 1);
+                    dl->AddCircle(cc, rr, col, 0, 1.5f);
+                } else {
+                    /* Half-pixel inset so the crosshair sits *between*
+                       the target pixel and its neighbors, not over them.
+                       Scale-aware: at high zoom the pixel is huge and a
+                       fixed-pixel crosshair would look tiny inside it, so
+                       extend the arms a bit relative to zoom. */
+                    float pix = (sx + sy) * 0.5f;
+                    float gap = pix * 0.5f + 1.0f;
+                    float len = pix * 0.5f + 3.0f;
+                    dl->AddLine(ImVec2(cc.x - gap - len, cc.y), ImVec2(cc.x - gap, cc.y), col, 1.5f);
+                    dl->AddLine(ImVec2(cc.x + gap, cc.y), ImVec2(cc.x + gap + len, cc.y), col, 1.5f);
+                    dl->AddLine(ImVec2(cc.x, cc.y - gap - len), ImVec2(cc.x, cc.y - gap), col, 1.5f);
+                    dl->AddLine(ImVec2(cc.x, cc.y + gap), ImVec2(cc.x, cc.y + gap + len), col, 1.5f);
+                }
             }
 
             /* Clone Stamp visual aids: source crosshair and destination brush ring. */
