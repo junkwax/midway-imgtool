@@ -4997,15 +4997,34 @@ static void DrawAboutModal(void)
                            "and other Williams/Midway arcade titles of the era.");
         ImGui::Spacing();
 
-        ImGui::Text("Version:  %s",       IMGTOOL_VERSION);
-        ImGui::Text("Built:    %s %s",    __DATE__, __TIME__);
-#ifdef IMGTOOL_GIT_REV
-        ImGui::Text("Commit:   %s",       IMGTOOL_GIT_REV);
-#endif
-        ImGui::Text("Dear ImGui: %s",     IMGUI_VERSION);
+        /* Two-column key/value table so the values line up regardless of
+           the proportional-font widths of the labels. ImGui::Text uses a
+           variable-width font, so space-padding inside the format string
+           can't be relied on for alignment. */
         SDL_version sdlv;
         SDL_GetVersion(&sdlv);
-        ImGui::Text("SDL2:     %d.%d.%d", sdlv.major, sdlv.minor, sdlv.patch);
+        if (ImGui::BeginTable("##about_kv", 2,
+                              ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoBordersInBody)) {
+            auto row = [](const char *k, const char *fmt, ...) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(k);
+                ImGui::TableSetColumnIndex(1);
+                va_list ap; va_start(ap, fmt);
+                char buf[256];
+                vsnprintf(buf, sizeof(buf), fmt, ap);
+                va_end(ap);
+                ImGui::TextUnformatted(buf);
+            };
+            row("Version",    "%s",          IMGTOOL_VERSION);
+            row("Built",      "%s %s",       __DATE__, __TIME__);
+#ifdef IMGTOOL_GIT_REV
+            row("Commit",     "%s",          IMGTOOL_GIT_REV);
+#endif
+            row("Dear ImGui", "%s",          IMGUI_VERSION);
+            row("SDL2",       "%d.%d.%d",    sdlv.major, sdlv.minor, sdlv.patch);
+            ImGui::EndTable();
+        }
 
         ImGui::Spacing();
         ImGui::Separator();
