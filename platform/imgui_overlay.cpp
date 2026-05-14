@@ -532,6 +532,61 @@ static int Mk2CurrentRecord(void) {
     if (g_mk2_move_idx < 0 || g_mk2_move_idx >= (int)moves.size()) return -1;
     return mk2::find_record(&g_mk2_doc, moves[g_mk2_move_idx].c_str());
 }
+/* Heuristically map an IMG filename to an MK2 character code based on
+   the data/ filename prefixes seen in the mk2-main tree. Returns NULL
+   when the filename doesn't match a known fighter; callers should leave
+   the panel selection alone in that case rather than guessing. */
+static const char *Mk2CharFromImgName(const char *fname)
+{
+    if (!fname || !fname[0]) return NULL;
+    /* Uppercase copy of just the basename (strip path + extension). */
+    char up[64];
+    const char *p = fname;
+    /* Strip any preceding directory components — backslash and slash. */
+    for (const char *s = fname; *s; s++)
+        if (*s == '\\' || *s == '/') p = s + 1;
+    size_t n = 0;
+    while (p[n] && p[n] != '.' && n < sizeof(up) - 1) {
+        up[n] = (char)toupper((unsigned char)p[n]);
+        n++;
+    }
+    up[n] = '\0';
+    if (n == 0) return NULL;
+
+    /* Prefix match table — most specific first (e.g. NUJAX before NU). */
+    struct { const char *prefix; const char *code; } map[] = {
+        { "CAGE",     "jc" },  /* Johnny Cage */
+        { "HATHED",   "hh" },  /* Kung Lao */
+        { "KANG",     "lk" },  /* Liu Kang */
+        { "NINJAS",   "nj" },  /* Sub-Zero / Reptile / Scorpion / Smoke */
+        { "RAID",     "rd" },  /* Raiden (covers RAIDWALK too) */
+        { "TSUNG",    "st" },  /* Shang Tsung */
+        { "JAXPRO",   "jx" },
+        { "NUJAX",    "jx" },
+        { "MKJXARMS", "jx" },
+        { "KAT",      "fn" },  /* Kitana / Mileena / Jade */
+        { "BIGGORO",  "go" },
+        { "GOROSIZE", "go" },
+    };
+    for (const auto &m : map)
+        if (strncmp(up, m.prefix, strlen(m.prefix)) == 0) return m.code;
+    return NULL;
+}
+
+/* Best-effort: when an IMG finishes loading, if its filename maps to a
+   known MK2 fighter and the MK2 doc has been loaded, jump the panel to
+   that character. Silent no-op when nothing matches. */
+static void Mk2AutoSelectFromImg(void)
+{
+    if (g_mk2_doc.char_tables.empty()) return;
+    const char *code = Mk2CharFromImgName(g_doc->fname_s);
+    if (!code) return;
+    int ci = mk2::find_char_table(&g_mk2_doc, code);
+    if (ci < 0) return;
+    g_mk2_char_idx = ci;
+    g_mk2_move_idx = 0;
+}
+
 /* Move the char/move selection to whichever character table contains
    the given record index, so the user sees the result of an undo/redo. */
 static void Mk2SelectRecord(int rec_idx) {
@@ -2211,6 +2266,7 @@ static void OpenImgFile(const std::string &full_path)
     g_dirty = false; /* fresh load = clean baseline */
     g_img_tex_idx = -2;
     RecentAdd(full_path);
+    Mk2AutoSelectFromImg();
 }
 
 static const char* GetDialogExtension(FileDialogMode mode)
@@ -2716,6 +2772,7 @@ static void DrawFileDialog() {
                     LoadImgFile();
     g_dirty = false; /* fresh load = clean baseline */
                     RecentAdd(full_path);
+                    Mk2AutoSelectFromImg();
                 } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
                     /* Append adds images on top of the current set — even if
                        the file was clean (matched disk) before, after Append
@@ -4074,6 +4131,10 @@ static void DrawMk2HitboxWindow(void)
                referenced records that may no longer match the new doc. */
             g_mk2_doc.undo_stack.clear();
             g_mk2_doc.redo_stack.clear();
+            /* If an IMG is already loaded, pre-select the matching
+               character so the panel comes up pointing at the right
+               fighter without an extra click. */
+            Mk2AutoSelectFromImg();
         } else {
             g_mk2_status = std::string("Load failed: ") + err;
         }
