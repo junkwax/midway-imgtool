@@ -5258,6 +5258,15 @@ void imgui_overlay_render(void)
            since the underlying paint behavior is the same as no tool. */
         g_active_tool = (g_active_tool == ActiveTool::Pencil) ? ActiveTool::None : ActiveTool::Pencil;
     }
+    /* Brush size: [ shrinks, ] grows. Photoshop convention. Only active
+       while the Pencil tool is selected so it doesn't collide with other
+       palette-related menu hints that advertise the same keys. */
+    if (g_active_tool == ActiveTool::Pencil) {
+        if (ImGui::Shortcut(ImGuiKey_LeftBracket,  route))
+            { if (g_pencil_brush > 1)  g_pencil_brush--; }
+        if (ImGui::Shortcut(ImGuiKey_RightBracket, route))
+            { if (g_pencil_brush < 16) g_pencil_brush++; }
+    }
 
     /* Tool Intercepts. Esc/Enter have a three-level priority: transform
        takes precedence, then floating paste, then marquee. */
@@ -5707,7 +5716,7 @@ void imgui_overlay_render(void)
             g_active_tool = (g_active_tool == ActiveTool::Pencil) ? ActiveTool::None : ActiveTool::Pencil;
         }
         ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil - single-pixel paint at current color (P)");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil - paint at current color (P)\n[ / ] to shrink / grow brush");
 
         /* Marquee/select tool — explicit mode toggle. When off, no green-box
            selection ever starts (no more random firing). */
@@ -5797,7 +5806,7 @@ void imgui_overlay_render(void)
             ImGui::SameLine();
             ImGui::SetNextItemWidth(100);
             ImGui::SliderInt("Brush##pencil", &g_pencil_brush, 1, 16);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil brush radius (1 = single pixel)");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil brush radius (1 = single pixel)\n[ / ] also shrink / grow");
         } else if (g_active_tool == ActiveTool::MagicWand) {
             ImGui::SameLine();
             ImGui::TextDisabled("|");
@@ -7074,7 +7083,10 @@ void imgui_overlay_render(void)
 
             /* Pencil cursor ring — only when brush is wider than one pixel.
                Single-pixel pencil intentionally has no overlay so it doesn't
-               obscure the pixel being targeted. */
+               obscure the pixel being targeted. Ring color tracks the
+               currently-selected palette entry so the user previews what
+               they're about to paint with. Index 0 (transparent) falls back
+               to white since it has no visible RGB. */
             if (g_active_tool == ActiveTool::Pencil && g_pencil_brush > 1 && mouse_over_sprite) {
                 int r = g_pencil_brush - 1;
                 int mx = (int)((mouse.x - img_pos.x) / sx);
@@ -7082,7 +7094,14 @@ void imgui_overlay_render(void)
                 ImVec2 cc(img_pos.x + (mx + 0.5f) * sx,
                           img_pos.y + (my + 0.5f) * sy);
                 float rr = (sx + sy) * 0.5f * r;
-                dl->AddCircle(cc, rr, IM_COL32(255, 255, 255, 200), 0, 1.0f);
+                ImU32 ring;
+                if (g_sel_color > 0) {
+                    SDL_Color &c = g_palette[g_sel_color];
+                    ring = IM_COL32(c.r, c.g, c.b, 230);
+                } else {
+                    ring = IM_COL32(255, 255, 255, 200);
+                }
+                dl->AddCircle(cc, rr, ring, 0, 1.5f);
             }
 
             /* Clone Stamp visual aids: source crosshair and destination brush ring. */
