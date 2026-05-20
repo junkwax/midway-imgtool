@@ -67,6 +67,7 @@ static inline void _compat_msgbox(const char *title, const char *text, unsigned 
 
 /* ---- MSVC string helpers ---- */
 #  define _snprintf   snprintf
+#  define _stricmp    strcasecmp
 #  define _strnicmp   strncasecmp
 
 /* ---- Drive ops — no-op on Linux ---- */

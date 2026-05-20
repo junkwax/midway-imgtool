@@ -8,6 +8,88 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v2.9.0] — Headless CLI, GIF import, palette workflows
+
+Automation and art-cleanup release. Adds a headless command-line mode
+for build pipelines, GIF and palette import/export, new paint workflows
+for variant-heavy sprites, and a round of release-hardening fixes. No
+IMG file-format changes.
+
+### Command Line Interface
+- **Open on launch** — `imgtool [file]` opens an `.img`, `.png`,
+  `.tga`, `.lbm`, or `.gif` file immediately on application start.
+- **Headless data exports** — `--export-tbl <input.img> <output.tbl>`
+  writes MK2/MK3 assembly tables with `--mk3`, `--include-pal`,
+  `--padding`, `--align-16`, `--dual-bank`, `--bank=N`, and
+  `--base=HEX`; `--export-irw <input.img> <output.irw>` writes raw
+  ROM layouts with `--bpp=N`, `--no-align`, and `--base=HEX`;
+  `--export-anilst <input.img> <output.asm>` writes assembly animation
+  lists.
+- **Headless format conversions** — `--export-png <input.img>
+  <output_dir>` unpacks sprites to individual PNG files, while
+  `--build-tga <input.img> <output.tga>` packs all marked sprites into a
+  single TGA spritesheet.
+- **LOD and validation tools** — `--build-lod <manifest.lod>
+  <output.img>` builds an IMG directly from a `.lod` manifest, and
+  `--verify-load2 <input.img>` runs the LOAD2 packing verifier with
+  non-zero exit status on breaking alignment issues.
+- **Usage dialog** — `--help`, `-h`, and `/?` show a native usage
+  message for GUI launches.
+
+### Import / Export
+- **GIF import** — File > Import > GIF File loads single-frame or
+  multi-frame GIFs into IMG sprites, quantizes all imported frames into
+  a shared 15-bit palette, and exposes blend mode plus opacity controls
+  for compositing animation frames before import.
+- **Palette import/export** — raw Midway `.PAL` data and Adobe `.ACT`
+  RGB palettes can be imported as new palettes or exported from the
+  active palette. Palette dialogs remember their own directory and
+  default export names from the selected palette.
+- **GIF-aware path dispatch** — drag/drop and launch-by-path now route
+  `.gif` files through the same import path as the file dialog.
+- **File dialog preview** — the existing PNG/TGA thumbnail pane now
+  previews GIFs via `stb_image`.
+
+### Paint And Selection Tools
+- **Paint Bucket tool** — new `G` toolbar mode fills the clicked color
+  with the current swatch. Tolerance is palette-index based, with a
+  contiguous flood mode or global replace mode.
+- **Variant Paint tool** — new `V` toolbar mode paints only the current
+  image's palette appearance while preserving the original color in all
+  other palettes through automatically-created shadow slots. The same
+  logic can be applied to the current selection from the Operations menu
+  or palette properties.
+- **Overlay frame extraction** — selected opaque pixels can be split or
+  copied into a new transparent overlay frame that preserves the source
+  sprite's geometry, anipoints, palette, flags, and alternate-palette
+  metadata. Split mode clears the source pixels and participates in
+  pixel undo.
+
+### Palette Workflow
+- **Clean Up Palette** replaces the older unused-color delete action
+  with a cleanup pass that preserves transparent index 0, removes unused
+  entries, sorts active colors into visible brightness ramps, and remaps
+  every sprite using that palette.
+- **Clean Copy Palette** creates a new sorted/trimmed palette without
+  remapping existing sprites, useful when comparing a cleaned ramp
+  against the original palette.
+- **Palette adjustment commits** — RGB/HSL edits now commit their
+  preview baseline when changing image, palette, or swatch selection, so
+  subsequent resets and multi-select changes do not resurrect stale
+  preview data. Applying a palette also clears stale SDL swatches past
+  `pal->numc`.
+
+### Hardening
+- **CodeQL fixes** — corrected a real `src_filename` overflow in chopped
+  image creation, widened several allocation/mask-size multiplications
+  to `size_t`, and escaped a literal percent sign in an ImGui tooltip
+  format string.
+- **GIF decoder fix** — patched the bundled `stb_image` GIF loader so
+  the two-frame-back pointer references the correct output layer during
+  animated GIF decoding.
+- **Repository hygiene** — stopped tracking the local `last.md` scratch
+  file; the existing `*.md` ignore now covers it.
+
 ## [v2.8.0] — Editor polish, parser correctness, layout-independent shortcuts
 
 Twenty-commit round focused on tightening everything Phase 7 introduced.

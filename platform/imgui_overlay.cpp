@@ -321,7 +321,7 @@ struct GridSelection {
 static GridSelection g_grid_sel = {false, false, 0, 0, 0, 0, false, 0, 0, {}};
 
 /* Active tool state */
-enum class ActiveTool { None, Pencil, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper };
+enum class ActiveTool { None, Pencil, PaintBucket, VariantPaint, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper };
 static ActiveTool g_active_tool = ActiveTool::None;
 
 /* Clone Stamp state */
@@ -335,6 +335,8 @@ static int  g_clone_dy = 0;
 /* Smart Remap state */
 static int g_remap_target_color = -1;
 static int g_remap_tolerance = 0;       /* 0..16, palette-index distance */
+static int  g_bucket_tolerance = 0;     /* 0..16, palette-index distance */
+static bool g_bucket_contiguous = true; /* true = flood region; false = replace all matching pixels */
 
 /* Color isolation view: when set to a palette index >=0, the canvas dims
    every pixel that isn't that index so the user can see exactly where a
@@ -463,6 +465,7 @@ static std::vector<std::pair<int,int>> g_lasso_points;
 /* Clone Stamp brush */
 static int g_clone_brush = 1;           /* radius+1; 1 = single pixel, 3/5/7 = round brushes */
 static int g_pencil_brush = 1;          /* same convention as g_clone_brush — 1 = single pixel */
+static int g_variant_brush = 1;         /* same convention as pencil brush */
 
 /* Snap-to-content cached bbox (recomputed when Shift goes down on a paste drag) */
 struct SnapBBox {
@@ -515,6 +518,9 @@ struct FreeTransform {
 static FreeTransform g_xform = {false, true, 0,0,0,0, 0,0,0,0, TransformHandle::None, 0,0, 0,0,0,0, 1.0f};
 
 static void ApplyPalette(int pal_idx);
+static void save_palette_baseline(void);
+static void reset_palette_adjust_sliders(void);
+static void commit_palette_adjustments(void);
 void undo_push(void);
 static void xform_begin(void);  /* forward decl — used by paste_image */
 
@@ -873,6 +879,7 @@ static void SetPaletteOfSelected(void)
 static void SelectPalette(int idx)
 {
     if (idx < 0 || (unsigned)idx >= g_doc->palcnt) return;
+    commit_palette_adjustments();
     g_doc->plselected   = idx;
     g_palette_nav = true;
     IMG *cur = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -955,6 +962,67 @@ static void FloodFill(IMG *img, int sx, int sy, unsigned char new_color)
         stack.push_back({p.x + 1, p.y}); stack.push_back({p.x - 1, p.y});
         stack.push_back({p.x, p.y + 1}); stack.push_back({p.x, p.y - 1});
     }
+}
+
+static int PaintBucketFill(IMG *img, int sx, int sy, unsigned char new_color, int tolerance, bool contiguous)
+{
+    if (!img || !img->data_p || sx < 0 || sy < 0 || sx >= (int)img->w || sy >= (int)img->h)
+        return 0;
+    if (tolerance < 0) tolerance = 0;
+    if (tolerance > 255) tolerance = 255;
+
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    unsigned char target = pixels[sy * stride + sx];
+    if (target == new_color) return 0;
+
+    auto in_range = [&](unsigned char v) {
+        int d = (int)v - (int)target;
+        if (d < 0) d = -d;
+        return d <= tolerance;
+    };
+
+    int changed = 0;
+    if (contiguous) {
+        struct Pt { int x, y; };
+        std::vector<Pt> stack;
+        std::vector<unsigned char> seen((size_t)w * h, 0);
+        stack.reserve(4096);
+        stack.push_back({sx, sy});
+        seen[sy * w + sx] = 1;
+
+        while (!stack.empty()) {
+            Pt p = stack.back();
+            stack.pop_back();
+            unsigned char *px = &pixels[p.y * stride + p.x];
+            if (!in_range(*px)) continue;
+            *px = new_color;
+            changed++;
+
+            const int dx[4] = {1, -1, 0, 0};
+            const int dy[4] = {0, 0, 1, -1};
+            for (int i = 0; i < 4; i++) {
+                int nx = p.x + dx[i], ny = p.y + dy[i];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                size_t off = (size_t)ny * w + nx;
+                if (seen[off]) continue;
+                seen[off] = 1;
+                if (in_range(pixels[ny * stride + nx]))
+                    stack.push_back({nx, ny});
+            }
+        }
+    } else {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                unsigned char *px = &pixels[y * stride + x];
+                if (!in_range(*px)) continue;
+                *px = new_color;
+                changed++;
+            }
+        }
+    }
+    return changed;
 }
 
 /* Smart eraser: removes the clicked chroma color (and anything within
@@ -1121,12 +1189,7 @@ static void ClearAll(void)
 
     g_img_tex_idx = -2;
     g_palette_nav = false;
-    g_hue_slider  = 0;
-    g_hue_last    = 0;
-    g_sat_slider  = 0;
-    g_sat_last    = 0;
-    g_light_slider = 0;
-    g_light_last   = 0;
+    reset_palette_adjust_sliders();
     g_palette_baseline_nc = 0;
 }
 
@@ -1595,81 +1658,635 @@ static void CalculatePaletteHistogram()
     if (g_histogram_max == 0.0f) g_histogram_max = 1.0f;
 }
 
-static void DeleteUnusedPaletteColors()
+struct PaletteCleanupResult {
+    int removed;
+    int moved;
+    int sorted;
+    bool changed;
+};
+
+struct PaletteSortColor {
+    int old_idx;
+    int r, g, b;
+    int luma;
+    int sat;
+    int hue;
+    int family;
+};
+
+static int palette_sort_hue(int r, int g, int b)
 {
-    if (g_doc->plselected < 0) return;
+    int maxv = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    int minv = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    int delta = maxv - minv;
+    if (delta == 0) return 0;
+
+    int h;
+    if (maxv == r) {
+        h = 256 * (g - b) / delta;
+        if (h < 0) h += 1536;
+    } else if (maxv == g) {
+        h = 512 + 256 * (b - r) / delta;
+    } else {
+        h = 1024 + 256 * (r - g) / delta;
+    }
+    if (h < 0) h += 1536;
+    if (h >= 1536) h -= 1536;
+    return h;
+}
+
+static std::vector<int> BuildGradientPaletteOrder(PAL *pal, const bool used[256])
+{
+    std::vector<PaletteSortColor> colors;
+    if (!pal || !pal->data_p) return {};
+
+    int max_colors = pal->numc;
+    if (max_colors > 256) max_colors = 256;
+    const unsigned char *pd = (const unsigned char *)pal->data_p;
+
+    for (int i = 1; i < max_colors; i++) {
+        if (!used[i]) continue;
+        unsigned char r, g, b;
+        pal_word_to_rgb8(pd + i * 2, &r, &g, &b);
+        PaletteSortColor c;
+        c.old_idx = i;
+        c.r = r;
+        c.g = g;
+        c.b = b;
+        c.luma = c.r * 54 + c.g * 183 + c.b * 19;
+        int maxv = c.r > c.g ? (c.r > c.b ? c.r : c.b) : (c.g > c.b ? c.g : c.b);
+        int minv = c.r < c.g ? (c.r < c.b ? c.r : c.b) : (c.g < c.b ? c.g : c.b);
+        c.sat = maxv - minv;
+        c.hue = palette_sort_hue(c.r, c.g, c.b);
+        c.family = (c.sat <= 18) ? 0 : 1 + ((c.hue + 32) % 1536) / 64;
+        colors.push_back(c);
+    }
+
+    std::sort(colors.begin(), colors.end(), [](const PaletteSortColor& a, const PaletteSortColor& b) {
+        if (a.luma != b.luma) return a.luma < b.luma;
+        if (a.sat != b.sat) return a.sat < b.sat;
+        if (a.family != b.family) return a.family < b.family;
+        if (a.hue != b.hue) return a.hue < b.hue;
+        if (a.r != b.r) return a.r < b.r;
+        if (a.g != b.g) return a.g < b.g;
+        if (a.b != b.b) return a.b < b.b;
+        return a.old_idx < b.old_idx;
+    });
+
+    std::vector<int> order;
+    order.reserve(colors.size());
+    for (const PaletteSortColor& c : colors)
+        order.push_back(c.old_idx);
+    return order;
+}
+
+static int BuildPaletteUsedMask(int pal_idx, int old_numc, bool used[256])
+{
+    memset(used, 0, sizeof(bool) * 256);
+    used[0] = true; /* Transparent index 0 is always preserved. */
+    if (old_numc > 256) old_numc = 256;
+
+    int referenced_pixels = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (img->palnum != pal_idx || !img->data_p || img->w == 0 || img->h == 0) continue;
+        unsigned short stride = (img->w + 3) & ~3;
+        unsigned char *pixels = (unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++) {
+            for (int x = 0; x < img->w; x++) {
+                unsigned char idx = pixels[y * stride + x];
+                if (idx < old_numc) used[idx] = true;
+                referenced_pixels++;
+            }
+        }
+    }
+
+    /* If this palette is only being previewed and no sprite references it,
+       sort the palette itself instead of producing a blank cleaned copy. */
+    if (referenced_pixels == 0) {
+        for (int i = 1; i < old_numc; i++) used[i] = true;
+    }
+    return referenced_pixels;
+}
+
+static PaletteCleanupResult DeleteUnusedPaletteColors()
+{
+    PaletteCleanupResult result = {0, 0, 0, false};
+    if (g_doc->plselected < 0) return result;
     PAL *pal = get_pal(g_doc->plselected);
-    if (!pal || !pal->data_p) return;
+    if (!pal || !pal->data_p) return result;
 
     bool used[256] = {false};
     used[0] = true; /* Transparent index 0 is always preserved */
+    int old_numc = pal->numc;
+    if (old_numc > 256) old_numc = 256;
 
-    /* 1. Find used colors across all images sharing this palette */
+    /* 1. Find used colors across all images sharing this palette. */
+    BuildPaletteUsedMask(g_doc->plselected, old_numc, used);
+
+    /* 2. Reorder used colors into visible brightness ramps. Brightness is
+       the primary key so near dark variants stay adjacent even when one has
+       a slight blue tint, e.g. #060606 next to #070707. */
+    std::vector<int> order = BuildGradientPaletteOrder(pal, used);
+    int new_numc = (int)order.size() + 1;
+    result.sorted = (int)order.size();
+
+    result.removed = old_numc - new_numc;
+    if (result.removed < 0) result.removed = 0;
+    for (int i = 0; i < (int)order.size(); i++) {
+        if (order[i] != i + 1) result.moved++;
+    }
+
+    if (result.removed == 0 && result.moved == 0) return result;
+    result.changed = true;
+    undo_push();
+
+    /* 3. Build remap table */
+    unsigned char remap[256] = {0};
+    for (int i = 0; i < (int)order.size(); i++) {
+        remap[order[i]] = (unsigned char)(i + 1);
+    }
+    if (g_sel_color > 0 && g_sel_color < 256)
+        g_sel_color = remap[g_sel_color] ? remap[g_sel_color] : 0;
+
+    /* 4. Rewrite palette colors in the new order. */
+    unsigned char *colors = (unsigned char *)pal->data_p;
+    unsigned char old_colors[512] = {0};
+    memcpy(old_colors, colors, (size_t)old_numc * 2);
+    for (int i = 0; i < (int)order.size(); i++) {
+        int old_idx = order[i];
+        int new_idx = i + 1;
+        colors[new_idx * 2 + 0] = old_colors[old_idx * 2 + 0];
+        colors[new_idx * 2 + 1] = old_colors[old_idx * 2 + 1];
+    }
+
+    /* Clear remaining colors to black */
+    for (int i = new_numc; i < old_numc; i++) {
+        colors[i * 2 + 0] = 0;
+        colors[i * 2 + 1] = 0;
+    }
+
+    pal->numc = (unsigned short)new_numc;
+
+    /* 5. Remap pixel indices in all affected images */
     IMG *img = (IMG *)g_doc->img_p;
     while (img) {
         if (img->palnum == g_doc->plselected && img->data_p && img->w > 0 && img->h > 0) {
             unsigned short stride = (img->w + 3) & ~3;
             unsigned char *pixels = (unsigned char *)img->data_p;
-            int total_pixels = stride * img->h;
-            for (int i = 0; i < total_pixels; i++) {
-                used[pixels[i]] = true;
+            for (int y = 0; y < img->h; y++) {
+                for (int x = 0; x < img->w; x++) {
+                    unsigned char *idx = &pixels[y * stride + x];
+                    *idx = remap[*idx];
+                }
             }
         }
         img = (IMG *)img->nxt_p;
     }
 
-    /* 2. Build remap table */
-    unsigned char remap[256] = {0};
-    unsigned short next_avail = 1;
-    for (int i = 1; i < 256; i++) {
-        if (used[i]) {
-            remap[i] = (unsigned char)next_avail++;
-        }
-    }
-
-    /* If no optimization is possible, early out */
-    if (next_avail == 256 || next_avail == pal->numc) return;
-
-    /* 3. Pack palette colors in-place (2 bytes per color, 15-bit packed RGB) */
-    unsigned char *colors = (unsigned char *)pal->data_p;
-    int max_colors = pal->numc; /* honor allocated buffer size */
-    for (int i = 1; i < max_colors; i++) {
-        if (used[i]) {
-            int new_idx = remap[i];
-            if (new_idx != i) {
-                colors[new_idx * 2 + 0] = colors[i * 2 + 0];
-                colors[new_idx * 2 + 1] = colors[i * 2 + 1];
-            }
-        }
-    }
-
-    /* Clear remaining colors to black */
-    for (int i = next_avail; i < max_colors; i++) {
-        colors[i * 2 + 0] = 0;
-        colors[i * 2 + 1] = 0;
-    }
-
-    pal->numc = next_avail;
-
-    /* 4. Remap pixel indices in all affected images */
-    img = (IMG *)g_doc->img_p;
-    while (img) {
-        if (img->palnum == g_doc->plselected && img->data_p && img->w > 0 && img->h > 0) {
-            unsigned short stride = (img->w + 3) & ~3;
-            unsigned char *pixels = (unsigned char *)img->data_p;
-            int total_pixels = stride * img->h;
-            for (int i = 0; i < total_pixels; i++) {
-                pixels[i] = remap[pixels[i]];
-            }
-        }
-        img = (IMG *)img->nxt_p;
-    }
-
-    /* 5. Update global SDL palette so the UI reflects changes instantly */
+    /* 6. Update global SDL palette so the UI reflects changes instantly */
     ApplyPalette(g_doc->plselected);
 
-    /* 6. Force canvas texture rebuild */
+    /* 7. Force canvas texture rebuild */
     g_img_tex_idx = -2;
+    mark_dirty();
+    return result;
+}
+
+static void CreateCleanedPaletteCopy(void)
+{
+    commit_palette_adjustments();
+
+    int src_idx = g_doc->plselected;
+    PAL *src = (src_idx >= 0) ? get_pal(src_idx) : NULL;
+    if (!src || !src->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No palette selected to clean-copy.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int old_numc = src->numc;
+    if (old_numc > 256) old_numc = 256;
+    if (old_numc <= 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Selected palette has no colors.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    bool used[256];
+    int referenced_pixels = BuildPaletteUsedMask(src_idx, old_numc, used);
+    std::vector<int> order = BuildGradientPaletteOrder(src, used);
+    int new_numc = (int)order.size() + 1;
+    if (new_numc <= 1) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No active colors to clean-copy.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int moved = 0;
+    for (int i = 0; i < (int)order.size(); i++)
+        if (order[i] != i + 1) moved++;
+
+    undo_push();
+    PAL *pal = (PAL *)AllocPal();
+    if (!pal) return;
+
+    pal->flags   = src->flags;
+    pal->bitspix = src->bitspix;
+    pal->numc    = (unsigned short)new_numc;
+    pal->pad     = 0;
+    make_unique_pal_name(pal->n_s);
+
+    unsigned char *buf = (unsigned char *)PoolAlloc((size_t)new_numc * 2);
+    if (!buf) return;
+    pal->data_p = buf;
+
+    const unsigned char *old_colors = (const unsigned char *)src->data_p;
+    buf[0] = old_colors[0];
+    buf[1] = old_colors[1];
+    for (int i = 0; i < (int)order.size(); i++) {
+        int old_idx = order[i];
+        int new_idx = i + 1;
+        buf[new_idx * 2 + 0] = old_colors[old_idx * 2 + 0];
+        buf[new_idx * 2 + 1] = old_colors[old_idx * 2 + 1];
+    }
+
+    g_doc->plselected = (int)g_doc->palcnt - 1;
+    ApplyPalette(g_doc->plselected);
+    memset(g_palette_selection, 0, sizeof(g_palette_selection));
+    save_palette_baseline();
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Created clean palette copy: sorted %d colors, moved %d%s.",
+             (int)order.size(), moved,
+             referenced_pixels == 0 ? " (palette-only)" : "");
+    g_restore_msg_timer = 5.0f;
+}
+
+static void CleanupSelectedPalette(void)
+{
+    commit_palette_adjustments();
+    PaletteCleanupResult r = DeleteUnusedPaletteColors();
+    if (r.changed) {
+        memset(g_palette_selection, 0, sizeof(g_palette_selection));
+        save_palette_baseline();
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Cleaned %d unused, sorted %d active color%s, moved %d.",
+                 r.removed, r.sorted, r.sorted == 1 ? "" : "s", r.moved);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Palette already sorted (%d active color%s).",
+                 r.sorted, r.sorted == 1 ? "" : "s");
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
+struct VariantPaintResult {
+    int pixels;
+    int slots;
+    int skipped_transparent;
+    int skipped_no_slot;
+};
+
+static unsigned short pal_word_or_black(PAL *pal, int idx)
+{
+    if (!pal || !pal->data_p || idx < 0 || idx >= (int)pal->numc || idx >= 256) return 0;
+    const unsigned char *pd = (const unsigned char *)pal->data_p;
+    return (unsigned short)(pd[idx * 2] | (pd[idx * 2 + 1] << 8));
+}
+
+static unsigned short rgb_to_word15(unsigned char r, unsigned char g, unsigned char b)
+{
+    unsigned char tmp[2];
+    rgb8_to_pal_word(r, g, b, tmp);
+    return (unsigned short)(tmp[0] | (tmp[1] << 8));
+}
+
+static bool ensure_palette_numc(PAL *pal, int min_numc)
+{
+    if (!pal || min_numc <= 0 || min_numc > 256) return false;
+    if (!pal->data_p) {
+        pal->data_p = PoolAlloc(512);
+        if (!pal->data_p) return false;
+        pal->numc = (unsigned short)min_numc;
+        pal->bitspix = 8;
+        return true;
+    }
+
+    if (pal->numc >= min_numc) return true;
+
+    unsigned char *old_data = (unsigned char *)pal->data_p;
+    unsigned int old_bytes = (unsigned int)pal->numc * 2;
+    unsigned char *new_data = (unsigned char *)malloc(512);
+    if (!new_data) return false;
+    memset(new_data, 0, 512);
+    if (old_bytes > 0) memcpy(new_data, old_data, old_bytes);
+    free(old_data);
+    pal->data_p = new_data;
+    pal->numc = (unsigned short)min_numc;
+    if (pal->bitspix == 0) pal->bitspix = 8;
+    return true;
+}
+
+static bool ensure_all_palettes_numc(int min_numc)
+{
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p) {
+        if (!ensure_palette_numc(p, min_numc)) return false;
+    }
+    return true;
+}
+
+static void collect_library_used_indices(bool used[256])
+{
+    memset(used, 0, sizeof(bool) * 256);
+    used[0] = true;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *pix = (const unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++)
+            for (int x = 0; x < img->w; x++)
+                used[pix[y * stride + x]] = true;
+    }
+}
+
+static bool slot_matches_variant_shadow(int slot, int base_idx, int target_pal_idx, unsigned short target_word)
+{
+    PAL *target = get_pal(target_pal_idx);
+    if (!target || !target->data_p || slot >= (int)target->numc) return false;
+    if (pal_word_or_black(target, slot) != target_word) return false;
+
+    int pal_idx = 0;
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p, pal_idx++) {
+        if (pal_idx == target_pal_idx) continue;
+        if (!p->data_p || slot >= (int)p->numc) return false;
+        if (pal_word_or_black(p, slot) != pal_word_or_black(p, base_idx)) return false;
+    }
+    return true;
+}
+
+static int find_variant_shadow_slot(int base_idx, int target_pal_idx, unsigned short target_word)
+{
+    if (base_idx <= 0 || base_idx >= 256) return -1;
+    for (int slot = 1; slot < 256; slot++) {
+        if (slot == base_idx) continue;
+        if (slot_matches_variant_shadow(slot, base_idx, target_pal_idx, target_word))
+            return slot;
+    }
+    return -1;
+}
+
+static int create_variant_shadow_slot(int base_idx, int target_pal_idx, unsigned short target_word, bool *created)
+{
+    if (created) *created = false;
+    int existing = find_variant_shadow_slot(base_idx, target_pal_idx, target_word);
+    if (existing >= 0) return existing;
+
+    bool used[256];
+    collect_library_used_indices(used);
+    int slot = -1;
+    for (int i = 1; i < 256; i++) {
+        if (!used[i]) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+    if (!ensure_all_palettes_numc(slot + 1)) return -1;
+
+    int pal_idx = 0;
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p, pal_idx++) {
+        unsigned short w = (pal_idx == target_pal_idx)
+            ? target_word
+            : pal_word_or_black(p, base_idx);
+        unsigned char *pd = (unsigned char *)p->data_p;
+        pd[slot * 2 + 0] = (unsigned char)(w & 0xFF);
+        pd[slot * 2 + 1] = (unsigned char)(w >> 8);
+    }
+
+    if (created) *created = true;
+    return slot;
+}
+
+static bool selection_contains_pixel(IMG *img, int x, int y)
+{
+    if (!img || !g_grid_sel.active) return false;
+    int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
+    int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
+    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x < x1 || x > x2 || y < y1 || y > y2) return false;
+    if (!g_grid_sel.is_mask) return true;
+    if (x < 0 || y < 0 || x >= g_grid_sel.mask_w || y >= g_grid_sel.mask_h) return false;
+    return g_grid_sel.pixel_mask[(size_t)y * g_grid_sel.mask_w + x];
+}
+
+static VariantPaintResult ApplyVariantPaintToPixels(IMG *img, const std::vector<std::pair<int,int>>& pixels)
+{
+    VariantPaintResult r = {0, 0, 0, 0};
+    if (!img || !img->data_p || pixels.empty()) return r;
+    int target_pal_idx = img->palnum;
+    PAL *target_pal = get_pal(target_pal_idx);
+    if (!target_pal || !target_pal->data_p || target_pal_idx < 0) {
+        r.skipped_no_slot = (int)pixels.size();
+        return r;
+    }
+    if (g_sel_color == 0) {
+        r.skipped_no_slot = (int)pixels.size();
+        return r;
+    }
+
+    SDL_Color &tc = g_palette[g_sel_color];
+    unsigned short target_word = rgb_to_word15(tc.r, tc.g, tc.b);
+    int base_to_slot[256];
+    for (int i = 0; i < 256; i++) base_to_slot[i] = -1;
+
+    int stride = (img->w + 3) & ~3;
+    unsigned char *data = (unsigned char *)img->data_p;
+    for (const auto &pt : pixels) {
+        int x = pt.first, y = pt.second;
+        if (x < 0 || y < 0 || x >= (int)img->w || y >= (int)img->h) continue;
+        unsigned char *pix = data + y * stride + x;
+        int base_idx = *pix;
+        if (base_idx == 0) { r.skipped_transparent++; continue; }
+        if (pal_word_or_black(target_pal, base_idx) == target_word) continue;
+
+        int slot = base_to_slot[base_idx];
+        if (slot == -1) {
+            bool created = false;
+            slot = create_variant_shadow_slot(base_idx, target_pal_idx, target_word, &created);
+            base_to_slot[base_idx] = (slot >= 0) ? slot : -2;
+            if (created) r.slots++;
+        }
+        if (slot < 0) {
+            r.skipped_no_slot++;
+            continue;
+        }
+        if (*pix != (unsigned char)slot) {
+            *pix = (unsigned char)slot;
+            r.pixels++;
+        }
+    }
+
+    if (r.pixels > 0 || r.slots > 0) {
+        ApplyPalette(target_pal_idx);
+        g_img_tex_idx = -2;
+        mark_dirty();
+    }
+    return r;
+}
+
+static VariantPaintResult ApplyVariantBrush(IMG *img, int cx, int cy, int brush)
+{
+    std::vector<std::pair<int,int>> pts;
+    int r = brush > 0 ? brush : 1;
+    int r2 = (r - 1) * (r - 1);
+    for (int by = -(r - 1); by <= (r - 1); by++) {
+        for (int bx = -(r - 1); bx <= (r - 1); bx++) {
+            if (r > 1 && bx * bx + by * by > r2) continue;
+            pts.push_back({cx + bx, cy + by});
+        }
+    }
+    return ApplyVariantPaintToPixels(img, pts);
+}
+
+static void ApplyVariantToSelection(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+    if (!g_grid_sel.active) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select pixels first, then apply variant paint.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    if (g_sel_color == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Variant paint needs an opaque target color.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    PixelHist snap = {};
+    bool have_snap = pixel_hist_capture(&snap);
+
+    std::vector<std::pair<int,int>> pts;
+    for (int y = 0; y < img->h; y++)
+        for (int x = 0; x < img->w; x++)
+            if (selection_contains_pixel(img, x, y)) pts.push_back({x, y});
+
+    VariantPaintResult r = ApplyVariantPaintToPixels(img, pts);
+    if (r.pixels > 0 && have_snap) {
+        if (g_pixel_hist.size() >= kPixelHistMax) {
+            pixel_hist_free(&g_pixel_hist.front());
+            g_pixel_hist.erase(g_pixel_hist.begin());
+        }
+        g_pixel_hist.push_back(snap);
+        for (auto &redo : g_pixel_redo) pixel_hist_free(&redo);
+        g_pixel_redo.clear();
+    } else if (have_snap) {
+        pixel_hist_free(&snap);
+    }
+
+    if (r.pixels > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Variantized %d px using %d shadow slot%s.",
+                 r.pixels, r.slots, r.slots == 1 ? "" : "s");
+    } else if (r.skipped_no_slot > 0 && g_sel_color == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Variant paint needs an opaque target color.");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No pixels changed (%d transparent skipped).", r.skipped_transparent);
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
+static void unlink_and_free_img(IMG *victim)
+{
+    if (!victim) return;
+    IMG *prev = NULL;
+    IMG *cur = (IMG *)g_doc->img_p;
+    while (cur && cur != victim) { prev = cur; cur = (IMG *)cur->nxt_p; }
+    if (cur == victim) {
+        if (prev) prev->nxt_p = cur->nxt_p;
+        else g_doc->img_p = cur->nxt_p;
+        g_doc->imgcnt--;
+    }
+    FreeImg(victim);
+}
+
+static void SplitSelectionToOverlayFrame(bool clear_source)
+{
+    IMG *src = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!src || !src->data_p || src->w == 0 || src->h == 0) return;
+    if (!g_grid_sel.active) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select pixels first, then split an overlay frame.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int stride = (src->w + 3) & ~3;
+    unsigned int sz = (unsigned int)stride * src->h;
+    PixelHist snap = {};
+    bool have_snap = clear_source && pixel_hist_capture(&snap);
+
+    IMG *dst = (IMG *)AllocImg();
+    if (!dst) {
+        if (have_snap) pixel_hist_free(&snap);
+        return;
+    }
+
+    dst->w = src->w; dst->h = src->h;
+    dst->palnum = src->palnum; dst->flags = src->flags;
+    dst->anix = src->anix; dst->aniy = src->aniy;
+    dst->anix2 = src->anix2; dst->aniy2 = src->aniy2; dst->aniz2 = src->aniz2;
+    dst->opals = src->opals;
+    strncpy(dst->src_filename, src->src_filename, sizeof(dst->src_filename) - 1);
+    dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
+    snprintf(dst->n_s, sizeof(dst->n_s), "%.12sOVR", src->n_s);
+
+    dst->data_p = PoolAlloc(sz);
+    if (!dst->data_p) {
+        if (have_snap) pixel_hist_free(&snap);
+        unlink_and_free_img(dst);
+        return;
+    }
+
+    unsigned char *sp = (unsigned char *)src->data_p;
+    unsigned char *dp = (unsigned char *)dst->data_p;
+    int copied = 0;
+    for (int y = 0; y < src->h; y++) {
+        for (int x = 0; x < src->w; x++) {
+            if (!selection_contains_pixel(src, x, y)) continue;
+            unsigned char v = sp[y * stride + x];
+            if (v == 0) continue;
+            dp[y * stride + x] = v;
+            if (clear_source) sp[y * stride + x] = 0;
+            copied++;
+        }
+    }
+
+    if (copied == 0) {
+        if (have_snap) pixel_hist_free(&snap);
+        unlink_and_free_img(dst);
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No opaque selected pixels to split.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    if (have_snap) {
+        if (g_pixel_hist.size() >= kPixelHistMax) {
+            pixel_hist_free(&g_pixel_hist.front());
+            g_pixel_hist.erase(g_pixel_hist.begin());
+        }
+        g_pixel_hist.push_back(snap);
+        for (auto &redo : g_pixel_redo) pixel_hist_free(&redo);
+        g_pixel_redo.clear();
+    }
+
+    g_doc->ilselected = (int)g_doc->imgcnt - 1;
+    g_img_tex_idx = -2;
+    mark_dirty();
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "%s %d px into overlay frame.",
+             clear_source ? "Split" : "Copied", copied);
+    g_restore_msg_timer = 4.0f;
 }
 
 /* ---- Strip Edge (DMA Compression Prep) ---- */
@@ -1830,7 +2447,7 @@ static void LeastSquaresReduceMarked()
 }
 
 /* ---- ImGui Native File Dialog ---- */
-enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch, ExportPng, WriteAniLst, WriteTbl, WriteIrw };
+enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch, ImportGif, ExportPng, ExportPalette, ImportPalette, WriteAniLst, WriteTbl, WriteIrw };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
@@ -1847,6 +2464,10 @@ static int  g_tbl_export_bank      = 0;
 static int  g_irw_bpp             = 8;
 static unsigned int g_irw_base_address = 0x02000000;
 static bool g_irw_align_16bit     = true;
+static int  g_gif_blend_mode      = GifBlend_Normal;
+static int  g_gif_opacity_percent = 100;
+static bool g_gif_import_all      = true;
+static bool g_palette_export_act  = false;
 
 /* Group file-dialog modes into categories so each remembers its own last
    directory. Users tend to keep sprites, source PNGs, and TGA dumps in
@@ -1864,6 +2485,9 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::ImportPng:
         case FileDialogMode::ImportPngMatch:
         case FileDialogMode::ExportPng:       return "png";
+        case FileDialogMode::ImportGif:       return "gif";
+        case FileDialogMode::ExportPalette:
+        case FileDialogMode::ImportPalette:   return "palette";
         case FileDialogMode::LoadTga:
         case FileDialogMode::SaveTga:
         case FileDialogMode::ExportTga:       return "tga";
@@ -2023,8 +2647,7 @@ static SDL_Texture *make_preview_texture(const unsigned char *rgba, int sw, int 
     return tex;
 }
 
-/* Decode a PNG via stb_image (already linked in img_io.cpp) and build a
-   preview texture. Returns NULL if the file isn't a valid PNG. */
+/* Decode a stb_image-supported file and build a preview texture. */
 extern "C" unsigned char *stbi_load(const char *, int *, int *, int *, int);
 extern "C" void stbi_image_free(void *);
 static SDL_Texture *load_preview_png(const char *path, int max_side)
@@ -2111,6 +2734,7 @@ static void file_preview_refresh(const std::string &path)
     }
     SDL_Texture *tex = NULL;
     if (ext == "png")       tex = load_preview_png(path.c_str(), 192);
+    else if (ext == "gif")  tex = load_preview_png(path.c_str(), 192);
     else if (ext == "tga")  tex = load_preview_tga(path.c_str(), 192);
     /* IMG / LBM previews would require refactoring those loaders to write
        into a sandbox buffer rather than the global IMG / PAL lists. Saved
@@ -2334,8 +2958,12 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::ImportPng:
         case FileDialogMode::ImportPngMatch:
         case FileDialogMode::ExportPng: return "PNG";
+        case FileDialogMode::ImportGif: return "GIF";
+        case FileDialogMode::ExportPalette: return g_palette_export_act ? "ACT" : "PAL";
+        case FileDialogMode::ImportPalette: return "PAL";
         case FileDialogMode::WriteAniLst: return "ASM";
         case FileDialogMode::WriteTbl:  return "TBL";
+        case FileDialogMode::WriteIrw:  return "IRW";
     }
     return "";
 }
@@ -2367,8 +2995,16 @@ static void OpenFileDialog(FileDialogMode mode) {
 #endif
     }
     g_file_dialog_mode = mode;
-    bool is_export = (mode == FileDialogMode::ExportTga || mode == FileDialogMode::SaveTga || mode == FileDialogMode::ExportPng || mode == FileDialogMode::SaveLbm);
-    if (is_export && g_doc->ilselected >= 0) {
+    bool is_export = (mode == FileDialogMode::ExportTga || mode == FileDialogMode::SaveTga ||
+                      mode == FileDialogMode::ExportPng || mode == FileDialogMode::ExportPalette ||
+                      mode == FileDialogMode::SaveLbm);
+    if (mode == FileDialogMode::ExportPalette && g_doc->plselected >= 0) {
+        PAL *pal = get_pal(g_doc->plselected);
+        if (pal) {
+            snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s.%s",
+                     pal->n_s, GetDialogExtension(mode));
+        }
+    } else if (is_export && g_doc->ilselected >= 0) {
         IMG *img = get_img(g_doc->ilselected);
         if (img) {
             size_t n = 0;
@@ -2431,7 +3067,8 @@ static void RequestOpenLodDialog(void)
      .img → RequestOpenPath (unsaved-changes guard + full reset)
      .tga → LoadTga import into the active document
      .lbm → LoadLbm import into the active document
-     .png → ImportPng if an IMG is open (palette context required), else toast
+     .png → ImportPng
+     .gif → ImportGif
    Unknown extensions toast and return. */
 extern "C" void imgui_overlay_open_path(const char *path)
 {
@@ -2473,6 +3110,11 @@ extern "C" void imgui_overlay_open_path(const char *path)
         ImportPng(p.c_str());
         mark_dirty();
         g_img_tex_idx = -2;
+    } else if (ext == "gif") {
+        ensure_new_doc_if_empty();
+        ImportGif(p.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all);
+        mark_dirty();
+        g_img_tex_idx = -2;
     } else {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Unsupported file type: .%s", ext.empty() ? "(none)" : ext.c_str());
@@ -2494,7 +3136,10 @@ static void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::SaveTga) title = "Save TGA File";
     else if (g_file_dialog_mode == FileDialogMode::ImportPng) title = "Import PNG File";
     else if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) title = "Import PNG (Match Palette)";
+    else if (g_file_dialog_mode == FileDialogMode::ImportGif) title = "Import GIF File";
     else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
+    else if (g_file_dialog_mode == FileDialogMode::ExportPalette) title = "Export Palette";
+    else if (g_file_dialog_mode == FileDialogMode::ImportPalette) title = "Import Palette";
     else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) title = "Write ANILST";
     else if (g_file_dialog_mode == FileDialogMode::WriteTbl) title = "Write TBL";
     else if (g_file_dialog_mode == FileDialogMode::WriteIrw) title = "Write IRW";
@@ -2629,6 +3274,24 @@ static void DrawFileDialog() {
             ImGui::Checkbox("Align to 16-bit boundary (/L)", &g_irw_align_16bit);
         }
 
+        if (g_file_dialog_mode == FileDialogMode::ImportGif) {
+            if (ImGui::BeginCombo("Blend Mode", GifBlendModeName(g_gif_blend_mode))) {
+                for (int i = 0; i < GifBlend_Count; i++) {
+                    bool selected = (g_gif_blend_mode == i);
+                    if (ImGui::Selectable(GifBlendModeName(i), selected)) g_gif_blend_mode = i;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SliderInt("Opacity", &g_gif_opacity_percent, 0, 100, "%d%%");
+            ImGui::Checkbox("Import All Frames", &g_gif_import_all);
+        }
+
+        if (g_file_dialog_mode == FileDialogMode::ExportPalette) {
+            ImGui::Checkbox("Adobe ACT (RGB)", &g_palette_export_act);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off writes raw Midway 15-bit palette words.");
+        }
+
         if (g_file_dialog_mode == FileDialogMode::OpenLod) {
             ImGui::InputText("Force Override Directory (/O)", g_lod_override_dir, sizeof(g_lod_override_dir));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("If set, forces all IMGs to load from this directory, ignoring paths in the .lod file.");
@@ -2639,12 +3302,14 @@ static void DrawFileDialog() {
         
         const char* btn_text = (g_file_dialog_mode == FileDialogMode::ImportPng ||
                                 g_file_dialog_mode == FileDialogMode::ImportPngMatch ||
+                                g_file_dialog_mode == FileDialogMode::ImportGif ||
                                 g_file_dialog_mode == FileDialogMode::ExportPng) ? "OK" :
                                (g_file_dialog_mode == FileDialogMode::OpenImg ||
                                 g_file_dialog_mode == FileDialogMode::AppendImg ||
                                 g_file_dialog_mode == FileDialogMode::OpenLod ||
                                 g_file_dialog_mode == FileDialogMode::LoadLbm ||
-                                g_file_dialog_mode == FileDialogMode::LoadTga) ? "Open" : "Save";
+                                g_file_dialog_mode == FileDialogMode::LoadTga ||
+                                g_file_dialog_mode == FileDialogMode::ImportPalette) ? "Open" : "Save";
         if (ImGui::Button(btn_text, ImVec2(100, 0)) || dbl_click_commit) {
             std::string full_path = PathCombine(g_file_dialog_dir, g_file_dialog_file);
 
@@ -2658,11 +3323,23 @@ static void DrawFileDialog() {
                 if (dot != std::string::npos) full_path = full_path.substr(0, dot);
                 full_path += ".PNG";
                 ExportPng(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::ExportPalette) {
+                size_t dot = full_path.find_last_of('.');
+                if (dot != std::string::npos) full_path = full_path.substr(0, dot);
+                full_path += g_palette_export_act ? ".ACT" : ".PAL";
+                ExportPalette(full_path.c_str(), g_palette_export_act);
+            } else if (g_file_dialog_mode == FileDialogMode::ImportPalette) {
+                undo_push();
+                ImportPalette(full_path.c_str());
+                mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportPng) {
                 ImportPng(full_path.c_str());
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) {
                 ImportPngMatch(full_path.c_str());
+                mark_dirty();
+            } else if (g_file_dialog_mode == FileDialogMode::ImportGif) {
+                ImportGif(full_path.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all);
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) {
                 size_t dot = full_path.find_last_of('.');
@@ -2952,13 +3629,15 @@ Image list:
 
 Tools (toolbar shortcuts):
   P                    Pencil   - paint at current color
+  G                    Paint Bucket - fill contiguous area
+  V                    Variant Paint - target-palette-only color over opaque pixels
   R                    Marquee  - rectangular selection
   W                    Magic Wand
   L                    Lasso
   I                    Eyedropper - pick color from canvas
   (no shortcut)        Smart Eraser, Clone Stamp, Smart Remap (toolbar buttons)
 
-Pencil-specific (only fire while Pencil is active):
+Brush-specific (only fire while Pencil or Variant Paint is active):
   [ / ]                Shrink / grow brush radius (1..16)
 
 Palette (only fire when no paint tool is active):
@@ -3374,6 +4053,22 @@ static void save_palette_baseline(void)
     g_palette_baseline_nc = nc;
 }
 
+static void reset_palette_adjust_sliders(void)
+{
+    g_hue_slider = 0;
+    g_hue_last   = 0;
+    g_sat_slider = 0;
+    g_sat_last   = 0;
+    g_light_slider = 0;
+    g_light_last   = 0;
+}
+
+static void commit_palette_adjustments(void)
+{
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+}
+
 static void reset_palette_to_baseline(void)
 {
     PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
@@ -3383,12 +4078,7 @@ static void reset_palette_to_baseline(void)
     if (nc > g_palette_baseline_nc) nc = g_palette_baseline_nc;
     memcpy(pal->data_p, g_palette_baseline, nc * 2);
     ApplyPalette(g_doc->plselected);
-    g_hue_slider = 0;
-    g_hue_last   = 0;
-    g_sat_slider = 0;
-    g_sat_last   = 0;
-    g_light_slider = 0;
-    g_light_last   = 0;
+    reset_palette_adjust_sliders();
     mark_dirty();
 }
 
@@ -3403,6 +4093,12 @@ static void ApplyPalette(int pal_idx)
     if (n > 256) n = 256;
     for (int i = 0; i < n; i++) {
         pal_word_to_rgb8(src + i * 2, &g_palette[i].r, &g_palette[i].g, &g_palette[i].b);
+        g_palette[i].a = 255;
+    }
+    for (int i = n; i < 256; i++) {
+        g_palette[i].r = 0;
+        g_palette[i].g = 0;
+        g_palette[i].b = 0;
         g_palette[i].a = 255;
     }
 }
@@ -5220,6 +5916,7 @@ void imgui_overlay_render(void)
            palette with the old one, users perceive image-switch as a
            fresh context and a stale yellow border on swatches is
            confusing. They can Ctrl/Shift-click to rebuild it. */
+        commit_palette_adjustments();
         memset(g_palette_selection, 0, sizeof(g_palette_selection));
         g_prev_ilselected = g_doc->ilselected;
     }
@@ -5310,6 +6007,12 @@ void imgui_overlay_render(void)
            since the underlying paint behavior is the same as no tool. */
         g_active_tool = (g_active_tool == ActiveTool::Pencil) ? ActiveTool::None : ActiveTool::Pencil;
     }
+    if (ImGui::Shortcut(ImGuiKey_G, route)) {
+        g_active_tool = (g_active_tool == ActiveTool::PaintBucket) ? ActiveTool::None : ActiveTool::PaintBucket;
+    }
+    if (ImGui::Shortcut(ImGuiKey_V, route)) {
+        g_active_tool = (g_active_tool == ActiveTool::VariantPaint) ? ActiveTool::None : ActiveTool::VariantPaint;
+    }
     /* [ and ] do double duty depending on context:
          - Pencil active: [ shrinks brush, ] grows brush (Photoshop convention).
          - Otherwise:     [ Set Palette for Marked, ] Set for Image
@@ -5320,11 +6023,12 @@ void imgui_overlay_render(void)
          Del      — Delete selected palette
        All of these were previously advertised in tooltips but never actually
        wired; they're real shortcuts now. */
-    if (g_active_tool == ActiveTool::Pencil) {
+    if (g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::VariantPaint) {
+        int *brush = (g_active_tool == ActiveTool::VariantPaint) ? &g_variant_brush : &g_pencil_brush;
         if (ImGui::Shortcut(ImGuiKey_LeftBracket,  route))
-            { if (g_pencil_brush > 1)  g_pencil_brush--; }
+            { if (*brush > 1)  (*brush)--; }
         if (ImGui::Shortcut(ImGuiKey_RightBracket, route))
-            { if (g_pencil_brush < 16) g_pencil_brush++; }
+            { if (*brush < 16) (*brush)++; }
     } else {
         if (ImGui::Shortcut(ImGuiKey_LeftBracket,  route)) SetPaletteOfMarked();
         if (ImGui::Shortcut(ImGuiKey_RightBracket, route)) SetPaletteOfSelected();
@@ -5446,6 +6150,8 @@ void imgui_overlay_render(void)
             if (ImGui::BeginMenu("Import")) {
                 if (ImGui::MenuItem("PNG File..."))                 OpenFileDialog(FileDialogMode::ImportPng);
                 if (ImGui::MenuItem("PNG (Match to Active Palette)...")) OpenFileDialog(FileDialogMode::ImportPngMatch);
+                if (ImGui::MenuItem("GIF File..."))                 OpenFileDialog(FileDialogMode::ImportGif);
+                if (ImGui::MenuItem("Palette..."))                  OpenFileDialog(FileDialogMode::ImportPalette);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Load LBM", "Alt+L"))  OpenFileDialog(FileDialogMode::LoadLbm);
                 if (ImGui::MenuItem("Load TGA", "Ctrl+L")) OpenFileDialog(FileDialogMode::LoadTga);
@@ -5453,6 +6159,7 @@ void imgui_overlay_render(void)
             }
             if (ImGui::BeginMenu("Export")) {
                 if (ImGui::MenuItem("PNG File..."))                    OpenFileDialog(FileDialogMode::ExportPng);
+                if (ImGui::MenuItem("Palette..."))                     OpenFileDialog(FileDialogMode::ExportPalette);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Save LBM", "Alt+S"))        OpenFileDialog(FileDialogMode::SaveLbm);
                 if (ImGui::MenuItem("Save Marked LBM"))          OpenFileDialog(FileDialogMode::SaveMarkedLbm);
@@ -5578,6 +6285,10 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Strip Edge (Selected Color)"))              StripMarkedImages(5, g_sel_color);
             if (ImGui::MenuItem("Dither Replace"))                           DitherReplaceMarkedImages(g_sel_color);
             ImGui::Separator();
+            if (ImGui::MenuItem("Apply Variant Paint to Selection"))          ApplyVariantToSelection();
+            if (ImGui::MenuItem("Split Selection to Overlay Frame"))          SplitSelectionToOverlayFrame(true);
+            if (ImGui::MenuItem("Copy Selection to Overlay Frame"))           SplitSelectionToOverlayFrame(false);
+            ImGui::Separator();
             if (ImGui::MenuItem("Restore from Selected (pixel-diff)")) {
                 int n = RestoreMarkedFromSource();
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -5627,7 +6338,10 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Rename Palette",      "Shift+R")) OpenRenamePalette(g_doc->plselected);
             ImGui::Separator();
             if (ImGui::MenuItem("Show Histogram"))               { CalculatePaletteHistogram(); g_show_histogram = true; }
-            if (ImGui::MenuItem("Delete Unused Colors"))         DeleteUnusedPaletteColors();
+            if (ImGui::MenuItem("Clean Up Palette"))             CleanupSelectedPalette();
+            if (ImGui::MenuItem("Clean Copy Palette"))           CreateCleanedPaletteCopy();
+            if (ImGui::MenuItem("Import Palette..."))            OpenFileDialog(FileDialogMode::ImportPalette);
+            if (ImGui::MenuItem("Export Palette..."))            OpenFileDialog(FileDialogMode::ExportPalette);
             ImGui::Separator();
             if (ImGui::MenuItem("Mark All")) {
                 PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;}
@@ -5729,12 +6443,7 @@ void imgui_overlay_render(void)
         last_plselected = g_doc->plselected;
         ApplyPalette(g_doc->plselected);
         g_img_tex_idx = -2; /* Force texture rebuild to use new palette */
-        g_hue_slider = 0;
-        g_hue_last   = 0;
-        g_sat_slider = 0;
-        g_sat_last   = 0;
-        g_light_slider = 0;
-        g_light_last   = 0;
+        reset_palette_adjust_sliders();
         /* Clear multi-select on palette change. Indexes from the previous
            palette don't map cleanly to the new one (different colors at the
            same index), so persisting the selection is misleading. */
@@ -5791,6 +6500,26 @@ void imgui_overlay_render(void)
         }
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil - paint at current color (P)\n[ / ] to shrink / grow brush");
+
+        /* Paint Bucket tool */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::PaintBucket ?
+            ImVec4(0.7f,0.45f,0.15f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEE\x8E\xAE", "Bk"), btn)) { /* U+E3AE format_color_fill */
+            g_active_tool = (g_active_tool == ActiveTool::PaintBucket) ? ActiveTool::None : ActiveTool::PaintBucket;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Paint Bucket (G)\nClick to fill with current color");
+
+        /* Variant Paint: paints with the selected palette color on the
+           current/target palette while cloning the original color into every
+           other palette at the new shadow index. */
+        ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::VariantPaint ?
+            ImVec4(0.2f,0.6f,0.7f,1.f) : ImVec4(0.25f,0.25f,0.25f,1.f));
+        if (ImGui::Button(TB_LABEL("\xEE\x90\x8A", "Vt"), btn)) { /* U+E40A palette */
+            g_active_tool = (g_active_tool == ActiveTool::VariantPaint) ? ActiveTool::None : ActiveTool::VariantPaint;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Variant Paint (V)\nPaints visible detail only on the current palette\nover existing opaque pixels");
 
         /* Marquee/select tool — explicit mode toggle. When off, no green-box
            selection ever starts (no more random firing). */
@@ -5881,6 +6610,23 @@ void imgui_overlay_render(void)
             ImGui::SetNextItemWidth(100);
             ImGui::SliderInt("Brush##pencil", &g_pencil_brush, 1, 16);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil brush radius (1 = single pixel)\n[ / ] also shrink / grow");
+        } else if (g_active_tool == ActiveTool::PaintBucket) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
+            ImGui::SliderInt("Tol##bucket", &g_bucket_tolerance, 0, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fill tolerance (palette-index distance)");
+            ImGui::SameLine();
+            ImGui::Checkbox("Contig##bucket", &g_bucket_contiguous);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("If off: replace every matching pixel globally");
+        } else if (g_active_tool == ActiveTool::VariantPaint) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::SliderInt("Brush##variant", &g_variant_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Variant brush radius (1 = single pixel)\n[ / ] also shrink / grow");
         } else if (g_active_tool == ActiveTool::MagicWand) {
             ImGui::SameLine();
             ImGui::TextDisabled("|");
@@ -6132,7 +6878,10 @@ void imgui_overlay_render(void)
                         if (ImGui::MenuItem("Set for Marked Images", "["))       SetPaletteOfMarked();
                         if (ImGui::MenuItem("Merge Marked into Selected", "*"))  MergeMarkedPalettes();
                         ImGui::Separator();
-                        if (ImGui::MenuItem("Delete Unused Colors")) DeleteUnusedPaletteColors();
+                        if (ImGui::MenuItem("Clean Up Palette")) CleanupSelectedPalette();
+                        if (ImGui::MenuItem("Clean Copy Palette")) CreateCleanedPaletteCopy();
+                        if (ImGui::MenuItem("Import Palette...")) OpenFileDialog(FileDialogMode::ImportPalette);
+                        if (ImGui::MenuItem("Export Palette...")) OpenFileDialog(FileDialogMode::ExportPalette);
                         if (ImGui::MenuItem("Show Histogram")) { CalculatePaletteHistogram(); g_show_histogram = true; }
                         if (ImGui::MenuItem("Rename", "Shift+R")) OpenRenamePalette(i);
                         if (ImGui::MenuItem("Delete", "Del")) DeletePalette();
@@ -6143,14 +6892,16 @@ void imgui_overlay_render(void)
                 ImGui::EndListBox();
             }
             /* Palette mark buttons (wrapped to 2 rows) */
+            ImGui::PushID("palette_controls");
             if (ImGui::SmallButton("Mk All"))    { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Clr All"))   { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
+            ImGui::SameLine();
             if (ImGui::SmallButton("Add")) AddNewPalette();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank 256-color palette");
-            ImGui::SameLine();
+
             if (ImGui::SmallButton("Merge"))     MergeMarkedPalettes();
             ImGui::SameLine();
             if (ImGui::SmallButton("Dup"))       DuplicatePalette();
@@ -6166,6 +6917,15 @@ void imgui_overlay_render(void)
                 ImGui::SetTooltip("Paste clipboard palette as new (%s, %d colors)",
                                   g_pal_clipboard.n_s, (int)g_pal_clipboard.numc);
             if (!g_pal_clipboard.valid) ImGui::EndDisabled();
+
+            if (ImGui::SmallButton("Clean")) CleanupSelectedPalette();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pack used colors into visible ramps and remap images using this palette");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clean+")) CreateCleanedPaletteCopy();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new cleaned palette copy without remapping sprites");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Export")) OpenFileDialog(FileDialogMode::ExportPalette);
+            ImGui::PopID();
         }
 
         /* --- Properties --- */
@@ -6267,16 +7027,19 @@ void imgui_overlay_render(void)
             if (ImGui::SliderInt("R##cr", &r, 0, 255)) {
                 col.r = (unsigned char)r;
                 palette_writeback(g_sel_color);
+                commit_palette_adjustments();
             }
             ImGui::SetNextItemWidth(-1);
             if (ImGui::SliderInt("G##cg", &g, 0, 255)) {
                 col.g = (unsigned char)g;
                 palette_writeback(g_sel_color);
+                commit_palette_adjustments();
             }
             ImGui::SetNextItemWidth(-1);
             if (ImGui::SliderInt("B##cb", &b, 0, 255)) {
                 col.b = (unsigned char)b;
                 palette_writeback(g_sel_color);
+                commit_palette_adjustments();
             }
             ImGui::Separator();
             bool any_sel = false;
@@ -6310,9 +7073,7 @@ void imgui_overlay_render(void)
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = black, +100 = white.");
             if (ImGui::SmallButton("Reset HSL")) {
-                g_hue_slider = g_hue_last = 0;
-                g_sat_slider = g_sat_last = 0;
-                g_light_slider = g_light_last = 0;
+                reset_palette_adjust_sliders();
                 reset_palette_to_baseline();
             }
             if (ImGui::IsItemHovered())
@@ -6335,17 +7096,21 @@ void imgui_overlay_render(void)
                             memcpy(buf, src->data_p, col_sz);
                             if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
                             ApplyPalette(g_doc->plselected);
-                            g_hue_slider = 0;
-                            g_hue_last   = 0;
-                            g_sat_slider = 0;
-                            g_sat_last   = 0;
-                            g_light_slider = 0;
-                            g_light_last   = 0;
+                            commit_palette_adjustments();
                             mark_dirty();
                         }
                     }
                 }
             }
+            ImGui::Separator();
+            if (ImGui::SmallButton("Variant Selection")) ApplyVariantToSelection();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Use the current swatch as the target-palette color,\n"
+                                  "but keep selected pixels visually unchanged on other palettes.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Split Overlay")) SplitSelectionToOverlayFrame(true);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Move selected opaque pixels into a new transparent overlay frame.");
         }
 
         /* --- Library Info --- */
@@ -6797,7 +7562,7 @@ void imgui_overlay_render(void)
                         g_sel_color = *pix;
                         widget_consumed_click = true;
                     }
-                    /* Left-click: pencil, fill, background eraser, clone stamp, or smart remap.
+                    /* Left-click: pencil, paint bucket, background eraser, clone stamp, or smart remap.
                        Suppress when the cursor is over (or dragging) an anipoint or hitbox
                        handle. The anipoint render block runs *after* this branch, so the
                        in-progress drag flag isn't enough on the first click frame — we
@@ -6814,7 +7579,7 @@ void imgui_overlay_render(void)
                         }
                     }
                     if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
-                        && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
+                        && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::PaintBucket || g_active_tool == ActiveTool::VariantPaint || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
                         /* Stroke begin: capture a pre-stroke snapshot of the
                            image's pixel buffer on the first frame of left-mouse
                            down for any paint tool. Skipped for Clone Stamp's
@@ -6866,6 +7631,41 @@ void imgui_overlay_render(void)
                                 }
                                 mark_dirty();
                                 g_img_tex_idx = -2;
+                                widget_consumed_click = true;
+                            }
+                        } else if (g_active_tool == ActiveTool::PaintBucket) {
+                            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                int changed = PaintBucketFill(cimg, px, py,
+                                                              (unsigned char)g_sel_color,
+                                                              g_bucket_tolerance,
+                                                              g_bucket_contiguous);
+                                if (changed > 0) {
+                                    mark_dirty();
+                                    g_img_tex_idx = -2;
+                                }
+                                if (changed > 0) {
+                                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                             "Paint bucket filled %d pixel%s.",
+                                             changed, changed == 1 ? "" : "s");
+                                } else {
+                                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                             "Paint bucket: no pixels changed.");
+                                }
+                                g_restore_msg_timer = 3.0f;
+                                widget_consumed_click = true;
+                            }
+                        } else if (g_active_tool == ActiveTool::VariantPaint) {
+                            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                                VariantPaintResult vr = ApplyVariantBrush(cimg, px, py, g_variant_brush);
+                                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                    if (g_sel_color == 0) {
+                                        snprintf(g_restore_msg, sizeof(g_restore_msg), "Variant paint needs an opaque target color.");
+                                        g_restore_msg_timer = 4.0f;
+                                    } else if (vr.skipped_no_slot > 0 && vr.pixels == 0) {
+                                        snprintf(g_restore_msg, sizeof(g_restore_msg), "No free palette index for variant shadow.");
+                                        g_restore_msg_timer = 4.0f;
+                                    }
+                                }
                                 widget_consumed_click = true;
                             }
                         } else if (g_active_tool == ActiveTool::SmartRemap) {
@@ -8187,6 +8987,7 @@ void imgui_overlay_render(void)
                     /* Alt-click: toggle color isolation on this index */
                     g_isolate_color = (g_isolate_color == i) ? -1 : i;
                 } else if (cio.KeyCtrl) {
+                    commit_palette_adjustments();
                     /* Ctrl-click: toggle this swatch's membership in the
                        multi-selection. Doesn't move g_sel_color — Photoshop
                        convention — so the active color stays put and the
@@ -8194,11 +8995,13 @@ void imgui_overlay_render(void)
                        unchanged white ring (or its absence). */
                     g_palette_selection[i] = !g_palette_selection[i];
                 } else if (cio.KeyShift) {
+                    commit_palette_adjustments();
                     int start = g_sel_color < i ? g_sel_color : i;
                     int end = g_sel_color < i ? i : g_sel_color;
                     for (int j = start; j <= end; j++) g_palette_selection[j] = true;
                     g_sel_color = i;
                 } else {
+                    commit_palette_adjustments();
                     memset(g_palette_selection, 0, sizeof(g_palette_selection));
                     g_sel_color = i;
                 }

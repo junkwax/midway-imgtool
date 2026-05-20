@@ -9,7 +9,7 @@
 /* Single source of truth for the version string shipped in the binary.
    Used by the window title and the About dialog. Bump alongside the
    CHANGELOG entry and the git tag at release time. */
-#define IMGTOOL_VERSION "2.8.0"
+#define IMGTOOL_VERSION "2.9.0"
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,10 +62,10 @@ int imgui_overlay_should_quit(void);
    Must be called after imgui_overlay_render() and before SDL_RenderPresent(). */
 void imgui_overlay_present(void);
 
-/* Open a file by path, dispatched by extension (.img / .png / .tga / .lbm).
+/* Open a file by path, dispatched by extension (.img / .png / .gif / .tga / .lbm).
    Used by SDL_DROPFILE drag-and-drop. IMG goes through the unsaved-changes
-   guard; PNG/TGA/LBM import into the current document (no-op with a toast
-   if no IMG is open for PNG, which requires an active palette context). */
+   guard; PNG/GIF/TGA/LBM import into the current document, bootstrapping a
+   fresh document first when the workspace is empty. */
 void imgui_overlay_open_path(const char *path);
 
 #ifdef __cplusplus

@@ -52,7 +52,28 @@ void LoadTga(const char *filepath);
 void LoadLbm(const char *filepath);
 void ImportPng(const char *path);
 void ImportPngMatch(const char *path);
+enum GifBlendMode {
+    GifBlend_Normal = 0,
+    GifBlend_Dissolve,
+    GifBlend_Darken,
+    GifBlend_Multiply,
+    GifBlend_ColorBurn,
+    GifBlend_LinearBurn,
+    GifBlend_Lighten,
+    GifBlend_Screen,
+    GifBlend_ColorDodge,
+    GifBlend_Overlay,
+    GifBlend_SoftLight,
+    GifBlend_HardLight,
+    GifBlend_Difference,
+    GifBlend_Exclusion,
+    GifBlend_Count
+};
+const char *GifBlendModeName(int mode);
+void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames);
 void ExportPng(const char *path);
+void ExportPalette(const char *path, bool adobe_act);
+void ImportPalette(const char *path);
 int  RestoreMarkedFromSource(void);
 int  RestoreMarkedFromSourceForce(void);
 int  ExecuteBulkRestorePairs(const std::vector<BulkRestoreMatch>& matches);

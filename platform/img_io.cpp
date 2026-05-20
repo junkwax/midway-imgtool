@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <utility>
 #include <climits>
+#include <cmath>
 #include <string>
 #include <regex>
 #include <stdarg.h>
@@ -1980,6 +1981,337 @@ static void recompute_bucket_bounds(ColorBucket &b)
     }
 }
 
+struct PalRGB5 { unsigned char r, g, b; };
+
+static void import_base_name(const char *path, char *out, size_t outsz)
+{
+    if (!out || outsz == 0) return;
+    const char *name = path ? path : "";
+    const char *slash = strrchr(name, '/');
+    const char *back  = strrchr(name, '\\');
+    if (slash && back) name = (slash > back) ? slash + 1 : back + 1;
+    else if (slash)    name = slash + 1;
+    else if (back)     name = back + 1;
+
+    size_t n = 0;
+    while (name[n] && name[n] != '.' && n < outsz - 1) {
+        out[n] = name[n];
+        n++;
+    }
+    if (n == 0) {
+        strncpy(out, "IMPORT", outsz - 1);
+        out[outsz - 1] = '\0';
+    } else {
+        out[n] = '\0';
+    }
+}
+
+static void make_frame_name(const char *base, int frame_idx, int frame_count, char out[16])
+{
+    if (frame_count <= 1) {
+        strncpy(out, base && base[0] ? base : "GIF", 15);
+        out[15] = '\0';
+        return;
+    }
+
+    char suffix[8];
+    int digits = (frame_count >= 1000) ? 4 : 3;
+    snprintf(suffix, sizeof(suffix), "%0*d", digits, frame_idx + 1);
+    size_t suffix_len = strlen(suffix);
+    int base_len = 15 - (int)suffix_len;
+    if (base_len < 1) base_len = 1;
+    snprintf(out, 16, "%.*s%s", base_len, base && base[0] ? base : "GIF", suffix);
+}
+
+static int build_quantized_palette_from_rgba(const unsigned char *rgba, int w, int h,
+                                             int frame_count, PalRGB5 pcolors[256],
+                                             int *unique_colors_out)
+{
+    if (unique_colors_out) *unique_colors_out = 0;
+    if (!rgba || w <= 0 || h <= 0 || frame_count <= 0) return 0;
+
+    static int hist[32768];
+    memset(hist, 0, sizeof(hist));
+
+    const size_t pixels_per_frame = (size_t)w * (size_t)h;
+    for (int f = 0; f < frame_count; f++) {
+        const unsigned char *frame = rgba + (size_t)f * pixels_per_frame * 4;
+        for (size_t i = 0; i < pixels_per_frame; i++) {
+            const unsigned char *p = frame + i * 4;
+            if (p[3] < 128) continue;
+            int r5 = p[0] >> 3;
+            int g5 = p[1] >> 3;
+            int b5 = p[2] >> 3;
+            unsigned short c = (unsigned short)((r5 << 10) | (g5 << 5) | b5);
+            hist[c]++;
+        }
+    }
+
+    std::vector<ColorBucket> buckets;
+    buckets.reserve(256);
+    buckets.emplace_back();
+    int unique_colors = 0;
+    {
+        ColorBucket &b0 = buckets.back();
+        for (int c = 0; c < 32768; c++) {
+            if (hist[c] > 0) {
+                b0.entries.push_back({ (unsigned short)c, hist[c] });
+                unique_colors++;
+            }
+        }
+        if (unique_colors == 0) {
+            if (unique_colors_out) *unique_colors_out = 0;
+            return 0;
+        }
+        recompute_bucket_bounds(b0);
+    }
+
+    const int MAX_PAL_COLORS = 255;
+    while ((int)buckets.size() < MAX_PAL_COLORS) {
+        int best = -1;
+        int best_range = 0;
+        int best_axis  = 0;
+        for (int i = 0; i < (int)buckets.size(); i++) {
+            ColorBucket &b = buckets[i];
+            if (b.entries.size() < 2) continue;
+            int rr = b.r_hi - b.r_lo;
+            int gr = b.g_hi - b.g_lo;
+            int br = b.b_hi - b.b_lo;
+            int axis = 0, range = rr;
+            if (gr > range) { range = gr; axis = 1; }
+            if (br > range) { range = br; axis = 2; }
+            if (range > best_range) {
+                best_range = range;
+                best       = i;
+                best_axis  = axis;
+            }
+        }
+        if (best < 0) break;
+
+        ColorBucket &src = buckets[best];
+        std::sort(src.entries.begin(), src.entries.end(),
+                  [best_axis](const std::pair<unsigned short, int> &a,
+                              const std::pair<unsigned short, int> &b) {
+                      int ar, ag, ab; unpack15(a.first, ar, ag, ab);
+                      int br, bg, bb; unpack15(b.first, br, bg, bb);
+                      int av = (best_axis == 0) ? ar : (best_axis == 1) ? ag : ab;
+                      int bv = (best_axis == 0) ? br : (best_axis == 1) ? bg : bb;
+                      return av < bv;
+                  });
+
+        int half = src.pixel_count / 2;
+        int acc  = 0;
+        size_t split = 0;
+        for (; split < src.entries.size() - 1; split++) {
+            acc += src.entries[split].second;
+            if (acc >= half) { split++; break; }
+        }
+        if (split == 0) split = 1;
+        if (split >= src.entries.size()) split = src.entries.size() - 1;
+
+        ColorBucket right;
+        right.entries.assign(src.entries.begin() + split, src.entries.end());
+        src.entries.erase(src.entries.begin() + split, src.entries.end());
+        recompute_bucket_bounds(src);
+        recompute_bucket_bounds(right);
+        buckets.push_back(std::move(right));
+    }
+
+    int pal_colors = (int)buckets.size();
+    memset(pcolors, 0, sizeof(PalRGB5) * 256);
+    for (int i = 0; i < pal_colors; i++) {
+        long long rs = 0, gs = 0, bs = 0, ws = 0;
+        for (auto &e : buckets[i].entries) {
+            int r, g, b; unpack15(e.first, r, g, b);
+            rs += (long long)r * e.second;
+            gs += (long long)g * e.second;
+            bs += (long long)b * e.second;
+            ws += e.second;
+        }
+        if (ws == 0) ws = 1;
+        pcolors[i + 1].r = (unsigned char)((rs + ws / 2) / ws);
+        pcolors[i + 1].g = (unsigned char)((gs + ws / 2) / ws);
+        pcolors[i + 1].b = (unsigned char)((bs + ws / 2) / ws);
+    }
+
+    if (unique_colors_out) *unique_colors_out = unique_colors;
+    return pal_colors;
+}
+
+static int import_rgba_frames_as_images(const char *path, const unsigned char *rgba,
+                                        int w, int h, int frame_count,
+                                        int *palette_colors_out,
+                                        int *unique_colors_out)
+{
+    if (palette_colors_out) *palette_colors_out = 0;
+    if (unique_colors_out) *unique_colors_out = 0;
+    if (!rgba || w <= 0 || h <= 0 || frame_count <= 0) return 0;
+
+    PalRGB5 pcolors[256];
+    int unique_colors = 0;
+    int pal_colors = build_quantized_palette_from_rgba(rgba, w, h, frame_count,
+                                                       pcolors, &unique_colors);
+
+    PAL *pal = AllocPal();
+    if (!pal) return 0;
+    pal->flags   = 0;
+    pal->bitspix = 8;
+    pal->numc    = (unsigned short)(pal_colors + 1);
+    pal->data_p  = PoolAlloc((size_t)(pal_colors + 1) * 2);
+    if (!pal->data_p) return 0;
+
+    char base[32];
+    import_base_name(path, base, sizeof(base));
+    snprintf(pal->n_s, sizeof(pal->n_s), "%.8sP", base);
+
+    unsigned char *pal_bytes = (unsigned char *)pal->data_p;
+    pal_bytes[0] = 0; pal_bytes[1] = 0;
+    for (int i = 1; i <= pal_colors; i++) {
+        unsigned short w15 = (unsigned short)(((pcolors[i].r & 0x1F) << 10) |
+                                              ((pcolors[i].g & 0x1F) <<  5) |
+                                              ( pcolors[i].b & 0x1F));
+        pal_bytes[i * 2]     = (unsigned char)(w15 & 0xFF);
+        pal_bytes[i * 2 + 1] = (unsigned char)(w15 >> 8);
+    }
+
+    unsigned short pal_idx = (unsigned short)(g_doc->palcnt - 1);
+    unsigned short stride = (unsigned short)((w + 3) & ~3);
+    const size_t pixels_per_frame = (size_t)w * (size_t)h;
+
+    static unsigned char color_to_idx[32768];
+    static bool          color_resolved[32768];
+    memset(color_resolved, 0, sizeof(color_resolved));
+
+    int imported = 0;
+    for (int f = 0; f < frame_count; f++) {
+        IMG *img = AllocImg();
+        if (!img) break;
+        img->w = (unsigned short)w; img->h = (unsigned short)h;
+        img->palnum = pal_idx; img->flags = 0;
+        img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
+        img->pttbl_p = NULL; img->opals = (unsigned short)-1;
+        img->data_p = PoolAlloc((size_t)stride * h);
+        if (!img->data_p) break;
+        memset(img->data_p, 0, (size_t)stride * h);
+
+        make_frame_name(base, f, frame_count, img->n_s);
+
+        const unsigned char *frame = rgba + (size_t)f * pixels_per_frame * 4;
+        unsigned char *out = (unsigned char *)img->data_p;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                const unsigned char *p = frame + ((size_t)y * w + x) * 4;
+                if (p[3] < 128 || pal_colors == 0) continue;
+                int r5 = p[0] >> 3, g5 = p[1] >> 3, b5 = p[2] >> 3;
+                unsigned short c = (unsigned short)((r5 << 10) | (g5 << 5) | b5);
+                unsigned char idx;
+                if (color_resolved[c]) {
+                    idx = color_to_idx[c];
+                } else {
+                    int best_idx = 1, best_dist = INT_MAX;
+                    for (int j = 1; j <= pal_colors; j++) {
+                        int dr = r5 - pcolors[j].r;
+                        int dg = g5 - pcolors[j].g;
+                        int db = b5 - pcolors[j].b;
+                        int dist = dr*dr + dg*dg + db*db;
+                        if (dist < best_dist) { best_dist = dist; best_idx = j; }
+                    }
+                    idx = (unsigned char)best_idx;
+                    color_to_idx[c] = idx;
+                    color_resolved[c] = true;
+                }
+                out[y * stride + x] = idx;
+            }
+        }
+        imported++;
+    }
+
+    g_doc->plselected = (int)pal_idx;
+    if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
+    g_img_tex_idx = -2;
+
+    if (palette_colors_out) *palette_colors_out = pal_colors;
+    if (unique_colors_out) *unique_colors_out = unique_colors;
+    return imported;
+}
+
+static int clamp255(int v)
+{
+    return v < 0 ? 0 : (v > 255 ? 255 : v);
+}
+
+static int blend_channel(int s, int d, int mode)
+{
+    switch (mode) {
+        case GifBlend_Darken:      return s < d ? s : d;
+        case GifBlend_Multiply:    return (s * d + 127) / 255;
+        case GifBlend_ColorBurn:   return s == 0 ? 0 : clamp255(255 - ((255 - d) * 255 + s / 2) / s);
+        case GifBlend_LinearBurn:  return clamp255(s + d - 255);
+        case GifBlend_Lighten:     return s > d ? s : d;
+        case GifBlend_Screen:      return 255 - ((255 - s) * (255 - d) + 127) / 255;
+        case GifBlend_ColorDodge:  return s == 255 ? 255 : clamp255((d * 255 + (255 - s) / 2) / (255 - s));
+        case GifBlend_Overlay:
+            return d < 128 ? (2 * s * d + 127) / 255
+                           : 255 - (2 * (255 - s) * (255 - d) + 127) / 255;
+        case GifBlend_SoftLight:
+        {
+            double sf = s / 255.0;
+            double df = d / 255.0;
+            double out = (sf <= 0.5)
+                ? df - (1.0 - 2.0 * sf) * df * (1.0 - df)
+                : df + (2.0 * sf - 1.0) * (std::sqrt(df) - df);
+            return clamp255((int)(out * 255.0 + 0.5));
+        }
+        case GifBlend_HardLight:
+            return s < 128 ? (2 * s * d + 127) / 255
+                           : 255 - (2 * (255 - s) * (255 - d) + 127) / 255;
+        case GifBlend_Difference:  return abs(d - s);
+        case GifBlend_Exclusion:   return clamp255(d + s - (2 * d * s + 127) / 255);
+        case GifBlend_Normal:
+        case GifBlend_Dissolve:
+        default:                   return s;
+    }
+}
+
+static unsigned int dissolve_hash(int x, int y, int frame)
+{
+    unsigned int v = (unsigned int)(x * 73856093u) ^ (unsigned int)(y * 19349663u) ^
+                     (unsigned int)(frame * 83492791u);
+    v ^= v >> 13;
+    v *= 1274126177u;
+    v ^= v >> 16;
+    return v & 255u;
+}
+
+static void blend_rgba_pixel(unsigned char *dst, const unsigned char *src,
+                             int x, int y, int frame, int mode, int opacity_percent)
+{
+    int sa_i = (src[3] * opacity_percent + 50) / 100;
+    if (mode == GifBlend_Dissolve) {
+        if (sa_i >= 255) sa_i = 255;
+        else if ((int)dissolve_hash(x, y, frame) >= sa_i) sa_i = 0;
+        else sa_i = 255;
+    }
+    if (sa_i <= 0) return;
+
+    int da_i = dst[3];
+    int out_a = sa_i + (da_i * (255 - sa_i) + 127) / 255;
+    if (out_a <= 0) {
+        dst[0] = dst[1] = dst[2] = dst[3] = 0;
+        return;
+    }
+
+    int br = blend_channel(src[0], dst[0], mode);
+    int bg = blend_channel(src[1], dst[1], mode);
+    int bb = blend_channel(src[2], dst[2], mode);
+    int keep = (da_i * (255 - sa_i) + 127) / 255;
+
+    dst[0] = (unsigned char)clamp255((br * sa_i + dst[0] * keep + out_a / 2) / out_a);
+    dst[1] = (unsigned char)clamp255((bg * sa_i + dst[1] * keep + out_a / 2) / out_a);
+    dst[2] = (unsigned char)clamp255((bb * sa_i + dst[2] * keep + out_a / 2) / out_a);
+    dst[3] = (unsigned char)clamp255(out_a);
+}
+
 } /* namespace */
 
 void ImportPng(const char *path)
@@ -2233,6 +2565,115 @@ void ImportPngMatch(const char *path)
     verbose_log("  -> %dx%d px, matched to palette %u", w, h, pal->numc);
 }
 
+/* ---- GIF Import ---- */
+
+const char *GifBlendModeName(int mode)
+{
+    static const char *names[] = {
+        "Normal",
+        "Dissolve",
+        "Darken",
+        "Multiply",
+        "Color Burn",
+        "Linear Burn",
+        "Lighten",
+        "Screen",
+        "Color Dodge",
+        "Overlay",
+        "Soft Light",
+        "Hard Light",
+        "Difference",
+        "Exclusion",
+    };
+    if (mode < 0 || mode >= (int)(sizeof(names) / sizeof(names[0]))) return names[0];
+    return names[mode];
+}
+
+static bool read_entire_file(const char *path, std::vector<unsigned char> &bytes)
+{
+    bytes.clear();
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    long sz = ftell(f);
+    if (sz <= 0 || sz > INT_MAX) { fclose(f); return false; }
+    rewind(f);
+    bytes.resize((size_t)sz);
+    bool ok = fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
+    fclose(f);
+    if (!ok) bytes.clear();
+    return ok;
+}
+
+void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames)
+{
+    verbose_log("ImportGif: %s", path);
+    if (blend_mode < 0 || blend_mode >= GifBlend_Count) blend_mode = GifBlend_Normal;
+    if (opacity_percent < 0) opacity_percent = 0;
+    if (opacity_percent > 100) opacity_percent = 100;
+
+    std::vector<unsigned char> bytes;
+    if (!read_entire_file(path, bytes)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "GIF import failed: could not read file.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int *delays = NULL;
+    int w = 0, h = 0, frames = 0, comp = 0;
+    unsigned char *gif = stbi_load_gif_from_memory(bytes.data(), (int)bytes.size(),
+                                                   &delays, &w, &h, &frames, &comp, 4);
+    if (!gif || w <= 0 || h <= 0 || frames <= 0) {
+        if (gif) stbi_image_free(gif);
+        if (delays) stbi_image_free(delays);
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "GIF import failed: unsupported or corrupt GIF.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int import_count = import_all_frames ? frames : 1;
+    const size_t pixels_per_frame = (size_t)w * (size_t)h;
+    std::vector<unsigned char> frames_rgba;
+    frames_rgba.resize((size_t)import_count * pixels_per_frame * 4);
+
+    bool preserve_gif_frames = (blend_mode == GifBlend_Normal && opacity_percent >= 100);
+    if (preserve_gif_frames) {
+        memcpy(frames_rgba.data(), gif, frames_rgba.size());
+    } else {
+        std::vector<unsigned char> canvas(pixels_per_frame * 4, 0);
+        for (int f = 0; f < import_count; f++) {
+            const unsigned char *src_frame = gif + (size_t)f * pixels_per_frame * 4;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    unsigned char *dst = canvas.data() + ((size_t)y * w + x) * 4;
+                    const unsigned char *src = src_frame + ((size_t)y * w + x) * 4;
+                    blend_rgba_pixel(dst, src, x, y, f, blend_mode, opacity_percent);
+                }
+            }
+            memcpy(frames_rgba.data() + (size_t)f * pixels_per_frame * 4,
+                   canvas.data(), pixels_per_frame * 4);
+        }
+    }
+
+    int pal_colors = 0, unique_colors = 0;
+    int imported = import_rgba_frames_as_images(path, frames_rgba.data(), w, h,
+                                                import_count, &pal_colors, &unique_colors);
+
+    stbi_image_free(gif);
+    if (delays) stbi_image_free(delays);
+
+    if (imported > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Imported %d GIF frame(s), %d palette color(s).", imported, pal_colors + 1);
+        verbose_log("  -> %dx%d px, %d/%d frame(s), %d colors from %d unique source colors, blend=%s opacity=%d%%",
+                    w, h, imported, frames, pal_colors + 1, unique_colors,
+                    GifBlendModeName(blend_mode), opacity_percent);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "GIF import failed: no frames imported.");
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
 /* ---- PNG Export ---- */
 
 void ExportPng(const char *path)
@@ -2264,4 +2705,122 @@ void ExportPng(const char *path)
     }
     stbi_write_png(path, w, h, 4, rgba, w * 4);
     free(rgba);
+}
+
+/* ---- Palette Export ---- */
+
+void ExportPalette(const char *path, bool adobe_act)
+{
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || !pal->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No palette selected.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Palette export failed.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int n = pal->numc;
+    if (n < 0) n = 0;
+    if (n > 256) n = 256;
+    const unsigned char *src = (const unsigned char *)pal->data_p;
+
+    if (adobe_act) {
+        for (int i = 0; i < 256; i++) {
+            unsigned char rgb[3] = {0, 0, 0};
+            if (i < n) pal_word_to_rgb8(src + i * 2, &rgb[0], &rgb[1], &rgb[2]);
+            fwrite(rgb, 1, 3, f);
+        }
+    } else {
+        fwrite(src, 2, (size_t)n, f);
+    }
+    fclose(f);
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Exported palette %s (%d color%s).", pal->n_s, n, n == 1 ? "" : "s");
+    g_restore_msg_timer = 4.0f;
+    verbose_log("ExportPalette: %s (%s, %d colors)", path,
+                adobe_act ? "ACT" : "raw PAL", n);
+}
+
+/* ---- Palette Import ---- */
+
+void ImportPalette(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Failed to open palette file.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (size <= 0) {
+        fclose(f);
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Palette file is empty.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    /* Extract filename for palette name */
+    const char *base = strrchr(path, '/');
+    const char *base_win = strrchr(path, '\\');
+    if (base_win && (!base || base_win > base)) base = base_win;
+    base = base ? base + 1 : path;
+
+    char pal_name[32] = {0};
+    strncpy(pal_name, base, sizeof(pal_name) - 1);
+    char *dot = strrchr(pal_name, '.');
+    if (dot) *dot = '\0';
+
+    bool is_act = (size == 768 || size == 772);
+    /* Also check extension if size is ambiguous, though ACT is very strictly sized. */
+    const char *ext = strrchr(path, '.');
+    if (ext && (_stricmp(ext, ".act") == 0)) {
+        is_act = true;
+    } else if (ext && (_stricmp(ext, ".pal") == 0)) {
+        is_act = false;
+    }
+
+    int n_colors = is_act ? 256 : (int)(size / 2);
+    if (n_colors > 256) n_colors = 256;
+
+    PAL *new_pal = AllocPal();
+    if (!new_pal) {
+        fclose(f);
+        return;
+    }
+    strncpy(new_pal->n_s, pal_name, 11);
+    new_pal->numc = n_colors;
+    new_pal->data_p = calloc(256, 2); /* Always allocate max */
+
+    if (is_act) {
+        unsigned char rgb[768];
+        size_t read_bytes = fread(rgb, 1, 768, f);
+        int read_colors = (int)read_bytes / 3;
+        if (read_colors < n_colors) n_colors = read_colors;
+        new_pal->numc = n_colors;
+
+        unsigned char *dst = (unsigned char *)new_pal->data_p;
+        for (int i = 0; i < n_colors; i++) {
+            rgb8_to_pal_word(rgb[i*3], rgb[i*3+1], rgb[i*3+2], dst + i * 2);
+        }
+    } else {
+        fread(new_pal->data_p, 2, n_colors, f);
+    }
+    fclose(f);
+
+    g_doc->plselected = (int)g_doc->palcnt - 1; /* Select the new palette */
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg), "Imported palette %s (%d colors).", pal_name, n_colors);
+    g_restore_msg_timer = 4.0f;
+    verbose_log("ImportPalette: %s (%s, %d colors)", path, is_act ? "ACT" : "raw PAL", n_colors);
 }

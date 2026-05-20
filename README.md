@@ -41,15 +41,17 @@ Imgtool is a sprite-sheet editor for Midway's IMG format. Open a file, browse hu
 
 ### Import / Export
 - **TGA, LBM, PNG** load and save. PNG import quantizes via median-cut in 15-bit RGB space, then maps every pixel by nearest color. Import-into-active-palette mode skips quantization.
+- **GIF import** loads one frame or every frame, with blend mode and opacity controls before quantizing to an IMG palette.
+- **Palette import/export** supports raw Midway `.PAL` data and Adobe `.ACT` RGB palettes.
 - **Build TGA** from marked sprites, **Export PNG**, **ANILST** (assembly animation lists)
 - **TBL export** — MK3-format with hardware padding (`/P`), 16-bit align (`/L`), dual-bank (`/E`)
 - **IRW export** — raw binary ROM layouts with dynamic BPP (`/B`)
 - **LOD parser** — read `.lod` manifests, resolve via `IMGDIR` or override (`/O`)
 
 ### File dialog
-- **Drag and drop** `.img` / `.png` / `.tga` / `.lbm` files onto the window to open or import
-- **Per-category last-dir** memory (IMG / PNG / TGA / LBM each remember their own folder)
-- **Preview thumbnails** for PNG and TGA highlighted files
+- **Drag and drop** `.img` / `.png` / `.gif` / `.tga` / `.lbm` files onto the window to open or import
+- **Per-category last-dir** memory (IMG / PNG / GIF / palette / TGA / LBM each remember their own folder)
+- **Preview thumbnails** for PNG, GIF, and TGA highlighted files
 - **Sort** by name / date / size, asc or desc
 - **Double-click to open**, **Recent Files** menu
 
