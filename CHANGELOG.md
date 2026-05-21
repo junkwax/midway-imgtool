@@ -8,6 +8,45 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.1.0] — Sprite resize, IMG tabs, and World View pairing
+
+Workflow release for editing multiple IMG libraries side by side and comparing
+animation alignment across tabs.
+
+### Sprite Editing
+- **Resize Sprite** — added a resize dialog with width/height and percent
+  scaling controls, optional aspect-ratio locking, nearest-neighbor palette-ID
+  preservation, quality remap mode, and a quality-plus-smallest-bytes mode that
+  trims transparent bounds.
+- **Geometry-safe undo** — sprite-resize operations now capture full image
+  state, including dimensions, anipoints, palette metadata, and pixel data, so
+  geometry edits undo cleanly without disturbing normal paint undo.
+- **LOAD2 baseline dimensions** — load-time baseline width/height are tracked
+  with the pristine pixel snapshot so resized sprites are reported accurately by
+  the packing verifier and drift overlay.
+
+### Multi-IMG Tabs
+- **IMG tabs** — File > Open now opens each IMG/LOD into its own tab, reusing
+  the initial empty tab when possible and activating an already-open tab when
+  the same path is opened again.
+- **Per-tab dirty state** — unsaved-change prompts now operate per open
+  document, including tab close and quit flows, while the editor keeps the
+  legacy `g_doc` access pattern through a new document container.
+- **Native ImGui tab strip** — the document strip uses ImGui tabs and trailing
+  tab buttons while avoiding the earlier selection tug-of-war by switching
+  documents only on tab activation.
+
+### World View
+- **Marked-tab playback** — World View can play marked animations from the
+  active tab together with the first other marked tab, anchored to the same
+  world origin for anipoint comparison.
+- **View-only mirroring** — mirror toggles for the active and paired World View
+  sprites let opposite-facing animations be compared without modifying image
+  pixels or anipoints.
+- **World View tab controls** — Onion, Marked, Mirror Active, and Mirror Paired
+  controls are exposed as separate trailing tab buttons instead of living in the
+  View dropdown.
+
 ## [v3.0.0] — MK3 IMG support
 
 Major compatibility release for Mortal Kombat 3 / Ultimate MK3-era IMG

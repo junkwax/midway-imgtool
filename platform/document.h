@@ -79,6 +79,11 @@ typedef struct Document {
     char          fpath_s[1024];
     char          fname_s[13];
     char          fnametmp_s[13];
+
+    /* UI/document lifecycle state. Stored here so each open IMG tab can be
+       dirty/clean independently while legacy code keeps reaching through
+       g_doc. */
+    int           dirty;
 } Document;
 
 /* The currently-active document. Points at one element of the tabs
@@ -89,6 +94,17 @@ extern Document *g_doc;
 /* Initialize the tab system with one empty document. Must be called once
    during startup before any IMG load. */
 void document_init(void);
+
+/* Tab/document container API. These keep the C-era code insulated from the
+   std::deque backing store used by the UI. */
+int       document_tab_count(void);
+int       document_active_index(void);
+Document *document_get(int idx);
+Document *document_active(void);
+int       document_new_tab(void);
+void      document_set_active(int idx);
+void      document_close_tab(int idx);
+void      document_clear_contents(Document *doc);
 
 #ifdef __cplusplus
 }

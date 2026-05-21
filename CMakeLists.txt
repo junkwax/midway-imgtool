@@ -44,6 +44,7 @@ endif()
 
 set(IMGTOOL_SOURCES
     platform/main.cpp
+    platform/document.cpp
     platform/globals.c
     platform/shim_vid.c
     platform/shim_input.c

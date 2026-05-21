@@ -51,6 +51,8 @@ struct IMG {
      * instead of overwriting hand-tuned per-piece pixels. NULL until load
      * fills it; freed by FreeImg. */
     void          *baseline_p;
+    unsigned short baseline_w;
+    unsigned short baseline_h;
     /* Source filename for UI hierarchy grouping */
     char           src_filename[16];
 };

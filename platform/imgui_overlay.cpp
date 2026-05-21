@@ -17,6 +17,7 @@
 #include <vector>
 #include <algorithm>
 #include <regex>
+#include <cmath>
 #include "compat.h"
 #ifdef _WIN32
 #include <shlobj.h>
@@ -100,6 +101,7 @@ static bool g_icon_font_loaded = false;
 #define ICON_MARQUEE  "\xEE\xBD\x92"     /* U+EF52 highlight_alt — dashed-rect marquee */
 #define ICON_UNDO     "\xEE\x85\xA6"     /* U+E166 undo */
 #define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
+#define ICON_RESIZE   "\xEE\xA1\x9B"     /* U+E85B aspect_ratio */
 
 #define ICON_OPEN_TXT     "Op"
 #define ICON_FOLDER_TXT   "D "
@@ -114,6 +116,7 @@ static bool g_icon_font_loaded = false;
 #define ICON_MARQUEE_TXT  "[]"
 #define ICON_UNDO_TXT     "Uz"
 #define ICON_REDO_TXT     "Ry"
+#define ICON_RESIZE_TXT   "Sz"
 
 /* Per-image render texture — rebuilt when selected image or palette changes */
 static SDL_Texture  *g_img_texture    = NULL;
@@ -137,7 +140,13 @@ static int            g_pixel_undo_img = -1;  /* -2 = never built */
    snapshot and pushing the prior state onto the redo stack. */
 struct PixelHist {
     int            img_idx;     /* index into the IMG list at the time */
+    bool           full_state;  /* true for geometry-changing operations */
     unsigned short w, h;        /* sentinels for stale-redo protection */
+    unsigned short anix, aniy;
+    unsigned short anix2, aniy2, aniz2;
+    unsigned short palnum;
+    unsigned short flags;
+    unsigned short opals;
     unsigned int   size;        /* bytes in `data` */
     unsigned char *data;        /* owned malloc()'d buffer */
 };
@@ -149,20 +158,57 @@ static inline void pixel_hist_free(PixelHist *e) {
     if (e->data) free(e->data);
     e->data = NULL;
 }
-/* Capture the current pixel buffer of the active image into `out`.
+/* Capture the current pixel buffer of an image into `out`.
    Returns true if `out` now owns a valid snapshot. */
-static bool pixel_hist_capture(PixelHist *out) {
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+static bool pixel_hist_capture_img(int img_idx, PixelHist *out, bool full_state = false) {
+    IMG *img = (img_idx >= 0) ? get_img(img_idx) : NULL;
     if (!img || !img->data_p) return false;
     unsigned short stride = (img->w + 3) & ~3;
     unsigned int sz = (unsigned int)stride * img->h;
     unsigned char *buf = (unsigned char *)malloc(sz);
     if (!buf) return false;
     memcpy(buf, img->data_p, sz);
-    out->img_idx = g_doc->ilselected;
+    out->img_idx = img_idx;
+    out->full_state = full_state;
     out->w = img->w; out->h = img->h;
+    out->anix = img->anix; out->aniy = img->aniy;
+    out->anix2 = img->anix2; out->aniy2 = img->aniy2; out->aniz2 = img->aniz2;
+    out->palnum = img->palnum;
+    out->flags = img->flags;
+    out->opals = img->opals;
     out->size = sz;
     out->data = buf;
+    return true;
+}
+static bool pixel_hist_capture(PixelHist *out, bool full_state = false) {
+    return pixel_hist_capture_img(g_doc->ilselected, out, full_state);
+}
+
+static bool pixel_hist_restore(const PixelHist *e) {
+    if (!e || !e->data || e->size == 0) return false;
+    IMG *img = get_img(e->img_idx);
+    if (!img) return false;
+    if (e->full_state) {
+        unsigned char *buf = (unsigned char *)malloc(e->size);
+        if (!buf) return false;
+        memcpy(buf, e->data, e->size);
+        free(img->data_p);
+        img->data_p = buf;
+        img->w = e->w; img->h = e->h;
+        img->anix = e->anix; img->aniy = e->aniy;
+        img->anix2 = e->anix2; img->aniy2 = e->aniy2; img->aniz2 = e->aniz2;
+        img->palnum = e->palnum;
+        img->flags = e->flags;
+        img->opals = e->opals;
+        g_zoom_reset = true;
+    } else {
+        if (!img->data_p || img->w != e->w || img->h != e->h) return false;
+        unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
+        if (cur_sz != e->size) return false;
+        memcpy(img->data_p, e->data, e->size);
+    }
+    g_doc->ilselected = e->img_idx;
+    g_img_tex_idx = -2;
     return true;
 }
 /* Stroke-begin: push a fresh pre-stroke snapshot. Drops the oldest entry
@@ -265,11 +311,13 @@ static char         g_rename_buf[20] = {0};
 static bool g_show_unsaved_confirm = false;
 /* Deferred action that the unsaved-changes dialog should run after the user
    picks Save or Discard. One of: quit, open-file-dialog, open-specific-path. */
-enum class PendingAction { None, Quit, OpenDialog, OpenPath, OpenLodDialog };
+enum class PendingAction { None, Quit, OpenDialog, OpenPath, OpenLodDialog, CloseTab };
 static PendingAction g_pending_action      = PendingAction::None;
 static std::string   g_pending_action_path; /* only used when action == OpenPath */
+static int           g_pending_tab_index = -1;
+static int           g_doc_tab_select_request = 0;
 static bool g_pending_quit = false;
-static bool g_dirty = false;
+#define g_dirty (g_doc->dirty)
 
 /* Anipoint drag state, hoisted to file scope so the pencil branch can
    gate on it (the anipoint render block runs *after* the pencil block,
@@ -539,6 +587,58 @@ static void reset_palette_adjust_sliders(void);
 static void commit_palette_adjustments(void);
 void undo_push(void);
 static void xform_begin(void);  /* forward decl — used by paste_image */
+static int  FindDirtyDocumentIndex(void);
+static bool HasDirtyDocuments(void);
+
+static void ClearPixelHistoryStacks(void)
+{
+    for (auto &e : g_pixel_hist) pixel_hist_free(&e);
+    for (auto &e : g_pixel_redo) pixel_hist_free(&e);
+    g_pixel_hist.clear();
+    g_pixel_redo.clear();
+}
+
+static void ClearTimelineThumbCache(void)
+{
+    for (auto &t : g_thumb_cache) {
+        if (t.tex) SDL_DestroyTexture(t.tex);
+    }
+    g_thumb_cache.clear();
+}
+
+static void ResetPerDocumentUiState(bool clear_pixel_clipboard = false)
+{
+    g_undo_count = 0;
+    g_undo_idx = -1;
+    ClearPixelHistoryStacks();
+    ClearTimelineThumbCache();
+    g_timeline_frames.clear();
+    g_timeline_play_idx = 0;
+    g_timeline_built_for_imgcnt = 0;
+    g_is_playing = false;
+    g_play_timer = 0.0f;
+    g_timeline_play_dir = 1;
+
+    if (clear_pixel_clipboard) ClearPixelClipboard();
+    g_grid_sel.active = false;
+    g_grid_sel.dragging = false;
+    g_lasso_points.clear();
+    g_active_tool = ActiveTool::None;
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+    g_xform.active = false;
+    g_xform.handle = TransformHandle::None;
+    g_palette_nav = false;
+    g_clone_source_set = false;
+    g_clone_offset_set = false;
+    g_remap_target_color = -1;
+    g_snap_bbox.valid = false;
+    memset(g_palette_selection, 0, sizeof(g_palette_selection));
+    g_palette_baseline_nc = 0;
+    reset_palette_adjust_sliders();
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+}
 
 /* ---- Histogram state ---- */
 static bool  g_show_histogram = false;
@@ -652,9 +752,203 @@ static bool  g_world_onion = false; /* faintly draw prev frame underneath */
 static SDL_Texture *g_world_onion_tex = NULL;
 static int   g_world_onion_tex_w = 0, g_world_onion_tex_h = 0;
 static int   g_world_onion_idx = -1; /* which sprite the onion tex holds */
+static bool  g_world_dual_marked_play = false;
+static float g_world_dual_fps = 12.0f;
+static float g_world_dual_timer = 0.0f;
+static int   g_world_dual_frame = 0;
+static bool  g_world_mirror_active = false;
+static bool  g_world_mirror_other = false;
+static std::vector<SDL_Texture *> g_world_temp_textures;
 static int   g_load2_selected_idx = -1;          /* index into g_load2_report.issues */
 static SDL_Texture *g_load2_drift_tex = NULL;
 static int   g_load2_drift_tex_w = 0, g_load2_drift_tex_h = 0;
+
+static void ClearWorldTempTextures(void)
+{
+    for (SDL_Texture *tex : g_world_temp_textures) {
+        if (tex) SDL_DestroyTexture(tex);
+    }
+    g_world_temp_textures.clear();
+}
+
+static IMG *doc_get_img(Document *doc, int idx)
+{
+    if (!doc || idx < 0) return NULL;
+    IMG *img = (IMG *)doc->img_p;
+    for (int i = 0; i < idx && img; i++) img = (IMG *)img->nxt_p;
+    return img;
+}
+
+static PAL *doc_get_pal(Document *doc, int idx)
+{
+    if (!doc || idx < 0) return NULL;
+    PAL *pal = (PAL *)doc->pal_p;
+    for (int i = 0; i < idx && pal; i++) pal = (PAL *)pal->nxt_p;
+    return pal;
+}
+
+static void collect_marked_frames(Document *doc, std::vector<int> &out)
+{
+    out.clear();
+    if (!doc) return;
+    int idx = 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0)
+            out.push_back(idx);
+    }
+}
+
+static SDL_Texture *BuildWorldSpriteTexture(Document *doc, IMG *img, unsigned char alpha)
+{
+    if (!g_imgui_renderer || !doc || !img || !img->data_p || img->w == 0 || img->h == 0)
+        return NULL;
+
+    SDL_Texture *tex = SDL_CreateTexture(g_imgui_renderer,
+        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+        img->w, img->h);
+    if (!tex) return NULL;
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
+
+    void *pixels; int pitch;
+    if (SDL_LockTexture(tex, NULL, &pixels, &pitch) != 0) {
+        SDL_DestroyTexture(tex);
+        return NULL;
+    }
+
+    PAL *pal = doc_get_pal(doc, img->palnum);
+    const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
+    int pal_colors = pal ? (int)pal->numc : 0;
+    int stride = (img->w + 3) & ~3;
+    const unsigned char *src = (const unsigned char *)img->data_p;
+    Uint32 *dst = (Uint32 *)pixels;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            unsigned char ci = src[y * stride + x];
+            Uint32 r = 200, g = 200, b = 200;
+            if (pd && ci < pal_colors) {
+                unsigned short w15 = (unsigned short)(pd[ci * 2] | (pd[ci * 2 + 1] << 8));
+                r = (((w15 >> 10) & 0x1F) << 3);
+                g = (((w15 >>  5) & 0x1F) << 3);
+                b = (( w15        & 0x1F) << 3);
+            } else if (doc == g_doc) {
+                SDL_Color c = g_palette[ci];
+                r = c.r; g = c.g; b = c.b;
+            }
+            Uint32 a = (ci == 0) ? 0u : (Uint32)alpha;
+            dst[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+    SDL_UnlockTexture(tex);
+    g_world_temp_textures.push_back(tex);
+    return tex;
+}
+
+static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
+{
+    if (!g_world_dual_marked_play || document_tab_count() < 2)
+        return false;
+
+    std::vector<int> active_frames;
+    std::vector<int> other_frames;
+    Document *active_doc = g_doc;
+    Document *other_doc = NULL;
+    int active_doc_idx = document_active_index();
+    int other_doc_idx = -1;
+
+    collect_marked_frames(active_doc, active_frames);
+    if (active_frames.empty()) return false;
+
+    for (int i = 0; i < document_tab_count(); i++) {
+        if (i == active_doc_idx) continue;
+        Document *doc = document_get(i);
+        collect_marked_frames(doc, other_frames);
+        if (!other_frames.empty()) {
+            other_doc = doc;
+            other_doc_idx = i;
+            break;
+        }
+    }
+    if (!other_doc || other_frames.empty()) return false;
+
+    if (g_world_dual_fps < 1.0f) g_world_dual_fps = 1.0f;
+    if (g_world_dual_fps > 60.0f) g_world_dual_fps = 60.0f;
+    g_world_dual_timer += io.DeltaTime;
+    float step = 1.0f / g_world_dual_fps;
+    while (g_world_dual_timer >= step) {
+        g_world_dual_timer -= step;
+        g_world_dual_frame++;
+    }
+
+    int aidx = active_frames[g_world_dual_frame % (int)active_frames.size()];
+    int bidx = other_frames[g_world_dual_frame % (int)other_frames.size()];
+    IMG *aimg = doc_get_img(active_doc, aidx);
+    IMG *bimg = doc_get_img(other_doc, bidx);
+    if (!aimg || !bimg) return false;
+
+    float fit_x = avail.x / (float)g_world_w;
+    float fit_y = avail.y / (float)g_world_h;
+    float wscale = (fit_x < fit_y) ? fit_x : fit_y;
+    if (wscale < 1.0f) wscale = 1.0f;
+    wscale = (float)(int)wscale;
+    if (wscale < 1.0f) wscale = 1.0f;
+
+    float ww = (float)g_world_w * wscale;
+    float wh = (float)g_world_h * wscale;
+    ImVec2 wpos(img_pos.x + (avail.x - ww) * 0.5f,
+                img_pos.y + (avail.y - wh) * 0.5f);
+    float ox = wpos.x + g_world_origin_x * wscale;
+    float oy = wpos.y + g_world_origin_y * wscale;
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),
+                      IM_COL32(0, 0, 0, 255));
+    dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy),
+                IM_COL32(120, 120, 120, 255));
+    dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
+                IM_COL32(120, 120, 120, 255));
+
+    SDL_Texture *btex = BuildWorldSpriteTexture(other_doc, bimg, 165);
+    SDL_Texture *atex = BuildWorldSpriteTexture(active_doc, aimg, 255);
+    auto draw_sprite = [&](IMG *img, SDL_Texture *tex, bool mirror_x) {
+        if (!img || !tex) return;
+        int ax = (int)(short)img->anix;
+        int ay = (int)(short)img->aniy;
+        float spw = img->w * wscale;
+        float sph = img->h * wscale;
+        float left = mirror_x ? (ox - ((int)img->w - ax) * wscale)
+                              : (ox - ax * wscale);
+        ImVec2 spos(left, oy - ay * wscale);
+        ImVec2 uv0 = mirror_x ? ImVec2(1, 0) : ImVec2(0, 0);
+        ImVec2 uv1 = mirror_x ? ImVec2(0, 1) : ImVec2(1, 1);
+        dl->AddImage((ImTextureID)(intptr_t)tex,
+                     spos, ImVec2(spos.x + spw, spos.y + sph), uv0, uv1);
+    };
+    draw_sprite(bimg, btex, g_world_mirror_other);
+    draw_sprite(aimg, atex, g_world_mirror_active);
+
+    dl->AddCircle(ImVec2(ox, oy), 4.0f,
+                  IM_COL32(255, 200, 0, 255), 0, 1.5f);
+
+    const char *aname = active_doc->fname_s[0] ? active_doc->fname_s : "Untitled";
+    const char *bname = other_doc->fname_s[0] ? other_doc->fname_s : "Untitled";
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "Marked tabs: [%d] %s:%s%s + [%d] %s:%s%s   fps=%.1f",
+             active_doc_idx, aname, aimg->n_s,
+             g_world_mirror_active ? " mirror" : "",
+             other_doc_idx, bname, bimg->n_s,
+             g_world_mirror_other ? " mirror" : "",
+             g_world_dual_fps);
+    dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
+                      ImVec2(wpos.x + 520, wpos.y + 18),
+                      IM_COL32(0, 0, 0, 180));
+    dl->AddText(ImVec2(wpos.x + 4, wpos.y + 2),
+                IM_COL32(220, 220, 220, 255), buf);
+
+    ImGui::Dummy(ImVec2(avail.x, avail.y));
+    return true;
+}
 
 /* Build a per-row drift overlay texture for the given image. Renders the
  * sprite's current pixels at full color, then tints rows where the
@@ -662,7 +956,10 @@ static int   g_load2_drift_tex_w = 0, g_load2_drift_tex_h = 0;
  * user can see exactly which scanlines will shift LOAD2's destbits. */
 static void update_drift_texture(IMG *img)
 {
-    if (!img || !img->data_p || !img->baseline_p || img->w == 0 || img->h == 0) {
+    int baseline_w = img ? (img->baseline_w ? (int)img->baseline_w : (int)img->w) : 0;
+    int baseline_h = img ? (img->baseline_h ? (int)img->baseline_h : (int)img->h) : 0;
+    if (!img || !img->data_p || !img->baseline_p || img->w == 0 || img->h == 0 ||
+        baseline_w != (int)img->w || baseline_h != (int)img->h) {
         if (g_load2_drift_tex) { SDL_DestroyTexture(g_load2_drift_tex); g_load2_drift_tex = NULL; }
         g_load2_drift_tex_w = g_load2_drift_tex_h = 0;
         return;
@@ -759,6 +1056,7 @@ static void DeleteImage(int idx)
 
     if (curr->data_p) free(curr->data_p);
     if (curr->pttbl_p) free(curr->pttbl_p);
+    if (curr->baseline_p) free(curr->baseline_p);
     free(curr);
 
     g_img_tex_idx = -2;
@@ -787,6 +1085,7 @@ static void DeleteMarkedImages(void)
 
             if (to_delete->data_p) free(to_delete->data_p);
             if (to_delete->pttbl_p) free(to_delete->pttbl_p);
+            if (to_delete->baseline_p) free(to_delete->baseline_p);
             free(to_delete);
             /* idx tracks the original list position; advance it for the deleted entry */
             idx++;
@@ -1161,6 +1460,7 @@ static void ClearAll(void)
         g_doc->img_p = cur->nxt_p;
         if (cur->data_p)  free(cur->data_p);
         if (cur->pttbl_p) free(cur->pttbl_p);
+        if (cur->baseline_p) free(cur->baseline_p);
         free(cur);
     }
     g_doc->imgcnt = 0;
@@ -1195,6 +1495,7 @@ static void ClearAll(void)
             g_doc->img2_p = cur->nxt_p;
             if (cur->data_p)  free(cur->data_p);
             if (cur->pttbl_p) free(cur->pttbl_p);
+            if (cur->baseline_p) free(cur->baseline_p);
             free(cur);
         }
     }
@@ -1384,7 +1685,11 @@ static void AddNewBlankImage(int w = 32, int h = 32)
     img->data_p = PoolAlloc(sz);
     if (img->data_p) memset(img->data_p, 0, sz);
     img->baseline_p = PoolAlloc(sz);
-    if (img->baseline_p) memset(img->baseline_p, 0, sz);
+    if (img->baseline_p) {
+        memset(img->baseline_p, 0, sz);
+        img->baseline_w = img->w;
+        img->baseline_h = img->h;
+    }
 
     static int next_id = 1;
     snprintf(img->n_s, sizeof(img->n_s), "NEW%d", next_id++);
@@ -2948,11 +3253,76 @@ static void RecentAdd(const std::string &full_path)
     RecentSave();
 }
 
-/* Load an IMG by absolute path. Mirrors the Open-button branch of the file
-   dialog: split into dir+file, populate the asm-side g_doc->fpath_s/g_doc->fname_s globals,
-   chdir, then img_clearall + img_load. Used by both the dialog and the
-   Recent Files menu. */
-static void OpenImgFile(const std::string &full_path)
+static std::string DocFullPath(const Document *doc)
+{
+    if (!doc || doc->fname_s[0] == '\0') return std::string();
+    std::string dir(doc->fpath_s);
+    std::string file(doc->fname_s);
+    if (dir.empty()) return file;
+    char last = dir[dir.size() - 1];
+    if (last == '\\' || last == '/') return dir + file;
+#ifdef _WIN32
+    return dir + "\\" + file;
+#else
+    return dir + "/" + file;
+#endif
+}
+
+static bool PathEqualsForPlatform(const std::string &a, const std::string &b)
+{
+#ifdef _WIN32
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        char ca = (char)tolower((unsigned char)a[i]);
+        char cb = (char)tolower((unsigned char)b[i]);
+        if (ca == '/') ca = '\\';
+        if (cb == '/') cb = '\\';
+        if (ca != cb) return false;
+    }
+    return true;
+#else
+    return a == b;
+#endif
+}
+
+static int FindOpenDocumentByPath(const std::string &full_path)
+{
+    for (int i = 0; i < document_tab_count(); i++) {
+        Document *doc = document_get(i);
+        std::string doc_path = DocFullPath(doc);
+        if (!doc_path.empty() && PathEqualsForPlatform(doc_path, full_path))
+            return i;
+    }
+    return -1;
+}
+
+static bool DocumentCanReuseForOpen(Document *doc)
+{
+    return doc && !doc->dirty && doc->imgcnt == 0 && doc->palcnt == 0 &&
+           doc->img2cnt == 0 && doc->fname_s[0] == '\0';
+}
+
+static void ActivateDocumentTab(int idx)
+{
+    if (idx < 0 || idx >= document_tab_count()) return;
+    if (idx != document_active_index()) {
+        document_set_active(idx);
+        ResetPerDocumentUiState(false);
+    }
+    g_doc_tab_select_request = idx;
+    Mk2AutoSelectFromImg();
+}
+
+static void PrepareDocumentForOpenedFile(void)
+{
+    if (!DocumentCanReuseForOpen(g_doc))
+        document_new_tab();
+    g_doc_tab_select_request = document_active_index();
+    ResetPerDocumentUiState(false);
+    ClearAll();
+}
+
+static void SetActiveDocumentPath(const std::string &full_path)
 {
     size_t sep = full_path.find_last_of("\\/");
     std::string dir  = (sep == std::string::npos) ? std::string(".") : full_path.substr(0, sep);
@@ -2973,18 +3343,24 @@ static void OpenImgFile(const std::string &full_path)
         g_doc->fname_s[i] = (char)toupper((unsigned char)g_doc->fname_s[i]);
         g_doc->fnametmp_s[i] = (char)toupper((unsigned char)g_doc->fnametmp_s[i]);
     }
+
     _chdir(dir.c_str());
+}
 
-    g_undo_count = 0;
-    g_undo_idx   = 0;
-    ClearPixelClipboard();
-    g_grid_sel.active = false;
-    g_grid_sel.dragging = false;
-    g_active_tool = ActiveTool::None;
-    g_pasted.active = false;
-    g_pasted.dragging = false;
+/* Load an IMG by absolute path. Mirrors the Open-button branch of the file
+   dialog, but now opens into its own document tab. A clean empty startup tab
+   is reused; otherwise a new tab is created and activated. */
+static void OpenImgFile(const std::string &full_path)
+{
+    int existing = FindOpenDocumentByPath(full_path);
+    if (existing >= 0) {
+        ActivateDocumentTab(existing);
+        RecentAdd(full_path);
+        return;
+    }
 
-    ClearAll();
+    PrepareDocumentForOpenedFile();
+    SetActiveDocumentPath(full_path);
     LoadImgFile();
     g_dirty = false; /* fresh load = clean baseline */
     g_img_tex_idx = -2;
@@ -3081,36 +3457,19 @@ static void OpenFileDialog(FileDialogMode mode) {
 }
 
 /* Guarded entry points for "load a different file" operations. If there are
-   unsaved changes, queue the action and show the confirm dialog; otherwise
-   run immediately. Used by File->Open, Open Recent, and Open LOD so the
-   user can't accidentally throw away palette/hue edits by switching files. */
+   unsaved changes, tabs let us avoid destructive replacement: Open creates a
+   fresh document when needed, while Close/Quit still prompt per dirty tab. */
 static void RequestOpenDialog(void)
 {
-    if (g_dirty && g_doc->imgcnt > 0) {
-        g_pending_action = PendingAction::OpenDialog;
-        g_show_unsaved_confirm = true;
-    } else {
-        OpenFileDialog(FileDialogMode::OpenImg);
-    }
+    OpenFileDialog(FileDialogMode::OpenImg);
 }
 static void RequestOpenPath(const std::string &path)
 {
-    if (g_dirty && g_doc->imgcnt > 0) {
-        g_pending_action      = PendingAction::OpenPath;
-        g_pending_action_path = path;
-        g_show_unsaved_confirm = true;
-    } else {
-        OpenImgFile(path);
-    }
+    OpenImgFile(path);
 }
 static void RequestOpenLodDialog(void)
 {
-    if (g_dirty && g_doc->imgcnt > 0) {
-        g_pending_action = PendingAction::OpenLodDialog;
-        g_show_unsaved_confirm = true;
-    } else {
-        OpenFileDialog(FileDialogMode::OpenLod);
-    }
+    OpenFileDialog(FileDialogMode::OpenLod);
 }
 
 /* Drag-and-drop entry point. Extension dispatch:
@@ -3419,8 +3778,11 @@ static void DrawFileDialog() {
                     i++;
                 }
                 g_doc->ilselected = original_selection;
+            } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
+                OpenImgFile(full_path);
             } else if (g_file_dialog_mode == FileDialogMode::OpenLod) {
-                LodManifest manifest = ParseLodFile(full_path.c_str());
+                LodManifest manifest = ParseLodFile(full_path.c_str(),
+                    g_lod_override_dir[0] ? g_lod_override_dir : nullptr);
                 verbose_log("OpenLod: %s -> %zu entries, PPP=%d", full_path.c_str(), manifest.entries.size(), manifest.ppp_value);
                 if (manifest.parse_error) {
                     snprintf(g_restore_msg, sizeof(g_restore_msg), "LOD: %s", manifest.error_msg.c_str());
@@ -3429,15 +3791,7 @@ static void DrawFileDialog() {
                     if (manifest.has_ppp_value)
                         g_load2_ppp = manifest.ppp_value;
 
-                    g_undo_count = 0;
-                    g_undo_idx   = 0;
-                    ClearPixelClipboard();
-                    g_grid_sel.active = false;
-                    g_grid_sel.dragging = false;
-                    g_active_tool = ActiveTool::None;
-                    g_pasted.active = false;
-                    g_pasted.dragging = false;
-                    ClearAll();
+                    PrepareDocumentForOpenedFile();
 
                     std::string lod_dir(g_file_dialog_dir);
 
@@ -3527,20 +3881,6 @@ static void DrawFileDialog() {
                     SaveImgFile();
                     g_dirty = false; /* Mark as saved in C++ state */
                     RecentAdd(full_path);
-                } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
-                    g_undo_count = 0;
-                    g_undo_idx   = 0;
-                    ClearPixelClipboard();
-                    g_grid_sel.active = false;
-                    g_grid_sel.dragging = false;
-                    g_active_tool = ActiveTool::None;
-                    g_pasted.active = false;
-                    g_pasted.dragging = false;
-                    ClearAll();
-                    LoadImgFile();
-    g_dirty = false; /* fresh load = clean baseline */
-                    RecentAdd(full_path);
-                    Mk2AutoSelectFromImg();
                 } else if (g_file_dialog_mode == FileDialogMode::AppendImg) {
                     /* Append adds images on top of the current set — even if
                        the file was clean (matched disk) before, after Append
@@ -4694,6 +5034,494 @@ static void xform_commit(void)
     g_xform.handle   = TransformHandle::None;
 }
 
+/* ---- Full-sprite resize ---- */
+enum class SpriteResizeMode { IndexNearest = 0, MaxQuality = 1, QualitySmallBytes = 2 };
+static bool g_show_resize_sprite = false;
+static int  g_resize_source_idx = -1;
+static int  g_resize_source_w = 0;
+static int  g_resize_source_h = 0;
+static int  g_resize_w = 32;
+static int  g_resize_h = 32;
+static int  g_resize_scale_x = 100;
+static int  g_resize_scale_y = 100;
+static bool g_resize_lock_aspect = true;
+static int  g_resize_mode = (int)SpriteResizeMode::IndexNearest;
+static bool g_resize_trim_bounds = false;
+
+static int clamp_int(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static int round_to_int(double v)
+{
+    return (int)(v >= 0.0 ? v + 0.5 : v - 0.5);
+}
+
+static unsigned short signed_to_img_word(int v)
+{
+    if (v < -32768) v = -32768;
+    if (v >  32767) v =  32767;
+    return (unsigned short)(short)v;
+}
+
+static int scaled_coord(unsigned short coord, int old_dim, int new_dim)
+{
+    if (old_dim <= 0) return (int)(short)coord;
+    return round_to_int((double)(short)coord * (double)new_dim / (double)old_dim);
+}
+
+static void resize_sync_scale_from_dims(void)
+{
+    if (g_resize_source_w > 0)
+        g_resize_scale_x = clamp_int(round_to_int((double)g_resize_w * 100.0 / (double)g_resize_source_w), 1, 3200);
+    if (g_resize_source_h > 0)
+        g_resize_scale_y = clamp_int(round_to_int((double)g_resize_h * 100.0 / (double)g_resize_source_h), 1, 3200);
+}
+
+static void resize_sync_dims_from_scale(void)
+{
+    if (g_resize_source_w > 0)
+        g_resize_w = clamp_int(round_to_int((double)g_resize_source_w * (double)g_resize_scale_x / 100.0), 1, 4096);
+    if (g_resize_source_h > 0)
+        g_resize_h = clamp_int(round_to_int((double)g_resize_source_h * (double)g_resize_scale_y / 100.0), 1, 4096);
+}
+
+static void OpenResizeSpriteDialog(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+    g_resize_source_idx = g_doc->ilselected;
+    g_resize_source_w = img->w;
+    g_resize_source_h = img->h;
+    g_resize_w = img->w;
+    g_resize_h = img->h;
+    g_resize_scale_x = 100;
+    g_resize_scale_y = 100;
+    g_show_resize_sprite = true;
+}
+
+struct ResizeRGB {
+    unsigned char r, g, b;
+};
+
+static void build_resize_palette(PAL *pal, ResizeRGB out[256])
+{
+    for (int i = 0; i < 256; i++) {
+        out[i].r = g_palette[i].r;
+        out[i].g = g_palette[i].g;
+        out[i].b = g_palette[i].b;
+    }
+    if (!pal || !pal->data_p) return;
+    int n = pal->numc;
+    if (n > 256) n = 256;
+    const unsigned char *pd = (const unsigned char *)pal->data_p;
+    for (int i = 0; i < n; i++)
+        pal_word_to_rgb8(pd + i * 2, &out[i].r, &out[i].g, &out[i].b);
+}
+
+static unsigned char nearest_palette_color(const ResizeRGB pal_rgb[256], int pal_count,
+                                           double r, double g, double b)
+{
+    if (pal_count > 256) pal_count = 256;
+    if (pal_count <= 1) return 1;
+    int best = 1;
+    double best_d = 1.0e30;
+    for (int i = 1; i < pal_count; i++) {
+        double dr = r - pal_rgb[i].r;
+        double dg = g - pal_rgb[i].g;
+        double db = b - pal_rgb[i].b;
+        double d = dr * dr + dg * dg + db * db;
+        if (d < best_d) {
+            best_d = d;
+            best = i;
+        }
+    }
+    return (unsigned char)best;
+}
+
+static void accum_source_pixel(const unsigned char *src, int stride, int x, int y,
+                               const ResizeRGB pal_rgb[256], double weight,
+                               double *r, double *g, double *b, double *a)
+{
+    if (weight <= 0.0) return;
+    unsigned char ci = src[y * stride + x];
+    if (ci == 0) return;
+    *a += weight;
+    *r += weight * (double)pal_rgb[ci].r;
+    *g += weight * (double)pal_rgb[ci].g;
+    *b += weight * (double)pal_rgb[ci].b;
+}
+
+static unsigned char *resize_pixels_nearest(const IMG *img, int nw, int nh, unsigned int *out_stride)
+{
+    int sw = img->w, sh = img->h;
+    int src_stride = (sw + 3) & ~3;
+    unsigned int dst_stride = ((unsigned int)nw + 3) & ~3u;
+    unsigned char *dst = (unsigned char *)PoolAlloc((size_t)dst_stride * nh);
+    if (!dst) return NULL;
+    const unsigned char *src = (const unsigned char *)img->data_p;
+
+    for (int dy = 0; dy < nh; dy++) {
+        int sy = (int)(((long long)dy * sh + sh / 2) / nh);
+        if (sy >= sh) sy = sh - 1;
+        const unsigned char *srow = src + sy * src_stride;
+        unsigned char *drow = dst + dy * dst_stride;
+        for (int dx = 0; dx < nw; dx++) {
+            int sx = (int)(((long long)dx * sw + sw / 2) / nw);
+            if (sx >= sw) sx = sw - 1;
+            drow[dx] = srow[sx];
+        }
+    }
+    *out_stride = dst_stride;
+    return dst;
+}
+
+static unsigned char *resize_pixels_quality(const IMG *img, PAL *pal, int nw, int nh,
+                                            bool optimize_bytes, unsigned int *out_stride)
+{
+    if (!pal || !pal->data_p || pal->numc <= 1)
+        return resize_pixels_nearest(img, nw, nh, out_stride);
+
+    int sw = img->w, sh = img->h;
+    int src_stride = (sw + 3) & ~3;
+    unsigned int dst_stride = ((unsigned int)nw + 3) & ~3u;
+    unsigned char *dst = (unsigned char *)PoolAlloc((size_t)dst_stride * nh);
+    if (!dst) return NULL;
+
+    ResizeRGB pal_rgb[256];
+    build_resize_palette(pal, pal_rgb);
+    int pal_count = pal->numc;
+    if (pal_count > 256) pal_count = 256;
+    int alpha_threshold = optimize_bytes ? 176 : 96;
+    const unsigned char *src = (const unsigned char *)img->data_p;
+
+    bool pure_upscale = (nw >= sw && nh >= sh);
+    for (int dy = 0; dy < nh; dy++) {
+        unsigned char *drow = dst + dy * dst_stride;
+        for (int dx = 0; dx < nw; dx++) {
+            double r = 0.0, g = 0.0, b = 0.0, a = 0.0;
+            double total = 0.0;
+
+            if (pure_upscale) {
+                double sx = ((double)dx + 0.5) * (double)sw / (double)nw - 0.5;
+                double sy = ((double)dy + 0.5) * (double)sh / (double)nh - 0.5;
+                int x0 = (int)floor(sx);
+                int y0 = (int)floor(sy);
+                double tx = sx - (double)x0;
+                double ty = sy - (double)y0;
+                for (int yy = 0; yy <= 1; yy++) {
+                    int syi = y0 + yy;
+                    if (syi < 0) syi = 0;
+                    if (syi >= sh) syi = sh - 1;
+                    double wy = yy ? ty : (1.0 - ty);
+                    for (int xx = 0; xx <= 1; xx++) {
+                        int sxi = x0 + xx;
+                        if (sxi < 0) sxi = 0;
+                        if (sxi >= sw) sxi = sw - 1;
+                        double wx = xx ? tx : (1.0 - tx);
+                        double w = wx * wy;
+                        total += w;
+                        accum_source_pixel(src, src_stride, sxi, syi, pal_rgb, w, &r, &g, &b, &a);
+                    }
+                }
+            } else {
+                double x0 = (double)dx * (double)sw / (double)nw;
+                double x1 = (double)(dx + 1) * (double)sw / (double)nw;
+                double y0 = (double)dy * (double)sh / (double)nh;
+                double y1 = (double)(dy + 1) * (double)sh / (double)nh;
+                int ix0 = (int)floor(x0);
+                int ix1 = (int)ceil(x1);
+                int iy0 = (int)floor(y0);
+                int iy1 = (int)ceil(y1);
+                for (int syi = iy0; syi < iy1; syi++) {
+                    if (syi < 0 || syi >= sh) continue;
+                    double oy0 = (y0 > (double)syi) ? y0 : (double)syi;
+                    double oy1 = (y1 < (double)syi + 1.0) ? y1 : (double)syi + 1.0;
+                    double wy = oy1 - oy0;
+                    if (wy <= 0.0) continue;
+                    for (int sxi = ix0; sxi < ix1; sxi++) {
+                        if (sxi < 0 || sxi >= sw) continue;
+                        double ox0 = (x0 > (double)sxi) ? x0 : (double)sxi;
+                        double ox1 = (x1 < (double)sxi + 1.0) ? x1 : (double)sxi + 1.0;
+                        double wx = ox1 - ox0;
+                        if (wx <= 0.0) continue;
+                        double w = wx * wy;
+                        total += w;
+                        accum_source_pixel(src, src_stride, sxi, syi, pal_rgb, w, &r, &g, &b, &a);
+                    }
+                }
+            }
+
+            if (total <= 0.0 || a <= 0.0 || (a * 255.0 / total) < (double)alpha_threshold) {
+                drow[dx] = 0;
+            } else {
+                drow[dx] = nearest_palette_color(pal_rgb, pal_count, r / a, g / a, b / a);
+            }
+        }
+    }
+
+    *out_stride = dst_stride;
+    return dst;
+}
+
+static bool trim_image_to_content(IMG *img, bool shrink_empty, int *out_trim_x, int *out_trim_y)
+{
+    if (out_trim_x) *out_trim_x = 0;
+    if (out_trim_y) *out_trim_y = 0;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *src = (unsigned char *)img->data_p;
+    int min_x = w, min_y = h, max_x = -1, max_y = -1;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (src[y * stride + x] != 0) {
+                if (x < min_x) min_x = x;
+                if (x > max_x) max_x = x;
+                if (y < min_y) min_y = y;
+                if (y > max_y) max_y = y;
+            }
+        }
+    }
+
+    if (max_x < 0) {
+        if (!shrink_empty || (w == 1 && h == 1)) return false;
+        unsigned char *dst = (unsigned char *)PoolAlloc(4);
+        if (!dst) return false;
+        free(img->data_p);
+        img->data_p = dst;
+        img->w = 1;
+        img->h = 1;
+        img->anix = 0;
+        img->aniy = 0;
+        img->anix2 = img->aniy2 = 0;
+        return true;
+    }
+
+    if (min_x == 0 && min_y == 0 && max_x == w - 1 && max_y == h - 1) return false;
+
+    int new_w = max_x - min_x + 1;
+    int new_h = max_y - min_y + 1;
+    int new_stride = (new_w + 3) & ~3;
+    unsigned char *dst = (unsigned char *)PoolAlloc((size_t)new_stride * new_h);
+    if (!dst) return false;
+    for (int y = 0; y < new_h; y++)
+        memcpy(dst + y * new_stride, src + (y + min_y) * stride + min_x, new_w);
+
+    free(img->data_p);
+    img->data_p = dst;
+    img->w = (unsigned short)new_w;
+    img->h = (unsigned short)new_h;
+    img->anix = signed_to_img_word((int)(short)img->anix - min_x);
+    img->aniy = signed_to_img_word((int)(short)img->aniy - min_y);
+    if (img->anix2 != 0 || img->aniy2 != 0 || img->aniz2 != 0) {
+        img->anix2 = signed_to_img_word((int)(short)img->anix2 - min_x);
+        img->aniy2 = signed_to_img_word((int)(short)img->aniy2 - min_y);
+    }
+    g_hitbox_x -= min_x;
+    g_hitbox_y -= min_y;
+    if (out_trim_x) *out_trim_x = min_x;
+    if (out_trim_y) *out_trim_y = min_y;
+    return true;
+}
+
+static bool push_pixel_history_entry(PixelHist *snap)
+{
+    if (!snap || !snap->data) return false;
+    if (g_pixel_hist.size() >= kPixelHistMax) {
+        pixel_hist_free(&g_pixel_hist.front());
+        g_pixel_hist.erase(g_pixel_hist.begin());
+    }
+    g_pixel_hist.push_back(*snap);
+    snap->data = NULL;
+    for (auto &redo : g_pixel_redo) pixel_hist_free(&redo);
+    g_pixel_redo.clear();
+    return true;
+}
+
+static bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool trim_bounds)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+    nw = clamp_int(nw, 1, 4096);
+    nh = clamp_int(nh, 1, 4096);
+
+    int old_w = img->w;
+    int old_h = img->h;
+    bool optimize_bytes = (mode == SpriteResizeMode::QualitySmallBytes);
+    bool use_quality = (mode != SpriteResizeMode::IndexNearest);
+
+    if (nw == old_w && nh == old_h && !(trim_bounds || optimize_bytes)) return false;
+
+    PixelHist snap = {};
+    if (!pixel_hist_capture(&snap, true)) return false;
+
+    PAL *pal = get_pal(img->palnum);
+    unsigned int new_stride = 0;
+    unsigned char *new_pixels = use_quality
+        ? resize_pixels_quality(img, pal, nw, nh, optimize_bytes, &new_stride)
+        : resize_pixels_nearest(img, nw, nh, &new_stride);
+    if (!new_pixels) {
+        pixel_hist_free(&snap);
+        return false;
+    }
+
+    free(img->data_p);
+    img->data_p = new_pixels;
+    img->w = (unsigned short)nw;
+    img->h = (unsigned short)nh;
+    img->anix = signed_to_img_word(scaled_coord(snap.anix, old_w, nw));
+    img->aniy = signed_to_img_word(scaled_coord(snap.aniy, old_h, nh));
+    img->anix2 = signed_to_img_word(scaled_coord(snap.anix2, old_w, nw));
+    img->aniy2 = signed_to_img_word(scaled_coord(snap.aniy2, old_h, nh));
+    if (g_hitbox_w > 0 && g_hitbox_h > 0) {
+        g_hitbox_x = scaled_coord((unsigned short)(short)g_hitbox_x, old_w, nw);
+        g_hitbox_y = scaled_coord((unsigned short)(short)g_hitbox_y, old_h, nh);
+        g_hitbox_w = clamp_int(round_to_int((double)g_hitbox_w * (double)nw / (double)old_w), 1, 4096);
+        g_hitbox_h = clamp_int(round_to_int((double)g_hitbox_h * (double)nh / (double)old_h), 1, 4096);
+    }
+
+    int trim_x = 0, trim_y = 0;
+    bool did_trim = false;
+    if (trim_bounds || optimize_bytes)
+        did_trim = trim_image_to_content(img, optimize_bytes, &trim_x, &trim_y);
+
+    push_pixel_history_entry(&snap);
+    mark_dirty();
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+    g_xform.active = false;
+    deselect_all();
+    InvalidateThumb(g_doc->ilselected);
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             did_trim ? "Resized %s: %dx%d -> %dx%d (trimmed %d,%d)."
+                      : "Resized %s: %dx%d -> %dx%d.",
+             img->n_s, old_w, old_h, (int)img->w, (int)img->h, trim_x, trim_y);
+    g_restore_msg_timer = 4.0f;
+    (void)new_stride;
+    return true;
+}
+
+static void DrawResizeSpriteDialog(void)
+{
+    if (g_show_resize_sprite) ImGui::OpenPopup("Resize Sprite");
+    if (!ImGui::BeginPopupModal("Resize Sprite", &g_show_resize_sprite,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    IMG *img = (g_resize_source_idx >= 0) ? get_img(g_resize_source_idx) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) {
+        ImGui::TextDisabled("No sprite selected");
+        if (ImGui::Button("Close", ImVec2(100, 0))) {
+            g_show_resize_sprite = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    if (g_resize_source_w <= 0 || g_resize_source_h <= 0 ||
+        g_resize_source_idx != g_doc->ilselected) {
+        g_resize_source_idx = g_doc->ilselected;
+        g_resize_source_w = img->w;
+        g_resize_source_h = img->h;
+        g_resize_w = img->w;
+        g_resize_h = img->h;
+        g_resize_scale_x = g_resize_scale_y = 100;
+    }
+
+    ImGui::Text("%s  %dx%d", img->n_s, g_resize_source_w, g_resize_source_h);
+    ImGui::Separator();
+
+    ImGui::Checkbox("Constrain Aspect Ratio", &g_resize_lock_aspect);
+    ImGui::SetNextItemWidth(110);
+    int w = g_resize_w;
+    if (ImGui::InputInt("Width", &w, 1, 16)) {
+        g_resize_w = clamp_int(w, 1, 4096);
+        if (g_resize_lock_aspect && g_resize_source_w > 0)
+            g_resize_h = clamp_int(round_to_int((double)g_resize_w * (double)g_resize_source_h / (double)g_resize_source_w), 1, 4096);
+        resize_sync_scale_from_dims();
+    }
+    ImGui::SetNextItemWidth(110);
+    int h = g_resize_h;
+    if (ImGui::InputInt("Height", &h, 1, 16)) {
+        g_resize_h = clamp_int(h, 1, 4096);
+        if (g_resize_lock_aspect && g_resize_source_h > 0)
+            g_resize_w = clamp_int(round_to_int((double)g_resize_h * (double)g_resize_source_w / (double)g_resize_source_h), 1, 4096);
+        resize_sync_scale_from_dims();
+    }
+
+    ImGui::SetNextItemWidth(110);
+    if (g_resize_lock_aspect) {
+        int pct = g_resize_scale_x;
+        if (ImGui::InputInt("Scale %", &pct, 1, 10)) {
+            g_resize_scale_x = g_resize_scale_y = clamp_int(pct, 1, 3200);
+            resize_sync_dims_from_scale();
+        }
+    } else {
+        int sx = g_resize_scale_x;
+        if (ImGui::InputInt("Scale X %", &sx, 1, 10)) {
+            g_resize_scale_x = clamp_int(sx, 1, 3200);
+            resize_sync_dims_from_scale();
+        }
+        ImGui::SetNextItemWidth(110);
+        int sy = g_resize_scale_y;
+        if (ImGui::InputInt("Scale Y %", &sy, 1, 10)) {
+            g_resize_scale_y = clamp_int(sy, 1, 3200);
+            resize_sync_dims_from_scale();
+        }
+    }
+
+    const char *mode_names[] = {
+        "Lossless Palette IDs",
+        "Max Quality",
+        "Quality + Smallest Bytes"
+    };
+    ImGui::SetNextItemWidth(220);
+    ImGui::Combo("Mode", &g_resize_mode, mode_names, 3);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Lossless Palette IDs keeps existing indices exact with nearest-neighbor.\n"
+                          "Max Quality resamples RGB from the active palette and remaps.\n"
+                          "Quality + Smallest Bytes also trims transparent bounds.");
+    }
+
+    bool force_trim = (g_resize_mode == (int)SpriteResizeMode::QualitySmallBytes);
+    bool trim_box = force_trim ? true : g_resize_trim_bounds;
+    if (force_trim) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("Trim Transparent Bounds", &trim_box) && !force_trim)
+        g_resize_trim_bounds = trim_box;
+    if (force_trim) ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    int old_bytes = ((g_resize_source_w + 3) & ~3) * g_resize_source_h;
+    int new_bytes = ((g_resize_w + 3) & ~3) * g_resize_h;
+    ImGui::TextDisabled("IMG data: %d B -> %d B", old_bytes, new_bytes);
+
+    bool same_size = (g_resize_w == g_resize_source_w && g_resize_h == g_resize_source_h);
+    bool can_apply = !same_size || g_resize_trim_bounds || force_trim;
+    ImGui::BeginDisabled(!can_apply);
+    if (ImGui::Button("Resize", ImVec2(100, 0))) {
+        SpriteResizeMode mode = (SpriteResizeMode)clamp_int(g_resize_mode, 0, 2);
+        if (ResizeSelectedSprite(g_resize_w, g_resize_h, mode, g_resize_trim_bounds)) {
+            g_show_resize_sprite = false;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_resize_sprite = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 /* ---- Public C interface ---- */
 
 void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *canvas_tex)
@@ -4814,9 +5642,14 @@ static bool g_show_mk2_unsaved_confirm = false;
 
 int imgui_overlay_check_unsaved_and_quit(void)
 {
-    bool img_dirty = g_dirty && g_doc->imgcnt > 0;
+    int dirty_idx = FindDirtyDocumentIndex();
+    bool img_dirty = dirty_idx >= 0;
     bool mk2_dirty = g_mk2_doc.dirty && !g_mk2_doc.source_path.empty();
-    if (img_dirty)  g_show_unsaved_confirm = true;
+    if (img_dirty) {
+        ActivateDocumentTab(dirty_idx);
+        g_pending_action = PendingAction::Quit;
+        g_show_unsaved_confirm = true;
+    }
     if (mk2_dirty)  g_show_mk2_unsaved_confirm = true;
     if (img_dirty || mk2_dirty) return 0;
     return 1;
@@ -4830,7 +5663,8 @@ void imgui_overlay_request_quit(void)
 int imgui_overlay_should_quit(void)
 {
     /* If we're pending quit and no unsaved popup is showing, it's safe to exit */
-    return (g_pending_quit && !g_show_unsaved_confirm && !g_show_mk2_unsaved_confirm) ? 1 : 0;
+    return (g_pending_quit && !HasDirtyDocuments() &&
+            !g_show_unsaved_confirm && !g_show_mk2_unsaved_confirm) ? 1 : 0;
 }
 
 void imgui_overlay_mark_saved(void)
@@ -5657,17 +6491,14 @@ static void DrawNewImgConfirm(void)
 {
     if (g_show_new_img_confirm) ImGui::OpenPopup("New IMG");
     if (!ImGui::BeginPopupModal("New IMG", &g_show_new_img_confirm, ImGuiWindowFlags_AlwaysAutoResize)) return;
-    ImGui::Text("Discard all loaded images and palettes?");
-    ImGui::Text("Starts a fresh IMG with one blank palette and one 32x32 image.");
-    ImGui::Text("This cannot be undone.");
+    ImGui::Text("Create a fresh IMG tab?");
+    ImGui::Text("Starts with one blank palette and one 32x32 image.");
     ImGui::Spacing();
     ImGui::Separator();
     if (ImGui::Button("New", ImVec2(80, 0))) {
-        ClearAll();
+        PrepareDocumentForOpenedFile();
         g_doc->fileversion = 0x0634;
         g_doc->fname_s[0]  = 0;
-        g_undo_count = 0;
-        g_undo_idx   = 0;
         /* Bootstrap: a fresh doc with zero palettes/images is unusable —
            the user can't paint, can't import a TGA target, can't even
            see the editor properly. Seed one default palette and one
@@ -5677,8 +6508,7 @@ static void DrawNewImgConfirm(void)
         AddNewPalette();
         AddNewBlankImage();
         g_dirty = false;
-        g_undo_count = 0;
-        g_undo_idx   = 0;
+        ResetPerDocumentUiState(false);
         g_show_new_img_confirm = false;
         ImGui::CloseCurrentPopup();
     }
@@ -5735,13 +6565,29 @@ static void RunPendingAction(void)
 {
     PendingAction act = g_pending_action;
     std::string   path = g_pending_action_path;
+    int           tab_idx = g_pending_tab_index;
     g_pending_action = PendingAction::None;
     g_pending_action_path.clear();
+    g_pending_tab_index = -1;
     switch (act) {
-        case PendingAction::Quit:           /* main loop sees imgui_overlay_should_quit() */ break;
+        case PendingAction::Quit: {
+            int dirty_idx = FindDirtyDocumentIndex();
+            if (dirty_idx >= 0) {
+                ActivateDocumentTab(dirty_idx);
+                g_pending_action = PendingAction::Quit;
+                g_show_unsaved_confirm = true;
+            }
+            break;
+        }
         case PendingAction::OpenDialog:     OpenFileDialog(FileDialogMode::OpenImg); break;
         case PendingAction::OpenPath:       OpenImgFile(path); break;
         case PendingAction::OpenLodDialog:  OpenFileDialog(FileDialogMode::OpenLod); break;
+        case PendingAction::CloseTab:
+            if (tab_idx < 0) tab_idx = document_active_index();
+            document_close_tab(tab_idx);
+            ResetPerDocumentUiState(false);
+            g_doc_tab_select_request = document_active_index();
+            break;
         case PendingAction::None: default:  break;
     }
 }
@@ -5751,7 +6597,9 @@ static void DrawUnsavedChangesConfirm(void)
     /* Legacy: g_pending_quit is set by Esc/window-close; treat it as the
        Quit pending action if nothing else queued. */
     if (g_pending_quit && g_pending_action == PendingAction::None && !g_show_unsaved_confirm) {
-        if (g_dirty && g_doc->imgcnt > 0) {
+        int dirty_idx = FindDirtyDocumentIndex();
+        if (dirty_idx >= 0) {
+            ActivateDocumentTab(dirty_idx);
             g_pending_action = PendingAction::Quit;
             g_show_unsaved_confirm = true;
         }
@@ -5763,7 +6611,8 @@ static void DrawUnsavedChangesConfirm(void)
         (g_pending_action == PendingAction::OpenDialog ||
          g_pending_action == PendingAction::OpenPath  ||
          g_pending_action == PendingAction::OpenLodDialog) ? "before opening another file"
-                                                           : "before quitting";
+        : (g_pending_action == PendingAction::CloseTab) ? "before closing this tab"
+                                                        : "before quitting";
     ImGui::Text("You have unsaved changes.");
     ImGui::Text("Do you want to save %s?", verb);
     ImGui::Spacing();
@@ -5782,6 +6631,7 @@ static void DrawUnsavedChangesConfirm(void)
             g_pending_quit = false;
             g_pending_action = PendingAction::None;
             g_pending_action_path.clear();
+            g_pending_tab_index = -1;
             OpenFileDialog(FileDialogMode::SaveImg);
         }
     }
@@ -5795,9 +6645,10 @@ static void DrawUnsavedChangesConfirm(void)
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(80, 0))) {
         g_show_unsaved_confirm = false;
-        g_pending_quit = false;
+        if (g_pending_action == PendingAction::Quit) g_pending_quit = false;
         g_pending_action = PendingAction::None;
         g_pending_action_path.clear();
+        g_pending_tab_index = -1;
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -5972,22 +6823,15 @@ static void DoUndo(void) {
     if (!g_pixel_hist.empty()) {
         PixelHist e = g_pixel_hist.back();
         g_pixel_hist.pop_back();
-        IMG *img = get_img(e.img_idx);
-        if (img && img->data_p && img->w == e.w && img->h == e.h) {
-            unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
-            if (cur_sz == e.size) {
-                PixelHist r = {};
-                r.img_idx = e.img_idx; r.w = img->w; r.h = img->h; r.size = cur_sz;
-                r.data = (unsigned char *)malloc(cur_sz);
-                if (r.data) {
-                    memcpy(r.data, img->data_p, cur_sz);
-                    g_pixel_redo.push_back(r);
-                }
-                memcpy(img->data_p, e.data, cur_sz);
-                g_doc->ilselected = e.img_idx;
-                g_img_tex_idx = -2;
-                g_palette_nav = false;
-            }
+        PixelHist r = {};
+        bool have_redo = pixel_hist_capture_img(e.img_idx, &r, e.full_state);
+        if (pixel_hist_restore(&e)) {
+            if (have_redo) g_pixel_redo.push_back(r);
+            g_palette_nav = false;
+        } else {
+            if (have_redo) pixel_hist_free(&r);
+            g_pixel_hist.push_back(e);
+            return;
         }
         pixel_hist_free(&e);
     } else if (g_undo_idx > 0) {
@@ -5999,21 +6843,15 @@ static void DoRedo(void) {
     if (!g_pixel_redo.empty()) {
         PixelHist e = g_pixel_redo.back();
         g_pixel_redo.pop_back();
-        IMG *img = get_img(e.img_idx);
-        if (img && img->data_p && img->w == e.w && img->h == e.h) {
-            unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
-            if (cur_sz == e.size) {
-                PixelHist u = {};
-                u.img_idx = e.img_idx; u.w = img->w; u.h = img->h; u.size = cur_sz;
-                u.data = (unsigned char *)malloc(cur_sz);
-                if (u.data) {
-                    memcpy(u.data, img->data_p, cur_sz);
-                    g_pixel_hist.push_back(u);
-                }
-                memcpy(img->data_p, e.data, cur_sz);
-                g_doc->ilselected = e.img_idx;
-                g_img_tex_idx = -2;
-            }
+        PixelHist u = {};
+        bool have_undo = pixel_hist_capture_img(e.img_idx, &u, e.full_state);
+        if (pixel_hist_restore(&e)) {
+            if (have_undo) g_pixel_hist.push_back(u);
+            g_palette_nav = false;
+        } else {
+            if (have_undo) pixel_hist_free(&u);
+            g_pixel_redo.push_back(e);
+            return;
         }
         pixel_hist_free(&e);
     } else if (g_undo_idx < g_undo_count - 1) {
@@ -6022,8 +6860,128 @@ static void DoRedo(void) {
     }
 }
 
+static int FindDirtyDocumentIndex(void)
+{
+    int active = document_active_index();
+    Document *cur = document_get(active);
+    if (cur && cur->dirty) return active;
+    for (int i = 0; i < document_tab_count(); i++) {
+        Document *doc = document_get(i);
+        if (doc && doc->dirty) return i;
+    }
+    return -1;
+}
+
+static bool HasDirtyDocuments(void)
+{
+    return FindDirtyDocumentIndex() >= 0;
+}
+
+static void RequestCloseDocumentTab(int idx)
+{
+    Document *doc = document_get(idx);
+    if (!doc) return;
+    if (doc->dirty) {
+        ActivateDocumentTab(idx);
+        g_pending_action = PendingAction::CloseTab;
+        g_pending_tab_index = idx;
+        g_show_unsaved_confirm = true;
+        return;
+    }
+    bool closing_active = (idx == document_active_index());
+    document_close_tab(idx);
+    ResetPerDocumentUiState(false);
+    if (closing_active) g_doc_tab_select_request = document_active_index();
+}
+
+static float DrawDocumentTabBar(float y, float sw)
+{
+    const float tab_h = ImGui::GetFrameHeight() + 5.0f;
+    ImGui::SetNextWindowPos(ImVec2(0, y));
+    ImGui::SetNextWindowSize(ImVec2(sw, tab_h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 2));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 0));
+    ImGui::Begin("##document_tabs", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    /* Use real ImGui tabs, but only switch documents on tab activation.
+       BeginTabItem() returns true every frame for the selected tab; treating
+       that as a click is what caused the earlier back-and-forth selection
+       fight. */
+    int activate_idx = -1;
+    int close_idx = -1;
+    bool new_tab = false;
+    int active = document_active_index();
+
+    ImGuiTabBarFlags tab_flags = ImGuiTabBarFlags_FittingPolicyScroll;
+    if (ImGui::BeginTabBar("##img_document_tabs", tab_flags)) {
+        int n = document_tab_count();
+        for (int i = 0; i < n; i++) {
+            Document *doc = document_get(i);
+            if (!doc) continue;
+
+            const char *base = doc->fname_s[0] ? doc->fname_s : "Untitled";
+            char label[96];
+            snprintf(label, sizeof(label), "%s%s##doc_tab_%d",
+                     doc->dirty ? "* " : "", base, i);
+
+            bool open = true;
+            ImGuiTabItemFlags item_flags = (i == active) ? ImGuiTabItemFlags_SetSelected
+                                                         : ImGuiTabItemFlags_None;
+            bool visible = ImGui::BeginTabItem(label, &open, item_flags);
+            bool activated = ImGui::IsItemActivated();
+            if (activated && i != active)
+                activate_idx = i;
+            if (visible)
+                ImGui::EndTabItem();
+            if (!open)
+                close_idx = i;
+        }
+
+        if (g_world_view) {
+            auto tab_toggle = [](const char *label, bool *value) {
+                bool was_on = *value;
+                if (was_on) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                    ImGui::PushStyleColor(ImGuiCol_Tab, ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
+                    ImGui::PushStyleColor(ImGuiCol_TabHovered, ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
+                }
+                if (ImGui::TabItemButton(label, ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
+                    *value = !*value;
+                if (was_on) ImGui::PopStyleColor(3);
+            };
+            tab_toggle(g_world_onion ? "Onion: On" : "Onion", &g_world_onion);
+            tab_toggle(g_world_dual_marked_play ? "Marked: On" : "Marked", &g_world_dual_marked_play);
+            tab_toggle(g_world_mirror_active ? "Mirror Active: On" : "Mirror Active", &g_world_mirror_active);
+            tab_toggle(g_world_mirror_other ? "Mirror Paired: On" : "Mirror Paired", &g_world_mirror_other);
+        }
+
+        if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
+            new_tab = true;
+        ImGui::EndTabBar();
+    }
+    g_doc_tab_select_request = -1;
+
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+
+    if (activate_idx >= 0)
+        ActivateDocumentTab(activate_idx);
+    if (close_idx >= 0)
+        RequestCloseDocumentTab(close_idx);
+    if (new_tab) {
+        document_new_tab();
+        g_doc_tab_select_request = document_active_index();
+        ResetPerDocumentUiState(false);
+    }
+    return tab_h;
+}
+
 void imgui_overlay_render(void)
 {
+    ClearWorldTempTextures();
     ImGuiIO &io = ImGui::GetIO();
     float sw = io.DisplaySize.x;
     float sh = io.DisplaySize.y;
@@ -6032,7 +6990,9 @@ void imgui_overlay_render(void)
        so e.g. a Clone Stamp source from sprite A doesn't get re-applied as
        coords on sprite B (which could OOB-read or just paint garbage). */
     static int g_prev_ilselected = -2;
-    if (g_doc->ilselected != g_prev_ilselected) {
+    static Document *g_prev_render_doc = NULL;
+    if (g_doc != g_prev_render_doc || g_doc->ilselected != g_prev_ilselected) {
+        g_prev_render_doc = g_doc;
         g_clone_source_set = false;
         g_clone_offset_set = false;
         g_remap_target_color = -1;
@@ -6395,6 +7355,7 @@ void imgui_overlay_render(void)
         if (ImGui::BeginMenu("Operations")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Auto-Chop Sprite...")) g_show_auto_chop = true;
+            if (ImGui::MenuItem("Resize Sprite...", NULL, false, g_doc->ilselected >= 0)) OpenResizeSpriteDialog();
             if (ImGui::MenuItem("Crop Selected to Content", NULL, false, g_doc->ilselected >= 0)) {
                 int n = CropSelectedImageToContent();
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -6523,7 +7484,8 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             ImGui::MenuItem("World View",      NULL,   &g_world_view);
             if (g_world_view) {
-                ImGui::MenuItem("  Onion-skin prev frame", NULL, &g_world_onion);
+                ImGui::SetNextItemWidth(80);
+                ImGui::SliderFloat("Marked FPS", &g_world_dual_fps, 1.0f, 60.0f, "%.1f");
                 ImGui::SetNextItemWidth(80);
                 ImGui::InputInt("World W",      &g_world_w, 0, 0);
                 ImGui::SetNextItemWidth(80);
@@ -6581,7 +7543,8 @@ void imgui_overlay_render(void)
     }
 
     float menu_h = ImGui::GetFrameHeight();
-    float work_y = menu_h;
+    float tab_h = DrawDocumentTabBar(menu_h, sw);
+    float work_y = menu_h + tab_h;
     float work_h = sh - work_y;
 
     /* ---- Sync Palette State ---- */
@@ -6647,6 +7610,10 @@ void imgui_overlay_render(void)
         if (ImGui::Button(TB_LABEL(ICON_HITBOX, ICON_HITBOX_TXT), btn)) g_show_hitbox = !g_show_hitbox;
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Hitbox");
+        ImGui::BeginDisabled(g_doc->ilselected < 0);
+        if (ImGui::Button(TB_LABEL(ICON_RESIZE, ICON_RESIZE_TXT), btn)) OpenResizeSpriteDialog();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Resize Sprite");
         /* Pencil tool — single-pixel paint at the current palette index.
            Same paint behavior as the "no active tool" state, but exposed
            as an explicit mode so it's discoverable and pairs with the
@@ -6974,6 +7941,7 @@ void imgui_overlay_render(void)
                             if (ImGui::MenuItem("Mark / Unmark")) { img->flags ^= 1; }
                             if (ImGui::MenuItem("Rename"))        OpenRenameImage();
                             if (ImGui::MenuItem("Duplicate"))     DuplicateImage();
+                            if (ImGui::MenuItem("Resize..."))     OpenResizeSpriteDialog();
                             if (ImGui::MenuItem("Trim Bounds")) {
                                 int n = CropSelectedImageToContent();
                                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -7011,6 +7979,9 @@ void imgui_overlay_render(void)
             if (g_doc->ilselected < 0) ImGui::BeginDisabled();
             if (ImGui::SmallButton("Dup##img")) DuplicateImage();
             if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate selected sprite (Ctrl+J)");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Resize##img")) OpenResizeSpriteDialog();
+            if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Resize selected sprite");
             ImGui::SameLine();
             if (ImGui::SmallButton("Trim##img")) {
                 int n = CropSelectedImageToContent();
@@ -7339,7 +8310,9 @@ void imgui_overlay_render(void)
          * When this branch runs, the rest of the canvas pipeline (pixel
          * paint, marquee, anim-point handles, hitboxes, DMA overlay,
          * grid-selection) is skipped. */
-        if (g_world_view && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+        if (g_world_view) {
+            bool drew_dual_marked = DrawWorldMarkedTabs(avail, img_pos, io);
+            if (!drew_dual_marked && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
             IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (cimg) {
                 /* Auto-fit the world canvas inside the available area. */
@@ -7405,10 +8378,15 @@ void imgui_overlay_render(void)
                         }
                         float pw = pimg->w * wscale;
                         float ph = pimg->h * wscale;
-                        ImVec2 ppos(ox - (int)(short)pimg->anix * wscale,
-                                    oy - (int)(short)pimg->aniy * wscale);
+                        int pax = (int)(short)pimg->anix;
+                        float pleft = g_world_mirror_active
+                            ? (ox - ((int)pimg->w - pax) * wscale)
+                            : (ox - pax * wscale);
+                        ImVec2 ppos(pleft, oy - (int)(short)pimg->aniy * wscale);
+                        ImVec2 puv0 = g_world_mirror_active ? ImVec2(1, 0) : ImVec2(0, 0);
+                        ImVec2 puv1 = g_world_mirror_active ? ImVec2(0, 1) : ImVec2(1, 1);
                         dl->AddImage((ImTextureID)(intptr_t)g_world_onion_tex,
-                                     ppos, ImVec2(ppos.x + pw, ppos.y + ph));
+                                     ppos, ImVec2(ppos.x + pw, ppos.y + ph), puv0, puv1);
                     }
                 }
 
@@ -7417,10 +8395,15 @@ void imgui_overlay_render(void)
                 int ay = (int)(short)cimg->aniy;
                 float spw = cimg->w * wscale;
                 float sph = cimg->h * wscale;
-                ImVec2 spos(ox - ax * wscale, oy - ay * wscale);
+                float sleft = g_world_mirror_active
+                    ? (ox - ((int)cimg->w - ax) * wscale)
+                    : (ox - ax * wscale);
+                ImVec2 spos(sleft, oy - ay * wscale);
+                ImVec2 suv0 = g_world_mirror_active ? ImVec2(1, 0) : ImVec2(0, 0);
+                ImVec2 suv1 = g_world_mirror_active ? ImVec2(0, 1) : ImVec2(1, 1);
 
                 dl->AddImage((ImTextureID)(intptr_t)g_img_texture,
-                             spos, ImVec2(spos.x + spw, spos.y + sph));
+                             spos, ImVec2(spos.x + spw, spos.y + sph), suv0, suv1);
 
                 /* Anchor marker on the sprite's anipoint (== world origin). */
                 dl->AddCircle(ImVec2(ox, oy), 4.0f,
@@ -7450,10 +8433,12 @@ void imgui_overlay_render(void)
                 }
 
                 /* Coord readout overlay (top-left of world canvas). */
-                char buf[64];
+                char buf[96];
                 snprintf(buf, sizeof(buf),
-                         "[%d] %s   anix=%d aniy=%d   world=%dx%d",
-                         g_doc->ilselected, cimg->n_s, ax, ay, g_world_w, g_world_h);
+                         "[%d] %s%s   anix=%d aniy=%d   world=%dx%d",
+                         g_doc->ilselected, cimg->n_s,
+                         g_world_mirror_active ? " mirror" : "",
+                         ax, ay, g_world_w, g_world_h);
                 dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
                                   ImVec2(wpos.x + 320, wpos.y + 18),
                                   IM_COL32(0, 0, 0, 180));
@@ -7462,6 +8447,7 @@ void imgui_overlay_render(void)
 
                 /* Reserve the canvas region so other widgets don't overlap. */
                 ImGui::Dummy(ImVec2(avail.x, avail.y));
+            }
             }
         }
         else if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
@@ -9218,6 +10204,8 @@ void imgui_overlay_render(void)
 
     DrawAutoChopDialog();
 
+    DrawResizeSpriteDialog();
+
     DrawBulkRestoreRegexDialog();
 
     DrawDebugInfoModal();
@@ -9248,6 +10236,9 @@ void imgui_overlay_shutdown(void)
 {
     if (g_img_texture) { SDL_DestroyTexture(g_img_texture); g_img_texture = NULL; }
     if (g_world_onion_tex) { SDL_DestroyTexture(g_world_onion_tex); g_world_onion_tex = NULL; }
+    ClearWorldTempTextures();
+    ClearTimelineThumbCache();
+    ClearPixelHistoryStacks();
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

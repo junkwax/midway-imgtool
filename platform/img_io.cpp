@@ -292,8 +292,11 @@ void LoadImgFile(void)
          * master sprite into its child pieces, leaving any pixel that wasn't
          * touched alone (preserving hand-tuned per-piece details). */
         img->baseline_p = PoolAlloc(pix_sz);
-        if (img->baseline_p && img->data_p)
+        if (img->baseline_p && img->data_p) {
             memcpy(img->baseline_p, img->data_p, pix_sz);
+            img->baseline_w = img->w;
+            img->baseline_h = img->h;
+        }
     }
 
     unsigned int pal_foffset = (unsigned int)hdr.oset + (unsigned int)hdr.imgcnt * sizeof(IMAGE_disk);

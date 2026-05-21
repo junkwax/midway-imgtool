@@ -192,6 +192,18 @@ L2Report VerifyLoad2Packing(int ppp, bool limit_scales_to_3)
         }
         if (!img->data_p) continue;
 
+        int baseline_w = img->baseline_w ? (int)img->baseline_w : (int)img->w;
+        int baseline_h = img->baseline_h ? (int)img->baseline_h : (int)img->h;
+        if (baseline_w != (int)img->w || baseline_h != (int)img->h) {
+            char msg[180];
+            snprintf(msg, sizeof(msg),
+                "geometry drift %dx%d -> %ux%u — destbits will shift; "
+                "every SAG after this image misaligns",
+                baseline_w, baseline_h, (unsigned)img->w, (unsigned)img->h);
+            r.issues.push_back({img_idx, img->n_s, L2Severity::Break, msg});
+            continue;
+        }
+
         unsigned int stride = ((unsigned int)img->w + 3) & ~3u;
         const unsigned char *base = (const unsigned char *)img->baseline_p;
         const unsigned char *cur  = (const unsigned char *)img->data_p;
