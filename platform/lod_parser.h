@@ -14,11 +14,12 @@ struct LodManifest {
         std::string resolved_path;    /* full path after IMGDIR/wd resolution */
     };
     std::vector<Entry> entries;
-    int ppp_value;                    /* from PPP> directive; 0 = auto */
+    int ppp_value;                    /* from PPP> directive; 0 = palette/native bpp */
+    bool has_ppp_value;               /* distinguishes PPP> 0 from no PPP> directive */
     bool parse_error;
     std::string error_msg;
 
-    LodManifest() : ppp_value(0), parse_error(false) {}
+    LodManifest() : ppp_value(0), has_ppp_value(false), parse_error(false) {}
 };
 
 /* Parse a .lod file at the given path.  Resolves IMG file references

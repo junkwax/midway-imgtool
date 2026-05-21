@@ -108,7 +108,7 @@ static void build_full_path(char *dst, int dstsz)
 
 void LoadImgFile(void)
 {
-    char full[MAX_PATH];
+    char full[sizeof(g_doc->fpath_s) + sizeof(g_doc->fname_s) + 2];
     build_full_path(full, sizeof(full));
     verbose_log("LoadImgFile: %s", full);
     FILE *f = fopen(full, "rb");
@@ -366,7 +366,7 @@ void SaveImgFile(void)
      * after LOAD2 processes the saved IMG. Save proceeds either way. */
     VerifyLoad2BeforeSave(g_load2_ppp, g_load2_limit_scales_to_3);
 
-    char full[MAX_PATH];
+    char full[sizeof(g_doc->fpath_s) + sizeof(g_doc->fname_s) + 2];
     build_full_path(full, sizeof(full));
     FILE *f = fopen(full, "wb");
     if (!f) return;

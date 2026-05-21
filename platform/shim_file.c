@@ -41,7 +41,7 @@ static const char *startup_cwd(void)
     return s_startup_cwd;
 }
 
-/* g_doc->fpath_s is the path-display buffer on Document (64 bytes).
+/* g_doc->fpath_s is the path-display buffer on Document.
    We write back a DOS-style "C:\..." path after every successful setcd
    so the on-screen path widget shows the real current directory. */
 #include "document.h"
@@ -50,17 +50,18 @@ static void update_fpath_s(void)
 {
     char cwd[MAX_PATH];
     if (!getcwd(cwd, sizeof(cwd))) return;
-    /* Build "C:\rest\with\backslashes" into g_doc->fpath_s (63 chars max) */
-    char buf[64];
+    /* Build "C:\rest\with\backslashes" into g_doc->fpath_s. */
+    char buf[sizeof(g_doc->fpath_s)];
     buf[0] = 'C'; buf[1] = ':'; buf[2] = '\\';
     int i = 3;
     const char *p = cwd;
     if (*p == '/') p++;   /* strip leading / */
-    while (*p && i < 62) {
+    while (*p && i < (int)sizeof(buf) - 1) {
         buf[i++] = (*p == '/') ? '\\' : *p;
         p++;
     }
     buf[i] = '\0';
+    memset(g_doc->fpath_s, 0, sizeof(g_doc->fpath_s));
     memcpy(g_doc->fpath_s, buf, (size_t)(i + 1));
 }
 #endif

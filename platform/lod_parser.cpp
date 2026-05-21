@@ -110,8 +110,10 @@ LodManifest ParseLodFile(const char *lod_path, const char *override_dir)
         if (is_keyword_line(line, "PPP>")) {
             int val = 0;
             if (sscanf(line + 4, "%d", &val) == 1) {
-                if (val >= 0 && val <= 8)
+                if (val >= 0 && val <= 8) {
                     manifest.ppp_value = val;
+                    manifest.has_ppp_value = true;
+                }
             }
             continue;
         }

@@ -72,8 +72,11 @@ typedef struct Document {
     unsigned short file_spare2;
     unsigned short file_spare3;
 
-    /* ---- File I/O paths (DOS-era 8.3 convention) ---- */
-    char          fpath_s[64];
+    /* ---- File I/O paths ----
+     * Basenames still use the DOS-era 8.3 convention, but modern project
+     * directories are often much longer than the original 64-byte buffer.
+     */
+    char          fpath_s[1024];
     char          fname_s[13];
     char          fnametmp_s[13];
 } Document;

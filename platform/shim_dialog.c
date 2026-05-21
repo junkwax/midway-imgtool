@@ -240,11 +240,11 @@ void shim_filereq_impl(void)
 
     upcase(base);
 
-    /* Write g_doc->fpath_s (64 bytes, zero-padded), g_doc->fname_s + g_doc->fnametmp_s (13 bytes). */
+    /* Write g_doc->fpath_s (zero-padded), g_doc->fname_s + g_doc->fnametmp_s (13 bytes). */
     {
         size_t n = strlen(dir);
-        if (n > 63) n = 63;
-        memset(g_doc->fpath_s, 0, 64);
+        if (n > sizeof(g_doc->fpath_s) - 1) n = sizeof(g_doc->fpath_s) - 1;
+        memset(g_doc->fpath_s, 0, sizeof(g_doc->fpath_s));
         memcpy(g_doc->fpath_s, dir, n);
     }
     {

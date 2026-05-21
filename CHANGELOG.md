@@ -8,6 +8,21 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.0.0] — MK3 IMG support
+
+Major compatibility release for Mortal Kombat 3 / Ultimate MK3-era IMG
+workflows.
+
+### IMG Compatibility
+- **Long project paths** — expanded the document path buffer and removed
+  hardcoded 64-byte path copies, so MK3 assets in normal source-tree paths
+  open directly from the GUI and CLI.
+- **MK3 WIMP 0x0634 libraries** — verified `MKPOWER.IMG` loads, exports,
+  and runs through the LOAD2 packing verifier from its original project path.
+- **LOD `PPP> 0` handling** — `.LOD` parsing now distinguishes an explicit
+  `PPP> 0` from a missing `PPP>` directive, preserving MK3 manifests that
+  deliberately use palette/native bpp.
+
 ## [v2.10.0] — Sprite workflow tools and CLI packaging
 
 Focused workflow release for faster sprite extraction and scriptable build

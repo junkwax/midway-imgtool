@@ -209,8 +209,8 @@ static void set_doc_path_for_file(const char *filepath)
     std::string file = (sep == std::string::npos) ? path : path.substr(sep + 1);
 
     size_t n_dir = dir.size();
-    if (n_dir > 63) n_dir = 63;
-    memset(g_doc->fpath_s, 0, 64);
+    if (n_dir > sizeof(g_doc->fpath_s) - 1) n_dir = sizeof(g_doc->fpath_s) - 1;
+    memset(g_doc->fpath_s, 0, sizeof(g_doc->fpath_s));
     memcpy(g_doc->fpath_s, dir.data(), n_dir);
 
     size_t n_file = file.size();
@@ -355,7 +355,7 @@ static int run_headless_cli(int argc, char *argv[]) {
             return 1;
         }
 
-        if (manifest.ppp_value > 0) g_load2_ppp = manifest.ppp_value;
+        if (manifest.has_ppp_value) g_load2_ppp = manifest.ppp_value;
         std::string lod_dir = ".";
         std::string lod_path(lod_file);
         size_t sep = lod_path.find_last_of("\\/");
@@ -374,8 +374,8 @@ static int run_headless_cli(int argc, char *argv[]) {
                 std::string candidate = path_join(d, file);
                 if (!path_exists(candidate.c_str())) return false;
                 size_t nd = d.length();
-                if (nd > 63) nd = 63;
-                memset(g_doc->fpath_s, 0, 64);
+                if (nd > sizeof(g_doc->fpath_s) - 1) nd = sizeof(g_doc->fpath_s) - 1;
+                memset(g_doc->fpath_s, 0, sizeof(g_doc->fpath_s));
                 memcpy(g_doc->fpath_s, d.c_str(), nd);
 
                 size_t n_file = file.length();

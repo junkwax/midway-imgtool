@@ -2959,8 +2959,8 @@ static void OpenImgFile(const std::string &full_path)
     std::string file = (sep == std::string::npos) ? full_path        : full_path.substr(sep + 1);
 
     size_t n_dir = dir.size();
-    if (n_dir > 63) n_dir = 63;
-    memset(g_doc->fpath_s, 0, 64);
+    if (n_dir > sizeof(g_doc->fpath_s) - 1) n_dir = sizeof(g_doc->fpath_s) - 1;
+    memset(g_doc->fpath_s, 0, sizeof(g_doc->fpath_s));
     memcpy(g_doc->fpath_s, dir.data(), n_dir);
 
     size_t n_file = file.size();
@@ -3030,7 +3030,7 @@ static void OpenFileDialog(FileDialogMode mode) {
     g_file_dialog_dir[0] = '\0';
     if (is_img_cat && g_doc->fpath_s[0] != '\0') {
         size_t n = 0;
-        while (n < 63 && g_doc->fpath_s[n] != '\0') n++;
+        while (n < sizeof(g_doc->fpath_s) - 1 && g_doc->fpath_s[n] != '\0') n++;
         memcpy(g_file_dialog_dir, g_doc->fpath_s, n);
         g_file_dialog_dir[n] = '\0';
     } else {
@@ -3426,7 +3426,7 @@ static void DrawFileDialog() {
                     snprintf(g_restore_msg, sizeof(g_restore_msg), "LOD: %s", manifest.error_msg.c_str());
                     g_restore_msg_timer = 6.0f;
                 } else {
-                    if (manifest.ppp_value > 0)
+                    if (manifest.has_ppp_value)
                         g_load2_ppp = manifest.ppp_value;
 
                     g_undo_count = 0;
@@ -3460,8 +3460,8 @@ static void DrawFileDialog() {
 
                         auto try_load = [&](const std::string &d) -> bool {
                             size_t nd = d.length();
-                            if (nd > 63) nd = 63;
-                            memset(g_doc->fpath_s, 0, 64);
+                            if (nd > sizeof(g_doc->fpath_s) - 1) nd = sizeof(g_doc->fpath_s) - 1;
+                            memset(g_doc->fpath_s, 0, sizeof(g_doc->fpath_s));
                             memcpy(g_doc->fpath_s, d.c_str(), nd);
 
                             memset(g_doc->fname_s, 0, 13);
@@ -3498,17 +3498,17 @@ static void DrawFileDialog() {
                     else if (loaded < total)
                         snprintf(g_restore_msg, sizeof(g_restore_msg),
                             "LOD: %d/%d IMG(s) loaded%s", loaded, total,
-                            manifest.ppp_value > 0 ? " (PPP set)" : "");
+                            manifest.has_ppp_value ? " (PPP set)" : "");
                     else
                         snprintf(g_restore_msg, sizeof(g_restore_msg),
                             "Loaded %d IMG(s) from LOD%s", loaded,
-                            manifest.ppp_value > 0 ? " (PPP set)" : "");
+                            manifest.has_ppp_value ? " (PPP set)" : "");
                     g_restore_msg_timer = 4.0f;
                 }
             } else {
                 size_t n_dir = strlen(g_file_dialog_dir);
-                if (n_dir > 63) n_dir = 63;
-                memset(g_doc->fpath_s, 0, 64);
+                if (n_dir > sizeof(g_doc->fpath_s) - 1) n_dir = sizeof(g_doc->fpath_s) - 1;
+                memset(g_doc->fpath_s, 0, sizeof(g_doc->fpath_s));
                 memcpy(g_doc->fpath_s, g_file_dialog_dir, n_dir);
                 
                 size_t n_file = strlen(g_file_dialog_file);
