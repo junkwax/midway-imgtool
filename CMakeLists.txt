@@ -42,7 +42,7 @@ else()
     set(PLATFORM_RC "")
 endif()
 
-add_executable(imgtool
+set(IMGTOOL_SOURCES
     platform/main.cpp
     platform/globals.c
     platform/shim_vid.c
@@ -64,13 +64,25 @@ add_executable(imgtool
     ${PLATFORM_RC}
 )
 
+add_executable(imgtool ${IMGTOOL_SOURCES})
+add_executable(imgtool-cli ${IMGTOOL_SOURCES})
+
 target_include_directories(imgtool PRIVATE
+    platform
+    imgui
+    imgui/backends
+)
+target_include_directories(imgtool-cli PRIVATE
     platform
     imgui
     imgui/backends
 )
 
 target_link_libraries(imgtool PRIVATE
+    SDL2::SDL2
+    SDL2::SDL2main
+)
+target_link_libraries(imgtool-cli PRIVATE
     SDL2::SDL2
     SDL2::SDL2main
 )
@@ -82,10 +94,16 @@ endif()
 
 if(MSVC)
     target_compile_options(imgtool PRIVATE /W3)
+    target_compile_options(imgtool-cli PRIVATE /W3)
     target_compile_definitions(imgtool PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_definitions(imgtool-cli PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 target_compile_definitions(imgtool PRIVATE IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}")
+target_compile_definitions(imgtool-cli PRIVATE
+    IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}"
+    IMGTOOL_CLI_ONLY
+)
 
 # Copy bundled icon font next to the exe
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/assets/MaterialSymbolsSharp-Regular.ttf")
@@ -103,8 +121,14 @@ if(APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
         target_compile_options(imgtool PRIVATE -m64)
         target_link_options(imgtool PRIVATE -m64)
+        target_compile_options(imgtool-cli PRIVATE -m64)
+        target_link_options(imgtool-cli PRIVATE -m64)
     endif()
     set_target_properties(imgtool PROPERTIES
+        BUILD_RPATH "@executable_path/../Frameworks"
+        INSTALL_RPATH "@executable_path/../Frameworks"
+    )
+    set_target_properties(imgtool-cli PROPERTIES
         BUILD_RPATH "@executable_path/../Frameworks"
         INSTALL_RPATH "@executable_path/../Frameworks"
     )
@@ -112,8 +136,11 @@ elseif(NOT WIN32)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
         target_compile_options(imgtool PRIVATE -m64)
         target_link_options(imgtool PRIVATE -m64 -no-pie -Wl,-z,noexecstack)
+        target_compile_options(imgtool-cli PRIVATE -m64)
+        target_link_options(imgtool-cli PRIVATE -m64 -no-pie -Wl,-z,noexecstack)
     else()
         target_link_options(imgtool PRIVATE -no-pie -Wl,-z,noexecstack)
+        target_link_options(imgtool-cli PRIVATE -no-pie -Wl,-z,noexecstack)
     endif()
 endif()
 

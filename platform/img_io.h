@@ -100,6 +100,7 @@ int  DefringeMarkedImages(int radius);
  * adjusted so the visual rendering stays identical. Returns count of edited
  * images. */
 int  CropMarkedImagesToContent(void);
+int  CropSelectedImageToContent(void);
 
 /* Align anipoints of all marked images to the anipoint of the image at
  * reference_idx. Conceptually: pick one frame as the "anchor frame", all

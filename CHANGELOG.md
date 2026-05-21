@@ -8,6 +8,33 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v2.10.0] — Sprite workflow tools and CLI packaging
+
+Focused workflow release for faster sprite extraction and scriptable build
+pipelines. No IMG file-format changes.
+
+### Sprite Editing
+- **Cut to New Sprite** — `Ctrl+Shift+X` cuts the current marquee/lasso/wand
+  selection into a freshly-created sprite, preserving palette and anipoint
+  alignment from the source frame.
+- **Paste as New Sprite** — `Ctrl+Shift+V` creates a new sprite directly from
+  the pixel clipboard, using tight transparent bounds and unique derived
+  names.
+- **Duplicate and Trim buttons** — the Images panel now exposes one-click
+  `Dup`, `Trim`, and `Paste+` controls. Trim removes dead transparent border
+  space from the selected sprite without dirtying already-tight frames.
+
+### Command Line Interface
+- **Console CLI target** — builds now produce `imgtool-cli`, a console
+  subsystem binary for scripts and CI. Release artifacts include it on
+  Windows, Linux, and macOS.
+- **Stricter headless commands** — CLI commands now reject unknown options,
+  report missing inputs and failed IMG loads, and print a full command
+  reference from `--help`.
+- **LOD automation polish** — `--build-lod` accepts `--override-dir=DIR`,
+  validates that all referenced IMGs loaded, and handles relative output paths
+  safely after internal directory changes.
+
 ## [v2.9.0] — Headless CLI, GIF import, palette workflows
 
 Automation and art-cleanup release. Adds a headless command-line mode

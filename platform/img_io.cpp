@@ -1111,7 +1111,70 @@ int DefringeMarkedImages(int radius)
     return total_edited;
 }
 
+static int CropOneImageToContent(IMG *img, bool apply)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return 0;
+
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *src = (unsigned char *)img->data_p;
+
+    int min_x = w, max_x = -1, min_y = h, max_y = -1;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (src[y * stride + x] != 0) {
+                if (x < min_x) min_x = x;
+                if (x > max_x) max_x = x;
+                if (y < min_y) min_y = y;
+                if (y > max_y) max_y = y;
+            }
+        }
+    }
+    if (max_x < 0) return 0; /* fully transparent — leave alone */
+    if (min_x == 0 && min_y == 0 && max_x == w - 1 && max_y == h - 1) return 0;
+
+    int new_w = max_x - min_x + 1;
+    int new_h = max_y - min_y + 1;
+    if (!apply) return 1;
+
+    int new_stride = (new_w + 3) & ~3;
+    unsigned char *dst = (unsigned char *)PoolAlloc((size_t)new_stride * new_h);
+    if (!dst) return 0;
+
+    memset(dst, 0, (size_t)new_stride * new_h);
+    for (int y = 0; y < new_h; y++) {
+        memcpy(dst + y * new_stride,
+               src + (y + min_y) * stride + min_x,
+               new_w);
+    }
+
+    free(img->data_p);
+    img->data_p = dst;
+    img->w = (unsigned short)new_w;
+    img->h = (unsigned short)new_h;
+    img->anix = (unsigned short)((short)img->anix - (short)min_x);
+    img->aniy = (unsigned short)((short)img->aniy - (short)min_y);
+    if (img->anix2 != 0 || img->aniy2 != 0 || img->aniz2 != 0) {
+        img->anix2 = (unsigned short)((short)img->anix2 - (short)min_x);
+        img->aniy2 = (unsigned short)((short)img->aniy2 - (short)min_y);
+    }
+    return 1;
+}
+
 /* ---- Crop to Content (single-image smart trim) ---- */
+int CropSelectedImageToContent(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img) return 0;
+
+    if (!CropOneImageToContent(img, false)) return 0;
+
+    undo_push();
+    int count = CropOneImageToContent(img, true);
+    if (count > 0) g_img_tex_idx = -2;
+    return count;
+}
+
 int CropMarkedImagesToContent(void)
 {
     int count = 0;
@@ -1120,46 +1183,17 @@ int CropMarkedImagesToContent(void)
         if (p->flags & 1) targets.push_back(p);
     }
     if (targets.empty()) return 0;
+
+    bool any_crop = false;
+    for (IMG *img : targets) {
+        if (CropOneImageToContent(img, false)) { any_crop = true; break; }
+    }
+    if (!any_crop) return 0;
+
     undo_push();
 
     for (IMG *img : targets) {
-        if (!img->data_p || img->w == 0 || img->h == 0) continue;
-        int w = img->w, h = img->h;
-        int stride = (w + 3) & ~3;
-        unsigned char *src = (unsigned char *)img->data_p;
-
-        int min_x = w, max_x = -1, min_y = h, max_y = -1;
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                if (src[y * stride + x] != 0) {
-                    if (x < min_x) min_x = x;
-                    if (x > max_x) max_x = x;
-                    if (y < min_y) min_y = y;
-                    if (y > max_y) max_y = y;
-                }
-            }
-        }
-        if (max_x < 0) continue; /* fully transparent — leave alone */
-        if (min_x == 0 && min_y == 0 && max_x == w - 1 && max_y == h - 1) continue;
-
-        int new_w = max_x - min_x + 1;
-        int new_h = max_y - min_y + 1;
-        int new_stride = (new_w + 3) & ~3;
-        unsigned char *dst = (unsigned char *)PoolAlloc((size_t)new_stride * new_h);
-        if (!dst) continue;
-        memset(dst, 0, (size_t)new_stride * new_h);
-        for (int y = 0; y < new_h; y++) {
-            memcpy(dst + y * new_stride,
-                   src + (y + min_y) * stride + min_x,
-                   new_w);
-        }
-        free(img->data_p);
-        img->data_p = dst;
-        img->w = new_w;
-        img->h = new_h;
-        img->anix = (unsigned short)((short)img->anix - (short)min_x);
-        img->aniy = (unsigned short)((short)img->aniy - (short)min_y);
-        count++;
+        count += CropOneImageToContent(img, true);
     }
     if (count > 0) g_img_tex_idx = -2;
     return count;

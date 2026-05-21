@@ -25,6 +25,7 @@
 #include "lod_parser.h"
 #include <string>
 #include <sys/stat.h>
+#include <cerrno>
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -36,16 +37,173 @@
 #  endif
 #endif
 
-static void headless_mark_all() {
-    IMG* p = (IMG*)g_doc->img_p;
-    while (p) {
-        p->flags |= 1; // Mark image
-        p = (IMG*)p->nxt_p;
-    }
+static bool is_help_arg(const char *arg)
+{
+    return arg &&
+        (std::strcmp(arg, "--help") == 0 ||
+         std::strcmp(arg, "-h") == 0 ||
+         std::strcmp(arg, "/?") == 0);
 }
 
-static void headless_load_img(const char* filepath) {
-    std::string path(filepath);
+static bool is_headless_command(const char *arg)
+{
+    return arg &&
+        (std::strcmp(arg, "--export-anilst") == 0 ||
+         std::strcmp(arg, "--export-tbl") == 0 ||
+         std::strcmp(arg, "--export-irw") == 0 ||
+         std::strcmp(arg, "--export-png") == 0 ||
+         std::strcmp(arg, "--build-tga") == 0 ||
+         std::strcmp(arg, "--build-lod") == 0 ||
+         std::strcmp(arg, "--verify-load2") == 0);
+}
+
+static void print_cli_help(FILE *out, const char *exe)
+{
+    if (!exe || !*exe) exe = "imgtool";
+    std::fprintf(out,
+        "IMGTOOL command line\n"
+        "\n"
+#ifdef IMGTOOL_CLI_ONLY
+        "GUI executable:\n"
+        "  imgtool [file]\n"
+#else
+        "GUI:\n"
+        "  %s [file]\n"
+#endif
+        "\n"
+        "Headless commands:\n"
+        "  %s --verify-load2 <input.img> [--ppp=N] [--limit-scales-to-3]\n"
+        "  %s --export-anilst <input.img> <output.asm>\n"
+        "  %s --export-tbl <input.img> <output.tbl> [options]\n"
+        "  %s --export-irw <input.img> <output.irw> [options]\n"
+        "  %s --export-png <input.img> <output_dir>\n"
+        "  %s --build-tga <input.img> <output.tga>\n"
+        "  %s --build-lod <manifest.lod> <output.img> [--override-dir=DIR]\n"
+        "\n"
+        "TBL options:\n"
+        "  --mk3              write MK3 7-value headers\n"
+        "  --include-pal      include palette label pointers\n"
+        "  --padding          pad packed data to 4-bit boundary (/P)\n"
+        "  --align-16         align sprite starts to 16-bit boundary (/L)\n"
+        "  --dual-bank        emit dual-bank addresses (/E)\n"
+        "  --bank=N           bank number for dual-bank output (0 or 1)\n"
+        "  --base=HEX         ROM base address (default 02000000)\n"
+        "\n"
+        "IRW options:\n"
+        "  --bpp=N            fixed bits per pixel, 1..8\n"
+        "  --bpp=auto         infer bpp from image data\n"
+        "  --bpp=palette      infer bpp from palette size (/B)\n"
+        "  --no-align         disable 16-bit alignment\n"
+        "  --base=HEX         ROM base address (default 02000000)\n"
+        "\n"
+        "Exit status: 0 on success; non-zero on invalid args, failed loads,\n"
+        "or LOAD2 breaking issues.\n",
+#ifdef IMGTOOL_CLI_ONLY
+        exe, exe, exe, exe, exe, exe, exe);
+#else
+        exe, exe, exe, exe, exe, exe, exe, exe);
+#endif
+}
+
+static bool parse_u32_hex_arg(const char *arg, const char *prefix, unsigned int *out)
+{
+    size_t n = std::strlen(prefix);
+    if (std::strncmp(arg, prefix, n) != 0) return false;
+    const char *s = arg + n;
+    if (!*s) return false;
+    char *end = NULL;
+    unsigned long v = std::strtoul(s, &end, 16);
+    if (!end || *end != '\0' || v > 0xFFFFFFFFUL) return false;
+    *out = (unsigned int)v;
+    return true;
+}
+
+static bool parse_int_arg(const char *arg, const char *prefix, int min_v, int max_v, int *out)
+{
+    size_t n = std::strlen(prefix);
+    if (std::strncmp(arg, prefix, n) != 0) return false;
+    const char *s = arg + n;
+    if (!*s) return false;
+    char *end = NULL;
+    long v = std::strtol(s, &end, 10);
+    if (!end || *end != '\0' || v < min_v || v > max_v) return false;
+    *out = (int)v;
+    return true;
+}
+
+static bool path_exists(const char *path)
+{
+    struct stat st;
+    return path && *path && stat(path, &st) == 0;
+}
+
+static bool path_is_dir(const char *path)
+{
+    struct stat st;
+    if (!path || !*path || stat(path, &st) != 0) return false;
+#ifdef _WIN32
+    return (st.st_mode & _S_IFDIR) != 0;
+#else
+    return S_ISDIR(st.st_mode);
+#endif
+}
+
+static std::string path_join(const std::string &dir, const std::string &file)
+{
+    if (dir.empty() || dir == ".") return file;
+    char last = dir[dir.size() - 1];
+    if (last == '\\' || last == '/') return dir + file;
+#ifdef _WIN32
+    return dir + "\\" + file;
+#else
+    return dir + "/" + file;
+#endif
+}
+
+static std::string current_dir_string(void)
+{
+    char buf[MAX_PATH];
+#ifdef _WIN32
+    if (_getcwd(buf, sizeof(buf))) return std::string(buf);
+#else
+    if (getcwd(buf, sizeof(buf))) return std::string(buf);
+#endif
+    return std::string(".");
+}
+
+static bool path_is_absolute(const std::string &path)
+{
+    if (path.empty()) return false;
+#ifdef _WIN32
+    if (path.size() >= 2 && path[1] == ':') return true;
+    return path.size() >= 2 &&
+        ((path[0] == '\\' && path[1] == '\\') ||
+         (path[0] == '/'  && path[1] == '/'));
+#else
+    return path[0] == '/';
+#endif
+}
+
+static std::string make_absolute_path(const std::string &path, const std::string &base)
+{
+    if (path_is_absolute(path)) return path;
+    return path_join(base.empty() ? std::string(".") : base, path);
+}
+
+static bool ensure_dir_exists(const char *path)
+{
+#ifdef _WIN32
+    if (_mkdir(path) == 0) return true;
+#else
+    if (mkdir(path, 0755) == 0) return true;
+#endif
+    if (errno == EEXIST) return path_is_dir(path);
+    return false;
+}
+
+static void set_doc_path_for_file(const char *filepath)
+{
+    std::string path(filepath ? filepath : "");
     size_t sep = path.find_last_of("\\/");
     std::string dir = (sep == std::string::npos) ? std::string(".") : path.substr(0, sep);
     std::string file = (sep == std::string::npos) ? path : path.substr(sep + 1);
@@ -65,26 +223,83 @@ static void headless_load_img(const char* filepath) {
         g_doc->fname_s[i] = (char)toupper((unsigned char)g_doc->fname_s[i]);
         g_doc->fnametmp_s[i] = (char)toupper((unsigned char)g_doc->fnametmp_s[i]);
     }
+
 #ifdef _WIN32
     _chdir(dir.c_str());
 #else
     chdir(dir.c_str());
 #endif
+}
 
+static void headless_mark_all() {
+    IMG* p = (IMG*)g_doc->img_p;
+    while (p) {
+        p->flags |= 1; // Mark image
+        p = (IMG*)p->nxt_p;
+    }
+}
+
+static bool headless_load_img(const char* filepath) {
+    if (!path_exists(filepath)) {
+        std::fprintf(stderr, "Error: input IMG not found: %s\n", filepath ? filepath : "(null)");
+        return false;
+    }
+    unsigned int prev = g_doc->imgcnt;
+    set_doc_path_for_file(filepath);
     LoadImgFile();
+    if (g_doc->imgcnt <= prev) {
+        std::fprintf(stderr, "Error: failed to load IMG: %s\n", filepath);
+        return false;
+    }
+    return true;
 }
 
 static int run_headless_cli(int argc, char *argv[]) {
-    if (argc < 3) {
-        std::printf("Error: Missing arguments for headless command.\n");
-        return 1;
+    const char *exe = (argc > 0) ? argv[0] : "imgtool";
+    if (argc < 2 || is_help_arg(argv[1])) {
+        print_cli_help(stdout, exe);
+        return 0;
     }
+
     const char* cmd = argv[1];
+    if (!is_headless_command(cmd)) {
+        std::fprintf(stderr, "Error: unknown command: %s\n\n", cmd);
+        print_cli_help(stderr, exe);
+        return 2;
+    }
+
+    for (int i = 2; i < argc; i++) {
+        if (is_help_arg(argv[i])) {
+            print_cli_help(stdout, exe);
+            return 0;
+        }
+    }
+
     document_init();
 
     if (std::strcmp(cmd, "--verify-load2") == 0) {
+        if (argc < 3) {
+            std::fprintf(stderr, "Error: --verify-load2 requires <input.img>\n");
+            return 2;
+        }
         const char* input_img = argv[2];
-        headless_load_img(input_img);
+        for (int i = 3; i < argc; i++) {
+            if (std::strncmp(argv[i], "--ppp=", 6) == 0) {
+                if (!parse_int_arg(argv[i], "--ppp=", 0, 8, &g_load2_ppp)) {
+                    std::fprintf(stderr, "Error: invalid --ppp value: %s\n", argv[i]);
+                    return 2;
+                }
+            } else if (std::strcmp(argv[i], "--limit-scales-to-3") == 0) {
+                g_load2_limit_scales_to_3 = true;
+            } else if (std::strcmp(argv[i], "--no-limit-scales") == 0) {
+                g_load2_limit_scales_to_3 = false;
+            } else {
+                std::fprintf(stderr, "Error: unknown --verify-load2 option: %s\n", argv[i]);
+                return 2;
+            }
+        }
+        if (!headless_load_img(input_img)) return 1;
+
         L2Report report = VerifyLoad2Packing(g_load2_ppp, g_load2_limit_scales_to_3);
         std::printf("LOAD2 Verification Report for %s:\n", input_img);
         std::printf("  Checked %u sprites.\n", report.imgs_checked);
@@ -100,13 +315,43 @@ static int run_headless_cli(int argc, char *argv[]) {
     }
 
     if (std::strcmp(cmd, "--build-lod") == 0) {
-        if (argc < 4) { std::printf("Error: Missing output file.\n"); return 1; }
+        if (argc < 4) {
+            std::fprintf(stderr, "Error: --build-lod requires <manifest.lod> <output.img>\n");
+            return 2;
+        }
         const char* lod_file = argv[2];
         const char* output_file = argv[3];
+        const char* override_dir = NULL;
+        std::string start_dir = current_dir_string();
+        std::string override_dir_storage;
 
-        LodManifest manifest = ParseLodFile(lod_file);
+        for (int i = 4; i < argc; i++) {
+            if (std::strncmp(argv[i], "--override-dir=", 15) == 0) {
+                override_dir = argv[i] + 15;
+                if (!*override_dir) {
+                    std::fprintf(stderr, "Error: --override-dir needs a directory\n");
+                    return 2;
+                }
+                override_dir_storage = make_absolute_path(override_dir, start_dir);
+                override_dir = override_dir_storage.c_str();
+            } else {
+                std::fprintf(stderr, "Error: unknown --build-lod option: %s\n", argv[i]);
+                return 2;
+            }
+        }
+
+        if (!path_exists(lod_file)) {
+            std::fprintf(stderr, "Error: LOD manifest not found: %s\n", lod_file);
+            return 1;
+        }
+
+        LodManifest manifest = ParseLodFile(lod_file, override_dir);
         if (manifest.parse_error) {
-            std::printf("Error parsing LOD: %s\n", manifest.error_msg.c_str());
+            std::fprintf(stderr, "Error parsing LOD: %s\n", manifest.error_msg.c_str());
+            return 1;
+        }
+        if (manifest.entries.empty()) {
+            std::fprintf(stderr, "Error: LOD did not reference any IMG files: %s\n", lod_file);
             return 1;
         }
 
@@ -115,7 +360,10 @@ static int run_headless_cli(int argc, char *argv[]) {
         std::string lod_path(lod_file);
         size_t sep = lod_path.find_last_of("\\/");
         if (sep != std::string::npos) lod_dir = lod_path.substr(0, sep);
+        lod_dir = make_absolute_path(lod_dir, start_dir);
 
+        int loaded = 0;
+        std::string first_missing;
         for (const auto& entry : manifest.entries) {
             std::string rpath = entry.resolved_path;
             size_t path_sep = rpath.find_last_of("\\/");
@@ -123,6 +371,8 @@ static int run_headless_cli(int argc, char *argv[]) {
             std::string file = (path_sep != std::string::npos) ? rpath.substr(path_sep + 1) : rpath;
 
             auto try_load = [&](const std::string &d) -> bool {
+                std::string candidate = path_join(d, file);
+                if (!path_exists(candidate.c_str())) return false;
                 size_t nd = d.length();
                 if (nd > 63) nd = 63;
                 memset(g_doc->fpath_s, 0, 64);
@@ -145,50 +395,46 @@ static int run_headless_cli(int argc, char *argv[]) {
                 return g_doc->imgcnt > prev;
             };
 
-            if (!try_load(dir) && !try_load(lod_dir)) {
+            bool ok = try_load(dir) || (lod_dir != dir && try_load(lod_dir));
+            if (!ok) {
                 const char *imgdir = getenv("IMGDIR");
-                if (imgdir) try_load(imgdir);
+                if (imgdir && imgdir[0] && std::string(imgdir) != dir && std::string(imgdir) != lod_dir)
+                    ok = try_load(imgdir);
+            }
+            if (ok) {
+                loaded++;
+            } else if (first_missing.empty()) {
+                first_missing = rpath;
             }
         }
+        if (loaded != (int)manifest.entries.size()) {
+            std::fprintf(stderr, "Error: loaded %d/%zu IMG files from LOD. First missing: %s\n",
+                         loaded, manifest.entries.size(), first_missing.c_str());
+            return 1;
+        }
 
-        std::string out_path(output_file);
-        sep = out_path.find_last_of("\\/");
-        std::string out_dir = (sep == std::string::npos) ? std::string(".") : out_path.substr(0, sep);
-        std::string out_file = (sep == std::string::npos) ? out_path : out_path.substr(sep + 1);
-
-        size_t n_dir = out_dir.size();
-        if (n_dir > 63) n_dir = 63;
-        memset(g_doc->fpath_s, 0, 64);
-        memcpy(g_doc->fpath_s, out_dir.data(), n_dir);
-
-        size_t n_file = out_file.size();
-        if (n_file > 12) n_file = 12;
-        memset(g_doc->fname_s, 0, 13);
-        memcpy(g_doc->fname_s, out_file.data(), n_file);
-        for (size_t i = 0; i < n_file; i++)
-            g_doc->fname_s[i] = (char)toupper((unsigned char)g_doc->fname_s[i]);
-
-#ifdef _WIN32
-        _chdir(out_dir.c_str());
-#else
-        chdir(out_dir.c_str());
-#endif
+        std::string output_full = make_absolute_path(output_file, start_dir);
+        set_doc_path_for_file(output_full.c_str());
         SaveImgFile();
-        std::printf("Built IMG from LOD and saved to %s\n", output_file);
+        std::printf("Built IMG from LOD (%d sprites from %zu file(s)) and saved to %s\n",
+                    (int)g_doc->imgcnt, manifest.entries.size(), output_full.c_str());
         return 0;
     }
 
     if (argc < 4) {
-        std::printf("Error: Missing arguments for headless export.\n");
-        return 1;
+        std::fprintf(stderr, "Error: %s requires <input.img> <output>\n", cmd);
+        return 2;
     }
     const char* input_img = argv[2];
     const char* output_file = argv[3];
 
-    headless_load_img(input_img);
-    headless_mark_all();
-
     if (std::strcmp(cmd, "--export-anilst") == 0) {
+        if (argc > 4) {
+            std::fprintf(stderr, "Error: unknown --export-anilst option: %s\n", argv[4]);
+            return 2;
+        }
+        if (!headless_load_img(input_img)) return 1;
+        headless_mark_all();
         WriteAnilstFromMarked(output_file);
         std::printf("Exported ANILST to %s\n", output_file);
         return 0;
@@ -205,35 +451,71 @@ static int run_headless_cli(int argc, char *argv[]) {
             else if (std::strcmp(argv[i], "--padding") == 0) pad_4bit = true;
             else if (std::strcmp(argv[i], "--align-16") == 0) align_16bit = true;
             else if (std::strcmp(argv[i], "--dual-bank") == 0) dual_bank = true;
-            else if (std::strncmp(argv[i], "--bank=", 7) == 0) bank = std::atoi(argv[i] + 7);
-            else if (std::strncmp(argv[i], "--base=", 7) == 0) base_address = std::strtoul(argv[i] + 7, nullptr, 16);
+            else if (std::strncmp(argv[i], "--bank=", 7) == 0) {
+                if (!parse_int_arg(argv[i], "--bank=", 0, 1, &bank)) {
+                    std::fprintf(stderr, "Error: invalid --bank value: %s\n", argv[i]);
+                    return 2;
+                }
+            } else if (std::strncmp(argv[i], "--base=", 7) == 0) {
+                if (!parse_u32_hex_arg(argv[i], "--base=", &base_address)) {
+                    std::fprintf(stderr, "Error: invalid --base value: %s\n", argv[i]);
+                    return 2;
+                }
+            } else {
+                std::fprintf(stderr, "Error: unknown --export-tbl option: %s\n", argv[i]);
+                return 2;
+            }
         }
+        if (!headless_load_img(input_img)) return 1;
+        headless_mark_all();
         WriteTblFromMarked(output_file, base_address, mk3, include_pal, pad_4bit, align_16bit, dual_bank, bank);
         std::printf("Exported TBL to %s\n", output_file);
         return 0;
     }
 
     if (std::strcmp(cmd, "--export-irw") == 0) {
-        int bpp = 8;
+        int bpp = 0;
         bool align_16bit = true;
         unsigned int base_address = 0x02000000;
 
         for (int i = 4; i < argc; i++) {
-            if (std::strncmp(argv[i], "--bpp=", 6) == 0) bpp = std::atoi(argv[i] + 6);
+            if (std::strcmp(argv[i], "--bpp=auto") == 0) bpp = 0;
+            else if (std::strcmp(argv[i], "--bpp=palette") == 0) bpp = -1;
+            else if (std::strncmp(argv[i], "--bpp=", 6) == 0) {
+                if (!parse_int_arg(argv[i], "--bpp=", 1, 8, &bpp)) {
+                    std::fprintf(stderr, "Error: invalid --bpp value: %s\n", argv[i]);
+                    return 2;
+                }
+            }
             else if (std::strcmp(argv[i], "--no-align") == 0) align_16bit = false;
-            else if (std::strncmp(argv[i], "--base=", 7) == 0) base_address = std::strtoul(argv[i] + 7, nullptr, 16);
+            else if (std::strncmp(argv[i], "--base=", 7) == 0) {
+                if (!parse_u32_hex_arg(argv[i], "--base=", &base_address)) {
+                    std::fprintf(stderr, "Error: invalid --base value: %s\n", argv[i]);
+                    return 2;
+                }
+            } else {
+                std::fprintf(stderr, "Error: unknown --export-irw option: %s\n", argv[i]);
+                return 2;
+            }
         }
+        if (!headless_load_img(input_img)) return 1;
+        headless_mark_all();
         WriteIrwFromMarked(output_file, base_address, bpp, align_16bit);
         std::printf("Exported IRW to %s\n", output_file);
         return 0;
     }
 
     if (std::strcmp(cmd, "--export-png") == 0) {
-#ifdef _WIN32
-        _mkdir(output_file);
-#else
-        mkdir(output_file, 0755);
-#endif
+        if (argc > 4) {
+            std::fprintf(stderr, "Error: unknown --export-png option: %s\n", argv[4]);
+            return 2;
+        }
+        if (!headless_load_img(input_img)) return 1;
+        headless_mark_all();
+        if (!ensure_dir_exists(output_file)) {
+            std::fprintf(stderr, "Error: could not create output directory: %s\n", output_file);
+            return 1;
+        }
         IMG* p = (IMG*)g_doc->img_p;
         int idx = 0;
         while (p) {
@@ -249,13 +531,19 @@ static int run_headless_cli(int argc, char *argv[]) {
     }
 
     if (std::strcmp(cmd, "--build-tga") == 0) {
+        if (argc > 4) {
+            std::fprintf(stderr, "Error: unknown --build-tga option: %s\n", argv[4]);
+            return 2;
+        }
+        if (!headless_load_img(input_img)) return 1;
+        headless_mark_all();
         BuildTgaFromMarked(output_file);
         std::printf("Built TGA sprite sheet to %s\n", output_file);
         return 0;
     }
 
-    std::printf("Error: Unknown command %s\n", cmd);
-    return 1;
+    std::fprintf(stderr, "Error: unknown command: %s\n", cmd);
+    return 2;
 }
 
 /* Populate shim_file's exe_dir so legacy "c:\bin\" path remapping resolves
@@ -296,15 +584,16 @@ int main(int argc, char *argv[])
 {
     capture_exe_dir(argc, argv);
 
+#ifdef IMGTOOL_CLI_ONLY
+    if (argc <= 1 || is_help_arg(argv[1])) {
+        print_cli_help(stdout, argc > 0 ? argv[0] : "imgtool-cli");
+        return 0;
+    }
+    return run_headless_cli(argc, argv);
+#else
     /* ---- Check for headless CLI commands ---- */
     if (argc > 1) {
-        if (std::strcmp(argv[1], "--export-anilst") == 0 ||
-            std::strcmp(argv[1], "--export-tbl") == 0 ||
-            std::strcmp(argv[1], "--export-irw") == 0 ||
-            std::strcmp(argv[1], "--export-png") == 0 ||
-            std::strcmp(argv[1], "--build-tga") == 0 ||
-            std::strcmp(argv[1], "--build-lod") == 0 ||
-            std::strcmp(argv[1], "--verify-load2") == 0) {
+        if (is_headless_command(argv[1])) {
             return run_headless_cli(argc, argv);
         }
     }
@@ -342,11 +631,12 @@ int main(int argc, char *argv[])
     imgui_overlay_init(window, renderer, canvas_tex);
 
     if (argc > 1) {
-        if (std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0 || std::strcmp(argv[1], "/?") == 0) {
-            char help_msg[256];
+        if (is_help_arg(argv[1])) {
+            char help_msg[512];
             std::snprintf(help_msg, sizeof(help_msg),
                 "Usage: %s [file]\n\n"
-                "  file    Path to an .img, .png, .gif, .tga, or .lbm file to open on launch.", argv[0]);
+                "  file    Path to an .img, .png, .gif, .tga, or .lbm file to open on launch.\n\n"
+                "For headless automation, use imgtool-cli --help.", argv[0]);
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "IMGTOOL Usage", help_msg, window);
             SDL_DestroyTexture(canvas_tex);
             SDL_DestroyRenderer(renderer);
@@ -404,4 +694,5 @@ int main(int argc, char *argv[])
     SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
+#endif
 }

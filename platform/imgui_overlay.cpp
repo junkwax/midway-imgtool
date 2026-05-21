@@ -207,8 +207,24 @@ struct CopiedImage {
     unsigned short w, h;
     void          *data_p;  /* pixel data */
     unsigned short stride;  /* bytes per row */
+    bool           has_meta;
+    bool           has_opaque;
+    bool           from_cut;
+    int            origin_x, origin_y; /* source-local top-left after tight crop */
+    unsigned short palnum;
+    unsigned short anix, aniy;
+    unsigned short anix2, aniy2, aniz2;
+    unsigned short opals;
+    char           source_name[16];
+    char           src_filename[16];
 };
 static CopiedImage g_clipboard = {false};
+
+static void ClearPixelClipboard(void)
+{
+    if (g_clipboard.data_p) free(g_clipboard.data_p);
+    memset(&g_clipboard, 0, sizeof(g_clipboard));
+}
 
 /* ---- Palette clipboard ----
    Holds a copy of a palette's color data (15-bit packed words) plus its name,
@@ -1225,6 +1241,42 @@ static void SetIDFromSecondList(void)
     pttbl[15] = (unsigned char)(new_id >> 8);
 }
 
+static bool ImageNameExists(const char *name)
+{
+    if (!name || !*name) return false;
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
+        char existing[16];
+        strncpy(existing, p->n_s, 15);
+        existing[15] = '\0';
+        if (strcmp(existing, name) == 0) return true;
+    }
+    return false;
+}
+
+static void MakeDerivedImageName(const char *base, const char *suffix, char out[16])
+{
+    char root[16];
+    if (base && *base) {
+        strncpy(root, base, 15);
+        root[15] = '\0';
+    } else {
+        strncpy(root, "SPRITE", sizeof(root));
+    }
+
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        char tail[8];
+        if (attempt == 0) snprintf(tail, sizeof(tail), "%s", suffix ? suffix : "");
+        else              snprintf(tail, sizeof(tail), "%s%d", suffix ? suffix : "", attempt);
+
+        size_t tail_len = strlen(tail);
+        size_t budget = (tail_len < 15) ? (15 - tail_len) : 0;
+        snprintf(out, 16, "%.*s%s", (int)budget, root, tail);
+        if (!ImageNameExists(out)) return;
+    }
+
+    snprintf(out, 16, "%.15s", root);
+}
+
 /* Duplicate the selected image: allocate a new IMG via the ASM pool,
    copy all fields (including pixel data and PTTBL), then open the
    ImGui rename dialog so the user can name the copy. */
@@ -1268,12 +1320,14 @@ static void DuplicateImage(void)
     dst->aniz2  = src->aniz2;
     dst->opals  = src->opals;
 
-    strncpy(dst->n_s, src->n_s, 15);
-    dst->n_s[15] = '\0';
+    strncpy(dst->src_filename, src->src_filename, sizeof(dst->src_filename) - 1);
+    dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
+    MakeDerivedImageName(src->n_s, "DUP", dst->n_s);
 
     /* Select the new image and open rename */
     g_doc->ilselected = (int)g_doc->imgcnt - 1;
     g_img_tex_idx = -2;
+    g_zoom_reset = true;
     OpenRenameImage();
     return;
 
@@ -2923,11 +2977,7 @@ static void OpenImgFile(const std::string &full_path)
 
     g_undo_count = 0;
     g_undo_idx   = 0;
-    if (g_clipboard.valid && g_clipboard.data_p) {
-        free(g_clipboard.data_p);
-        g_clipboard.data_p = NULL;
-        g_clipboard.valid = false;
-    }
+    ClearPixelClipboard();
     g_grid_sel.active = false;
     g_grid_sel.dragging = false;
     g_active_tool = ActiveTool::None;
@@ -3381,11 +3431,7 @@ static void DrawFileDialog() {
 
                     g_undo_count = 0;
                     g_undo_idx   = 0;
-                    if (g_clipboard.valid && g_clipboard.data_p) {
-                        free(g_clipboard.data_p);
-                        g_clipboard.data_p = NULL;
-                        g_clipboard.valid = false;
-                    }
+                    ClearPixelClipboard();
                     g_grid_sel.active = false;
                     g_grid_sel.dragging = false;
                     g_active_tool = ActiveTool::None;
@@ -3484,11 +3530,7 @@ static void DrawFileDialog() {
                 } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
                     g_undo_count = 0;
                     g_undo_idx   = 0;
-                    if (g_clipboard.valid && g_clipboard.data_p) {
-                        free(g_clipboard.data_p);
-                        g_clipboard.data_p = NULL;
-                        g_clipboard.valid = false;
-                    }
+                    ClearPixelClipboard();
                     g_grid_sel.active = false;
                     g_grid_sel.dragging = false;
                     g_active_tool = ActiveTool::None;
@@ -3609,6 +3651,8 @@ Edit:
   Ctrl+Z               Undo (paint stroke, anipoint, hitbox, palette ops)
   Ctrl+Y               Redo
   Ctrl+C / Ctrl+X / Ctrl+V   Copy / Cut / Paste
+  Ctrl+Shift+X         Cut selection to a new sprite
+  Ctrl+Shift+V         Paste clipboard as a new sprite
   Ctrl+A               Select all
   Ctrl+D               Deselect
   Ctrl+Shift+I         Invert selection
@@ -4195,11 +4239,7 @@ static void copy_image(bool cut)
 
     if (cut) undo_push();
 
-    /* Free previous clipboard if any */
-    if (g_clipboard.valid && g_clipboard.data_p) {
-        free(g_clipboard.data_p);
-        g_clipboard.data_p = NULL;
-    }
+    ClearPixelClipboard();
 
     int x1 = 0, y1 = 0, x2 = img->w - 1, y2 = img->h - 1;
 
@@ -4217,6 +4257,8 @@ static void copy_image(bool cut)
 
     int w = (x2 - x1) + 1;
     int h = (y2 - y1) + 1;
+    int origin_x = x1;
+    int origin_y = y1;
     unsigned short stride = (img->w + 3) & ~3;
     unsigned short clip_stride = (w + 3) & ~3;
     unsigned int size = clip_stride * h;
@@ -4255,6 +4297,22 @@ static void copy_image(bool cut)
     g_clipboard.h = h;
     g_clipboard.stride = clip_stride;
     g_clipboard.valid = true;
+    g_clipboard.has_meta = true;
+    g_clipboard.has_opaque = false;
+    g_clipboard.from_cut = cut;
+    g_clipboard.origin_x = origin_x;
+    g_clipboard.origin_y = origin_y;
+    g_clipboard.palnum = img->palnum;
+    g_clipboard.anix = img->anix;
+    g_clipboard.aniy = img->aniy;
+    g_clipboard.anix2 = img->anix2;
+    g_clipboard.aniy2 = img->aniy2;
+    g_clipboard.aniz2 = img->aniz2;
+    g_clipboard.opals = img->opals;
+    strncpy(g_clipboard.source_name, img->n_s, 15);
+    g_clipboard.source_name[15] = '\0';
+    strncpy(g_clipboard.src_filename, img->src_filename, sizeof(g_clipboard.src_filename) - 1);
+    g_clipboard.src_filename[sizeof(g_clipboard.src_filename) - 1] = '\0';
 
     /* Tight-crop the clipboard to its non-transparent content bbox. Adobe
        behaviour: a cut/copy carries the visible pixels, not the empty
@@ -4276,31 +4334,106 @@ static void copy_image(bool cut)
                 }
             }
         }
-        if (max_x >= 0 && max_y >= 0 &&
-            (min_x > 0 || min_y > 0 || max_x < w - 1 || max_y < h - 1)) {
-            int nw = max_x - min_x + 1;
-            int nh = max_y - min_y + 1;
-            unsigned short nstride = (unsigned short)((nw + 3) & ~3);
-            unsigned int nsize = (unsigned int)nstride * nh;
-            unsigned char *nbuf = (unsigned char *)malloc(nsize);
-            if (nbuf) {
-                memset(nbuf, 0, nsize);
-                for (int y = 0; y < nh; y++) {
-                    memcpy(nbuf + y * nstride,
-                           cd + (min_y + y) * clip_stride + min_x,
-                           nw);
+        if (max_x >= 0 && max_y >= 0) {
+            g_clipboard.has_opaque = true;
+            if (min_x > 0 || min_y > 0 || max_x < w - 1 || max_y < h - 1) {
+                int nw = max_x - min_x + 1;
+                int nh = max_y - min_y + 1;
+                unsigned short nstride = (unsigned short)((nw + 3) & ~3);
+                unsigned int nsize = (unsigned int)nstride * nh;
+                unsigned char *nbuf = (unsigned char *)malloc(nsize);
+                if (nbuf) {
+                    memset(nbuf, 0, nsize);
+                    for (int y = 0; y < nh; y++) {
+                        memcpy(nbuf + y * nstride,
+                               cd + (min_y + y) * clip_stride + min_x,
+                               nw);
+                    }
+                    free(g_clipboard.data_p);
+                    g_clipboard.data_p = nbuf;
+                    g_clipboard.w      = (unsigned short)nw;
+                    g_clipboard.h      = (unsigned short)nh;
+                    g_clipboard.stride = nstride;
+                    g_clipboard.origin_x += min_x;
+                    g_clipboard.origin_y += min_y;
                 }
-                free(g_clipboard.data_p);
-                g_clipboard.data_p = nbuf;
-                g_clipboard.w      = (unsigned short)nw;
-                g_clipboard.h      = (unsigned short)nh;
-                g_clipboard.stride = nstride;
             }
         }
         /* If max_x < 0 the selection was entirely transparent; the clipboard
            is left as-is (the user explicitly copied empty pixels — possibly
            intentional for blanking). */
     }
+}
+
+static void PasteClipboardAsNewImage(void)
+{
+    if (!g_clipboard.valid || !g_clipboard.data_p || g_clipboard.w == 0 || g_clipboard.h == 0) return;
+
+    if (g_doc->ilselected >= 0) undo_push();
+    else mark_dirty();
+
+    IMG *dst = (IMG *)AllocImg();
+    if (!dst) return;
+
+    int w = g_clipboard.w;
+    int h = g_clipboard.h;
+    int src_stride = g_clipboard.stride;
+    int dst_stride = (w + 3) & ~3;
+    size_t sz = (size_t)dst_stride * h;
+
+    dst->data_p = PoolAlloc(sz);
+    if (!dst->data_p) {
+        unlink_and_free_img(dst);
+        return;
+    }
+
+    unsigned char *src = (unsigned char *)g_clipboard.data_p;
+    unsigned char *dp = (unsigned char *)dst->data_p;
+    for (int y = 0; y < h; y++) {
+        memcpy(dp + y * dst_stride, src + y * src_stride, w);
+    }
+
+    dst->w = (unsigned short)w;
+    dst->h = (unsigned short)h;
+    dst->flags = 0;
+    dst->palnum = g_clipboard.has_meta ? g_clipboard.palnum
+                 : (g_doc->plselected >= 0 ? (unsigned short)g_doc->plselected : 0);
+    if (g_doc->palcnt > 0 && dst->palnum >= g_doc->palcnt)
+        dst->palnum = (g_doc->plselected >= 0 && (unsigned)g_doc->plselected < g_doc->palcnt)
+                    ? (unsigned short)g_doc->plselected : 0;
+    dst->opals = g_clipboard.has_meta ? g_clipboard.opals : 0;
+    dst->aniz2 = g_clipboard.has_meta ? g_clipboard.aniz2 : 0;
+
+    if (g_clipboard.has_meta) {
+        dst->anix  = (unsigned short)((short)g_clipboard.anix  - (short)g_clipboard.origin_x);
+        dst->aniy  = (unsigned short)((short)g_clipboard.aniy  - (short)g_clipboard.origin_y);
+        if (g_clipboard.anix2 != 0 || g_clipboard.aniy2 != 0 || g_clipboard.aniz2 != 0) {
+            dst->anix2 = (unsigned short)((short)g_clipboard.anix2 - (short)g_clipboard.origin_x);
+            dst->aniy2 = (unsigned short)((short)g_clipboard.aniy2 - (short)g_clipboard.origin_y);
+        }
+        strncpy(dst->src_filename, g_clipboard.src_filename, sizeof(dst->src_filename) - 1);
+        dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
+    }
+
+    MakeDerivedImageName(g_clipboard.source_name[0] ? g_clipboard.source_name : "PASTE",
+                         g_clipboard.from_cut ? "CUT" : "CPY",
+                         dst->n_s);
+
+    g_doc->ilselected = (int)g_doc->imgcnt - 1;
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_palette_nav = false;
+    mark_dirty();
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Pasted clipboard as new sprite: %dx%d.", w, h);
+    g_restore_msg_timer = 4.0f;
+}
+
+static void CutSelectionToNewImage(void)
+{
+    if (g_doc->ilselected < 0) return;
+    copy_image(true);
+    if (g_clipboard.valid) PasteClipboardAsNewImage();
 }
 
 static void apply_pasted_region(void)
@@ -5933,9 +6066,11 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) DoRedo();
 
     /* Clipboard */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_X, route)) CutSelectionToNewImage();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_V, route)) PasteClipboardAsNewImage();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) copy_image(false);
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) copy_image(true);
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) paste_image();
+    if (!io.KeyShift && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) copy_image(true);
+    if (!io.KeyShift && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) paste_image();
 
     /* Adobe-standard selection shortcuts. */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_A, route)) select_all();
@@ -6189,8 +6324,12 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             if (ImGui::MenuItem("Copy",  "Ctrl+C", false, g_doc->ilselected >= 0)) copy_image(false);
             if (ImGui::MenuItem("Cut",   "Ctrl+X", false, g_doc->ilselected >= 0)) copy_image(true);
+            if (ImGui::MenuItem("Cut to New Sprite", "Ctrl+Shift+X", false, g_doc->ilselected >= 0))
+                CutSelectionToNewImage();
             if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && g_doc->ilselected >= 0))
                 paste_image();
+            if (ImGui::MenuItem("Paste as New Sprite", "Ctrl+Shift+V", false, g_clipboard.valid))
+                PasteClipboardAsNewImage();
             ImGui::Separator();
             /* Selection ops — disabled when nothing's available. */
             if (ImGui::MenuItem("Select All",       "Ctrl+A",       false, g_doc->ilselected >= 0))      select_all();
@@ -6209,6 +6348,14 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Rename Image",     "Ctrl+R"))     OpenRenameImage();
             if (ImGui::MenuItem("Delete Image",     "Shift+Del"))  DeleteImage(g_doc->ilselected);
             if (ImGui::MenuItem("Duplicate",        "Ctrl+J"))     DuplicateImage();
+            if (ImGui::MenuItem("Trim Transparent Bounds", NULL, false, g_doc->ilselected >= 0)) {
+                int n = CropSelectedImageToContent();
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         n > 0 ? "Trimmed selected sprite to non-transparent bounds."
+                               : "Selected sprite already fits, or has no opaque pixels.");
+                g_restore_msg_timer = 4.0f;
+                if (n > 0) g_zoom_reset = true;
+            }
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
@@ -6248,6 +6395,17 @@ void imgui_overlay_render(void)
         if (ImGui::BeginMenu("Operations")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Auto-Chop Sprite...")) g_show_auto_chop = true;
+            if (ImGui::MenuItem("Crop Selected to Content", NULL, false, g_doc->ilselected >= 0)) {
+                int n = CropSelectedImageToContent();
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         n > 0 ? "Cropped selected sprite to non-transparent bbox."
+                               : "Selected sprite already fits, or has no opaque pixels.");
+                g_restore_msg_timer = 4.0f;
+                if (n > 0) g_zoom_reset = true;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Trim the selected image to its nearest non-transparent pixels.\n"
+                "Anipoints are adjusted so the on-screen position is unchanged.");
             if (ImGui::MenuItem("Crop Marked to Content")) {
                 int n = CropMarkedImagesToContent();
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -6815,6 +6973,15 @@ void imgui_overlay_render(void)
                         if (ImGui::BeginPopupContextItem("##imgctx")) {
                             if (ImGui::MenuItem("Mark / Unmark")) { img->flags ^= 1; }
                             if (ImGui::MenuItem("Rename"))        OpenRenameImage();
+                            if (ImGui::MenuItem("Duplicate"))     DuplicateImage();
+                            if (ImGui::MenuItem("Trim Bounds")) {
+                                int n = CropSelectedImageToContent();
+                                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                         n > 0 ? "Trimmed selected sprite to non-transparent bounds."
+                                               : "Selected sprite already fits, or has no opaque pixels.");
+                                g_restore_msg_timer = 4.0f;
+                                if (n > 0) g_zoom_reset = true;
+                            }
                             if (ImGui::MenuItem("Delete"))        DeleteImage(g_doc->ilselected);
                             ImGui::Separator();
                             if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
@@ -6838,12 +7005,30 @@ void imgui_overlay_render(void)
             ImGui::SameLine();
             if (ImGui::SmallButton("Mk"))       { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Add"))      { g_show_new_blank_dialog = true; }
+            if (ImGui::SmallButton("Add##img")) { g_show_new_blank_dialog = true; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank image (W/H prompt)");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Add a blank 32x32 sprite using the\n"
-                                  "currently selected palette. Rename via\n"
-                                  "right-click on the new entry.");
+            ImGui::SameLine();
+            if (g_doc->ilselected < 0) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Dup##img")) DuplicateImage();
+            if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate selected sprite (Ctrl+J)");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Trim##img")) {
+                int n = CropSelectedImageToContent();
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         n > 0 ? "Trimmed selected sprite to non-transparent bounds."
+                               : "Selected sprite already fits, or has no opaque pixels.");
+                g_restore_msg_timer = 4.0f;
+                if (n > 0) g_zoom_reset = true;
+            }
+            if (g_doc->ilselected >= 0 && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Remove transparent padding from selected sprite");
+            if (g_doc->ilselected < 0) ImGui::EndDisabled();
+
+            if (!g_clipboard.valid) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Paste+##img")) PasteClipboardAsNewImage();
+            if (g_clipboard.valid && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Paste clipboard as a new sprite (Ctrl+Shift+V)");
+            if (!g_clipboard.valid) ImGui::EndDisabled();
         }
 
         /* --- Palette List --- */

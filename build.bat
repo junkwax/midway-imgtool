@@ -112,7 +112,8 @@ copy /Y "%SDL2DIR%\lib\%SDL2_ARCH%\SDL2.dll" "%BUILDDIR%\Release\"
 echo.
 echo *** Build succeeded! ***
 echo EXE : %BUILDDIR%\Release\imgtool.exe
-echo Copy that folder somewhere and run imgtool.exe
+echo CLI : %BUILDDIR%\Release\imgtool-cli.exe
+echo Copy that folder somewhere and run imgtool.exe or imgtool-cli.exe
 goto :eof
 
 :fail

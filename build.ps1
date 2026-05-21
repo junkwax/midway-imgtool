@@ -125,9 +125,13 @@ $exitCode = $LASTEXITCODE
 
 if ($exitCode -eq 0) {
     $exe = "$buildDir\Release\imgtool.exe"
+    $cli = "$buildDir\Release\imgtool-cli.exe"
     Write-Host ""
     Write-Host "*** Build succeeded ***" -ForegroundColor Green
     Write-Host "EXE: $exe" -ForegroundColor Green
+    if (Test-Path $cli) {
+        Write-Host "CLI: $cli" -ForegroundColor Green
+    }
     # SDL2.dll must be next to the exe
     $sdl2Dll = "$sdl2Root\lib\$sdl2Lib\SDL2.dll"
     if (Test-Path $sdl2Dll) {

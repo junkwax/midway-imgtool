@@ -48,6 +48,27 @@ Imgtool is a sprite-sheet editor for Midway's IMG format. Open a file, browse hu
 - **IRW export** — raw binary ROM layouts with dynamic BPP (`/B`)
 - **LOD parser** — read `.lod` manifests, resolve via `IMGDIR` or override (`/O`)
 
+### Command line
+
+Builds include the normal GUI executable plus `imgtool-cli`, a console-friendly
+headless entry point for scripts and CI. The GUI executable also accepts the
+same headless commands, but `imgtool-cli` gives normal stdout/stderr behavior
+on Windows.
+
+```bash
+imgtool-cli --help
+imgtool-cli --verify-load2 MK2MIL.IMG --ppp=6
+imgtool-cli --export-tbl MK2MIL.IMG mk2mil.tbl --mk3 --include-pal --base=02000000
+imgtool-cli --export-irw MK2MIL.IMG mk2mil.irw --bpp=auto --base=02000000
+imgtool-cli --export-anilst MK2MIL.IMG anilst.asm
+imgtool-cli --export-png MK2MIL.IMG png-out
+imgtool-cli --build-tga MK2MIL.IMG marked.tga
+imgtool-cli --build-lod MK2MIL.LOD rebuilt.img --override-dir=./img
+```
+
+Headless commands fail with a non-zero exit status on invalid arguments,
+missing inputs, failed IMG loads, and LOAD2 breaking issues.
+
 ### File dialog
 - **Drag and drop** `.img` / `.png` / `.gif` / `.tga` / `.lbm` files onto the window to open or import
 - **Per-category last-dir** memory (IMG / PNG / GIF / palette / TGA / LBM each remember their own folder)
@@ -79,7 +100,8 @@ build.bat x86          :: 32-bit
 .\build.ps1 -Arch x86    # 32-bit
 ```
 
-Both scripts auto-download SDL2 2.30.2 and CMake to `%LOCALAPPDATA%\imgtool-build\`. Output: `build\Release\imgtool.exe`.
+Both scripts auto-download SDL2 and CMake to `%LOCALAPPDATA%\imgtool-build\`.
+Output includes `imgtool.exe` and `imgtool-cli.exe`.
 
 ### Manual CMake build
 
@@ -114,6 +136,7 @@ The build copies `SDL2.dll` (Windows) and the Material Symbols icon font next to
 | `Alt+L` / `Alt+S` / `Ctrl+L` / `Ctrl+B` | Load LBM / Save LBM / Load TGA / Build TGA from marked |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo (paint, anipoint, hitbox, palette) |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste |
+| `Ctrl+Shift+X` / `Ctrl+Shift+V` | Cut selection to new sprite / Paste as new sprite |
 | `Ctrl+A` / `Ctrl+D` / `Ctrl+Shift+I` | Select All / Deselect / Invert |
 | `Ctrl+J` / `Ctrl+E` / `Ctrl+T` | Duplicate / Merge Down / Free Transform |
 | `P` / `R` / `W` / `L` / `I` | Pencil / Marquee / Magic Wand / Lasso / Eyedropper |
