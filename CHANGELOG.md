@@ -18,6 +18,9 @@ animation alignment across tabs.
   scaling controls, optional aspect-ratio locking, nearest-neighbor palette-ID
   preservation, quality remap mode, and a quality-plus-smallest-bytes mode that
   trims transparent bounds.
+- **Anim-point batch push** — selected Anim Point sliders now nudge by one with
+  Left/Right, and a new push button copies the selected sprite's anim points to
+  regex-matched same-name sprites across open tabs, e.g. `^..HEADHOLE1$`.
 - **Geometry-safe undo** — sprite-resize operations now capture full image
   state, including dimensions, anipoints, palette metadata, and pixel data, so
   geometry edits undo cleanly without disturbing normal paint undo.

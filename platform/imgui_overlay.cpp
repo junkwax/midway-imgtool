@@ -347,6 +347,32 @@ static void LabeledValue(const char *label, const char *fmt, ...)
     va_end(args);
 }
 
+static bool AnimPointSliderInt(const char *label, int *value, int min_value, int max_value)
+{
+    ImGui::SetNextItemWidth(-1);
+    bool changed = ImGui::SliderInt(label, value, min_value, max_value);
+    bool selected = ImGui::IsItemActive() || ImGui::IsItemFocused();
+    ImGui::SetItemKeyOwner(ImGuiKey_LeftArrow);
+    ImGui::SetItemKeyOwner(ImGuiKey_RightArrow);
+
+    ImGuiIO &io = ImGui::GetIO();
+    if (selected && !changed && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift) {
+        int delta = 0;
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  delta--;
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) delta++;
+        if (delta != 0) {
+            int next = *value + delta;
+            if (next < min_value) next = min_value;
+            if (next > max_value) next = max_value;
+            if (next != *value) {
+                *value = next;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
 /* New IMG / Add Palette confirmations */
 static bool g_show_new_img_confirm = false;
 /* New-image dialog state. Width/height persist between opens so the user
@@ -777,6 +803,99 @@ static IMG *doc_get_img(Document *doc, int idx)
     IMG *img = (IMG *)doc->img_p;
     for (int i = 0; i < idx && img; i++) img = (IMG *)img->nxt_p;
     return img;
+}
+
+static std::string img_name_string(const IMG *img)
+{
+    if (!img) return std::string();
+    size_t n = 0;
+    while (n < sizeof(img->n_s) && img->n_s[n] != '\0') n++;
+    return std::string(img->n_s, img->n_s + n);
+}
+
+static std::string regex_escape(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (char ch : s) {
+        switch (ch) {
+            case '\\': case '.': case '^': case '$': case '|':
+            case '(': case ')': case '[': case ']': case '{':
+            case '}': case '*': case '+': case '?':
+                out.push_back('\\');
+                break;
+            default:
+                break;
+        }
+        out.push_back(ch);
+    }
+    return out;
+}
+
+static std::string sprite_family_key(const std::string &name)
+{
+    return (name.size() > 2) ? name.substr(2) : name;
+}
+
+static std::string sprite_family_regex_pattern(const std::string &name)
+{
+    if (name.size() > 2)
+        return std::string("^..") + regex_escape(name.substr(2)) + "$";
+    return std::string("^") + regex_escape(name) + "$";
+}
+
+static int PushAnipointsToMatchingOpenTabs(const IMG *src, int *matched_count, int *doc_count, std::string *pattern_out)
+{
+    if (matched_count) *matched_count = 0;
+    if (doc_count) *doc_count = 0;
+    if (pattern_out) pattern_out->clear();
+    if (!src) return 0;
+
+    std::string src_name = img_name_string(src);
+    if (src_name.empty()) return 0;
+
+    std::string pattern = sprite_family_regex_pattern(src_name);
+    if (pattern_out) *pattern_out = pattern;
+
+    std::regex name_re(pattern, std::regex_constants::ECMAScript | std::regex_constants::icase);
+    int changed = 0;
+    int matched = 0;
+    int docs_changed = 0;
+
+    for (int tab = 0; tab < document_tab_count(); tab++) {
+        Document *doc = document_get(tab);
+        if (!doc) continue;
+
+        bool doc_touched = false;
+        for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p) {
+            std::string name = img_name_string(img);
+            if (name.empty() || !std::regex_match(name, name_re)) continue;
+
+            matched++;
+            if (img == src) continue;
+            if (img->anix  == src->anix  && img->aniy  == src->aniy &&
+                img->anix2 == src->anix2 && img->aniy2 == src->aniy2 &&
+                img->aniz2 == src->aniz2)
+                continue;
+
+            img->anix  = src->anix;
+            img->aniy  = src->aniy;
+            img->anix2 = src->anix2;
+            img->aniy2 = src->aniy2;
+            img->aniz2 = src->aniz2;
+            changed++;
+            doc_touched = true;
+        }
+
+        if (doc_touched) {
+            doc->dirty = true;
+            docs_changed++;
+        }
+    }
+
+    if (matched_count) *matched_count = matched;
+    if (doc_count) *doc_count = docs_changed;
+    return changed;
 }
 
 static PAL *doc_get_pal(Document *doc, int idx)
@@ -8143,14 +8262,40 @@ void imgui_overlay_render(void)
             if (img) {
                 int ax = (short)img->anix, ay = (short)img->aniy;
                 int ax2 = (short)img->anix2, ay2 = (short)img->aniy2;
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("X1##ptx",  &ax,  -1024, 1024)) { undo_push(); img->anix  = (unsigned short)(short)ax;  }
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Y1##pty",  &ay,  -1024, 1024)) { undo_push(); img->aniy  = (unsigned short)(short)ay;  }
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("X2##ptx2", &ax2, -1024, 1024)) { undo_push(); img->anix2 = (unsigned short)(short)ax2; }
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderInt("Y2##pty2", &ay2, -1024, 1024)) { undo_push(); img->aniy2 = (unsigned short)(short)ay2; }
+                if (AnimPointSliderInt("X1##ptx",  &ax,  -1024, 1024)) { undo_push(); img->anix  = (unsigned short)(short)ax;  }
+                if (AnimPointSliderInt("Y1##pty",  &ay,  -1024, 1024)) { undo_push(); img->aniy  = (unsigned short)(short)ay;  }
+                if (AnimPointSliderInt("X2##ptx2", &ax2, -1024, 1024)) { undo_push(); img->anix2 = (unsigned short)(short)ax2; }
+                if (AnimPointSliderInt("Y2##pty2", &ay2, -1024, 1024)) { undo_push(); img->aniy2 = (unsigned short)(short)ay2; }
+
+                ImGui::Spacing();
+                if (ImGui::Button("Push to Open Tabs", ImVec2(-1, 0))) {
+                    int matched = 0;
+                    int docs_changed = 0;
+                    std::string pattern;
+                    int changed = PushAnipointsToMatchingOpenTabs(img, &matched, &docs_changed, &pattern);
+                    if (changed > 0) {
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 "Pushed anim points to %d sprite%s in %d tab%s.",
+                                 changed, changed == 1 ? "" : "s",
+                                 docs_changed, docs_changed == 1 ? "" : "s");
+                    } else if (matched > 1) {
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 "Anim points already match across %d regex hit%s.",
+                                 matched, matched == 1 ? "" : "s");
+                    } else {
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 "No other open-tab sprites match %s.",
+                                 pattern.empty() ? "that name" : pattern.c_str());
+                    }
+                    g_restore_msg_timer = 4.0f;
+                }
+                if (ImGui::IsItemHovered()) {
+                    std::string name = img_name_string(img);
+                    std::string key = sprite_family_key(name);
+                    std::string pattern = sprite_family_regex_pattern(name);
+                    ImGui::SetTooltip("Copies these anim points to open-tab sprites matching %s (%s).",
+                                      pattern.c_str(), key.c_str());
+                }
             } else {
                 ImGui::TextDisabled("No image selected");
             }
