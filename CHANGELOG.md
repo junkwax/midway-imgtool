@@ -8,6 +8,16 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.2.0] — Timeline composite preview
+
+Focused animation-alignment workflow release.
+
+### Animation Timeline
+- **Anipoint composite preview** — Ctrl-click two frames in the animation
+  timeline to show a read-only canvas preview of both sprites combined by their
+  primary animation points, with secondary animation points and per-frame
+  outlines drawn for registration checks.
+
 ## [v3.1.0] — Sprite resize, IMG tabs, and World View pairing
 
 Workflow release for editing multiple IMG libraries side by side and comparing

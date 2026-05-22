@@ -528,12 +528,74 @@ static unsigned int     g_timeline_built_for_imgcnt = 0;
 static bool             g_timeline_onion = false;  /* prev/next frame ghosting */
 static bool             g_timeline_pingpong = false; /* play forward then reverse, looping */
 static int              g_timeline_play_dir = 1;     /* +1 forward, -1 reverse (used when pingpong) */
+static int              g_timeline_composite[2] = {-1, -1}; /* Ctrl-click pair for anipoint-aligned preview */
+
+static void ClearTimelineCompositeSelection(void)
+{
+    g_timeline_composite[0] = -1;
+    g_timeline_composite[1] = -1;
+}
+
+static void CompactTimelineCompositeSelection(void)
+{
+    if (g_timeline_composite[0] < 0 && g_timeline_composite[1] >= 0) {
+        g_timeline_composite[0] = g_timeline_composite[1];
+        g_timeline_composite[1] = -1;
+    }
+    if (g_timeline_composite[0] == g_timeline_composite[1])
+        g_timeline_composite[1] = -1;
+}
+
+static void PruneTimelineCompositeSelection(void)
+{
+    for (int i = 0; i < 2; i++) {
+        int idx = g_timeline_composite[i];
+        if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt)
+            g_timeline_composite[i] = -1;
+    }
+    CompactTimelineCompositeSelection();
+}
+
+static int TimelineCompositeSlot(int img_idx)
+{
+    if (g_timeline_composite[0] == img_idx) return 0;
+    if (g_timeline_composite[1] == img_idx) return 1;
+    return -1;
+}
+
+static bool TimelineCompositeReady(void)
+{
+    return g_timeline_composite[0] >= 0 && g_timeline_composite[1] >= 0 &&
+           g_timeline_composite[0] != g_timeline_composite[1];
+}
+
+static void ToggleTimelineCompositeFrame(int img_idx)
+{
+    if (img_idx < 0 || (unsigned int)img_idx >= g_doc->imgcnt) return;
+
+    int slot = TimelineCompositeSlot(img_idx);
+    if (slot >= 0) {
+        g_timeline_composite[slot] = -1;
+        CompactTimelineCompositeSelection();
+        return;
+    }
+
+    if (g_timeline_composite[0] < 0) {
+        g_timeline_composite[0] = img_idx;
+    } else if (g_timeline_composite[1] < 0) {
+        g_timeline_composite[1] = img_idx;
+    } else {
+        g_timeline_composite[0] = g_timeline_composite[1];
+        g_timeline_composite[1] = img_idx;
+    }
+}
 
 void imgtool_toggle_timeline_play(void)
 {
     if (g_timeline_frames.empty()) return;
     g_is_playing = !g_is_playing;
     if (g_is_playing) {
+        ClearTimelineCompositeSelection();
         g_play_timer = 0.0f;
         g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
         g_img_tex_idx = -2;
@@ -644,6 +706,7 @@ static void ResetPerDocumentUiState(bool clear_pixel_clipboard = false)
     g_is_playing = false;
     g_play_timer = 0.0f;
     g_timeline_play_dir = 1;
+    ClearTimelineCompositeSelection();
 
     if (clear_pixel_clipboard) ClearPixelClipboard();
     g_grid_sel.active = false;
@@ -961,6 +1024,137 @@ static SDL_Texture *BuildWorldSpriteTexture(Document *doc, IMG *img, unsigned ch
     SDL_UnlockTexture(tex);
     g_world_temp_textures.push_back(tex);
     return tex;
+}
+
+static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
+{
+    PruneTimelineCompositeSelection();
+    if (!TimelineCompositeReady()) return false;
+
+    int back_idx = g_timeline_composite[0];
+    int front_idx = g_timeline_composite[1];
+    IMG *back = get_img(back_idx);
+    IMG *front = get_img(front_idx);
+    if (!back || !front || !back->data_p || !front->data_p ||
+        back->w == 0 || back->h == 0 || front->w == 0 || front->h == 0)
+        return false;
+
+    struct Placement {
+        IMG *img;
+        int left, top, right, bottom;
+        ImU32 outline;
+        unsigned char alpha;
+    };
+
+    Placement p[2] = {
+        { back,
+          -(int)(short)back->anix,  -(int)(short)back->aniy,
+          -(int)(short)back->anix + (int)back->w,
+          -(int)(short)back->aniy + (int)back->h,
+          IM_COL32(120, 190, 255, 220), 185 },
+        { front,
+          -(int)(short)front->anix, -(int)(short)front->aniy,
+          -(int)(short)front->anix + (int)front->w,
+          -(int)(short)front->aniy + (int)front->h,
+          IM_COL32(255, 190, 90, 230), 255 }
+    };
+
+    int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+    for (int i = 0; i < 2; i++) {
+        if (p[i].left   < min_x) min_x = p[i].left;
+        if (p[i].top    < min_y) min_y = p[i].top;
+        if (p[i].right  > max_x) max_x = p[i].right;
+        if (p[i].bottom > max_y) max_y = p[i].bottom;
+        if ((short)p[i].img->anix2 >= 0 && (short)p[i].img->aniy2 >= 0) {
+            int sx2 = p[i].left + (int)(short)p[i].img->anix2;
+            int sy2 = p[i].top  + (int)(short)p[i].img->aniy2;
+            if (sx2 < min_x) min_x = sx2;
+            if (sy2 < min_y) min_y = sy2;
+            if (sx2 > max_x) max_x = sx2;
+            if (sy2 > max_y) max_y = sy2;
+        }
+    }
+
+    int union_w = max_x - min_x;
+    int union_h = max_y - min_y;
+    if (union_w <= 0 || union_h <= 0) return false;
+
+    const float margin = 24.0f;
+    float fit_x = (avail.x - margin * 2.0f) / (float)union_w;
+    float fit_y = (avail.y - margin * 2.0f) / (float)union_h;
+    float scale = fit_x < fit_y ? fit_x : fit_y;
+    if (scale > 1.0f) scale = floorf(scale);
+    if (scale < 0.25f) scale = 0.25f;
+    if (scale > 32.0f) scale = 32.0f;
+
+    float cw = union_w * scale;
+    float ch = union_h * scale;
+    ImVec2 cpos(img_pos.x + (avail.x - cw) * 0.5f,
+                img_pos.y + (avail.y - ch) * 0.5f);
+    ImVec2 cend(cpos.x + cw, cpos.y + ch);
+    ImVec2 anchor(cpos.x + (0 - min_x) * scale,
+                  cpos.y + (0 - min_y) * scale);
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    float cs = 8.0f * scale;
+    if (cs < 6.0f) cs = 6.0f;
+    for (float y = cpos.y; y < cend.y; y += cs) {
+        for (float x = cpos.x; x < cend.x; x += cs) {
+            int row = (int)((y - cpos.y) / cs);
+            int col = (int)((x - cpos.x) / cs);
+            ImU32 col32 = ((row + col) & 1) ? IM_COL32(70, 70, 70, 255) : IM_COL32(40, 40, 40, 255);
+            float x2 = x + cs; if (x2 > cend.x) x2 = cend.x;
+            float y2 = y + cs; if (y2 > cend.y) y2 = cend.y;
+            dl->AddRectFilled(ImVec2(x, y), ImVec2(x2, y2), col32);
+        }
+    }
+
+    auto draw_crosshair = [&](ImVec2 pt, ImU32 col, float len, float thick) {
+        dl->AddLine(ImVec2(pt.x - len, pt.y), ImVec2(pt.x + len, pt.y), col, thick);
+        dl->AddLine(ImVec2(pt.x, pt.y - len), ImVec2(pt.x, pt.y + len), col, thick);
+        dl->AddCircleFilled(pt, 1.5f, col);
+    };
+
+    SDL_Texture *tex[2] = {
+        BuildWorldSpriteTexture(g_doc, p[0].img, p[0].alpha),
+        BuildWorldSpriteTexture(g_doc, p[1].img, p[1].alpha)
+    };
+
+    for (int i = 0; i < 2; i++) {
+        if (!tex[i]) continue;
+        ImVec2 sp(cpos.x + (p[i].left - min_x) * scale,
+                  cpos.y + (p[i].top - min_y) * scale);
+        ImVec2 se(sp.x + p[i].img->w * scale,
+                  sp.y + p[i].img->h * scale);
+        dl->AddImage((ImTextureID)(intptr_t)tex[i], sp, se);
+        dl->AddRect(sp, se, p[i].outline, 0.0f, 0, 1.0f);
+
+        if ((short)p[i].img->anix2 >= 0 && (short)p[i].img->aniy2 >= 0) {
+            ImVec2 s2(sp.x + (short)p[i].img->anix2 * scale,
+                      sp.y + (short)p[i].img->aniy2 * scale);
+            draw_crosshair(s2, p[i].outline, 9.0f, 1.2f);
+            dl->AddLine(anchor, s2, p[i].outline, 1.0f);
+        }
+    }
+
+    draw_crosshair(anchor, IM_COL32(255, 230, 80, 255), 15.0f, 1.6f);
+    dl->AddRect(cpos, cend, IM_COL32(210, 210, 210, 160), 0.0f, 0, 1.0f);
+
+    std::string back_name = img_name_string(back);
+    std::string front_name = img_name_string(front);
+    char buf[224];
+    snprintf(buf, sizeof(buf), "Composite  [%d] %s  +  [%d] %s",
+             back_idx, back_name.c_str(), front_idx, front_name.c_str());
+    ImVec2 label_sz = ImGui::CalcTextSize(buf);
+    float label_w = label_sz.x + 10.0f;
+    if (label_w > cw) label_w = cw;
+    dl->AddRectFilled(cpos, ImVec2(cpos.x + label_w, cpos.y + 20.0f),
+                      IM_COL32(0, 0, 0, 180));
+    dl->AddText(ImVec2(cpos.x + 5.0f, cpos.y + 3.0f),
+                IM_COL32(235, 235, 235, 255), buf);
+
+    ImGui::Dummy(ImVec2(avail.x, avail.y));
+    return true;
 }
 
 static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
@@ -4153,6 +4347,7 @@ Palette (only fire when no paint tool is active):
 Timeline / Anim:
   K                    Toggle timeline play / stop
   Ctrl+Left / Right    Step prev / next animation frame
+  Ctrl-click frames     Preview two frames combined by animation points
 
 View / Help:
   H                    Show this help
@@ -7130,6 +7325,8 @@ void imgui_overlay_render(void)
            confusing. They can Ctrl/Shift-click to rebuild it. */
         commit_palette_adjustments();
         memset(g_palette_selection, 0, sizeof(g_palette_selection));
+        if (TimelineCompositeReady() && TimelineCompositeSlot(g_doc->ilselected) < 0)
+            ClearTimelineCompositeSelection();
         g_prev_ilselected = g_doc->ilselected;
     }
 
@@ -8447,6 +8644,7 @@ void imgui_overlay_render(void)
         ImVec2 img_pos = ImGui::GetCursorScreenPos();
         ImVec2 img_sz(0, 0);
         float sx = 1.0f, sy = 1.0f;
+        bool timeline_composite_preview_active = false;
 
         /* ---- World View mode (DOS-style anipoint alignment workspace) ----
          * Renders the sprite inside a fixed black canvas, sprite anchored at
@@ -8594,6 +8792,10 @@ void imgui_overlay_render(void)
                 ImGui::Dummy(ImVec2(avail.x, avail.y));
             }
             }
+        }
+        else if ((timeline_composite_preview_active = DrawTimelineCompositePreview(avail, img_pos))) {
+            /* Composite preview is read-only: the canvas is showing two
+               timeline frames in shared anipoint space, not one editable IMG. */
         }
         else if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
             /* ---- Zoom: mouse wheel ---- */
@@ -8819,7 +9021,7 @@ void imgui_overlay_render(void)
         bool widget_consumed_click = false;
 
         /* Pixel highlight at high zoom */
-        if (!canvas_input_blocked) {
+        if (!canvas_input_blocked && !timeline_composite_preview_active) {
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                         mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
             if (over && img_sz.x > 0 && g_zoom >= 4.0f) {
@@ -8833,7 +9035,7 @@ void imgui_overlay_render(void)
         }
 
         /* ---- Pencil + eyedropper + fill + pan tools ---- */
-        if (!canvas_input_blocked) {
+        if (!canvas_input_blocked && !timeline_composite_preview_active) {
             IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                         mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
@@ -9075,7 +9277,7 @@ void imgui_overlay_render(void)
            wrong spot, and the IMG hitbox box would visually float
            detached from the playfield rectangle. Both stay reachable
            via their normal modes when World View is off. */
-        if (g_show_points && !canvas_input_blocked && !g_world_view) {
+        if (g_show_points && !canvas_input_blocked && !g_world_view && !timeline_composite_preview_active) {
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img && img->w > 0) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -9152,7 +9354,7 @@ void imgui_overlay_render(void)
            Suppressed when the MK2 strike-table overlay is showing a move,
            so the two hitbox systems don't pile on top of each other. */
         bool mk2_overlay_active = g_show_mk2 && Mk2CurrentRecord() >= 0;
-        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active && !g_world_view) {
+        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active && !g_world_view && !timeline_composite_preview_active) {
             ImDrawList *dl = ImGui::GetWindowDrawList();
             ImVec2 tl(img_pos.x + g_hitbox_x * sx, img_pos.y + g_hitbox_y * sy);
             ImVec2 br(img_pos.x + (g_hitbox_x + g_hitbox_w) * sx,
@@ -9201,7 +9403,7 @@ void imgui_overlay_render(void)
            Drawing always runs whenever a move is selected — the editor
            panel can hold focus (which sets canvas_input_blocked) without
            hiding the box. Only the corner-drag interaction is gated. */
-        int mk2_rec = (g_show_mk2 && !g_world_view) ? Mk2CurrentRecord() : -1;
+        int mk2_rec = (g_show_mk2 && !g_world_view && !timeline_composite_preview_active) ? Mk2CurrentRecord() : -1;
         if (mk2_rec >= 0) {
             const mk2::StrikeRecord &rec = g_mk2_doc.records[mk2_rec];
             int hx = rec.fields[mk2::F_X_OFFSET].has_value ? (int)rec.fields[mk2::F_X_OFFSET].value : 0;
@@ -9269,7 +9471,7 @@ void imgui_overlay_render(void)
         }
 
         /* --- Grid selection tool (for copy/paste) --- */
-        if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+        if (!timeline_composite_preview_active && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
             ImDrawList *dl = ImGui::GetWindowDrawList();
 
             /* Mouse-over-sprite test — clicks outside this rect must NOT start a selection. */
@@ -10065,6 +10267,7 @@ void imgui_overlay_render(void)
         }
         if (g_thumb_cache.size() > g_doc->imgcnt) g_thumb_cache.resize(g_doc->imgcnt);
         g_timeline_built_for_imgcnt = g_doc->imgcnt;
+        PruneTimelineCompositeSelection();
     }
 
     /* Build default timeline if empty (fresh file, or after Reset Sequence) */
@@ -10142,6 +10345,7 @@ void imgui_overlay_render(void)
         } else {
             if (ImGui::Button("\xEE\x80\xB7 Play", ImVec2(80, 0))) { /* U+E037 play_arrow */
                 if (!g_is_playing && !g_timeline_frames.empty()) {
+                    ClearTimelineCompositeSelection();
                     g_play_timer = 0.0f;
                     g_is_playing = true;
                     g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
@@ -10157,6 +10361,7 @@ void imgui_overlay_render(void)
         ImGui::SameLine();
         if (ImGui::Button("Reset Sequence")) {
             g_timeline_frames.clear();
+            ClearTimelineCompositeSelection();
         }
         ImGui::SameLine();
         ImGui::Checkbox("Onion", &g_timeline_onion);
@@ -10189,12 +10394,14 @@ void imgui_overlay_render(void)
                 snprintf(label, sizeof(label), "%d", img_idx);
 
                 bool is_current = (int)i == g_timeline_play_idx;
+                int composite_slot = TimelineCompositeSlot(img_idx);
                 if (is_current) {
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.8f, 1.0f));
                 }
 
                 TimelineThumb *t = EnsureThumb(img_idx);
                 bool clicked = false;
+                ImVec2 item_min(0, 0), item_max(0, 0);
                 if (t && t->tex) {
                     /* Frame: thumb + index label below in same button. We use
                        an ImageButton with the rendered thumbnail and overlay
@@ -10207,13 +10414,32 @@ void imgui_overlay_render(void)
                                            is_current ? ImVec4(0.4f,0.7f,1.f,1.f) : ImVec4(1,1,1,1))) {
                         clicked = true;
                     }
+                    item_min = ImGui::GetItemRectMin();
+                    item_max = ImGui::GetItemRectMax();
                     ImDrawList *fdl = ImGui::GetWindowDrawList();
                     fdl->AddText(ImVec2(cursor.x + 4, cursor.y + 2),
                                  IM_COL32(255,255,255,200), label);
                 } else {
                     if (ImGui::Button(label, ImVec2(48, 48))) clicked = true;
+                    item_min = ImGui::GetItemRectMin();
+                    item_max = ImGui::GetItemRectMax();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Ctrl-click two frames to preview their anipoint-aligned composite");
+                }
+                if (composite_slot >= 0) {
+                    ImDrawList *fdl = ImGui::GetWindowDrawList();
+                    ImU32 col = (composite_slot == 0)
+                        ? IM_COL32(120, 190, 255, 255)
+                        : IM_COL32(255, 190, 90, 255);
+                    fdl->AddRect(item_min, item_max, col, 0.0f, 0, 3.0f);
                 }
                 if (clicked) {
+                    if (io.KeyCtrl) {
+                        ToggleTimelineCompositeFrame(img_idx);
+                    } else {
+                        ClearTimelineCompositeSelection();
+                    }
                     g_timeline_play_idx = (int)i;
                     g_doc->ilselected = img_idx;
                     g_zoom_reset = true;
