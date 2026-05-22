@@ -18,6 +18,16 @@ Focused animation-alignment workflow release.
   primary animation points, with secondary animation points and per-frame
   outlines drawn for registration checks.
 
+### Sprite Alignment
+- **Reverse-facing anipoint mirror** — marked sprites can mirror their primary
+  and active secondary X anipoints as `width - x`, matching World View's
+  view-only reverse-facing comparison.
+
+### Palette Editing
+- **Transparent color relocation** — palette index 0's RGB value can be copied
+  into a safe opaque slot, with optional remap tools for the current selection
+  or sprite so formerly transparent pixels can be painted visibly.
+
 ## [v3.1.0] — Sprite resize, IMG tabs, and World View pairing
 
 Workflow release for editing multiple IMG libraries side by side and comparing

@@ -108,4 +108,9 @@ int  CropSelectedImageToContent(void);
  * Returns count of edited images. */
 int  AlignAnipointsToMarked(int reference_idx);
 
+/* Mirror marked images' anipoint X coordinates for reverse-facing sprites.
+ * Uses the same horizontal anchor convention as World View mirroring:
+ * mirrored_x = image_width - x. Y/Z values are left unchanged. */
+int  MirrorMarkedAnipointsToReverse(void);
+
 #endif /* IMG_IO_H */

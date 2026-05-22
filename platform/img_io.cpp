@@ -1232,6 +1232,52 @@ int AlignAnipointsToMarked(int reference_idx)
     return count;
 }
 
+static unsigned short mirror_anipoint_x(unsigned short x, unsigned short w)
+{
+    return (unsigned short)(short)((int)w - (int)(short)x);
+}
+
+/* ---- Mirror marked anipoints for reverse-facing sprites ----
+ * This commits the same X-anchor transform used by World View's view-only
+ * mirror: if a normal sprite anchors at X, the reverse-facing/mirrored
+ * version anchors at width - X. Secondary X is mirrored only when the
+ * secondary point appears to be in use, matching the local extra-data
+ * convention used by crop/paste. */
+int MirrorMarkedAnipointsToReverse(void)
+{
+    if (!g_doc || !g_doc->img_p) return 0;
+
+    bool any_change = false;
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
+        if (!(p->flags & 1)) continue;
+
+        unsigned short mx1 = mirror_anipoint_x(p->anix, p->w);
+        bool has_second = (p->anix2 != 0 || p->aniy2 != 0 || p->aniz2 != 0);
+        unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w) : p->anix2;
+        if (p->anix != mx1 || p->anix2 != mx2) {
+            any_change = true;
+            break;
+        }
+    }
+    if (!any_change) return 0;
+
+    undo_push();
+    int count = 0;
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
+        if (!(p->flags & 1)) continue;
+
+        unsigned short mx1 = mirror_anipoint_x(p->anix, p->w);
+        bool has_second = (p->anix2 != 0 || p->aniy2 != 0 || p->aniz2 != 0);
+        unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w) : p->anix2;
+        if (p->anix == mx1 && p->anix2 == mx2) continue;
+
+        p->anix = mx1;
+        p->anix2 = mx2;
+        count++;
+    }
+    return count;
+}
+
 /* ---- Write ANILST (Export Marked Images to Assembly) ---- */
 void WriteAnilstFromMarked(const char* filepath)
 {

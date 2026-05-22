@@ -961,6 +961,32 @@ static int PushAnipointsToMatchingOpenTabs(const IMG *src, int *matched_count, i
     return changed;
 }
 
+static int CountMarkedImages(void)
+{
+    int count = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p)
+        if (img->flags & 1) count++;
+    return count;
+}
+
+static void MirrorMarkedAnipointsToReverseWithToast(void)
+{
+    int marked = CountMarkedImages();
+    int changed = MirrorMarkedAnipointsToReverse();
+    if (changed > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mirrored anipoints on %d marked sprite%s.",
+                 changed, changed == 1 ? "" : "s");
+    } else if (marked > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No marked anipoints moved; X values are centered.");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark sprites first, then mirror anipoints.");
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
 static PAL *doc_get_pal(Document *doc, int idx)
 {
     if (!doc || idx < 0) return NULL;
@@ -2749,6 +2775,168 @@ static bool selection_contains_pixel(IMG *img, int x, int y)
     if (!g_grid_sel.is_mask) return true;
     if (x < 0 || y < 0 || x >= g_grid_sel.mask_w || y >= g_grid_sel.mask_h) return false;
     return g_grid_sel.pixel_mask[(size_t)y * g_grid_sel.mask_w + x];
+}
+
+enum class PaletteZeroRemapMode { None, Selection, CurrentImage };
+
+static int find_free_palette_slot_for_zero(PAL *pal, int pal_idx)
+{
+    if (!pal) return -1;
+
+    int n = pal->numc;
+    if (n < 0) n = 0;
+    if (n < 256) return n <= 0 ? 1 : n;
+
+    bool used[256] = {false};
+    used[0] = true;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if ((int)img->palnum != pal_idx || !img->data_p || img->w == 0 || img->h == 0) continue;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *pix = (const unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++)
+            for (int x = 0; x < img->w; x++)
+                used[pix[y * stride + x]] = true;
+    }
+
+    for (int i = 1; i < 256; i++)
+        if (!used[i]) return i;
+
+    unsigned short zero_word = pal_word_or_black(pal, 0);
+    for (int i = 1; i < 256; i++)
+        if (pal_word_or_black(pal, i) == zero_word) return i;
+
+    return -1;
+}
+
+static int copy_palette_zero_color_to_slot(int requested_slot)
+{
+    int pal_idx = g_doc->plselected;
+    PAL *pal = (pal_idx >= 0) ? get_pal(pal_idx) : NULL;
+    if (!pal) return -1;
+
+    int slot = requested_slot;
+    if (slot < 0) slot = find_free_palette_slot_for_zero(pal, pal_idx);
+    if (slot <= 0 || slot >= 256) return -1;
+
+    commit_palette_adjustments();
+
+    unsigned short zero_word = pal_word_or_black(pal, 0);
+    int old_numc = (int)pal->numc;
+    if (!ensure_palette_numc(pal, slot + 1)) return -1;
+    if ((int)pal->numc != old_numc) mark_dirty();
+
+    unsigned char *pd = (unsigned char *)pal->data_p;
+    unsigned short old_word = (unsigned short)(pd[slot * 2] | (pd[slot * 2 + 1] << 8));
+    if (old_word != zero_word) {
+        pd[slot * 2 + 0] = (unsigned char)(zero_word & 0xFF);
+        pd[slot * 2 + 1] = (unsigned char)(zero_word >> 8);
+        mark_dirty();
+    }
+
+    g_sel_color = slot;
+    memset(g_palette_selection, 0, sizeof(g_palette_selection));
+    ApplyPalette(pal_idx);
+    save_palette_baseline();
+    g_img_tex_idx = -2;
+    return slot;
+}
+
+static int count_zero_pixels_for_remap(IMG *img, bool selection_only)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return 0;
+    if (selection_only && !g_grid_sel.active) return 0;
+
+    int count = 0;
+    int stride = (img->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            if (pix[y * stride + x] == 0 &&
+                (!selection_only || selection_contains_pixel(img, x, y)))
+                count++;
+        }
+    }
+    return count;
+}
+
+static int remap_zero_pixels_to_slot(IMG *img, int slot, bool selection_only)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return 0;
+    if (slot <= 0 || slot >= 256) return 0;
+    if (selection_only && !g_grid_sel.active) return 0;
+
+    int changed = 0;
+    int stride = (img->w + 3) & ~3;
+    unsigned char *pix = (unsigned char *)img->data_p;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            unsigned char *p = pix + y * stride + x;
+            if (*p == 0 && (!selection_only || selection_contains_pixel(img, x, y))) {
+                *p = (unsigned char)slot;
+                changed++;
+            }
+        }
+    }
+    return changed;
+}
+
+static void CopyPaletteZeroToOpaqueSlot(int requested_slot = -1)
+{
+    int slot = copy_palette_zero_color_to_slot(requested_slot);
+    if (slot < 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No opaque palette slot is available for color #0.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Copied transparent color #0 to opaque palette index %d.", slot);
+    g_restore_msg_timer = 4.0f;
+}
+
+static void CopyPaletteZeroAndRemap(PaletteZeroRemapMode mode, int requested_slot = -1)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    bool selection_only = (mode == PaletteZeroRemapMode::Selection);
+    int pending = (mode == PaletteZeroRemapMode::None) ? 0
+                : count_zero_pixels_for_remap(img, selection_only);
+
+    int slot = copy_palette_zero_color_to_slot(requested_slot);
+    if (slot < 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No opaque palette slot is available for color #0.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int changed = 0;
+    if (mode != PaletteZeroRemapMode::None && pending > 0) {
+        pixel_hist_push_stroke();
+        changed = remap_zero_pixels_to_slot(img, slot, selection_only);
+        if (changed > 0) {
+            mark_dirty();
+            g_img_tex_idx = -2;
+        }
+    }
+
+    if (mode == PaletteZeroRemapMode::Selection) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 changed > 0
+                     ? "Copied #0 to index %d and remapped %d selected transparent pixel%s."
+                     : "Copied #0 to index %d; no selected #0 pixels to remap.",
+                 slot, changed, changed == 1 ? "" : "s");
+    } else if (mode == PaletteZeroRemapMode::CurrentImage) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 changed > 0
+                     ? "Copied #0 to index %d and remapped %d transparent pixel%s."
+                     : "Copied #0 to index %d; current sprite has no #0 pixels to remap.",
+                 slot, changed, changed == 1 ? "" : "s");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Copied transparent color #0 to opaque palette index %d.", slot);
+    }
+    g_restore_msg_timer = 5.0f;
 }
 
 static VariantPaintResult ApplyVariantPaintToPixels(IMG *img, const std::vector<std::pair<int,int>>& pixels)
@@ -7712,6 +7900,12 @@ void imgui_overlay_render(void)
                 "Sets the anipoint of every marked image to match the\n"
                 "currently-selected image's anipoint. Useful when several\n"
                 "frames should share one anchor (head, hand, hilt).");
+            if (ImGui::MenuItem("Mirror Marked Anipoints to Reverse")) {
+                MirrorMarkedAnipointsToReverseWithToast();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Mirrors X anipoints on marked sprites as width - X.\n"
+                "Y/Z values stay unchanged.");
             ImGui::Separator();
             if (ImGui::MenuItem("Least-Squares Reduce", ";"))               LeastSquaresReduceMarked();
             ImGui::Separator();
@@ -7775,6 +7969,10 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Show Histogram"))               { CalculatePaletteHistogram(); g_show_histogram = true; }
             if (ImGui::MenuItem("Clean Up Palette"))             CleanupSelectedPalette();
             if (ImGui::MenuItem("Clean Copy Palette"))           CreateCleanedPaletteCopy();
+            if (ImGui::MenuItem("Copy #0 to Opaque Slot"))       CopyPaletteZeroToOpaqueSlot();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Index 0 remains transparent; this copies its RGB into\n"
+                "a nonzero palette slot so it can be painted visibly.");
             if (ImGui::MenuItem("Import Palette..."))            OpenFileDialog(FileDialogMode::ImportPalette);
             if (ImGui::MenuItem("Export Palette..."))            OpenFileDialog(FileDialogMode::ExportPalette);
             ImGui::Separator();
@@ -8352,6 +8550,10 @@ void imgui_overlay_render(void)
                         ImGui::Separator();
                         if (ImGui::MenuItem("Clean Up Palette")) CleanupSelectedPalette();
                         if (ImGui::MenuItem("Clean Copy Palette")) CreateCleanedPaletteCopy();
+                        if (ImGui::MenuItem("Copy #0 to Opaque Slot")) CopyPaletteZeroToOpaqueSlot();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                            "Copies palette index 0's RGB into a nonzero slot.\n"
+                            "Pixels with index 0 still remain transparent.");
                         if (ImGui::MenuItem("Import Palette...")) OpenFileDialog(FileDialogMode::ImportPalette);
                         if (ImGui::MenuItem("Export Palette...")) OpenFileDialog(FileDialogMode::ExportPalette);
                         if (ImGui::MenuItem("Show Histogram")) { CalculatePaletteHistogram(); g_show_histogram = true; }
@@ -8395,6 +8597,9 @@ void imgui_overlay_render(void)
             ImGui::SameLine();
             if (ImGui::SmallButton("Clean+")) CreateCleanedPaletteCopy();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new cleaned palette copy without remapping sprites");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("#0>")) CopyPaletteZeroToOpaqueSlot();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy transparent color #0 to the first safe opaque slot");
             ImGui::SameLine();
             if (ImGui::SmallButton("Export")) OpenFileDialog(FileDialogMode::ExportPalette);
             ImGui::PopID();
@@ -8493,6 +8698,13 @@ void imgui_overlay_render(void)
                     ImGui::SetTooltip("Copies these anim points to open-tab sprites matching %s (%s).",
                                       pattern.c_str(), key.c_str());
                 }
+
+                if (ImGui::Button("Mirror Marked to Reverse", ImVec2(-1, 0))) {
+                    MirrorMarkedAnipointsToReverseWithToast();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("For every marked sprite, mirrors X1 and active X2 as width - X. Y/Z stay unchanged.");
+                }
             } else {
                 ImGui::TextDisabled("No image selected");
             }
@@ -8539,6 +8751,45 @@ void imgui_overlay_render(void)
                 palette_writeback(g_sel_color);
                 commit_palette_adjustments();
             }
+
+            PAL *active_pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+            bool can_copy_zero = active_pal && active_pal->data_p;
+            if (!can_copy_zero) ImGui::BeginDisabled();
+            if (g_sel_color == 0) {
+                if (ImGui::SmallButton("Copy #0 to Free Slot")) {
+                    CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None);
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Copies the RGB stored at transparent index 0 into\n"
+                    "the first safe nonzero palette slot and selects it.");
+            } else {
+                if (ImGui::SmallButton("Copy #0 Here")) {
+                    CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None, g_sel_color);
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Copies transparent index 0's RGB into the selected\n"
+                    "nonzero swatch. Existing pixels using this swatch change color.");
+            }
+            bool has_selection = g_grid_sel.active;
+            if (!has_selection) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Remap Selection")) {
+                CopyPaletteZeroAndRemap(PaletteZeroRemapMode::Selection,
+                                        g_sel_color > 0 ? g_sel_color : -1);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Copies #0 to an opaque slot, then changes selected\n"
+                "pixels with index 0 to that slot.");
+            if (!has_selection) ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remap Sprite")) {
+                CopyPaletteZeroAndRemap(PaletteZeroRemapMode::CurrentImage,
+                                        g_sel_color > 0 ? g_sel_color : -1);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Copies #0 to an opaque slot, then changes every index-0\n"
+                "pixel in the current sprite to that slot. Transparent padding\n"
+                "will become opaque too.");
+            if (!can_copy_zero) ImGui::EndDisabled();
             ImGui::Separator();
             bool any_sel = false;
             for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) { any_sel = true; break; }
@@ -10548,9 +10799,35 @@ void imgui_overlay_render(void)
                     g_sel_color = i;
                 }
             }
+            if (ImGui::BeginPopupContextItem(("##swctx" + std::to_string(i)).c_str())) {
+                if (i == 0) {
+                    if (ImGui::MenuItem("Copy #0 to Free Opaque Slot")) {
+                        CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None);
+                    }
+                } else {
+                    if (ImGui::MenuItem("Copy #0 Color Here")) {
+                        CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None, i);
+                    }
+                }
+                ImGui::Separator();
+                if (!g_grid_sel.active) ImGui::BeginDisabled();
+                if (ImGui::MenuItem(i == 0 ? "Copy #0 + Remap Selection"
+                                           : "Copy #0 Here + Remap Selection")) {
+                    CopyPaletteZeroAndRemap(PaletteZeroRemapMode::Selection, i == 0 ? -1 : i);
+                }
+                if (!g_grid_sel.active) ImGui::EndDisabled();
+                if (ImGui::MenuItem(i == 0 ? "Copy #0 + Remap Current Sprite"
+                                           : "Copy #0 Here + Remap Current Sprite")) {
+                    CopyPaletteZeroAndRemap(PaletteZeroRemapMode::CurrentImage, i == 0 ? -1 : i);
+                }
+                ImGui::EndPopup();
+            }
             if (ImGui::IsItemHovered()) {
                 ImGui::BeginTooltip();
                 ImGui::Text("Palette index %d", i);
+                if (i == 0)
+                    ImGui::TextDisabled("Index 0 pixels are transparent");
+                ImGui::TextDisabled("Right-click: #0 relocation tools");
                 ImGui::TextDisabled("Alt+click: isolate this color in the canvas");
                 ImGui::TextDisabled("Ctrl/Shift+click: multi-select — selected swatches stay lit, rest dim on canvas");
                 ImGui::EndTooltip();
