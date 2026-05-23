@@ -102,6 +102,8 @@ static bool g_icon_font_loaded = false;
 #define ICON_UNDO     "\xEE\x85\xA6"     /* U+E166 undo */
 #define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
 #define ICON_RESIZE   "\xEE\xA1\x9B"     /* U+E85B aspect_ratio */
+#define ICON_LOCK     "\xEE\xA2\x97"     /* U+E897 lock */
+#define ICON_UNLOCK   "\xEE\xA2\x98"     /* U+E898 lock_open */
 
 #define ICON_OPEN_TXT     "Op"
 #define ICON_FOLDER_TXT   "D "
@@ -117,6 +119,8 @@ static bool g_icon_font_loaded = false;
 #define ICON_UNDO_TXT     "Uz"
 #define ICON_REDO_TXT     "Ry"
 #define ICON_RESIZE_TXT   "Sz"
+#define ICON_LOCK_TXT     "Lk"
+#define ICON_UNLOCK_TXT   "Un"
 
 /* Per-image render texture — rebuilt when selected image or palette changes */
 static SDL_Texture  *g_img_texture    = NULL;
@@ -350,7 +354,7 @@ static void LabeledValue(const char *label, const char *fmt, ...)
 static bool AnimPointSliderInt(const char *label, int *value, int min_value, int max_value)
 {
     ImGui::SetNextItemWidth(-1);
-    bool changed = ImGui::SliderInt(label, value, min_value, max_value);
+    bool changed = ImGui::DragInt(label, value, 1.0f, min_value, max_value);
     bool selected = ImGui::IsItemActive() || ImGui::IsItemFocused();
     ImGui::SetItemKeyOwner(ImGuiKey_LeftArrow);
     ImGui::SetItemKeyOwner(ImGuiKey_RightArrow);
@@ -529,11 +533,19 @@ static bool             g_timeline_onion = false;  /* prev/next frame ghosting *
 static bool             g_timeline_pingpong = false; /* play forward then reverse, looping */
 static int              g_timeline_play_dir = 1;     /* +1 forward, -1 reverse (used when pingpong) */
 static int              g_timeline_composite[2] = {-1, -1}; /* Ctrl-click pair for anipoint-aligned preview */
+static bool             g_timeline_composite_locked[2] = {false, false};
+static int              g_timeline_composite_drag_slot = -1;
+static ImVec2           g_timeline_composite_drag_mouse(0.0f, 0.0f);
+static unsigned short   g_timeline_composite_drag_anix = 0;
+static unsigned short   g_timeline_composite_drag_aniy = 0;
 
 static void ClearTimelineCompositeSelection(void)
 {
     g_timeline_composite[0] = -1;
     g_timeline_composite[1] = -1;
+    g_timeline_composite_locked[0] = false;
+    g_timeline_composite_locked[1] = false;
+    g_timeline_composite_drag_slot = -1;
 }
 
 static void CompactTimelineCompositeSelection(void)
@@ -541,17 +553,25 @@ static void CompactTimelineCompositeSelection(void)
     if (g_timeline_composite[0] < 0 && g_timeline_composite[1] >= 0) {
         g_timeline_composite[0] = g_timeline_composite[1];
         g_timeline_composite[1] = -1;
+        g_timeline_composite_locked[0] = g_timeline_composite_locked[1];
+        g_timeline_composite_locked[1] = false;
     }
-    if (g_timeline_composite[0] == g_timeline_composite[1])
+    if (g_timeline_composite[0] == g_timeline_composite[1]) {
         g_timeline_composite[1] = -1;
+        g_timeline_composite_locked[1] = false;
+    }
 }
 
 static void PruneTimelineCompositeSelection(void)
 {
     for (int i = 0; i < 2; i++) {
         int idx = g_timeline_composite[i];
-        if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt)
+        if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt) {
             g_timeline_composite[i] = -1;
+            g_timeline_composite_locked[i] = false;
+            if (g_timeline_composite_drag_slot == i)
+                g_timeline_composite_drag_slot = -1;
+        }
     }
     CompactTimelineCompositeSelection();
 }
@@ -569,6 +589,91 @@ static bool TimelineCompositeReady(void)
            g_timeline_composite[0] != g_timeline_composite[1];
 }
 
+static void DrawTimelineCompositeLockToggle(int slot, const char *name)
+{
+    if (slot < 0 || slot > 1) return;
+
+    bool locked = g_timeline_composite_locked[slot];
+    ImVec4 bg = locked ? ImVec4(0.45f, 0.30f, 0.12f, 1.0f)
+                       : ImVec4(0.10f, 0.38f, 0.42f, 1.0f);
+    ImVec4 hover = locked ? ImVec4(0.58f, 0.39f, 0.16f, 1.0f)
+                          : ImVec4(0.14f, 0.50f, 0.55f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, bg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
+
+    char label[64];
+    const char *icon = locked
+        ? (g_icon_font_loaded ? ICON_LOCK : ICON_LOCK_TXT)
+        : (g_icon_font_loaded ? ICON_UNLOCK : ICON_UNLOCK_TXT);
+    snprintf(label, sizeof(label), "%s %s: %s##timeline_lock_%d",
+             icon, name, locked ? "Locked" : "Free", slot);
+    if (ImGui::SmallButton(label)) {
+        g_timeline_composite_locked[slot] = !locked;
+        if (g_timeline_composite_locked[slot] &&
+            g_timeline_composite_drag_slot == slot)
+            g_timeline_composite_drag_slot = -1;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(locked
+            ? "%s sprite is locked. Click to allow anipoint dragging."
+            : "%s sprite can be dragged in the composite preview. Click to lock it.",
+            name);
+    }
+
+    ImGui::PopStyleColor(2);
+}
+
+static int TimelineFramePosition(int img_idx)
+{
+    for (size_t i = 0; i < g_timeline_frames.size(); i++) {
+        if (g_timeline_frames[i] == img_idx)
+            return (int)i;
+    }
+    return -1;
+}
+
+static int WrapTimelinePosition(int pos)
+{
+    int n = (int)g_timeline_frames.size();
+    if (n <= 0) return 0;
+    pos %= n;
+    if (pos < 0) pos += n;
+    return pos;
+}
+
+static bool AdvanceTimelineComposite(int delta)
+{
+    if (!TimelineCompositeReady() || g_timeline_frames.empty()) return false;
+
+    int p0 = TimelineFramePosition(g_timeline_composite[0]);
+    int p1 = TimelineFramePosition(g_timeline_composite[1]);
+    if (p0 < 0 || p1 < 0) {
+        ClearTimelineCompositeSelection();
+        return false;
+    }
+
+    p0 = WrapTimelinePosition(p0 + delta);
+    p1 = WrapTimelinePosition(p1 + delta);
+    g_timeline_composite[0] = g_timeline_frames[p0];
+    g_timeline_composite[1] = g_timeline_frames[p1];
+    g_timeline_play_idx = p0;
+    g_doc->ilselected = g_timeline_composite[0];
+    g_zoom_reset = true;
+    return true;
+}
+
+static void StepTimelinePlayhead(int delta)
+{
+    if (g_timeline_frames.empty()) return;
+
+    if (AdvanceTimelineComposite(delta))
+        return;
+
+    g_timeline_play_idx = WrapTimelinePosition(g_timeline_play_idx + delta);
+    g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
+    g_zoom_reset = true;
+}
+
 static void ToggleTimelineCompositeFrame(int img_idx)
 {
     if (img_idx < 0 || (unsigned int)img_idx >= g_doc->imgcnt) return;
@@ -576,17 +681,24 @@ static void ToggleTimelineCompositeFrame(int img_idx)
     int slot = TimelineCompositeSlot(img_idx);
     if (slot >= 0) {
         g_timeline_composite[slot] = -1;
+        g_timeline_composite_locked[slot] = false;
+        if (g_timeline_composite_drag_slot == slot)
+            g_timeline_composite_drag_slot = -1;
         CompactTimelineCompositeSelection();
         return;
     }
 
     if (g_timeline_composite[0] < 0) {
         g_timeline_composite[0] = img_idx;
+        g_timeline_composite_locked[0] = false;
     } else if (g_timeline_composite[1] < 0) {
         g_timeline_composite[1] = img_idx;
+        g_timeline_composite_locked[1] = false;
     } else {
         g_timeline_composite[0] = g_timeline_composite[1];
         g_timeline_composite[1] = img_idx;
+        g_timeline_composite_locked[0] = g_timeline_composite_locked[1];
+        g_timeline_composite_locked[1] = false;
     }
 }
 
@@ -595,7 +707,10 @@ void imgtool_toggle_timeline_play(void)
     if (g_timeline_frames.empty()) return;
     g_is_playing = !g_is_playing;
     if (g_is_playing) {
-        ClearTimelineCompositeSelection();
+        if (TimelineCompositeReady()) {
+            int p0 = TimelineFramePosition(g_timeline_composite[0]);
+            if (p0 >= 0) g_timeline_play_idx = p0;
+        }
         g_play_timer = 0.0f;
         g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
         g_img_tex_idx = -2;
@@ -678,6 +793,36 @@ static void xform_begin(void);  /* forward decl — used by paste_image */
 static int  FindDirtyDocumentIndex(void);
 static bool HasDirtyDocuments(void);
 
+/* Palette downscale preview modal. Reduces the selected palette to a bpp
+   color budget (index 0 included) and remaps sprites that use it on OK. */
+static bool         g_show_palette_reduce = false;
+static int          g_palette_reduce_bpp = 7;
+static int          g_palette_reduce_preview_idx = -1;
+static SDL_Texture *g_palette_reduce_orig_tex = NULL;
+static SDL_Texture *g_palette_reduce_new_tex = NULL;
+static int          g_palette_reduce_tex_w = 0;
+static int          g_palette_reduce_tex_h = 0;
+static int          g_palette_reduce_tex_img = -1;
+static int          g_palette_reduce_tex_pal = -1;
+static int          g_palette_reduce_tex_bpp = 0;
+
+static void ClearPaletteReducePreviewTextures(void)
+{
+    if (g_palette_reduce_orig_tex) {
+        SDL_DestroyTexture(g_palette_reduce_orig_tex);
+        g_palette_reduce_orig_tex = NULL;
+    }
+    if (g_palette_reduce_new_tex) {
+        SDL_DestroyTexture(g_palette_reduce_new_tex);
+        g_palette_reduce_new_tex = NULL;
+    }
+    g_palette_reduce_tex_w = 0;
+    g_palette_reduce_tex_h = 0;
+    g_palette_reduce_tex_img = -1;
+    g_palette_reduce_tex_pal = -1;
+    g_palette_reduce_tex_bpp = 0;
+}
+
 static void ClearPixelHistoryStacks(void)
 {
     for (auto &e : g_pixel_hist) pixel_hist_free(&e);
@@ -721,6 +866,9 @@ static void ResetPerDocumentUiState(bool clear_pixel_clipboard = false)
     g_clone_source_set = false;
     g_clone_offset_set = false;
     g_remap_target_color = -1;
+    g_show_palette_reduce = false;
+    g_palette_reduce_preview_idx = -1;
+    ClearPaletteReducePreviewTextures();
     g_snap_bbox.valid = false;
     memset(g_palette_selection, 0, sizeof(g_palette_selection));
     g_palette_baseline_nc = 0;
@@ -1145,6 +1293,9 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
         BuildWorldSpriteTexture(g_doc, p[0].img, p[0].alpha),
         BuildWorldSpriteTexture(g_doc, p[1].img, p[1].alpha)
     };
+    ImVec2 sprite_min[2] = {};
+    ImVec2 sprite_max[2] = {};
+    bool sprite_valid[2] = {false, false};
 
     for (int i = 0; i < 2; i++) {
         if (!tex[i]) continue;
@@ -1152,6 +1303,9 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
                   cpos.y + (p[i].top - min_y) * scale);
         ImVec2 se(sp.x + p[i].img->w * scale,
                   sp.y + p[i].img->h * scale);
+        sprite_min[i] = sp;
+        sprite_max[i] = se;
+        sprite_valid[i] = true;
         dl->AddImage((ImTextureID)(intptr_t)tex[i], sp, se);
         dl->AddRect(sp, se, p[i].outline, 0.0f, 0, 1.0f);
 
@@ -1166,6 +1320,13 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
     draw_crosshair(anchor, IM_COL32(255, 230, 80, 255), 15.0f, 1.6f);
     dl->AddRect(cpos, cend, IM_COL32(210, 210, 210, 160), 0.0f, 0, 1.0f);
 
+    ImGuiIO &io = ImGui::GetIO();
+    ImVec2 mouse = io.MousePos;
+    bool over_lock_control = false;
+    auto mouse_in_rect = [&](ImVec2 a, ImVec2 b) -> bool {
+        return mouse.x >= a.x && mouse.x < b.x && mouse.y >= a.y && mouse.y < b.y;
+    };
+
     std::string back_name = img_name_string(back);
     std::string front_name = img_name_string(front);
     char buf[224];
@@ -1174,10 +1335,110 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
     ImVec2 label_sz = ImGui::CalcTextSize(buf);
     float label_w = label_sz.x + 10.0f;
     if (label_w > cw) label_w = cw;
+    float header_h = (cend.y - cpos.y >= 48.0f) ? 48.0f : 20.0f;
+    dl->AddRectFilled(cpos, ImVec2(cend.x, cpos.y + header_h),
+                      IM_COL32(0, 0, 0, 170));
     dl->AddRectFilled(cpos, ImVec2(cpos.x + label_w, cpos.y + 20.0f),
                       IM_COL32(0, 0, 0, 180));
     dl->AddText(ImVec2(cpos.x + 5.0f, cpos.y + 3.0f),
                 IM_COL32(235, 235, 235, 255), buf);
+
+    auto draw_lock_button = [&](int slot, const char *name, ImVec2 pos) {
+        char lbuf[48];
+        bool locked = g_timeline_composite_locked[slot];
+        const char *icon = locked
+            ? (g_icon_font_loaded ? ICON_LOCK : ICON_LOCK_TXT)
+            : (g_icon_font_loaded ? ICON_UNLOCK : ICON_UNLOCK_TXT);
+        snprintf(lbuf, sizeof(lbuf), "%s %s: %s", icon, name,
+                 locked ? "Locked" : "Free");
+        ImVec2 text_sz = ImGui::CalcTextSize(lbuf);
+        ImVec2 pad(6.0f, 3.0f);
+        ImVec2 a(pos.x, pos.y);
+        ImVec2 b(pos.x + text_sz.x + pad.x * 2.0f,
+                 pos.y + text_sz.y + pad.y * 2.0f);
+        bool hover = mouse_in_rect(a, b);
+        over_lock_control = over_lock_control || hover;
+        ImU32 bg = locked
+            ? IM_COL32(90, 70, 40, hover ? 245 : 215)
+            : IM_COL32(25, 75, 75, hover ? 245 : 210);
+        dl->AddRectFilled(a, b, bg, 3.0f);
+        dl->AddRect(a, b, IM_COL32(230, 230, 230, 180), 3.0f);
+        dl->AddText(ImVec2(a.x + pad.x, a.y + pad.y),
+                    IM_COL32(245, 245, 245, 255), lbuf);
+        if (hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            g_timeline_composite_locked[slot] = !g_timeline_composite_locked[slot];
+            if (g_timeline_composite_locked[slot] &&
+                g_timeline_composite_drag_slot == slot)
+                g_timeline_composite_drag_slot = -1;
+        }
+        return b.x - a.x;
+    };
+
+    ImVec2 lock_pos(cpos.x + 5.0f, cpos.y + 24.0f);
+    float lock_w = draw_lock_button(0, "Back", lock_pos);
+    draw_lock_button(1, "Front", ImVec2(lock_pos.x + lock_w + 6.0f, lock_pos.y));
+
+    auto hit_test_sprite = [&](int slot) -> bool {
+        if (slot < 0 || slot > 1 || g_timeline_composite_locked[slot] || !sprite_valid[slot])
+            return false;
+        if (!mouse_in_rect(sprite_min[slot], sprite_max[slot]))
+            return false;
+        IMG *img = p[slot].img;
+        int px = (int)((mouse.x - sprite_min[slot].x) / scale);
+        int py = (int)((mouse.y - sprite_min[slot].y) / scale);
+        if (px < 0 || py < 0 || px >= (int)img->w || py >= (int)img->h)
+            return false;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *data = (const unsigned char *)img->data_p;
+        return data && data[py * stride + px] != 0;
+    };
+
+    int hover_slot = -1;
+    if (!over_lock_control) {
+        if (hit_test_sprite(1)) hover_slot = 1;
+        else if (hit_test_sprite(0)) hover_slot = 0;
+    }
+    if (hover_slot >= 0) {
+        dl->AddRect(sprite_min[hover_slot], sprite_max[hover_slot],
+                    IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+
+    if (!over_lock_control && hover_slot >= 0 &&
+        ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        g_is_playing = false;
+        g_timeline_composite_drag_slot = hover_slot;
+        g_timeline_composite_drag_mouse = mouse;
+        g_timeline_composite_drag_anix = p[hover_slot].img->anix;
+        g_timeline_composite_drag_aniy = p[hover_slot].img->aniy;
+        g_doc->ilselected = g_timeline_composite[hover_slot];
+        g_zoom_reset = true;
+        undo_push();
+    }
+
+    if (g_timeline_composite_drag_slot >= 0) {
+        int slot = g_timeline_composite_drag_slot;
+        IMG *drag_img = p[slot].img;
+        if (!drag_img || g_timeline_composite_locked[slot] ||
+            !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (drag_img && !g_timeline_composite_locked[slot]) {
+                g_doc->ilselected = g_timeline_composite[slot];
+                undo_push();
+            }
+            g_timeline_composite_drag_slot = -1;
+        } else {
+            int dx = (int)((mouse.x - g_timeline_composite_drag_mouse.x) / scale);
+            int dy = (int)((mouse.y - g_timeline_composite_drag_mouse.y) / scale);
+            int nx = (int)(short)g_timeline_composite_drag_anix - dx;
+            int ny = (int)(short)g_timeline_composite_drag_aniy - dy;
+            if (nx < -32768) nx = -32768; if (nx > 32767) nx = 32767;
+            if (ny < -32768) ny = -32768; if (ny > 32767) ny = 32767;
+            drag_img->anix = (unsigned short)(short)nx;
+            drag_img->aniy = (unsigned short)(short)ny;
+            g_doc->ilselected = g_timeline_composite[slot];
+            mark_dirty();
+        }
+    }
 
     ImGui::Dummy(ImVec2(avail.x, avail.y));
     return true;
@@ -2638,6 +2899,589 @@ static void CleanupSelectedPalette(void)
                  r.sorted, r.sorted == 1 ? "" : "s");
     }
     g_restore_msg_timer = 4.0f;
+}
+
+struct PaletteReduceColor {
+    int old_idx;
+    unsigned char r, g, b;
+    double weight;
+};
+
+struct PaletteReduceBox {
+    std::vector<int> colors;
+    int rmin, rmax, gmin, gmax, bmin, bmax;
+    double weight;
+};
+
+struct PaletteReduceRep {
+    unsigned char r, g, b;
+    int old_min;
+    int luma;
+    int sat;
+    int hue;
+    int family;
+};
+
+struct PaletteReductionPlan {
+    bool valid;
+    int pal_idx;
+    int target_bpp;
+    int target_numc;
+    int old_numc;
+    int new_numc;
+    int input_colors;
+    int output_colors;
+    int active_colors;
+    int images;
+    int pixels;
+    int pixels_changed;
+    int colors_merged;
+    bool quantized;
+    unsigned char remap[256];
+    unsigned char data[512];
+    char error[128];
+};
+
+static int palette_reduce_target_numc(int bpp)
+{
+    if (bpp < 4) bpp = 4;
+    if (bpp > 8) bpp = 8;
+    return 1 << bpp;
+}
+
+static void palette_reduce_update_rep_fields(PaletteReduceRep *rep)
+{
+    if (!rep) return;
+    rep->luma = rep->r * 54 + rep->g * 183 + rep->b * 19;
+    int maxv = rep->r > rep->g ? (rep->r > rep->b ? rep->r : rep->b) : (rep->g > rep->b ? rep->g : rep->b);
+    int minv = rep->r < rep->g ? (rep->r < rep->b ? rep->r : rep->b) : (rep->g < rep->b ? rep->g : rep->b);
+    rep->sat = maxv - minv;
+    rep->hue = palette_sort_hue(rep->r, rep->g, rep->b);
+    rep->family = (rep->sat <= 18) ? 0 : 1 + ((rep->hue + 32) % 1536) / 64;
+}
+
+static void palette_reduce_compute_box(PaletteReduceBox *box,
+                                       const std::vector<PaletteReduceColor> &colors)
+{
+    if (!box || box->colors.empty()) return;
+    const PaletteReduceColor &first = colors[box->colors[0]];
+    box->rmin = box->rmax = first.r;
+    box->gmin = box->gmax = first.g;
+    box->bmin = box->bmax = first.b;
+    box->weight = 0.0;
+
+    for (int ci : box->colors) {
+        const PaletteReduceColor &c = colors[ci];
+        if (c.r < box->rmin) box->rmin = c.r;
+        if (c.r > box->rmax) box->rmax = c.r;
+        if (c.g < box->gmin) box->gmin = c.g;
+        if (c.g > box->gmax) box->gmax = c.g;
+        if (c.b < box->bmin) box->bmin = c.b;
+        if (c.b > box->bmax) box->bmax = c.b;
+        box->weight += c.weight;
+    }
+}
+
+static double palette_reduce_box_score(const PaletteReduceBox &box)
+{
+    if (box.colors.size() <= 1) return -1.0;
+    int rr = box.rmax - box.rmin;
+    int gr = box.gmax - box.gmin;
+    int br = box.bmax - box.bmin;
+    int range = rr > gr ? (rr > br ? rr : br) : (gr > br ? gr : br);
+    if (range <= 0) return -1.0;
+    return (double)range * (box.weight > 1.0 ? box.weight : 1.0);
+}
+
+static bool palette_reduce_split_box(std::vector<PaletteReduceBox> &boxes,
+                                     const std::vector<PaletteReduceColor> &colors,
+                                     int box_idx)
+{
+    if (box_idx < 0 || box_idx >= (int)boxes.size()) return false;
+    PaletteReduceBox box = boxes[box_idx];
+    if (box.colors.size() <= 1) return false;
+
+    int rr = box.rmax - box.rmin;
+    int gr = box.gmax - box.gmin;
+    int br = box.bmax - box.bmin;
+    int channel = 0;
+    if (gr >= rr && gr >= br) channel = 1;
+    else if (br >= rr && br >= gr) channel = 2;
+
+    std::stable_sort(box.colors.begin(), box.colors.end(),
+        [&](int ai, int bi) {
+            const PaletteReduceColor &a = colors[ai];
+            const PaletteReduceColor &b = colors[bi];
+            int av = channel == 0 ? a.r : (channel == 1 ? a.g : a.b);
+            int bv = channel == 0 ? b.r : (channel == 1 ? b.g : b.b);
+            if (av != bv) return av < bv;
+            return a.old_idx < b.old_idx;
+        });
+
+    double half = box.weight * 0.5;
+    double acc = 0.0;
+    int split = (int)box.colors.size() / 2;
+    for (int i = 0; i < (int)box.colors.size(); i++) {
+        acc += colors[box.colors[i]].weight;
+        if (acc >= half) {
+            split = i + 1;
+            break;
+        }
+    }
+    if (split <= 0) split = 1;
+    if (split >= (int)box.colors.size()) split = (int)box.colors.size() - 1;
+
+    PaletteReduceBox a = {};
+    PaletteReduceBox b = {};
+    a.colors.assign(box.colors.begin(), box.colors.begin() + split);
+    b.colors.assign(box.colors.begin() + split, box.colors.end());
+    palette_reduce_compute_box(&a, colors);
+    palette_reduce_compute_box(&b, colors);
+
+    boxes[box_idx] = a;
+    boxes.push_back(b);
+    return true;
+}
+
+static void palette_reduce_make_reps(const std::vector<PaletteReduceBox> &boxes,
+                                     const std::vector<PaletteReduceColor> &colors,
+                                     std::vector<PaletteReduceRep> &reps)
+{
+    reps.clear();
+    reps.reserve(boxes.size());
+    for (const PaletteReduceBox &box : boxes) {
+        if (box.colors.empty()) continue;
+        double rs = 0.0, gs = 0.0, bs = 0.0, ws = 0.0;
+        int old_min = 999;
+        for (int ci : box.colors) {
+            const PaletteReduceColor &c = colors[ci];
+            double w = c.weight > 0.0 ? c.weight : 1.0;
+            rs += (double)c.r * w;
+            gs += (double)c.g * w;
+            bs += (double)c.b * w;
+            ws += w;
+            if (c.old_idx < old_min) old_min = c.old_idx;
+        }
+        if (ws <= 0.0) ws = 1.0;
+        int r = (int)(rs / ws + 0.5);
+        int g = (int)(gs / ws + 0.5);
+        int b = (int)(bs / ws + 0.5);
+        if (r < 0) r = 0; if (r > 255) r = 255;
+        if (g < 0) g = 0; if (g > 255) g = 255;
+        if (b < 0) b = 0; if (b > 255) b = 255;
+
+        PaletteReduceRep rep = {};
+        rep.r = (unsigned char)r;
+        rep.g = (unsigned char)g;
+        rep.b = (unsigned char)b;
+        rep.old_min = old_min;
+        palette_reduce_update_rep_fields(&rep);
+        reps.push_back(rep);
+    }
+
+    std::sort(reps.begin(), reps.end(), [](const PaletteReduceRep &a, const PaletteReduceRep &b) {
+        if (a.luma != b.luma) return a.luma < b.luma;
+        if (a.sat != b.sat) return a.sat < b.sat;
+        if (a.family != b.family) return a.family < b.family;
+        if (a.hue != b.hue) return a.hue < b.hue;
+        return a.old_min < b.old_min;
+    });
+}
+
+static int palette_reduce_nearest_rep(const std::vector<PaletteReduceRep> &reps,
+                                      unsigned char r, unsigned char g, unsigned char b)
+{
+    int best = 0;
+    int best_d = 0x7fffffff;
+    for (int i = 0; i < (int)reps.size(); i++) {
+        int dr = (int)r - (int)reps[i].r;
+        int dg = (int)g - (int)reps[i].g;
+        int db = (int)b - (int)reps[i].b;
+        int d = dr * dr + dg * dg + db * db;
+        if (d < best_d) {
+            best_d = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+static void palette_reduce_refine_reps(std::vector<PaletteReduceRep> &reps,
+                                       const std::vector<PaletteReduceColor> &colors)
+{
+    int n = (int)reps.size();
+    if (n <= 0 || colors.empty()) return;
+
+    for (int iter = 0; iter < 8; iter++) {
+        std::vector<double> rs(n, 0.0), gs(n, 0.0), bs(n, 0.0), ws(n, 0.0);
+        std::vector<int> old_min(n, 999);
+
+        for (const PaletteReduceColor &c : colors) {
+            int best = palette_reduce_nearest_rep(reps, c.r, c.g, c.b);
+            double w = c.weight > 0.0 ? c.weight : 1.0;
+            rs[best] += (double)c.r * w;
+            gs[best] += (double)c.g * w;
+            bs[best] += (double)c.b * w;
+            ws[best] += w;
+            if (c.old_idx < old_min[best]) old_min[best] = c.old_idx;
+        }
+
+        bool changed = false;
+        for (int i = 0; i < n; i++) {
+            if (ws[i] <= 0.0) continue;
+            int r = (int)(rs[i] / ws[i] + 0.5);
+            int g = (int)(gs[i] / ws[i] + 0.5);
+            int b = (int)(bs[i] / ws[i] + 0.5);
+            if (r < 0) r = 0; if (r > 255) r = 255;
+            if (g < 0) g = 0; if (g > 255) g = 255;
+            if (b < 0) b = 0; if (b > 255) b = 255;
+            if (reps[i].r != (unsigned char)r ||
+                reps[i].g != (unsigned char)g ||
+                reps[i].b != (unsigned char)b) {
+                changed = true;
+            }
+            reps[i].r = (unsigned char)r;
+            reps[i].g = (unsigned char)g;
+            reps[i].b = (unsigned char)b;
+            if (old_min[i] != 999) reps[i].old_min = old_min[i];
+            palette_reduce_update_rep_fields(&reps[i]);
+        }
+        if (!changed) break;
+    }
+}
+
+static bool BuildPaletteReductionPlan(int pal_idx, int target_bpp,
+                                      PaletteReductionPlan *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (target_bpp < 4) target_bpp = 4;
+    if (target_bpp > 8) target_bpp = 8;
+    out->pal_idx = pal_idx;
+    out->target_bpp = target_bpp;
+    out->target_numc = palette_reduce_target_numc(target_bpp);
+
+    for (int i = 0; i < 256; i++) out->remap[i] = 0;
+
+    PAL *pal = get_pal(pal_idx);
+    if (!pal || !pal->data_p) {
+        snprintf(out->error, sizeof(out->error), "No palette selected.");
+        return false;
+    }
+
+    int old_numc = (int)pal->numc;
+    if (old_numc > 256) old_numc = 256;
+    if (old_numc <= 0) {
+        snprintf(out->error, sizeof(out->error), "Selected palette has no colors.");
+        return false;
+    }
+
+    out->old_numc = old_numc;
+    out->input_colors = old_numc;
+    const unsigned char *src = (const unsigned char *)pal->data_p;
+
+    double usage[256] = {};
+    bool active[256] = {};
+    active[0] = true;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (img->palnum != pal_idx || !img->data_p || img->w == 0 || img->h == 0) continue;
+        out->images++;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *pixels = (const unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++) {
+            for (int x = 0; x < img->w; x++) {
+                unsigned char idx = pixels[y * stride + x];
+                if (idx < old_numc) {
+                    usage[idx] += 1.0;
+                    active[idx] = true;
+                }
+                out->pixels++;
+            }
+        }
+    }
+
+    if (out->images == 0) {
+        for (int i = 1; i < old_numc; i++) {
+            active[i] = true;
+            usage[i] = 1.0;
+        }
+    }
+
+    for (int i = 1; i < old_numc; i++)
+        if (active[i]) out->active_colors++;
+
+    if (old_numc <= out->target_numc) {
+        memcpy(out->data, src, (size_t)old_numc * 2);
+        for (int i = 0; i < old_numc; i++) out->remap[i] = (unsigned char)i;
+        out->new_numc = old_numc;
+        out->output_colors = old_numc;
+        out->colors_merged = 0;
+    } else if (out->active_colors <= out->target_numc - 1) {
+        out->data[0] = src[0];
+        out->data[1] = src[1];
+        out->remap[0] = 0;
+        int dst_idx = 1;
+        for (int i = 1; i < old_numc; i++) {
+            if (!active[i]) continue;
+            out->remap[i] = (unsigned char)dst_idx;
+            out->data[dst_idx * 2 + 0] = src[i * 2 + 0];
+            out->data[dst_idx * 2 + 1] = src[i * 2 + 1];
+            dst_idx++;
+        }
+        out->new_numc = dst_idx;
+        out->output_colors = out->new_numc;
+        out->colors_merged = old_numc - out->new_numc;
+    } else {
+        std::vector<PaletteReduceColor> colors;
+        colors.reserve((size_t)out->active_colors);
+        for (int i = 1; i < old_numc; i++) {
+            if (!active[i]) continue;
+            unsigned char r, g, b;
+            pal_word_to_rgb8(src + i * 2, &r, &g, &b);
+            PaletteReduceColor c = {};
+            c.old_idx = i;
+            c.r = r;
+            c.g = g;
+            c.b = b;
+            c.weight = usage[i] > 0.0 ? usage[i] : 1.0;
+            colors.push_back(c);
+        }
+
+        int target_opaque = out->target_numc - 1;
+        std::vector<PaletteReduceBox> boxes;
+        PaletteReduceBox root = {};
+        for (int i = 0; i < (int)colors.size(); i++) root.colors.push_back(i);
+        palette_reduce_compute_box(&root, colors);
+        boxes.push_back(root);
+
+        while ((int)boxes.size() < target_opaque) {
+            int best = -1;
+            double best_score = -1.0;
+            for (int i = 0; i < (int)boxes.size(); i++) {
+                double score = palette_reduce_box_score(boxes[i]);
+                if (score > best_score) {
+                    best_score = score;
+                    best = i;
+                }
+            }
+            if (best < 0) break;
+            if (!palette_reduce_split_box(boxes, colors, best)) break;
+        }
+
+        std::vector<PaletteReduceRep> reps;
+        palette_reduce_make_reps(boxes, colors, reps);
+        palette_reduce_refine_reps(reps, colors);
+        if ((int)reps.size() > target_opaque) reps.resize(target_opaque);
+        std::sort(reps.begin(), reps.end(), [](const PaletteReduceRep &a, const PaletteReduceRep &b) {
+            if (a.luma != b.luma) return a.luma < b.luma;
+            if (a.sat != b.sat) return a.sat < b.sat;
+            if (a.family != b.family) return a.family < b.family;
+            if (a.hue != b.hue) return a.hue < b.hue;
+            return a.old_min < b.old_min;
+        });
+
+        out->data[0] = src[0];
+        out->data[1] = src[1];
+        out->remap[0] = 0;
+        out->new_numc = (int)reps.size() + 1;
+        out->output_colors = out->new_numc;
+        out->colors_merged = old_numc - out->new_numc;
+        out->quantized = true;
+
+        for (int i = 0; i < (int)reps.size(); i++) {
+            rgb8_to_pal_word(reps[i].r, reps[i].g, reps[i].b,
+                             out->data + (i + 1) * 2);
+        }
+
+        for (int i = 1; i < old_numc; i++) {
+            unsigned char r, g, b;
+            pal_word_to_rgb8(src + i * 2, &r, &g, &b);
+            int best = palette_reduce_nearest_rep(reps, r, g, b);
+            out->remap[i] = (unsigned char)(best + 1);
+        }
+    }
+
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (img->palnum != pal_idx || !img->data_p || img->w == 0 || img->h == 0) continue;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *pixels = (const unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++) {
+            for (int x = 0; x < img->w; x++) {
+                unsigned char idx = pixels[y * stride + x];
+                unsigned char mapped = out->remap[idx];
+                if (mapped != idx) out->pixels_changed++;
+            }
+        }
+    }
+
+    out->valid = true;
+    return true;
+}
+
+static int FindPalettePreviewImage(int pal_idx, int prefer_idx)
+{
+    IMG *prefer = get_img(prefer_idx);
+    if (prefer && prefer->palnum == pal_idx && prefer->data_p &&
+        prefer->w > 0 && prefer->h > 0)
+        return prefer_idx;
+
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img->palnum == pal_idx && img->data_p && img->w > 0 && img->h > 0)
+            return idx;
+    }
+    return -1;
+}
+
+static int StepPalettePreviewImage(int pal_idx, int start_idx, int delta)
+{
+    int n = count_imgs();
+    if (n <= 0) return -1;
+    int idx = start_idx;
+    if (idx < 0 || idx >= n) idx = delta >= 0 ? -1 : 0;
+    for (int step = 0; step < n; step++) {
+        idx += delta;
+        if (idx < 0) idx = n - 1;
+        if (idx >= n) idx = 0;
+        IMG *img = get_img(idx);
+        if (img && img->palnum == pal_idx && img->data_p &&
+            img->w > 0 && img->h > 0)
+            return idx;
+    }
+    return -1;
+}
+
+static SDL_Texture *BuildPaletteReductionTexture(const IMG *img, const PAL *pal,
+                                                 const PaletteReductionPlan *plan,
+                                                 bool reduced)
+{
+    if (!g_imgui_renderer || !img || !img->data_p || img->w == 0 || img->h == 0)
+        return NULL;
+
+    SDL_Texture *tex = SDL_CreateTexture(g_imgui_renderer,
+        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, img->w, img->h);
+    if (!tex) return NULL;
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
+
+    void *pixels = NULL;
+    int pitch = 0;
+    if (SDL_LockTexture(tex, NULL, &pixels, &pitch) != 0) {
+        SDL_DestroyTexture(tex);
+        return NULL;
+    }
+
+    const unsigned char *pal_data = reduced ? plan->data : (const unsigned char *)pal->data_p;
+    int pal_colors = reduced ? plan->new_numc : (int)pal->numc;
+    if (pal_colors > 256) pal_colors = 256;
+    int stride = (img->w + 3) & ~3;
+    const unsigned char *src_pixels = (const unsigned char *)img->data_p;
+    Uint32 *dst = (Uint32 *)pixels;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            unsigned char ci = src_pixels[y * stride + x];
+            if (reduced) ci = plan->remap[ci];
+            Uint32 a = ci == 0 ? 0u : 0xFFu;
+            unsigned char r = 160, g = 160, b = 160;
+            if (pal_data && ci < pal_colors) {
+                pal_word_to_rgb8(pal_data + ci * 2, &r, &g, &b);
+            }
+            dst[y * (pitch / 4) + x] =
+                (a << 24) | ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
+        }
+    }
+    SDL_UnlockTexture(tex);
+    return tex;
+}
+
+static void RebuildPaletteReducePreviewTextures(const PaletteReductionPlan &plan)
+{
+    IMG *img = get_img(g_palette_reduce_preview_idx);
+    PAL *pal = get_pal(plan.pal_idx);
+    if (!img || !pal || !plan.valid) {
+        ClearPaletteReducePreviewTextures();
+        return;
+    }
+
+    if (g_palette_reduce_orig_tex && g_palette_reduce_new_tex &&
+        g_palette_reduce_tex_img == g_palette_reduce_preview_idx &&
+        g_palette_reduce_tex_pal == plan.pal_idx &&
+        g_palette_reduce_tex_bpp == plan.target_bpp &&
+        g_palette_reduce_tex_w == (int)img->w &&
+        g_palette_reduce_tex_h == (int)img->h) {
+        return;
+    }
+
+    ClearPaletteReducePreviewTextures();
+    g_palette_reduce_orig_tex = BuildPaletteReductionTexture(img, pal, &plan, false);
+    g_palette_reduce_new_tex = BuildPaletteReductionTexture(img, pal, &plan, true);
+    g_palette_reduce_tex_img = g_palette_reduce_preview_idx;
+    g_palette_reduce_tex_pal = plan.pal_idx;
+    g_palette_reduce_tex_bpp = plan.target_bpp;
+    g_palette_reduce_tex_w = img->w;
+    g_palette_reduce_tex_h = img->h;
+}
+
+static void OpenPaletteReduceDialog(int bpp)
+{
+    commit_palette_adjustments();
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || !pal->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select a palette first.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    if (bpp < 4) bpp = 4;
+    if (bpp > 8) bpp = 8;
+    g_palette_reduce_bpp = bpp;
+    g_palette_reduce_preview_idx = FindPalettePreviewImage(g_doc->plselected, g_doc->ilselected);
+    ClearPaletteReducePreviewTextures();
+    g_show_palette_reduce = true;
+}
+
+static bool ApplyPaletteReductionPlan(const PaletteReductionPlan &plan)
+{
+    if (!plan.valid) return false;
+    PAL *pal = get_pal(plan.pal_idx);
+    if (!pal || !pal->data_p) return false;
+
+    undo_push();
+
+    int old_numc = (int)pal->numc;
+    if (old_numc > 256) old_numc = 256;
+    memcpy(pal->data_p, plan.data, (size_t)plan.new_numc * 2);
+    for (int i = plan.new_numc; i < old_numc; i++) {
+        ((unsigned char *)pal->data_p)[i * 2 + 0] = 0;
+        ((unsigned char *)pal->data_p)[i * 2 + 1] = 0;
+    }
+    pal->numc = (unsigned short)plan.new_numc;
+    pal->bitspix = (unsigned char)plan.target_bpp;
+
+    int img_idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, img_idx++) {
+        if (img->palnum != plan.pal_idx || !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+        int stride = (img->w + 3) & ~3;
+        unsigned char *pixels = (unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++) {
+            for (int x = 0; x < img->w; x++) {
+                unsigned char *idx = pixels + y * stride + x;
+                *idx = plan.remap[*idx];
+            }
+        }
+        InvalidateThumb(img_idx);
+    }
+
+    if (g_sel_color >= plan.new_numc)
+        g_sel_color = plan.new_numc > 1 ? plan.new_numc - 1 : 0;
+    memset(g_palette_selection, 0, sizeof(g_palette_selection));
+    ApplyPalette(plan.pal_idx);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    g_img_tex_idx = -2;
+    mark_dirty();
+    return true;
 }
 
 struct VariantPaintResult {
@@ -4534,8 +5378,10 @@ Palette (only fire when no paint tool is active):
 
 Timeline / Anim:
   K                    Toggle timeline play / stop
-  Ctrl+Left / Right    Step prev / next animation frame
-  Ctrl-click frames     Preview two frames combined by animation points
+  Left / Right         Step prev / next animation frame
+  Ctrl+Left / Right    Move current timeline frame earlier / later
+  Ctrl-click frames    Pair two frames; Play/Left/Right advances both
+  Drag paired sprite   Move sprite by editing its anipoint; lock Back/Front to protect it
 
 View / Help:
   H                    Show this help
@@ -5845,6 +6691,211 @@ static bool push_pixel_history_entry(PixelHist *snap)
     return true;
 }
 
+/* ---- Lossless full-sprite transform ---- */
+enum class SpriteTransformOp {
+    FlipHorizontal = 0,
+    FlipVertical,
+    Rotate90CW,
+    Rotate90CCW,
+    Rotate180
+};
+
+static const char *sprite_transform_name(SpriteTransformOp op)
+{
+    switch (op) {
+    case SpriteTransformOp::FlipHorizontal: return "Flipped horizontal";
+    case SpriteTransformOp::FlipVertical:   return "Flipped vertical";
+    case SpriteTransformOp::Rotate90CW:     return "Rotated 90 CW";
+    case SpriteTransformOp::Rotate90CCW:    return "Rotated 90 CCW";
+    case SpriteTransformOp::Rotate180:      return "Rotated 180";
+    }
+    return "Transformed";
+}
+
+static void transform_hitbox(SpriteTransformOp op, int old_w, int old_h)
+{
+    if (g_hitbox_w <= 0 || g_hitbox_h <= 0) return;
+
+    int x = g_hitbox_x;
+    int y = g_hitbox_y;
+    int w = g_hitbox_w;
+    int h = g_hitbox_h;
+
+    switch (op) {
+    case SpriteTransformOp::FlipHorizontal:
+        g_hitbox_x = old_w - (x + w);
+        break;
+    case SpriteTransformOp::FlipVertical:
+        g_hitbox_y = old_h - (y + h);
+        break;
+    case SpriteTransformOp::Rotate90CW:
+        g_hitbox_x = old_h - (y + h);
+        g_hitbox_y = x;
+        g_hitbox_w = h;
+        g_hitbox_h = w;
+        break;
+    case SpriteTransformOp::Rotate90CCW:
+        g_hitbox_x = y;
+        g_hitbox_y = old_w - (x + w);
+        g_hitbox_w = h;
+        g_hitbox_h = w;
+        break;
+    case SpriteTransformOp::Rotate180:
+        g_hitbox_x = old_w - (x + w);
+        g_hitbox_y = old_h - (y + h);
+        break;
+    }
+}
+
+static void transform_anipoint(SpriteTransformOp op, int old_w, int old_h,
+                               unsigned short *x, unsigned short *y)
+{
+    int sx = (int)(short)*x;
+    int sy = (int)(short)*y;
+    int dx = sx;
+    int dy = sy;
+
+    switch (op) {
+    case SpriteTransformOp::FlipHorizontal:
+        dx = old_w - sx;
+        dy = sy;
+        break;
+    case SpriteTransformOp::FlipVertical:
+        dx = sx;
+        dy = old_h - sy;
+        break;
+    case SpriteTransformOp::Rotate90CW:
+        dx = old_h - sy;
+        dy = sx;
+        break;
+    case SpriteTransformOp::Rotate90CCW:
+        dx = sy;
+        dy = old_w - sx;
+        break;
+    case SpriteTransformOp::Rotate180:
+        dx = old_w - sx;
+        dy = old_h - sy;
+        break;
+    }
+
+    *x = signed_to_img_word(dx);
+    *y = signed_to_img_word(dy);
+}
+
+static bool secondary_anipoint_in_use(const IMG *img)
+{
+    if (!img) return false;
+    if ((short)img->anix2 < 0 || (short)img->aniy2 < 0) return false;
+    return img->anix2 != 0 || img->aniy2 != 0 || img->aniz2 != 0;
+}
+
+static bool TransformSelectedSprite(SpriteTransformOp op)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+
+    int old_w = img->w;
+    int old_h = img->h;
+    int old_stride = (old_w + 3) & ~3;
+    int new_w = old_w;
+    int new_h = old_h;
+    if (op == SpriteTransformOp::Rotate90CW || op == SpriteTransformOp::Rotate90CCW) {
+        new_w = old_h;
+        new_h = old_w;
+    }
+
+    PixelHist snap = {};
+    if (!pixel_hist_capture(&snap, true)) return false;
+
+    unsigned int new_stride = ((unsigned int)new_w + 3) & ~3u;
+    unsigned char *dst = (unsigned char *)PoolAlloc((size_t)new_stride * new_h);
+    if (!dst) {
+        pixel_hist_free(&snap);
+        return false;
+    }
+    memset(dst, 0, (size_t)new_stride * new_h);
+
+    const unsigned char *src = (const unsigned char *)img->data_p;
+    for (int sy = 0; sy < old_h; sy++) {
+        for (int sx = 0; sx < old_w; sx++) {
+            int dx = sx, dy = sy;
+            switch (op) {
+            case SpriteTransformOp::FlipHorizontal:
+                dx = old_w - 1 - sx;
+                dy = sy;
+                break;
+            case SpriteTransformOp::FlipVertical:
+                dx = sx;
+                dy = old_h - 1 - sy;
+                break;
+            case SpriteTransformOp::Rotate90CW:
+                dx = old_h - 1 - sy;
+                dy = sx;
+                break;
+            case SpriteTransformOp::Rotate90CCW:
+                dx = sy;
+                dy = old_w - 1 - sx;
+                break;
+            case SpriteTransformOp::Rotate180:
+                dx = old_w - 1 - sx;
+                dy = old_h - 1 - sy;
+                break;
+            }
+            dst[dy * new_stride + dx] = src[sy * old_stride + sx];
+        }
+    }
+
+    free(img->data_p);
+    img->data_p = dst;
+    img->w = (unsigned short)new_w;
+    img->h = (unsigned short)new_h;
+    transform_anipoint(op, old_w, old_h, &img->anix, &img->aniy);
+    if (secondary_anipoint_in_use(img))
+        transform_anipoint(op, old_w, old_h, &img->anix2, &img->aniy2);
+    transform_hitbox(op, old_w, old_h);
+
+    push_pixel_history_entry(&snap);
+    mark_dirty();
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+    g_xform.active = false;
+    deselect_all();
+    InvalidateThumb(g_doc->ilselected);
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "%s: %s (%dx%d -> %dx%d).",
+             sprite_transform_name(op), img->n_s, old_w, old_h, new_w, new_h);
+    g_restore_msg_timer = 4.0f;
+    return true;
+}
+
+static void DrawSpriteTransformMenuItems(void)
+{
+    if (ImGui::MenuItem("Rotate 90 Clockwise"))
+        TransformSelectedSprite(SpriteTransformOp::Rotate90CW);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Rotates pixels, anipoints, and hitbox together.");
+    if (ImGui::MenuItem("Rotate 90 Counterclockwise"))
+        TransformSelectedSprite(SpriteTransformOp::Rotate90CCW);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Rotates pixels, anipoints, and hitbox together.");
+    if (ImGui::MenuItem("Rotate 180"))
+        TransformSelectedSprite(SpriteTransformOp::Rotate180);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Rotates pixels, anipoints, and hitbox together.");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Flip Horizontal / Mirror"))
+        TransformSelectedSprite(SpriteTransformOp::FlipHorizontal);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Mirrors pixels, anipoints, and hitbox together.");
+    if (ImGui::MenuItem("Flip Vertical"))
+        TransformSelectedSprite(SpriteTransformOp::FlipVertical);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Flips pixels, anipoints, and hitbox together.");
+}
+
 static bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool trim_bounds)
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -6667,6 +7718,199 @@ static void DrawPaletteHistogramDialog(void)
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+}
+
+static void DrawPaletteReduceSwatches(const unsigned char *data, int numc)
+{
+    if (!data || numc <= 0) {
+        ImGui::TextDisabled("No colors");
+        return;
+    }
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    const float sw = 13.0f;
+    const float gap = 1.0f;
+    const int cols = 16;
+    int rows = (numc + cols - 1) / cols;
+    if (rows < 1) rows = 1;
+
+    for (int i = 0; i < numc; i++) {
+        int row = i / cols;
+        int col = i % cols;
+        ImVec2 a(p.x + col * (sw + gap), p.y + row * (sw + gap));
+        ImVec2 b(a.x + sw, a.y + sw);
+        unsigned char r, g, bch;
+        pal_word_to_rgb8(data + i * 2, &r, &g, &bch);
+        dl->AddRectFilled(a, b, IM_COL32(r, g, bch, 255));
+        dl->AddRect(a, b, i == 0 ? IM_COL32(95, 95, 95, 200)
+                                  : IM_COL32(0, 0, 0, 160));
+    }
+    ImGui::Dummy(ImVec2(cols * (sw + gap), rows * (sw + gap)));
+}
+
+static void DrawPaletteReduceImageColumn(const char *title, SDL_Texture *tex,
+                                         IMG *img, float max_w, float max_h)
+{
+    ImGui::TextUnformatted(title);
+    if (!tex || !img || img->w == 0 || img->h == 0) {
+        ImGui::TextDisabled("No preview");
+        return;
+    }
+
+    float scale_x = max_w / (float)img->w;
+    float scale_y = max_h / (float)img->h;
+    float scale = scale_x < scale_y ? scale_x : scale_y;
+    if (scale > 8.0f) scale = 8.0f;
+    if (scale <= 0.0f) scale = 1.0f;
+    ImVec2 sz((float)img->w * scale, (float)img->h * scale);
+    ImGui::Image((ImTextureID)(intptr_t)tex, sz);
+}
+
+static void DrawPaletteReduceDialog(void)
+{
+    if (g_show_palette_reduce) {
+        ImGui::SetNextWindowSize(ImVec2(760, 560), ImGuiCond_Appearing);
+        ImGui::OpenPopup("Downscale Palette");
+    }
+    if (!ImGui::BeginPopupModal("Downscale Palette", &g_show_palette_reduce,
+                                ImGuiWindowFlags_NoSavedSettings)) {
+        if (!g_show_palette_reduce) ClearPaletteReducePreviewTextures();
+        return;
+    }
+
+    int pal_idx = g_doc->plselected;
+    PAL *pal = (pal_idx >= 0) ? get_pal(pal_idx) : NULL;
+    if (!pal || !pal->data_p) {
+        ImGui::TextDisabled("No palette selected");
+        if (ImGui::Button("Close", ImVec2(100, 0))) {
+            g_show_palette_reduce = false;
+            ClearPaletteReducePreviewTextures();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    PaletteReductionPlan plan = {};
+    BuildPaletteReductionPlan(pal_idx, g_palette_reduce_bpp, &plan);
+
+    ImGui::Text("%.9s", pal->n_s);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%u colors, %u bpp", pal->numc, pal->bitspix);
+
+    bool changed_bpp = false;
+    for (int bpp = 8; bpp >= 4; bpp--) {
+        char label[32];
+        snprintf(label, sizeof(label), "%d bpp (%d)", bpp, 1 << bpp);
+        if (bpp != 8) ImGui::SameLine();
+        if (ImGui::RadioButton(label, g_palette_reduce_bpp == bpp)) {
+            g_palette_reduce_bpp = bpp;
+            changed_bpp = true;
+        }
+    }
+    if (changed_bpp) {
+        ClearPaletteReducePreviewTextures();
+        BuildPaletteReductionPlan(pal_idx, g_palette_reduce_bpp, &plan);
+    }
+
+    if (!plan.valid) {
+        ImGui::TextDisabled("%s", plan.error[0] ? plan.error : "Unable to build reduction preview.");
+        if (ImGui::Button("Close", ImVec2(100, 0))) {
+            g_show_palette_reduce = false;
+            ClearPaletteReducePreviewTextures();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    const char *reduce_mode = plan.quantized ? "weighted merge"
+                            : (plan.old_numc == plan.new_numc ? "unchanged"
+                                                               : "exact pack");
+    ImGui::TextDisabled("Target max: %d colors. Active: %d opaque. Result: %d colors. Mode: %s.",
+                        plan.target_numc, plan.active_colors,
+                        plan.new_numc, reduce_mode);
+    ImGui::TextDisabled("Affected: %d image%s, %d px remapped.",
+                        plan.images, plan.images == 1 ? "" : "s",
+                        plan.pixels_changed);
+    ImGui::Separator();
+
+    g_palette_reduce_preview_idx = FindPalettePreviewImage(pal_idx, g_palette_reduce_preview_idx);
+    IMG *preview_img = get_img(g_palette_reduce_preview_idx);
+    if (preview_img) {
+        if (ImGui::SmallButton("<##pal_reduce_prev")) {
+            g_palette_reduce_preview_idx =
+                StepPalettePreviewImage(pal_idx, g_palette_reduce_preview_idx, -1);
+            ClearPaletteReducePreviewTextures();
+            preview_img = get_img(g_palette_reduce_preview_idx);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(">##pal_reduce_next")) {
+            g_palette_reduce_preview_idx =
+                StepPalettePreviewImage(pal_idx, g_palette_reduce_preview_idx, 1);
+            ClearPaletteReducePreviewTextures();
+            preview_img = get_img(g_palette_reduce_preview_idx);
+        }
+        ImGui::SameLine();
+        std::string pname = img_name_string(preview_img);
+        ImGui::TextDisabled("[%d] %s", g_palette_reduce_preview_idx, pname.c_str());
+
+        RebuildPaletteReducePreviewTextures(plan);
+        float max_w = 330.0f;
+        float max_h = 320.0f;
+        if (ImGui::BeginTable("##pal_reduce_preview_table", 2,
+                              ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame)) {
+            ImGui::TableNextColumn();
+            DrawPaletteReduceImageColumn("Current", g_palette_reduce_orig_tex, preview_img, max_w, max_h);
+            ImGui::TableNextColumn();
+            DrawPaletteReduceImageColumn("Downscaled", g_palette_reduce_new_tex, preview_img, max_w, max_h);
+            ImGui::EndTable();
+        }
+    } else {
+        if (ImGui::BeginTable("##pal_reduce_swatch_table", 2,
+                              ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame)) {
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("Current");
+            DrawPaletteReduceSwatches((const unsigned char *)pal->data_p, plan.old_numc);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("Downscaled");
+            DrawPaletteReduceSwatches(plan.data, plan.new_numc);
+            ImGui::EndTable();
+        }
+    }
+
+    ImGui::Separator();
+    bool can_apply = plan.valid &&
+        (plan.old_numc != plan.new_numc ||
+         plan.pixels_changed > 0 ||
+         (int)pal->bitspix != plan.target_bpp);
+    ImGui::BeginDisabled(!can_apply);
+    if (ImGui::Button("OK", ImVec2(100, 0))) {
+        commit_palette_adjustments();
+        PaletteReductionPlan apply_plan = {};
+        if (BuildPaletteReductionPlan(pal_idx, g_palette_reduce_bpp, &apply_plan) &&
+            ApplyPaletteReductionPlan(apply_plan)) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Downscaled palette %.9s to %d bpp: %d -> %d colors, %d px remapped.",
+                     pal->n_s, apply_plan.target_bpp, apply_plan.old_numc,
+                     apply_plan.new_numc, apply_plan.pixels_changed);
+            g_restore_msg_timer = 5.0f;
+        }
+        g_show_palette_reduce = false;
+        ClearPaletteReducePreviewTextures();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_palette_reduce = false;
+        ClearPaletteReducePreviewTextures();
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
+    if (!g_show_palette_reduce) ClearPaletteReducePreviewTextures();
 }
 
 static void DrawAutoChopDialog(void)
@@ -7669,15 +8913,22 @@ void imgui_overlay_render(void)
     }
     /* Timeline play/pause (K = standard video editor convention). */
     if (ImGui::Shortcut(ImGuiKey_K, route)) imgtool_toggle_timeline_play();
-    /* Ctrl+Left/Right nudges the play-head frame within the timeline order. */
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, route)) {
+    /* Left/Right scrub the animation timeline. With a composite pair selected,
+       both slots advance together and remain grouped until the pair is cleared. */
+    bool widget_using_keyboard = ImGui::IsAnyItemActive() || ImGui::IsAnyItemFocused() || io.WantTextInput;
+    if (!widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
+        if (ImGui::Shortcut(ImGuiKey_LeftArrow, route))  StepTimelinePlayhead(-1);
+        if (ImGui::Shortcut(ImGuiKey_RightArrow, route)) StepTimelinePlayhead(1);
+    }
+    /* Ctrl+Left/Right reorders the current play-head frame within the timeline. */
+    if (!widget_using_keyboard && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, route)) {
         if (g_timeline_play_idx > 0 && g_timeline_play_idx < (int)g_timeline_frames.size()) {
             std::swap(g_timeline_frames[g_timeline_play_idx],
                       g_timeline_frames[g_timeline_play_idx - 1]);
             g_timeline_play_idx--;
         }
     }
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, route)) {
+    if (!widget_using_keyboard && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, route)) {
         if (g_timeline_play_idx + 1 < (int)g_timeline_frames.size()) {
             std::swap(g_timeline_frames[g_timeline_play_idx],
                       g_timeline_frames[g_timeline_play_idx + 1]);
@@ -7860,6 +9111,10 @@ void imgui_overlay_render(void)
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Auto-Chop Sprite...")) g_show_auto_chop = true;
             if (ImGui::MenuItem("Resize Sprite...", NULL, false, g_doc->ilselected >= 0)) OpenResizeSpriteDialog();
+            if (ImGui::BeginMenu("Transform Selected", g_doc->ilselected >= 0)) {
+                DrawSpriteTransformMenuItems();
+                ImGui::EndMenu();
+            }
             if (ImGui::MenuItem("Crop Selected to Content", NULL, false, g_doc->ilselected >= 0)) {
                 int n = CropSelectedImageToContent();
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -7969,6 +9224,7 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Show Histogram"))               { CalculatePaletteHistogram(); g_show_histogram = true; }
             if (ImGui::MenuItem("Clean Up Palette"))             CleanupSelectedPalette();
             if (ImGui::MenuItem("Clean Copy Palette"))           CreateCleanedPaletteCopy();
+            if (ImGui::MenuItem("Downscale Palette..."))         OpenPaletteReduceDialog(7);
             if (ImGui::MenuItem("Copy #0 to Opaque Slot"))       CopyPaletteZeroToOpaqueSlot();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Index 0 remains transparent; this copies its RGB into\n"
@@ -8456,6 +9712,10 @@ void imgui_overlay_render(void)
                             if (ImGui::MenuItem("Rename"))        OpenRenameImage();
                             if (ImGui::MenuItem("Duplicate"))     DuplicateImage();
                             if (ImGui::MenuItem("Resize..."))     OpenResizeSpriteDialog();
+                            if (ImGui::BeginMenu("Transform")) {
+                                DrawSpriteTransformMenuItems();
+                                ImGui::EndMenu();
+                            }
                             if (ImGui::MenuItem("Trim Bounds")) {
                                 int n = CropSelectedImageToContent();
                                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -8478,7 +9738,8 @@ void imgui_overlay_render(void)
                 }
                 ImGui::EndListBox();
             }
-            /* Mark buttons inline below list */
+            /* Mark and edit buttons below list. Keep them in short rows so
+               the fixed-width side panel never clips the rightmost actions. */
             if (ImGui::SmallButton("Mk All"))   { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Clr All"))  { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
@@ -8486,7 +9747,7 @@ void imgui_overlay_render(void)
             if (ImGui::SmallButton("Invert"))   { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Mk"))       { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
-            ImGui::SameLine();
+
             if (ImGui::SmallButton("Add##img")) { g_show_new_blank_dialog = true; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank image (W/H prompt)");
             ImGui::SameLine();
@@ -8550,6 +9811,7 @@ void imgui_overlay_render(void)
                         ImGui::Separator();
                         if (ImGui::MenuItem("Clean Up Palette")) CleanupSelectedPalette();
                         if (ImGui::MenuItem("Clean Copy Palette")) CreateCleanedPaletteCopy();
+                        if (ImGui::MenuItem("Downscale Palette...")) OpenPaletteReduceDialog(7);
                         if (ImGui::MenuItem("Copy #0 to Opaque Slot")) CopyPaletteZeroToOpaqueSlot();
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                             "Copies palette index 0's RGB into a nonzero slot.\n"
@@ -8597,6 +9859,9 @@ void imgui_overlay_render(void)
             ImGui::SameLine();
             if (ImGui::SmallButton("Clean+")) CreateCleanedPaletteCopy();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new cleaned palette copy without remapping sprites");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Bpp-")) OpenPaletteReduceDialog(7);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Downscale selected palette to 8, 7, 6, 5, or 4 bpp with preview");
             ImGui::SameLine();
             if (ImGui::SmallButton("#0>")) CopyPaletteZeroToOpaqueSlot();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy transparent color #0 to the first safe opaque slot");
@@ -10541,6 +11806,7 @@ void imgui_overlay_render(void)
         if (g_play_timer >= 1.0f / g_play_speed) {
             g_play_timer = 0.0f;
             int n = (int)g_timeline_frames.size();
+            int step_delta = 1;
             if (g_timeline_pingpong && n > 1) {
                 /* Ping-pong: walk in g_timeline_play_dir and bounce at the
                    endpoints, landing on them once per cycle. e.g. for 7
@@ -10555,15 +11821,9 @@ void imgui_overlay_render(void)
                     if (next < 0) next = 0;
                     if (next >= n) next = n - 1;
                 }
-                g_timeline_play_idx = next;
-            } else {
-                g_timeline_play_idx++;
-                if (g_timeline_play_idx >= (int)g_timeline_frames.size()) {
-                    g_timeline_play_idx = 0;
-                }
+                step_delta = next - g_timeline_play_idx;
             }
-            g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
-            g_zoom_reset = true;
+            StepTimelinePlayhead(step_delta);
         }
     } else if (!g_is_playing && !g_timeline_frames.empty()) {
         /* Sync play_idx with manual selection if possible */
@@ -10596,7 +11856,10 @@ void imgui_overlay_render(void)
         } else {
             if (ImGui::Button("\xEE\x80\xB7 Play", ImVec2(80, 0))) { /* U+E037 play_arrow */
                 if (!g_is_playing && !g_timeline_frames.empty()) {
-                    ClearTimelineCompositeSelection();
+                    if (TimelineCompositeReady()) {
+                        int p0 = TimelineFramePosition(g_timeline_composite[0]);
+                        if (p0 >= 0) g_timeline_play_idx = p0;
+                    }
                     g_play_timer = 0.0f;
                     g_is_playing = true;
                     g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
@@ -10626,6 +11889,12 @@ void imgui_overlay_render(void)
             g_timeline_play_dir = 1;
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play forward then reverse and loop (e.g. 1-7 then 7-1, repeating)");
+        if (TimelineCompositeReady()) {
+            ImGui::SameLine();
+            DrawTimelineCompositeLockToggle(0, "Back");
+            ImGui::SameLine();
+            DrawTimelineCompositeLockToggle(1, "Front");
+        }
 
         /* Draw a horizontal scrolling list of frames with drag & drop. Buttons
            render a per-frame thumbnail so the user can scan visually instead
@@ -10676,7 +11945,7 @@ void imgui_overlay_render(void)
                     item_max = ImGui::GetItemRectMax();
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Ctrl-click two frames to preview their anipoint-aligned composite");
+                    ImGui::SetTooltip("Ctrl-click two frames to pair them.\nPlay or Left/Right advances both positions together.\nIn the canvas, drag an unlocked sprite to adjust its anipoint.");
                 }
                 if (composite_slot >= 0) {
                     ImDrawList *fdl = ImGui::GetWindowDrawList();
@@ -10848,6 +12117,8 @@ void imgui_overlay_render(void)
 
     DrawPaletteHistogramDialog();
 
+    DrawPaletteReduceDialog();
+
     DrawMk2HitboxWindow();
 
     DrawAutoChopDialog();
@@ -10884,6 +12155,7 @@ void imgui_overlay_shutdown(void)
 {
     if (g_img_texture) { SDL_DestroyTexture(g_img_texture); g_img_texture = NULL; }
     if (g_world_onion_tex) { SDL_DestroyTexture(g_world_onion_tex); g_world_onion_tex = NULL; }
+    ClearPaletteReducePreviewTextures();
     ClearWorldTempTextures();
     ClearTimelineThumbCache();
     ClearPixelHistoryStacks();

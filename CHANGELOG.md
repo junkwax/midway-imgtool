@@ -8,6 +8,27 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.3.0] — Palette bpp downscale and transform tools
+
+Focused art-editing release for reducing palette budgets and tightening
+sprite/timeline alignment workflows.
+
+### Palette Editing
+- **Palette downscale preview** — selected palettes can be downscaled to
+  8, 7, 6, 5, or 4 bpp with a side-by-side sprite preview before applying.
+- **Smart reduction logic** — used colors are preserved exactly when they fit
+  the target bpp; otherwise the reducer uses weighted color merging and remaps
+  every sprite that references the palette.
+
+### Sprite Editing
+- **Lossless sprite transforms** — selected sprites can rotate or flip while
+  keeping pixels, anipoints, and hitbox state aligned.
+
+### Animation Timeline
+- **Composite pair controls** — paired timeline sprites can stay grouped during
+  playback/scrubbing, with lock toggles and drag-to-adjust anipoint alignment
+  in the composite preview.
+
 ## [v3.2.0] — Timeline composite preview
 
 Focused animation-alignment workflow release.
