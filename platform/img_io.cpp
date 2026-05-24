@@ -948,6 +948,10 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
         if (p->flags & 1) targets.push_back(p);
     }
 
+    if (targets.empty() && g_doc->ilselected >= 0) {
+        IMG *selected = get_img(g_doc->ilselected);
+        if (selected) targets.push_back(selected);
+    }
     if (targets.empty()) return 0;
 
     undo_push();
@@ -960,6 +964,7 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
 
         int src_stride = (master->w + 3) & ~3;
         unsigned char *src_pix = (unsigned char *)master->data_p;
+        int piece_no = 0;
 
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < cols; c++) {
@@ -1017,19 +1022,17 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
                 new_img->flags = 0; /* Unmarked */
                 new_img->opals = master->opals;
 
-                /* Suffix format: _NL (single-digit row + A..Z column) for the
-                   common case; _NNL for r>=10; AA..AZ wraparound for c>=26 by
-                   adding a second leading letter. n_s is 16 bytes including NUL
-                   so the base gets trimmed to fit. */
+                /* Shipping Midway sprite pieces are commonly named BASE1A,
+                   BASE1B, BASE1C rather than carrying hierarchy metadata in
+                   the IMG itself. Use direct A..Z suffixes for generated
+                   pieces and fall back to _NN only for unusually large chops. */
                 char suffix[8];
-                if (c < 26) {
-                    snprintf(suffix, sizeof(suffix), "_%d%c", r + 1, 'A' + c);
+                if (piece_no < 26) {
+                    snprintf(suffix, sizeof(suffix), "%c", 'A' + piece_no);
                 } else {
-                    int hi = c / 26;        /* 1 = AA..AZ, 2 = BA..BZ, ... */
-                    int lo = c % 26;
-                    snprintf(suffix, sizeof(suffix), "_%d%c%c",
-                             r + 1, 'A' + (hi - 1), 'A' + lo);
+                    snprintf(suffix, sizeof(suffix), "_%02d", piece_no + 1);
                 }
+                piece_no++;
                 size_t suf_len = strlen(suffix);
                 size_t budget = (suf_len < 15) ? (15 - suf_len) : 0;
                 std::string base_name = master->n_s;

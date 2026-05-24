@@ -8,6 +8,37 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.4.0] — Sprite import, subframes, and palette inheritance
+
+Workflow release for batch-importing art, organizing chopped sprites, and
+moving palette work between related libraries.
+
+### Sprite Editing
+- **Multi-file PNG/GIF import** — the custom file dialog now supports
+  Ctrl-click and Shift-click selection for PNG/GIF import modes.
+- **Canvas rotate controls** — opened sprites show small clockwise and
+  counterclockwise rotate buttons in the top-right of the canvas.
+- **Bulk rename** — marked sprites can be renamed sequentially, with optional
+  tailing of existing names.
+- **Break into Subframes** — marked sprites, or the selected sprite when none
+  are marked, can be split into Midway-style A/B/C pieces with anipoints
+  recalculated for in-game alignment.
+
+### Image List
+- **Visual subframe folders** — sprites named like `BASE1A`, `BASE1B`, and
+  `BASE1C` are grouped as collapsible visual folders without writing hierarchy
+  data back into the IMG file.
+- **Image sorting** — the image panel can sort by original order, name, or
+  sprite size.
+
+### Palette Editing
+- **Palette inheritance** — selected palettes can inherit colors from a marked
+  source palette, remapping sprites to the nearest matching source colors.
+- **Duplicate palette merge** — byte-identical duplicate palettes can be merged
+  into the first matching palette while remapping sprites safely.
+- **Single palette mark button** — palette controls now include a selected
+  palette mark toggle alongside mark-all controls.
+
 ## [v3.3.0] — Palette bpp downscale and transform tools
 
 Focused art-editing release for reducing palette budgets and tightening

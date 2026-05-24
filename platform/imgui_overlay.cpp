@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
+#include <cctype>
 #include <vector>
 #include <algorithm>
 #include <regex>
@@ -310,6 +311,12 @@ static bool         g_show_rename = false;
 static RenameTarget g_rename_target = RenameTarget::Palette;
 static int          g_rename_idx = -1;
 static char         g_rename_buf[20] = {0};
+static bool         g_rename_tail_existing = false;
+static int          g_rename_start_number = 1;
+
+enum class ImageListSort { Original = 0, Name, Size };
+static ImageListSort g_image_list_sort = ImageListSort::Original;
+static bool          g_image_list_sort_desc = false;
 
 /* Unsaved changes confirmation */
 static bool g_show_unsaved_confirm = false;
@@ -1117,6 +1124,41 @@ static int CountMarkedImages(void)
     return count;
 }
 
+static std::string InferSubframeParentName(const char *name)
+{
+    if (!name || !*name) return std::string();
+    std::string s(name);
+    while (!s.empty() && s.back() == ' ') s.pop_back();
+    if (s.size() < 2) return std::string();
+
+    size_t end = s.size();
+    size_t suffix = end;
+    while (suffix > 0 && std::isalpha((unsigned char)s[suffix - 1]))
+        suffix--;
+    size_t suffix_len = end - suffix;
+    if (suffix_len > 0 && suffix > 0 && std::isdigit((unsigned char)s[suffix - 1])) {
+        size_t digits = suffix;
+        while (digits > 0 && std::isdigit((unsigned char)s[digits - 1]))
+            digits--;
+
+        /* Original Midway libraries overwhelmingly use BASE1A/BASE1B/etc.
+           Tool-generated grid chops may use BASE_1A. Keep FLIP and other
+           word suffixes out of the visual subframe folders. */
+        if (digits > 0 && (s[digits - 1] == '_' || s[digits - 1] == '-'))
+            return s.substr(0, digits - 1);
+        if (suffix_len == 1)
+            return s.substr(0, suffix);
+    }
+
+    size_t digits = end;
+    while (digits > 0 && std::isdigit((unsigned char)s[digits - 1]))
+        digits--;
+    if (digits < end && digits > 0 && (s[digits - 1] == '_' || s[digits - 1] == '-'))
+        return s.substr(0, digits - 1);
+
+    return std::string();
+}
+
 static void MirrorMarkedAnipointsToReverseWithToast(void)
 {
     int marked = CountMarkedImages();
@@ -1619,8 +1661,8 @@ static int   g_histogram_img_count = 0;
 /* ---- Bulk Restore Regex state ---- */
 static bool g_show_restore_regex = false;
 static bool g_show_auto_chop = false;
-static int  g_chop_w = 255;
-static int  g_chop_h = 255;
+static int  g_chop_w = 64;
+static int  g_chop_h = 128;
 static bool g_chop_trim = true;
 static char g_restore_regex_buf[256] = "^(.+)[A-Z]$";
 static std::vector<BulkRestoreMatch> g_restore_matches;
@@ -2528,6 +2570,237 @@ static void MergeMarkedPalettes(void)
     g_img_tex_idx = -2;
 }
 
+static bool PalettesAreIdentical(const PAL *a, const PAL *b)
+{
+    if (!a || !b || !a->data_p || !b->data_p) return false;
+    if (a->bitspix != b->bitspix || a->numc != b->numc) return false;
+    if (a->numc == 0) return false;
+    return memcmp(a->data_p, b->data_p, (size_t)a->numc * 2) == 0;
+}
+
+static int MergeDuplicatePalettes(void)
+{
+    int n_pals = count_pals();
+    if (n_pals < 2) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No duplicate palettes found.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    std::vector<PAL *> pals;
+    std::vector<int> duplicate_to;
+    pals.reserve(n_pals);
+    duplicate_to.assign(n_pals, -1);
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p)
+        pals.push_back(p);
+
+    int duplicates = 0;
+    for (int i = 0; i < (int)pals.size(); i++) {
+        for (int j = 0; j < i; j++) {
+            if (PalettesAreIdentical(pals[i], pals[j])) {
+                duplicate_to[i] = j;
+                duplicates++;
+                break;
+            }
+        }
+    }
+
+    if (duplicates == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No duplicate palettes found.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    undo_push();
+    mark_dirty();
+
+    int remapped_images = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        int pal_idx = (int)img->palnum;
+        if (pal_idx >= 0 && pal_idx < (int)duplicate_to.size() && duplicate_to[pal_idx] >= 0) {
+            img->palnum = (unsigned short)duplicate_to[pal_idx];
+            remapped_images++;
+        }
+    }
+    if (g_doc->plselected >= 0 && g_doc->plselected < (int)duplicate_to.size() &&
+        duplicate_to[g_doc->plselected] >= 0)
+        g_doc->plselected = duplicate_to[g_doc->plselected];
+
+    PAL *prev = NULL;
+    PAL *cur = (PAL *)g_doc->pal_p;
+    int original_idx = 0;
+    int current_idx = 0;
+    while (cur) {
+        if (original_idx < (int)duplicate_to.size() && duplicate_to[original_idx] >= 0) {
+            PAL *to_del = cur;
+            if (prev) prev->nxt_p = cur->nxt_p;
+            else g_doc->pal_p = cur->nxt_p;
+            cur = (PAL *)cur->nxt_p;
+            g_doc->palcnt--;
+
+            for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+                if ((int)img->palnum > current_idx) img->palnum--;
+            }
+            if ((int)g_doc->plselected > current_idx) g_doc->plselected--;
+
+            FreePal(to_del);
+        } else {
+            prev = cur;
+            cur = (PAL *)cur->nxt_p;
+            current_idx++;
+        }
+        original_idx++;
+    }
+
+    if ((unsigned)g_doc->plselected >= g_doc->palcnt)
+        g_doc->plselected = g_doc->palcnt ? (int)g_doc->palcnt - 1 : -1;
+    ApplyPalette(g_doc->plselected);
+    g_img_tex_idx = -2;
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Merged %d duplicate palette%s into first match%s.",
+             duplicates, duplicates == 1 ? "" : "s",
+             remapped_images ? "" : " (no sprites remapped)");
+    g_restore_msg_timer = 4.0f;
+    return duplicates;
+}
+
+static int PaletteColorDistance5(unsigned short a, unsigned short b)
+{
+    int ar = (a >> 10) & 0x1F;
+    int ag = (a >>  5) & 0x1F;
+    int ab =  a        & 0x1F;
+    int br = (b >> 10) & 0x1F;
+    int bg = (b >>  5) & 0x1F;
+    int bb =  b        & 0x1F;
+    int dr = ar - br;
+    int dg = ag - bg;
+    int db = ab - bb;
+    return dr * dr + dg * dg + db * db;
+}
+
+static int FindNearestPaletteSlot(const PAL *pal, unsigned short color_word)
+{
+    if (!pal || !pal->data_p || pal->numc <= 1) return 0;
+
+    const unsigned char *pd = (const unsigned char *)pal->data_p;
+    int count = pal->numc;
+    if (count > 256) count = 256;
+
+    int best = 1;
+    int best_dist = 0x7FFFFFFF;
+    for (int i = 1; i < count; i++) {
+        unsigned short w = (unsigned short)(pd[i * 2] | (pd[i * 2 + 1] << 8));
+        int dist = PaletteColorDistance5(color_word, w);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best = i;
+            if (dist == 0) break;
+        }
+    }
+    return best;
+}
+
+static int FindMarkedPaletteExcept(int except_idx)
+{
+    int idx = 0;
+    for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p, idx++) {
+        if (idx != except_idx && (pal->flags & 1))
+            return idx;
+    }
+    return -1;
+}
+
+static int InheritSelectedPaletteFromMarked(void)
+{
+    int target_idx = g_doc->plselected;
+    PAL *target = (target_idx >= 0) ? get_pal(target_idx) : NULL;
+    int source_idx = FindMarkedPaletteExcept(target_idx);
+    PAL *source = (source_idx >= 0) ? get_pal(source_idx) : NULL;
+
+    if (!target || !target->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select a target palette first.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+    if (!source || !source->data_p || source->numc <= 1) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark one source palette, then select the palette to inherit into.");
+        g_restore_msg_timer = 5.0f;
+        return 0;
+    }
+
+    commit_palette_adjustments();
+
+    unsigned char remap[256] = {0};
+    const unsigned char *target_data = (const unsigned char *)target->data_p;
+    int target_colors = target->numc;
+    if (target_colors > 256) target_colors = 256;
+    for (int i = 1; i < target_colors; i++) {
+        unsigned short w = (unsigned short)(target_data[i * 2] | (target_data[i * 2 + 1] << 8));
+        remap[i] = (unsigned char)FindNearestPaletteSlot(source, w);
+    }
+
+    int source_colors = source->numc;
+    if (source_colors > 256) source_colors = 256;
+    size_t source_bytes = (size_t)source_colors * 2;
+    void *new_data = malloc(source_bytes);
+    if (!new_data) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Could not allocate inherited palette data.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+    memcpy(new_data, source->data_p, source_bytes);
+
+    undo_push();
+
+    int pixels_changed = 0;
+    int images_touched = 0;
+    int img_idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, img_idx++) {
+        if ((int)img->palnum != target_idx) continue;
+        images_touched++;
+        if (img->data_p && img->w > 0 && img->h > 0) {
+            int stride = (img->w + 3) & ~3;
+            unsigned char *pix = (unsigned char *)img->data_p;
+            for (int y = 0; y < img->h; y++) {
+                for (int x = 0; x < img->w; x++) {
+                    unsigned char *p = pix + y * stride + x;
+                    unsigned char mapped = (*p < target_colors) ? remap[*p] : 0;
+                    if (*p != 0 && *p != mapped) {
+                        *p = mapped;
+                        pixels_changed++;
+                    }
+                }
+            }
+        }
+        InvalidateThumb(img_idx);
+    }
+
+    free(target->data_p);
+    target->data_p = new_data;
+    target->numc = (unsigned short)source_colors;
+    target->bitspix = source->bitspix;
+    target->pad = source->pad;
+
+    memset(g_palette_selection, 0, sizeof(g_palette_selection));
+    if (g_sel_color >= (int)target->numc)
+        g_sel_color = target->numc > 1 ? (int)target->numc - 1 : 0;
+    ApplyPalette(target_idx);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Inherited %.9s into %.9s: %d image%s, %d pixel%s remapped.",
+             source->n_s, target->n_s,
+             images_touched, images_touched == 1 ? "" : "s",
+             pixels_changed, pixels_changed == 1 ? "" : "s");
+    g_restore_msg_timer = 5.0f;
+    return pixels_changed;
+}
+
 static void OpenRenameImage(void)
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -2562,26 +2835,31 @@ static void OpenRenameMarkedImages(void)
     g_rename_idx = -1;
     strncpy(g_rename_buf, first->n_s, 12);
     g_rename_buf[12] = '\0';
+    g_rename_tail_existing = false;
+    g_rename_start_number = 1;
     g_show_rename = true;
 }
 
 static void ApplyMarkedImageRename(const char *base)
 {
-    if (!base || !*base) return;
+    if (!base || (!*base && !g_rename_tail_existing)) return;
     undo_push();
-    bool prepend = (base[0] == '+');
+    bool prepend = (base[0] == '+') && !g_rename_tail_existing;
     const char *core = prepend ? base + 1 : base;
-    int n = 0;
+    int n = g_rename_start_number;
+    if (n < 0) n = 0;
     for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (!(p->flags & 1)) continue;
-        if (prepend) {
-            char old[16];
-            strncpy(old, p->n_s, 15); old[15] = '\0';
+        char old[16];
+        strncpy(old, p->n_s, 15); old[15] = '\0';
+        if (g_rename_tail_existing) {
+            snprintf(p->n_s, sizeof(p->n_s), "%s%s%d", old, core, n);
+        } else if (prepend) {
             snprintf(p->n_s, sizeof(p->n_s), "%s%s", core, old);
         } else {
-            n++;
             snprintf(p->n_s, sizeof(p->n_s), "%s%d", core, n);
         }
+        n++;
         p->n_s[15] = '\0';
     }
 }
@@ -4156,6 +4434,8 @@ static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
 static char g_file_dialog_file[256] = "";
+static std::vector<std::string> g_file_dialog_multi_files;
+static std::string g_file_dialog_anchor_file;
 static char g_lod_override_dir[1024] = "";
 
 static unsigned int g_tbl_base_address = 0x02000000;
@@ -4172,6 +4452,13 @@ static int  g_gif_blend_mode      = GifBlend_Normal;
 static int  g_gif_opacity_percent = 100;
 static bool g_gif_import_all      = true;
 static bool g_palette_export_act  = false;
+
+static bool FileDialogSupportsMultiSelect(FileDialogMode mode)
+{
+    return mode == FileDialogMode::ImportPng ||
+           mode == FileDialogMode::ImportPngMatch ||
+           mode == FileDialogMode::ImportGif;
+}
 
 /* Group file-dialog modes into categories so each remembers its own last
    directory. Users tend to keep sprites, source PNGs, and TGA dumps in
@@ -4290,6 +4577,109 @@ struct FileEntry {
     long long    size;     /* bytes; 0 for dirs */
     long long    mtime;    /* unix-epoch-ish seconds; 0 for dirs */
 };
+
+static void FileDialogClearMultiSelection()
+{
+    g_file_dialog_multi_files.clear();
+    g_file_dialog_anchor_file.clear();
+}
+
+static bool FileDialogHasMultiFile(const std::string &name)
+{
+    return std::find(g_file_dialog_multi_files.begin(),
+                     g_file_dialog_multi_files.end(),
+                     name) != g_file_dialog_multi_files.end();
+}
+
+static void FileDialogAddMultiFile(const std::string &name)
+{
+    if (!FileDialogHasMultiFile(name))
+        g_file_dialog_multi_files.push_back(name);
+}
+
+static void FileDialogSetFocusedFile(const std::string &name)
+{
+    snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s", name.c_str());
+}
+
+static void FileDialogReplaceSelection(const std::string &name)
+{
+    g_file_dialog_multi_files.clear();
+    FileDialogAddMultiFile(name);
+    FileDialogSetFocusedFile(name);
+    g_file_dialog_anchor_file = name;
+}
+
+static void FileDialogToggleSelection(const std::string &name)
+{
+    auto it = std::find(g_file_dialog_multi_files.begin(),
+                        g_file_dialog_multi_files.end(),
+                        name);
+    if (it != g_file_dialog_multi_files.end())
+        g_file_dialog_multi_files.erase(it);
+    else
+        g_file_dialog_multi_files.push_back(name);
+
+    if (g_file_dialog_multi_files.empty())
+        g_file_dialog_file[0] = '\0';
+    else
+        FileDialogSetFocusedFile(name);
+    g_file_dialog_anchor_file = name;
+}
+
+static int FileDialogFindEntryIndex(const std::vector<FileEntry> &entries, const std::string &name)
+{
+    for (int i = 0; i < (int)entries.size(); i++) {
+        if (!entries[i].is_dir && entries[i].name == name)
+            return i;
+    }
+    return -1;
+}
+
+static void FileDialogSelectRange(const std::vector<FileEntry> &entries, int clicked_idx, bool append)
+{
+    if (clicked_idx < 0 || clicked_idx >= (int)entries.size() || entries[clicked_idx].is_dir)
+        return;
+
+    int anchor_idx = FileDialogFindEntryIndex(entries, g_file_dialog_anchor_file);
+    if (anchor_idx < 0) {
+        anchor_idx = clicked_idx;
+        g_file_dialog_anchor_file = entries[clicked_idx].name;
+    }
+
+    if (!append)
+        g_file_dialog_multi_files.clear();
+
+    int lo = anchor_idx < clicked_idx ? anchor_idx : clicked_idx;
+    int hi = anchor_idx > clicked_idx ? anchor_idx : clicked_idx;
+    for (int i = lo; i <= hi; i++) {
+        if (!entries[i].is_dir)
+            FileDialogAddMultiFile(entries[i].name);
+    }
+    FileDialogSetFocusedFile(entries[clicked_idx].name);
+}
+
+static std::vector<std::string> FileDialogSelectedFiles()
+{
+    std::vector<std::string> files;
+    if (FileDialogSupportsMultiSelect(g_file_dialog_mode) && !g_file_dialog_multi_files.empty())
+        files = g_file_dialog_multi_files;
+    else if (g_file_dialog_file[0])
+        files.push_back(g_file_dialog_file);
+    return files;
+}
+
+static void FileDialogSyncTypedFilename()
+{
+    if (!FileDialogSupportsMultiSelect(g_file_dialog_mode))
+        return;
+
+    FileDialogClearMultiSelection();
+    if (g_file_dialog_file[0]) {
+        g_file_dialog_multi_files.push_back(g_file_dialog_file);
+        g_file_dialog_anchor_file = g_file_dialog_file;
+    }
+}
 
 /* File-list sort key. Persists across dialog opens so the user keeps their
    preferred view. */
@@ -4798,6 +5188,11 @@ static void OpenFileDialog(FileDialogMode mode) {
     } else {
         g_file_dialog_file[0] = '\0';
     }
+    FileDialogClearMultiSelection();
+    if (FileDialogSupportsMultiSelect(mode) && g_file_dialog_file[0]) {
+        g_file_dialog_multi_files.push_back(g_file_dialog_file);
+        g_file_dialog_anchor_file = g_file_dialog_file;
+    }
     g_show_file_dialog = true;
 }
 
@@ -4903,7 +5298,11 @@ static void DrawFileDialog() {
     ImGui::SetNextWindowSize(ImVec2(800, 520), ImGuiCond_Once);
     if (ImGui::BeginPopupModal(title, &g_show_file_dialog, ImGuiWindowFlags_NoSavedSettings)) {
         
-        ImGui::InputText("Directory", g_file_dialog_dir, sizeof(g_file_dialog_dir));
+        if (ImGui::InputText("Directory", g_file_dialog_dir, sizeof(g_file_dialog_dir))) {
+            g_file_dialog_file[0] = '\0';
+            FileDialogClearMultiSelection();
+            file_preview_clear();
+        }
 
         /* Sort controls. Persistent across dialog opens. */
         ImGui::SameLine();
@@ -4932,6 +5331,9 @@ static void DrawFileDialog() {
             if (ImGui::Selectable("[..] (Up one level)", false, ImGuiSelectableFlags_AllowDoubleClick)) {
                 if (ImGui::IsMouseDoubleClicked(0)) {
                     snprintf(g_file_dialog_dir, sizeof(g_file_dialog_dir), "%s", parent_dir.c_str());
+                    g_file_dialog_file[0] = '\0';
+                    FileDialogClearMultiSelection();
+                    file_preview_clear();
                 }
             }
         }
@@ -4957,18 +5359,33 @@ static void DrawFileDialog() {
            file dialogs. The actual commit re-uses the OK/Open/Save button
            handler below by OR-ing this flag with its click. */
         bool dbl_click_commit = false;
-        for (const auto& entry : entries) {
+        const bool multi_select = FileDialogSupportsMultiSelect(g_file_dialog_mode);
+        for (int entry_idx = 0; entry_idx < (int)entries.size(); entry_idx++) {
+            const auto& entry = entries[entry_idx];
             std::string label = (entry.is_dir ? "[Dir] " : "      ") + entry.name;
-            bool selected = (entry.name == g_file_dialog_file);
+            bool selected = multi_select ? FileDialogHasMultiFile(entry.name)
+                                         : (entry.name == g_file_dialog_file);
             if (ImGui::Selectable(label.c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick)) {
                 if (entry.is_dir) {
                     if (ImGui::IsMouseDoubleClicked(0)) {
                         std::string new_dir = PathCombine(current_dir, entry.name);
                         snprintf(g_file_dialog_dir, sizeof(g_file_dialog_dir), "%s", new_dir.c_str());
                         g_file_dialog_file[0] = '\0';
+                        FileDialogClearMultiSelection();
+                        file_preview_clear();
                     }
                 } else {
-                    snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s", entry.name.c_str());
+                    if (multi_select) {
+                        const ImGuiIO &io = ImGui::GetIO();
+                        if (io.KeyShift)
+                            FileDialogSelectRange(entries, entry_idx, io.KeyCtrl);
+                        else if (io.KeyCtrl)
+                            FileDialogToggleSelection(entry.name);
+                        else
+                            FileDialogReplaceSelection(entry.name);
+                    } else {
+                        snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s", entry.name.c_str());
+                    }
                     if (ImGui::IsMouseDoubleClicked(0)) dbl_click_commit = true;
                 }
             }
@@ -5051,7 +5468,8 @@ static void DrawFileDialog() {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("If set, forces all IMGs to load from this directory, ignoring paths in the .lod file.");
         }
 
-        ImGui::InputText("File Name", g_file_dialog_file, sizeof(g_file_dialog_file));
+        if (ImGui::InputText("File Name", g_file_dialog_file, sizeof(g_file_dialog_file)))
+            FileDialogSyncTypedFilename();
         ImGui::SameLine();
         
         const char* btn_text = (g_file_dialog_mode == FileDialogMode::ImportPng ||
@@ -5065,6 +5483,7 @@ static void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::LoadTga ||
                                 g_file_dialog_mode == FileDialogMode::ImportPalette) ? "Open" : "Save";
         if (ImGui::Button(btn_text, ImVec2(100, 0)) || dbl_click_commit) {
+            std::vector<std::string> selected_files = FileDialogSelectedFiles();
             std::string full_path = PathCombine(g_file_dialog_dir, g_file_dialog_file);
 
             if (g_file_dialog_mode == FileDialogMode::ExportTga) {
@@ -5087,13 +5506,46 @@ static void DrawFileDialog() {
                 ImportPalette(full_path.c_str());
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportPng) {
-                ImportPng(full_path.c_str());
+                unsigned int before_count = g_doc->imgcnt;
+                for (const std::string &file : selected_files) {
+                    std::string path = PathCombine(g_file_dialog_dir, file);
+                    ImportPng(path.c_str());
+                }
+                if (selected_files.size() > 1) {
+                    unsigned int added = g_doc->imgcnt - before_count;
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             added ? "Imported %u image(s) from %d PNG file(s)." : "No PNG images imported.",
+                             added, (int)selected_files.size());
+                    g_restore_msg_timer = 4.0f;
+                }
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) {
-                ImportPngMatch(full_path.c_str());
+                unsigned int before_count = g_doc->imgcnt;
+                for (const std::string &file : selected_files) {
+                    std::string path = PathCombine(g_file_dialog_dir, file);
+                    ImportPngMatch(path.c_str());
+                }
+                if (selected_files.size() > 1) {
+                    unsigned int added = g_doc->imgcnt - before_count;
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             added ? "Imported %u image(s) from %d PNG file(s)." : "No PNG images imported.",
+                             added, (int)selected_files.size());
+                    g_restore_msg_timer = 4.0f;
+                }
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportGif) {
-                ImportGif(full_path.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all);
+                unsigned int before_count = g_doc->imgcnt;
+                for (const std::string &file : selected_files) {
+                    std::string path = PathCombine(g_file_dialog_dir, file);
+                    ImportGif(path.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all);
+                }
+                if (selected_files.size() > 1) {
+                    unsigned int added = g_doc->imgcnt - before_count;
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             added ? "Imported %u image(s) from %d GIF file(s)." : "No GIF images imported.",
+                             added, (int)selected_files.size());
+                    g_restore_msg_timer = 4.0f;
+                }
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) {
                 size_t dot = full_path.find_last_of('.');
@@ -5258,6 +5710,8 @@ static void DrawFileDialog() {
             g_show_file_dialog = false;
             ImGui::CloseCurrentPopup();
         }
+        if (FileDialogSupportsMultiSelect(g_file_dialog_mode) && g_file_dialog_multi_files.size() > 1)
+            ImGui::TextDisabled("%d files selected", (int)g_file_dialog_multi_files.size());
         ImGui::EndPopup();
     }
 }
@@ -6896,6 +7350,65 @@ static void DrawSpriteTransformMenuItems(void)
         "Flips pixels, anipoints, and hitbox together.");
 }
 
+static bool point_in_rect(ImVec2 p, ImVec2 mn, ImVec2 mx)
+{
+    return p.x >= mn.x && p.x < mx.x && p.y >= mn.y && p.y < mx.y;
+}
+
+static void canvas_rotate_button_rects(ImVec2 img_pos, ImVec2 img_sz,
+                                       ImVec2 mins[2], ImVec2 maxs[2])
+{
+    const float size = 24.0f;
+    const float gap = 4.0f;
+    const float inset = 4.0f;
+    const float group_w = size * 2.0f + gap;
+    float x0 = img_pos.x + img_sz.x - group_w - inset;
+    float min_x = img_pos.x + inset;
+    if (x0 < min_x) x0 = min_x;
+    float y0 = img_pos.y + inset;
+
+    mins[0] = ImVec2(x0, y0);
+    maxs[0] = ImVec2(x0 + size, y0 + size);
+    mins[1] = ImVec2(x0 + size + gap, y0);
+    maxs[1] = ImVec2(x0 + size + gap + size, y0 + size);
+}
+
+static void draw_rotate_arrow(ImDrawList *dl, ImVec2 center, bool clockwise, ImU32 col)
+{
+    const float r = 6.5f;
+    float a0 = clockwise ? -2.55f : -0.65f;
+    float a1 = clockwise ?  0.65f :  2.55f;
+    dl->PathArcTo(center, r, a0, a1, 18);
+    dl->PathStroke(col, false, 1.8f);
+
+    float tip_a = clockwise ? a1 : a0;
+    ImVec2 tip(center.x + cosf(tip_a) * r, center.y + sinf(tip_a) * r);
+    ImVec2 dir = clockwise
+        ? ImVec2(-sinf(tip_a),  cosf(tip_a))
+        : ImVec2( sinf(tip_a), -cosf(tip_a));
+    ImVec2 n(-dir.y, dir.x);
+    ImVec2 p1(tip.x - dir.x * 5.0f + n.x * 3.0f,
+              tip.y - dir.y * 5.0f + n.y * 3.0f);
+    ImVec2 p2(tip.x - dir.x * 5.0f - n.x * 3.0f,
+              tip.y - dir.y * 5.0f - n.y * 3.0f);
+    dl->AddTriangleFilled(tip, p1, p2, col);
+}
+
+static void draw_canvas_rotate_buttons(ImDrawList *dl, const ImVec2 mins[2],
+                                       const ImVec2 maxs[2], int hover_idx)
+{
+    for (int i = 0; i < 2; i++) {
+        bool hover = (i == hover_idx);
+        ImU32 bg = hover ? IM_COL32(45, 45, 45, 230) : IM_COL32(12, 12, 12, 175);
+        ImU32 border = hover ? IM_COL32(255, 220, 90, 255) : IM_COL32(235, 235, 235, 180);
+        ImU32 icon = hover ? IM_COL32(255, 235, 130, 255) : IM_COL32(245, 245, 245, 230);
+        dl->AddRectFilled(mins[i], maxs[i], bg, 4.0f);
+        dl->AddRect(mins[i], maxs[i], border, 4.0f, 0, hover ? 1.5f : 1.0f);
+        ImVec2 c((mins[i].x + maxs[i].x) * 0.5f, (mins[i].y + maxs[i].y) * 0.5f);
+        draw_rotate_arrow(dl, c, i == 1, icon);
+    }
+}
+
 static bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool trim_bounds)
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -7240,9 +7753,7 @@ static void DrawRenameDialog(void)
     if (!ImGui::BeginPopupModal(rename_title, &g_show_rename, ImGuiWindowFlags_AlwaysAutoResize)) return;
 
     if (g_rename_target == RenameTarget::MarkedImages) {
-        ImGui::TextWrapped("Base name. Prefix with '+' to prepend "
-                           "to existing names; otherwise the base is "
-                           "used with a numeric suffix (1, 2, 3, ...).");
+        ImGui::TextWrapped("Base text for a numbered sequence. Tail mode keeps each current name and appends this text plus the number.");
     } else if (g_rename_target == RenameTarget::Image) {
         IMG *img = get_img(g_rename_idx);
         if (img) ImGui::Text("Rename: %s", img->n_s);
@@ -7253,6 +7764,14 @@ static void DrawRenameDialog(void)
     const int maxlen = g_rename_target == RenameTarget::Palette ? 10 : 16;
     ImGui::InputText("##rn", g_rename_buf,
                      (size_t)maxlen < sizeof(g_rename_buf) ? maxlen : sizeof(g_rename_buf));
+    if (g_rename_target == RenameTarget::MarkedImages) {
+        ImGui::Checkbox("Tail existing names", &g_rename_tail_existing);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputInt("Start", &g_rename_start_number, 1, 10)) {
+            if (g_rename_start_number < 0) g_rename_start_number = 0;
+        }
+    }
     if (ImGui::Button("OK", ImVec2(100, 0))) {
         if (g_rename_target == RenameTarget::Image) {
             IMG *img = get_img(g_rename_idx);
@@ -7915,11 +8434,11 @@ static void DrawPaletteReduceDialog(void)
 
 static void DrawAutoChopDialog(void)
 {
-    if (g_show_auto_chop) ImGui::OpenPopup("Auto-Chop Sprite");
-    if (!ImGui::BeginPopupModal("Auto-Chop Sprite", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    if (g_show_auto_chop) ImGui::OpenPopup("Break into Subframes");
+    if (!ImGui::BeginPopupModal("Break into Subframes", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) return;
 
-    ImGui::TextWrapped("Slices marked images into a grid, trims empty space,\n"
-                       "and recalculates their ANIX/ANIY so they align perfectly in-game.");
+    ImGui::TextWrapped("Breaks marked sprites, or the selected sprite if none are marked,\n"
+                       "into Midway-style A/B/C pieces and recalculates ANIX/ANIY.");
     ImGui::Spacing();
     ImGui::SetNextItemWidth(100);
     if (ImGui::InputInt("Grid Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
@@ -7930,12 +8449,12 @@ static void DrawAutoChopDialog(void)
     ImGui::Separator();
     ImGui::Spacing();
 
-    if (ImGui::Button("Chop", ImVec2(100, 0))) {
+    if (ImGui::Button("Break", ImVec2(100, 0))) {
         int count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim);
         if (count > 0) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg), "Auto-chopped into %d piece(s).", count);
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "Broke into %d subframe piece(s).", count);
         } else {
-            snprintf(g_restore_msg, sizeof(g_restore_msg), "No pieces generated (check marks).");
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "No pieces generated (mark or select a sprite).");
         }
         g_restore_msg_timer = 4.0f;
         g_show_auto_chop = false;
@@ -9109,7 +9628,7 @@ void imgui_overlay_render(void)
         }
         if (ImGui::BeginMenu("Operations")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
-            if (ImGui::MenuItem("Auto-Chop Sprite...")) g_show_auto_chop = true;
+            if (ImGui::MenuItem("Break into Subframes...")) g_show_auto_chop = true;
             if (ImGui::MenuItem("Resize Sprite...", NULL, false, g_doc->ilselected >= 0)) OpenResizeSpriteDialog();
             if (ImGui::BeginMenu("Transform Selected", g_doc->ilselected >= 0)) {
                 DrawSpriteTransformMenuItems();
@@ -9224,6 +9743,14 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Show Histogram"))               { CalculatePaletteHistogram(); g_show_histogram = true; }
             if (ImGui::MenuItem("Clean Up Palette"))             CleanupSelectedPalette();
             if (ImGui::MenuItem("Clean Copy Palette"))           CreateCleanedPaletteCopy();
+            if (ImGui::MenuItem("Inherit Colors from Marked"))   InheritSelectedPaletteFromMarked();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Mark the source palette, select the target palette.\n"
+                "Sprites using the target are remapped to the nearest source colors.");
+            if (ImGui::MenuItem("Merge Duplicate Palettes"))      MergeDuplicatePalettes();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Finds byte-identical palettes and remaps sprites using later\n"
+                "duplicates to the first matching palette in the list.");
             if (ImGui::MenuItem("Downscale Palette..."))         OpenPaletteReduceDialog(7);
             if (ImGui::MenuItem("Copy #0 to Opaque Slot"))       CopyPaletteZeroToOpaqueSlot();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -9644,109 +10171,313 @@ void imgui_overlay_render(void)
                 static int last_scrolled_to = -2;
                 bool need_scroll = (g_doc->ilselected != last_scrolled_to);
 
-                char current_group[32] = {0};
-                bool group_open = true;
+                struct ImagePanelRow {
+                    int idx;
+                    IMG *img;
+                    std::string name;
+                    std::string src;
+                    int area;
+                    int parent_row;
+                    std::string virtual_parent;
+                    std::vector<int> children;
+                };
 
+                std::vector<ImagePanelRow> rows;
+                std::vector<std::string> source_groups;
+                rows.reserve(n_imgs);
                 for (int i = 0; i < n_imgs; i++) {
                     IMG *img = get_img(i);
                     if (!img) break;
-
                     const char *src_name = img->src_filename[0] ? img->src_filename : "Workspace";
-                    if (strcmp(current_group, src_name) != 0) {
-                        if (current_group[0] != '\0' && group_open) {
+                    bool have_group = false;
+                    for (const std::string &g : source_groups) {
+                        if (g == src_name) { have_group = true; break; }
+                    }
+                    if (!have_group) source_groups.push_back(src_name);
+                    rows.push_back({i, img, img->n_s, src_name,
+                                    (int)img->w * (int)img->h, -1,
+                                    std::string(), {}});
+                }
+                for (int r = 0; r < (int)rows.size(); r++) {
+                    std::string parent_name = InferSubframeParentName(rows[r].name.c_str());
+                    if (parent_name.empty()) continue;
+                    bool found_parent = false;
+                    for (int p = 0; p < (int)rows.size(); p++) {
+                        if (p == r) continue;
+                        if (rows[p].src == rows[r].src && rows[p].name == parent_name) {
+                            rows[r].parent_row = p;
+                            rows[p].children.push_back(r);
+                            found_parent = true;
+                            break;
+                        }
+                    }
+                    if (!found_parent)
+                        rows[r].virtual_parent = parent_name;
+                }
+                for (int r = 0; r < (int)rows.size(); r++) {
+                    if (rows[r].virtual_parent.empty()) continue;
+                    int siblings = 0;
+                    for (const ImagePanelRow &other : rows) {
+                        if (other.src == rows[r].src &&
+                            other.virtual_parent == rows[r].virtual_parent)
+                            siblings++;
+                    }
+                    if (siblings < 2)
+                        rows[r].virtual_parent.clear();
+                }
+
+                auto row_less = [&](int a, int b) {
+                    const ImagePanelRow &ra = rows[a];
+                    const ImagePanelRow &rb = rows[b];
+                    if (g_image_list_sort == ImageListSort::Name && ra.name != rb.name)
+                        return g_image_list_sort_desc ? (ra.name > rb.name) : (ra.name < rb.name);
+                    if (g_image_list_sort == ImageListSort::Size && ra.area != rb.area)
+                        return g_image_list_sort_desc ? (ra.area > rb.area) : (ra.area < rb.area);
+                    return g_image_list_sort_desc ? (ra.idx > rb.idx) : (ra.idx < rb.idx);
+                };
+
+                auto draw_image_context = [&](int img_idx) {
+                    if (ImGui::BeginPopupContextItem("##imgctx")) {
+                        g_doc->ilselected = img_idx;
+                        IMG *ctx_img = get_img(img_idx);
+                        if (ImGui::MenuItem("Mark / Unmark") && ctx_img) { ctx_img->flags ^= 1; }
+                        if (ImGui::MenuItem("Rename"))        OpenRenameImage();
+                        if (ImGui::MenuItem("Duplicate"))     DuplicateImage();
+                        if (ImGui::MenuItem("Resize..."))     OpenResizeSpriteDialog();
+                        if (ImGui::BeginMenu("Transform")) {
+                            DrawSpriteTransformMenuItems();
+                            ImGui::EndMenu();
+                        }
+                        if (ImGui::MenuItem("Trim Bounds")) {
+                            int n = CropSelectedImageToContent();
+                            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                     n > 0 ? "Trimmed selected sprite to non-transparent bounds."
+                                           : "Selected sprite already fits, or has no opaque pixels.");
+                            g_restore_msg_timer = 4.0f;
+                            if (n > 0) g_zoom_reset = true;
+                        }
+                        if (ImGui::MenuItem("Delete"))        DeleteImage(g_doc->ilselected);
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
+                        if (ImGui::MenuItem("Set Palette"))   SetPaletteOfSelected();
+                        ImGui::EndPopup();
+                    }
+                };
+
+                auto draw_leaf = [&](int row_id) {
+                    ImagePanelRow &row = rows[row_id];
+                    IMG *img = row.img;
+                    bool marked   = (img->flags & 1) != 0;
+                    bool selected = (row.idx == g_doc->ilselected);
+                    ImGui::PushID(row.idx);
+
+                    char label[96];
+                    const char *vis_icon = marked ? (g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT) : "   ";
+                    const char *img_icon = g_icon_font_loaded ? ICON_IMAGE : ICON_IMAGE_TXT;
+                    snprintf(label, sizeof(label), "%s %s  %s", vis_icon, img_icon, img->n_s);
+
+                    if (selected) {
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
+                    }
+                    if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_AllowDoubleClick)) {
+                        g_doc->ilselected = row.idx;
+                        g_palette_nav = false;
+                        if (ImGui::IsMouseDoubleClicked(0)) img->flags ^= 1;
+                    }
+                    if (selected && need_scroll && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
+                    if (selected && need_scroll) last_scrolled_to = g_doc->ilselected;
+                    if (selected) ImGui::PopStyleColor(2);
+                    draw_image_context(row.idx);
+                    ImGui::PopID();
+                };
+
+                auto collect_virtual_children = [&](const std::string &src,
+                                                    const std::string &parent,
+                                                    std::vector<int> &out) {
+                    out.clear();
+                    for (int r = 0; r < (int)rows.size(); r++) {
+                        if (rows[r].src == src && rows[r].virtual_parent == parent)
+                            out.push_back(r);
+                    }
+                };
+
+                auto virtual_group_stats = [&](const std::string &src,
+                                               const std::string &parent,
+                                               int *order, int *area) {
+                    int best_order = 0x7FFFFFFF;
+                    int best_area = 0;
+                    for (const ImagePanelRow &row : rows) {
+                        if (row.src != src || row.virtual_parent != parent) continue;
+                        if (row.idx < best_order) best_order = row.idx;
+                        if (row.area > best_area) best_area = row.area;
+                    }
+                    if (order) *order = (best_order == 0x7FFFFFFF) ? 0 : best_order;
+                    if (area) *area = best_area;
+                };
+
+                auto draw_virtual_group = [&](const std::string &src,
+                                              const std::string &parent) {
+                    std::vector<int> child_rows;
+                    collect_virtual_children(src, parent, child_rows);
+                    if (child_rows.empty()) return;
+                    std::stable_sort(child_rows.begin(), child_rows.end(), row_less);
+
+                    bool any_marked = false;
+                    bool any_selected = false;
+                    for (int child_id : child_rows) {
+                        IMG *img = rows[child_id].img;
+                        if (img && (img->flags & 1)) any_marked = true;
+                        if (rows[child_id].idx == g_doc->ilselected) any_selected = true;
+                    }
+
+                    const char *vis_icon = any_marked ? (g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT) : "   ";
+                    const char *folder_icon = g_icon_font_loaded ? ICON_FOLDER : ICON_FOLDER_TXT;
+                    char label[96];
+                    snprintf(label, sizeof(label), "%s %s  %s", vis_icon, folder_icon, parent.c_str());
+
+                    ImGui::PushID(src.c_str());
+                    ImGui::PushID(parent.c_str());
+                    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen |
+                        ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth;
+                    if (any_selected) flags |= ImGuiTreeNodeFlags_Selected;
+                    bool open = ImGui::TreeNodeEx(label, flags);
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
+                        g_doc->ilselected = rows[child_rows[0]].idx;
+                        g_palette_nav = false;
+                    }
+                    if (open) {
+                        for (int child_id : child_rows) draw_leaf(child_id);
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                    ImGui::PopID();
+                };
+
+                for (const std::string &src_group : source_groups) {
+                    ImGui::PushID(src_group.c_str());
+                    char group_label[96];
+                    snprintf(group_label, sizeof(group_label), "%s  %s",
+                             g_icon_font_loaded ? ICON_FOLDER : ICON_FOLDER_TXT,
+                             src_group.c_str());
+                    bool group_open = ImGui::TreeNodeEx(group_label,
+                        ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth);
+                    ImGui::PopID();
+                    if (!group_open) continue;
+
+                    struct ImagePanelItem {
+                        bool is_virtual;
+                        int row_id;
+                        std::string parent;
+                    };
+
+                    std::vector<ImagePanelItem> items;
+                    for (int r = 0; r < (int)rows.size(); r++) {
+                        if (rows[r].src == src_group &&
+                            rows[r].parent_row < 0 &&
+                            rows[r].virtual_parent.empty())
+                            items.push_back({false, r, std::string()});
+                    }
+                    std::vector<std::string> virtual_parents;
+                    for (const ImagePanelRow &row : rows) {
+                        if (row.src != src_group || row.virtual_parent.empty()) continue;
+                        bool seen = false;
+                        for (const std::string &parent : virtual_parents) {
+                            if (parent == row.virtual_parent) { seen = true; break; }
+                        }
+                        if (!seen) virtual_parents.push_back(row.virtual_parent);
+                    }
+                    for (const std::string &parent : virtual_parents)
+                        items.push_back({true, -1, parent});
+
+                    auto item_less = [&](const ImagePanelItem &a, const ImagePanelItem &b) {
+                        std::string an = a.is_virtual ? a.parent : rows[a.row_id].name;
+                        std::string bn = b.is_virtual ? b.parent : rows[b.row_id].name;
+                        int aa = 0, ba = 0;
+                        int ai = 0, bi = 0;
+                        if (a.is_virtual) virtual_group_stats(src_group, a.parent, &ai, &aa);
+                        else { ai = rows[a.row_id].idx; aa = rows[a.row_id].area; }
+                        if (b.is_virtual) virtual_group_stats(src_group, b.parent, &bi, &ba);
+                        else { bi = rows[b.row_id].idx; ba = rows[b.row_id].area; }
+
+                        if (g_image_list_sort == ImageListSort::Name && an != bn)
+                            return g_image_list_sort_desc ? (an > bn) : (an < bn);
+                        if (g_image_list_sort == ImageListSort::Size && aa != ba)
+                            return g_image_list_sort_desc ? (aa > ba) : (aa < ba);
+                        return g_image_list_sort_desc ? (ai > bi) : (ai < bi);
+                    };
+                    std::stable_sort(items.begin(), items.end(), item_less);
+
+                    for (const ImagePanelItem &item : items) {
+                        if (item.is_virtual) {
+                            draw_virtual_group(src_group, item.parent);
+                            continue;
+                        }
+
+                        int row_id = item.row_id;
+                        ImagePanelRow &row = rows[row_id];
+                        if (row.children.empty()) {
+                            draw_leaf(row_id);
+                            continue;
+                        }
+
+                        IMG *img = row.img;
+                        bool marked   = (img->flags & 1) != 0;
+                        bool selected = (row.idx == g_doc->ilselected);
+                        const char *vis_icon = marked ? (g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT) : "   ";
+                        const char *folder_icon = g_icon_font_loaded ? ICON_FOLDER : ICON_FOLDER_TXT;
+                        char label[96];
+                        snprintf(label, sizeof(label), "%s %s  %s", vis_icon, folder_icon, img->n_s);
+
+                        ImGui::PushID(row.idx);
+                        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen |
+                            ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth;
+                        if (selected) flags |= ImGuiTreeNodeFlags_Selected;
+                        bool open = ImGui::TreeNodeEx(label, flags);
+                        if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
+                            g_doc->ilselected = row.idx;
+                            g_palette_nav = false;
+                            if (ImGui::IsMouseDoubleClicked(0)) img->flags ^= 1;
+                        }
+                        if (selected && need_scroll && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
+                        if (selected && need_scroll) last_scrolled_to = g_doc->ilselected;
+                        draw_image_context(row.idx);
+
+                        if (open) {
+                            std::vector<int> child_rows = row.children;
+                            std::stable_sort(child_rows.begin(), child_rows.end(), row_less);
+                            for (int child_id : child_rows) draw_leaf(child_id);
                             ImGui::TreePop();
                         }
-                        strncpy(current_group, src_name, sizeof(current_group) - 1);
-                        current_group[sizeof(current_group) - 1] = '\0';
-                        
-                        ImGui::PushID(current_group);
-                        char group_label[64];
-                        snprintf(group_label, sizeof(group_label), "%s  %s", g_icon_font_loaded ? ICON_FOLDER : ICON_FOLDER_TXT, current_group);
-                        group_open = ImGui::TreeNodeEx(group_label, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth);
                         ImGui::PopID();
                     }
-
-                    if (group_open) {
-                        bool marked   = (img->flags & 1) != 0;
-                        bool selected = (i == g_doc->ilselected);
-                        ImGui::PushID(i);
-                        
-                        char label[64];
-                        const char *vis_icon = marked ? (g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT) : "   ";
-                        const char *img_icon = g_icon_font_loaded ? ICON_IMAGE : ICON_IMAGE_TXT;
-                        snprintf(label, sizeof(label), "%s %s  %s", vis_icon, img_icon, img->n_s);
-                        
-                        if (selected) {
-                            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
-                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
-                        }
-                        
-                        if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_AllowDoubleClick)) {
-                            g_doc->ilselected = i;
-                            g_palette_nav = false;
-                            if (ImGui::IsMouseDoubleClicked(0)) {
-                                img->flags ^= 1;
-                            }
-                        }
-                        /* When g_doc->ilselected changes and the selected row would
-                           be clipped above or below the listbox viewport,
-                           nudge the scroll so the user can see where they
-                           are. We DON'T pin every frame — only when the
-                           selection changed AND the row is currently out of
-                           view (IsItemVisible is false), so manual scrolling
-                           still works once you've found your sprite. */
-                        if (selected && need_scroll && !ImGui::IsItemVisible()) {
-                            ImGui::SetScrollHereY(0.5f);
-                        }
-                        if (selected && need_scroll) {
-                            last_scrolled_to = g_doc->ilselected;
-                        }
-                        
-                        if (selected) {
-                            ImGui::PopStyleColor(2);
-                        }
-
-                        /* Right-click context menu on image items */
-                        if (ImGui::BeginPopupContextItem("##imgctx")) {
-                            if (ImGui::MenuItem("Mark / Unmark")) { img->flags ^= 1; }
-                            if (ImGui::MenuItem("Rename"))        OpenRenameImage();
-                            if (ImGui::MenuItem("Duplicate"))     DuplicateImage();
-                            if (ImGui::MenuItem("Resize..."))     OpenResizeSpriteDialog();
-                            if (ImGui::BeginMenu("Transform")) {
-                                DrawSpriteTransformMenuItems();
-                                ImGui::EndMenu();
-                            }
-                            if (ImGui::MenuItem("Trim Bounds")) {
-                                int n = CropSelectedImageToContent();
-                                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                                         n > 0 ? "Trimmed selected sprite to non-transparent bounds."
-                                               : "Selected sprite already fits, or has no opaque pixels.");
-                                g_restore_msg_timer = 4.0f;
-                                if (n > 0) g_zoom_reset = true;
-                            }
-                            if (ImGui::MenuItem("Delete"))        DeleteImage(g_doc->ilselected);
-                            ImGui::Separator();
-                            if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
-                            if (ImGui::MenuItem("Set Palette"))   SetPaletteOfSelected();
-                            ImGui::EndPopup();
-                        }
-                        ImGui::PopID();
-                    }
-                }
-                if (current_group[0] != '\0' && group_open) {
                     ImGui::TreePop();
                 }
                 ImGui::EndListBox();
             }
+            const char *sort_labels[] = { "Order", "Name", "Size" };
+            int img_sort_idx = (int)g_image_list_sort;
+            ImGui::TextUnformatted("Sort");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(92.0f);
+            if (ImGui::Combo("##imgsort", &img_sort_idx, sort_labels, 3))
+                g_image_list_sort = (ImageListSort)img_sort_idx;
+            ImGui::SameLine();
+            if (ImGui::SmallButton(g_image_list_sort_desc ? "v##imgsort" : "^##imgsort"))
+                g_image_list_sort_desc = !g_image_list_sort_desc;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle image list sort direction");
+
             /* Mark and edit buttons below list. Keep them in short rows so
                the fixed-width side panel never clips the rightmost actions. */
+            int n_marked_imgs = CountMarkedImages();
             if (ImGui::SmallButton("Mk All"))   { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Clr All"))  { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Invert"))   { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags^=1;p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Mk"))       { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
+            if (ImGui::SmallButton("Mk Sel##img")) { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark / unmark selected sprite");
 
             if (ImGui::SmallButton("Add##img")) { g_show_new_blank_dialog = true; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank image (W/H prompt)");
@@ -9775,6 +10506,19 @@ void imgui_overlay_render(void)
             if (g_clipboard.valid && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Paste clipboard as a new sprite (Ctrl+Shift+V)");
             if (!g_clipboard.valid) ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (n_marked_imgs == 0) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Bulk Rename##img")) OpenRenameMarkedImages();
+            if (n_marked_imgs > 0 && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Rename marked sprites as Base1, Base2, Base3...");
+            if (n_marked_imgs == 0) ImGui::EndDisabled();
+
+            bool can_break_subframes = (n_marked_imgs > 0 || g_doc->ilselected >= 0);
+            if (!can_break_subframes) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Break Sub##img")) g_show_auto_chop = true;
+            if (can_break_subframes && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Break marked sprites, or selected sprite if none are marked, into A/B/C subframes");
+            if (!can_break_subframes) ImGui::EndDisabled();
         }
 
         /* --- Palette List --- */
@@ -9811,6 +10555,13 @@ void imgui_overlay_render(void)
                         ImGui::Separator();
                         if (ImGui::MenuItem("Clean Up Palette")) CleanupSelectedPalette();
                         if (ImGui::MenuItem("Clean Copy Palette")) CreateCleanedPaletteCopy();
+                        if (ImGui::MenuItem("Inherit Colors from Marked")) InheritSelectedPaletteFromMarked();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                            "Mark the source palette, select the target palette.\n"
+                            "Sprites using the target are remapped to nearest source colors.");
+                        if (ImGui::MenuItem("Merge Duplicate Palettes")) MergeDuplicatePalettes();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                            "Remaps sprites using later duplicate palettes to the first matching palette.");
                         if (ImGui::MenuItem("Downscale Palette...")) OpenPaletteReduceDialog(7);
                         if (ImGui::MenuItem("Copy #0 to Opaque Slot")) CopyPaletteZeroToOpaqueSlot();
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -9834,6 +10585,9 @@ void imgui_overlay_render(void)
             if (ImGui::SmallButton("Clr All"))   { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Mk"))        { PAL *p=get_pal(g_doc->plselected); if(p) p->flags^=1; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark / unmark selected palette");
             ImGui::SameLine();
             if (ImGui::SmallButton("Add")) AddNewPalette();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank 256-color palette");
@@ -9859,6 +10613,12 @@ void imgui_overlay_render(void)
             ImGui::SameLine();
             if (ImGui::SmallButton("Clean+")) CreateCleanedPaletteCopy();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new cleaned palette copy without remapping sprites");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Dups")) MergeDuplicatePalettes();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Merge duplicate palettes into the first matching palette");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Inh")) InheritSelectedPaletteFromMarked();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Inherit colors from marked source palette into selected target");
             ImGui::SameLine();
             if (ImGui::SmallButton("Bpp-")) OpenPaletteReduceDialog(7);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Downscale selected palette to 8, 7, 6, 5, or 4 bpp with preview");
@@ -10161,6 +10921,11 @@ void imgui_overlay_render(void)
         ImVec2 img_sz(0, 0);
         float sx = 1.0f, sy = 1.0f;
         bool timeline_composite_preview_active = false;
+        bool rotate_buttons_visible = false;
+        bool rotate_button_hovered = false;
+        int rotate_button_hover_idx = -1;
+        ImVec2 rotate_button_min[2] = {};
+        ImVec2 rotate_button_max[2] = {};
 
         /* ---- World View mode (DOS-style anipoint alignment workspace) ----
          * Renders the sprite inside a fixed black canvas, sprite anchored at
@@ -10355,6 +11120,8 @@ void imgui_overlay_render(void)
             img_sz  = ImVec2(tw, th);
             sx = tw / (float)g_img_tex_w;
             sy = th / (float)g_img_tex_h;
+            rotate_buttons_visible = true;
+            canvas_rotate_button_rects(img_pos, img_sz, rotate_button_min, rotate_button_max);
 
             /* Checkerboard background for transparency */
             ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -10536,10 +11303,28 @@ void imgui_overlay_render(void)
            click, so the grid-selection block below doesn't also start a selection. */
         bool widget_consumed_click = false;
 
+        if (rotate_buttons_visible && !canvas_input_blocked && !timeline_composite_preview_active) {
+            for (int i = 0; i < 2; i++) {
+                if (point_in_rect(mouse, rotate_button_min[i], rotate_button_max[i])) {
+                    rotate_button_hovered = true;
+                    rotate_button_hover_idx = i;
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    ImGui::SetTooltip(i == 0 ? "Rotate 90 Counterclockwise" : "Rotate 90 Clockwise");
+                    widget_consumed_click = true;
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        TransformSelectedSprite(i == 0 ? SpriteTransformOp::Rotate90CCW
+                                                       : SpriteTransformOp::Rotate90CW);
+                    }
+                    break;
+                }
+            }
+        }
+
         /* Pixel highlight at high zoom */
         if (!canvas_input_blocked && !timeline_composite_preview_active) {
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
-                        mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
+                        mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y &&
+                        !rotate_button_hovered;
             if (over && img_sz.x > 0 && g_zoom >= 4.0f) {
                 int hx = (int)((mouse.x - img_pos.x) / sx);
                 int hy = (int)((mouse.y - img_pos.y) / sy);
@@ -10554,7 +11339,8 @@ void imgui_overlay_render(void)
         if (!canvas_input_blocked && !timeline_composite_preview_active) {
             IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
-                        mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
+                        mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y &&
+                        !rotate_button_hovered;
 
             /* Pan: middle-mouse drag or spacebar+drag or right-drag at zoom */
             if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
@@ -10993,7 +11779,8 @@ void imgui_overlay_render(void)
             /* Mouse-over-sprite test — clicks outside this rect must NOT start a selection. */
             bool mouse_over_sprite =
                 mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
-                mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
+                mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y &&
+                !rotate_button_hovered;
 
             /* Pencil cursor indicator — color tracks the currently-selected
                palette entry so the user previews what they're about to paint.
@@ -11761,6 +12548,8 @@ void imgui_overlay_render(void)
                     }
                 }
             }
+            if (rotate_buttons_visible)
+                draw_canvas_rotate_buttons(dl, rotate_button_min, rotate_button_max, rotate_button_hover_idx);
         }
     }
     ImGui::End();

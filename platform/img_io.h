@@ -86,7 +86,7 @@ int  ExecuteBulkRestoreDiff (const std::vector<BulkRestoreMatch>& matches);
  * untouched (unlike Pairs mode's zero-fill). */
 int  ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches);
 
-int  ChopMarkedImages(int grid_w, int grid_h, bool trim);
+int  ChopMarkedImages(int grid_w, int grid_h, bool trim); /* marked sprites, or selected sprite if none are marked */
 
 /* Edge defringe for all marked images.
  * For each pixel within `radius` pixels of a transparent boundary (8-connected),
