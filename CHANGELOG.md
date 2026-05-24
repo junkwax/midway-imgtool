@@ -8,6 +8,42 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.5.0] — Palette safety and subframe polish
+
+Follow-up polish for sprite hierarchy display and safer palette operations.
+
+### Image List
+- **Parent row alignment** — real parent sprites stay aligned with normal image
+  rows and keep the image icon while subframes indent underneath.
+- **Subframe hierarchy icon** — child pieces use a compact hierarchy glyph
+  instead of the normal image icon.
+
+### Palette Editing
+- **Palette undo coverage** — palette add, delete, duplicate, paste, import,
+  rename, assignment, merge, cleanup, downscale, HSL/RGB edits, and #0 remap
+  tools now push real undo actions that restore palette records and affected
+  sprite pixels together.
+- **Palette delete remap fix** — deleting a palette now preserves image palette
+  assignments by remapping affected images to the adjacent surviving palette
+  and decrementing later indices.
+- **Palette merge quality check** — merging marked palettes now previews color
+  drift, transparency drift, invalid source indices, and LOAD2 PPP risk before
+  applying the merge.
+- **Safer palette merge remap** — nonzero sprite pixels prefer nonzero target
+  palette slots to avoid accidental transparent holes.
+
+### Sprite Editing
+- **File dialog keyboard focus** — Up/Down and timeline arrow shortcuts no
+  longer leak through while a modal file dialog or popup is open.
+- **Rotate icon orientation** — canvas rotate glyphs now visually match the
+  clockwise/counterclockwise actions more closely.
+- **Horizontal subframe defaults** — Break into Subframes defaults to a taller
+  slice height, matching the horizontal split pattern seen in MK2 character
+  data.
+- **Subframe split preview** — Break into Subframes now overlays the generated
+  piece bounds on the canvas and reports a live LOAD2 ZCOM bit estimate while
+  tuning grid size and trimming.
+
 ## [v3.4.0] — Sprite import, subframes, and palette inheritance
 
 Workflow release for batch-importing art, organizing chopped sprites, and
