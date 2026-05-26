@@ -15,8 +15,10 @@
 #include <cstdarg>
 #include <cstdlib>
 #include <cctype>
+#include <cfloat>
 #include <vector>
 #include <algorithm>
+#include <functional>
 #include <regex>
 #include <cmath>
 #include "compat.h"
@@ -32,6 +34,7 @@
 #include "load2_verify.h"
 #include "lod_parser.h"
 #include "mk2_hitbox.h"
+#include "mk2_fatality.h"
 
 /* PPP setting from img_io.cpp — used to drive the verifier modal. */
 
@@ -250,7 +253,7 @@ struct EditSnapshot {
     unsigned int   seq;
     int            image_idx;
     unsigned short anix, aniy;
-    unsigned short anix2, aniy2;
+    unsigned short anix2, aniy2, aniz2;
     unsigned short w, h;
     unsigned short palnum;
     unsigned short flags;
@@ -345,11 +348,13 @@ static bool g_pending_quit = false;
 static bool g_anipoint_drag1 = false;
 static bool g_anipoint_drag2 = false;
 
+static void InvalidatePaletteUsage(void);
+
 /* Single dirty-marking entry point. Use this instead of `g_dirty = true` so
    any future side-effects (auto-backup, dirty-bit tracing, etc.) only need
    to be added in one place — and so it's obvious in a grep which writes are
    intended to flip the unsaved flag vs. which are clearing it. */
-static inline void mark_dirty(void) { g_dirty = true; }
+static inline void mark_dirty(void) { g_dirty = true; InvalidatePaletteUsage(); }
 
 /* Two-column label/value renderer for the Properties panel. The value column
    is positioned by ImGui::SameLine(col_x) instead of by padding the label
@@ -403,6 +408,14 @@ static int  g_new_blank_h = 32;
 /* Keyboard navigation focus: up/down arrows navigate palettes when true */
 static bool g_palette_nav = false;
 
+/* Deferred sprite delete confirmation. When a parent sprite has inferred
+   subframes, the delete path pauses here so the user can choose parent-only
+   or parent+children without losing the normal one-key delete workflow. */
+static bool g_show_delete_images_confirm = false;
+static std::vector<int> g_pending_delete_base_indices;
+static std::vector<int> g_pending_delete_subframe_indices;
+static char g_pending_delete_parent_name[16] = {0};
+
 /* Hue shift slider state (reset on palette change) */
 static int g_hue_slider = 0;
 static int g_hue_last = 0;
@@ -416,6 +429,13 @@ static int g_light_last = 0;
 static unsigned char g_palette_baseline[512];
 static int g_palette_baseline_nc = 0;
 static bool g_palette_drag_undo_active = false;
+static unsigned int g_palette_sync_serial = 1;
+
+static void InvalidatePaletteSync(void)
+{
+    g_palette_sync_serial++;
+    if (g_palette_sync_serial == 0) g_palette_sync_serial = 1;
+}
 
 /* Grid selection tool (for copy/paste) */
 struct GridSelection {
@@ -543,6 +563,7 @@ static bool             g_is_playing = false;
 static float            g_play_speed = 12.0f; /* fps */
 static float            g_play_timer = 0.0f;
 static std::vector<int> g_timeline_frames;
+static std::vector<int> g_timeline_holds;  /* base-frame holds per timeline entry */
 static int              g_timeline_play_idx = 0;
 static unsigned int     g_timeline_built_for_imgcnt = 0;
 static bool             g_timeline_onion = false;  /* prev/next frame ghosting */
@@ -605,6 +626,12 @@ static bool TimelineCompositeReady(void)
            g_timeline_composite[0] != g_timeline_composite[1];
 }
 
+static bool TimelineAnyCompositeLocked(void)
+{
+    return TimelineCompositeReady() &&
+           (g_timeline_composite_locked[0] || g_timeline_composite_locked[1]);
+}
+
 static void DrawTimelineCompositeLockToggle(int slot, const char *name)
 {
     if (slot < 0 || slot > 1) return;
@@ -655,6 +682,85 @@ static int WrapTimelinePosition(int pos)
     pos %= n;
     if (pos < 0) pos += n;
     return pos;
+}
+
+static int ClampTimelineHold(int hold)
+{
+    if (hold < 1) return 1;
+    if (hold > 120) return 120;
+    return hold;
+}
+
+static void EnsureTimelineHolds(void)
+{
+    if (g_timeline_holds.size() < g_timeline_frames.size())
+        g_timeline_holds.resize(g_timeline_frames.size(), 1);
+    else if (g_timeline_holds.size() > g_timeline_frames.size())
+        g_timeline_holds.resize(g_timeline_frames.size());
+    for (int &hold : g_timeline_holds)
+        hold = ClampTimelineHold(hold);
+}
+
+static void TimelinePushFrame(int img_idx, int hold = 1)
+{
+    g_timeline_frames.push_back(img_idx);
+    g_timeline_holds.push_back(ClampTimelineHold(hold));
+}
+
+static void TimelineSetFrames(const std::vector<int> &frames)
+{
+    g_timeline_frames = frames;
+    g_timeline_holds.assign(g_timeline_frames.size(), 1);
+}
+
+static void TimelineClearFrames(void)
+{
+    g_timeline_frames.clear();
+    g_timeline_holds.clear();
+    g_timeline_play_idx = 0;
+}
+
+static int TimelineHoldAt(int pos)
+{
+    EnsureTimelineHolds();
+    if (pos < 0 || pos >= (int)g_timeline_holds.size()) return 1;
+    return ClampTimelineHold(g_timeline_holds[pos]);
+}
+
+static void TimelineSetHoldAt(int pos, int hold)
+{
+    EnsureTimelineHolds();
+    if (pos < 0 || pos >= (int)g_timeline_holds.size()) return;
+    g_timeline_holds[pos] = ClampTimelineHold(hold);
+}
+
+static void TimelineSwapFrames(int a, int b)
+{
+    EnsureTimelineHolds();
+    if (a < 0 || b < 0 ||
+        a >= (int)g_timeline_frames.size() ||
+        b >= (int)g_timeline_frames.size())
+        return;
+    std::swap(g_timeline_frames[a], g_timeline_frames[b]);
+    std::swap(g_timeline_holds[a], g_timeline_holds[b]);
+}
+
+static void TimelineMoveFrame(int src_idx, int dst_idx)
+{
+    EnsureTimelineHolds();
+    int n = (int)g_timeline_frames.size();
+    if (src_idx < 0 || src_idx >= n || dst_idx < 0 || dst_idx >= n || src_idx == dst_idx)
+        return;
+
+    int val = g_timeline_frames[src_idx];
+    int hold = g_timeline_holds[src_idx];
+    g_timeline_frames.erase(g_timeline_frames.begin() + src_idx);
+    g_timeline_holds.erase(g_timeline_holds.begin() + src_idx);
+    g_timeline_frames.insert(g_timeline_frames.begin() + dst_idx, val);
+    g_timeline_holds.insert(g_timeline_holds.begin() + dst_idx, hold);
+    if (g_timeline_play_idx == src_idx) g_timeline_play_idx = dst_idx;
+    else if (src_idx < g_timeline_play_idx && dst_idx >= g_timeline_play_idx) g_timeline_play_idx--;
+    else if (src_idx > g_timeline_play_idx && dst_idx <= g_timeline_play_idx) g_timeline_play_idx++;
 }
 
 static bool AdvanceTimelineComposite(int delta)
@@ -812,6 +918,9 @@ static void ClearTimelineThumbCache(void);
 static int  PaletteColorDistance5(unsigned short a, unsigned short b);
 static int  FindNearestPaletteSlot(const PAL *pal, unsigned short color_word);
 static void MergeMarkedPalettes(bool force_quality_merge = false);
+static bool secondary_anipoint_in_use(const IMG *img);
+static bool clipboard_secondary_anipoint_in_use(void);
+static void clear_secondary_anipoint(IMG *img);
 
 struct DocSnapshot {
     unsigned int seq;
@@ -1030,17 +1139,14 @@ static bool RestoreDocSnapshot(DocSnapshot *snap)
     memcpy(g_palette_selection, snap->palette_selection,
            sizeof(g_palette_selection));
 
-    if (g_doc->plselected >= 0) {
-        ApplyPalette(g_doc->plselected);
-        save_palette_baseline();
-    } else {
-        g_palette_baseline_nc = 0;
-    }
+    ApplyPalette(g_doc->plselected);
+    save_palette_baseline();
     reset_palette_adjust_sliders();
     ClearTimelineThumbCache();
     g_img_tex_idx = -2;
     g_zoom_reset = true;
     g_palette_nav = false;
+    InvalidatePaletteSync();
     mark_dirty();
     return true;
 }
@@ -1097,6 +1203,7 @@ struct PaletteMergeQuality {
 };
 static bool g_show_palette_merge_quality = false;
 static PaletteMergeQuality g_palette_merge_quality = {};
+static bool g_palette_merge_preview_only = false;
 
 static void ClearPaletteReducePreviewTextures(void)
 {
@@ -1139,8 +1246,7 @@ static void ResetPerDocumentUiState(bool clear_pixel_clipboard = false)
     ClearPixelHistoryStacks();
     ClearDocumentHistoryStacks();
     ClearTimelineThumbCache();
-    g_timeline_frames.clear();
-    g_timeline_play_idx = 0;
+    TimelineClearFrames();
     g_timeline_built_for_imgcnt = 0;
     g_is_playing = false;
     g_play_timer = 0.0f;
@@ -1169,12 +1275,30 @@ static void ResetPerDocumentUiState(bool clear_pixel_clipboard = false)
     reset_palette_adjust_sliders();
     g_img_tex_idx = -2;
     g_zoom_reset = true;
+    InvalidatePaletteSync();
 }
 
 /* ---- Histogram state ---- */
 static bool  g_show_histogram = false;
 static bool  g_show_load2_verify = false;
 static L2Report g_load2_report;
+
+/* ---- Selected palette usage state ----
+   Live cache for the bottom swatch strip. Counts visible sprite pixels only
+   (w*h), not DMA stride padding, across images using g_doc->plselected. */
+static unsigned long long g_palette_usage_counts[256] = {0};
+static unsigned int       g_palette_usage_serial = 1;
+static unsigned int       g_palette_usage_built_serial = 0;
+static Document          *g_palette_usage_doc = NULL;
+static void              *g_palette_usage_img_head = NULL;
+static unsigned int       g_palette_usage_imgcnt_seen = 0;
+static int                g_palette_usage_pal_idx = -2;
+static int                g_palette_usage_pal_numc = 0;
+static int                g_palette_usage_img_count = 0;
+static int                g_palette_usage_used_colors = 0;   /* excludes #0 */
+static int                g_palette_usage_unused_colors = 0; /* excludes #0 */
+static int                g_palette_usage_low_colors = 0;    /* excludes #0 */
+static int                g_palette_usage_low_threshold = 8;
 
 /* ---- MK2 strike-table editor state ---- */
 static bool          g_show_mk2 = false;
@@ -1186,6 +1310,29 @@ static int           g_mk2_char_idx = 0;  /* selected char-table index */
 static int           g_mk2_move_idx = 0;  /* selected move index within that table */
 static int           g_mk2_drag_corner = -1; /* canvas overlay corner drag (0..3) */
 static char          g_mk2_search[64] = ""; /* filter for the move list */
+
+/* ---- MK2 fatality lab state ---- */
+static bool                 g_show_mk2_fatality = false;
+static mk2fatal::Document   g_mk2_fatality_doc;
+static char                 g_mk2_fatality_root[1024] = "..\\mk2-main";
+static std::string          g_mk2_fatality_status;
+static bool                 g_mk2_fatality_status_sticky = false;
+static int                  g_mk2_fatality_command_idx = 0;
+static int                  g_mk2_fatality_combo_idx = 0;
+static int                  g_mk2_fatality_anim_idx = 0;
+static int                  g_mk2_fatality_selected_line = 0;
+static char                 g_mk2_fatality_filter[96] = "";
+static char                 g_mk2_fatality_insert_anim[256] = "\t.long\t0";
+static char                 g_mk2_fatality_insert_combo[256] = "\t.word\tsw_right";
+static bool                 g_mk2_fatality_body_only = false;
+static mk2fatal::AssetPlan  g_mk2_fatality_plan;
+static std::string          g_mk2_fatality_stage_status;
+static int                  g_mk2_fatality_fighter_idx = 0;
+static int                  g_mk2_fatality_selected_fatality = 0;
+static int                  g_mk2_fatality_attacker_anim_idx = 0;
+static int                  g_mk2_fatality_victim_anim_idx = 0;
+static float                g_mk2_fatality_preview_fps = 8.0f;
+
 /* Resolve the current MK2 record index, or -1 if no valid selection. */
 static int Mk2CurrentRecord(void) {
     if (g_mk2_char_idx < 0 || g_mk2_char_idx >= (int)g_mk2_doc.char_tables.size()) return -1;
@@ -1289,6 +1436,32 @@ static float g_world_dual_timer = 0.0f;
 static int   g_world_dual_frame = 0;
 static bool  g_world_mirror_active = false;
 static bool  g_world_mirror_other = false;
+static const int kWorldMarkedSourceTabs = 4;
+static const int kWorldMarkedMaxTabs = 5; /* four marked tabs + optional dummy body */
+static const int kWorldDummyDecapSlot = kWorldMarkedMaxTabs - 1;
+static bool  g_world_mirror_extra[3] = {false, false, false};
+static bool  g_world_marked_hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true};
+static bool  g_world_marked_paused = false;
+static std::vector<int> g_world_marked_frame_delays[kWorldMarkedMaxTabs];
+static std::vector<int> g_world_marked_local_dx[kWorldMarkedMaxTabs];
+static std::vector<int> g_world_marked_local_dy[kWorldMarkedMaxTabs];
+static std::vector<int> g_world_marked_visible_from[kWorldMarkedMaxTabs];
+static std::vector<int> g_world_marked_sequence_frames[kWorldMarkedMaxTabs];
+static std::vector<int> g_world_marked_default_frames[kWorldMarkedMaxTabs];
+static Document *g_world_marked_sequence_doc[kWorldMarkedMaxTabs] = {NULL, NULL, NULL, NULL, NULL};
+static int   g_world_marked_sequence_doc_idx[kWorldMarkedMaxTabs] = {-1, -1, -1, -1, -1};
+static int   g_world_marked_drag_slot = -1;
+static int   g_world_marked_drag_frame = -1;
+static ImVec2 g_world_marked_drag_mouse = ImVec2(0, 0);
+static int   g_world_marked_drag_dx = 0;
+static int   g_world_marked_drag_dy = 0;
+static bool  g_world_dummy_decap_body = false;
+static bool  g_world_dummy_decap_reset = true;
+static bool  g_world_dummy_decap_manual = false;
+static int   g_world_dummy_decap_doc_idx = -1;
+static std::string g_world_dummy_decap_prefix;
+static bool  g_world_marked_show_asm = false;
+static std::string g_world_marked_generated_asm;
 static std::vector<SDL_Texture *> g_world_temp_textures;
 static int   g_load2_selected_idx = -1;          /* index into g_load2_report.issues */
 static SDL_Texture *g_load2_drift_tex = NULL;
@@ -1300,6 +1473,263 @@ static void ClearWorldTempTextures(void)
         if (tex) SDL_DestroyTexture(tex);
     }
     g_world_temp_textures.clear();
+}
+
+static bool *WorldMarkedMirrorFlag(int slot)
+{
+    if (slot == 0) return &g_world_mirror_active;
+    if (slot == 1) return &g_world_mirror_other;
+    if (slot >= 2 && slot < kWorldMarkedMaxTabs) return &g_world_mirror_extra[slot - 2];
+    return NULL;
+}
+
+static void WorldMarkedRestart(void)
+{
+    g_world_dual_timer = 0.0f;
+    g_world_dual_frame = 0;
+}
+
+static void StepWorldMarkedSequence(int delta)
+{
+    g_world_marked_paused = true;
+    g_world_dual_timer = 0.0f;
+    g_world_dual_frame += delta;
+    if (g_world_dual_frame < 0)
+        g_world_dual_frame = 0;
+}
+
+static int ClampWorldMarkedAniptDelta(int value)
+{
+    if (value < -32768) return -32768;
+    if (value >  32767) return  32767;
+    return value;
+}
+
+static int ClampWorldMarkedVisibleFrom(int value)
+{
+    if (value < 0) return 0;
+    if (value > 99999) return 99999;
+    return value;
+}
+
+static void EnsureWorldMarkedFrameDelays(int slot, int frame_count)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    if (frame_count < 0) frame_count = 0;
+
+    std::vector<int> &delays = g_world_marked_frame_delays[slot];
+    if ((int)delays.size() < frame_count)
+        delays.resize((size_t)frame_count, 1);
+    else if ((int)delays.size() > frame_count)
+        delays.resize((size_t)frame_count);
+    for (int &delay : delays)
+        delay = ClampTimelineHold(delay);
+
+    std::vector<int> &local_dx = g_world_marked_local_dx[slot];
+    std::vector<int> &local_dy = g_world_marked_local_dy[slot];
+    std::vector<int> &visible_from = g_world_marked_visible_from[slot];
+    if ((int)local_dx.size() < frame_count)
+        local_dx.resize((size_t)frame_count, 0);
+    else if ((int)local_dx.size() > frame_count)
+        local_dx.resize((size_t)frame_count);
+    if ((int)local_dy.size() < frame_count)
+        local_dy.resize((size_t)frame_count, 0);
+    else if ((int)local_dy.size() > frame_count)
+        local_dy.resize((size_t)frame_count);
+    if ((int)visible_from.size() < frame_count)
+        visible_from.resize((size_t)frame_count, 0);
+    else if ((int)visible_from.size() > frame_count)
+        visible_from.resize((size_t)frame_count);
+    for (int &dx : local_dx)
+        dx = ClampWorldMarkedAniptDelta(dx);
+    for (int &dy : local_dy)
+        dy = ClampWorldMarkedAniptDelta(dy);
+    for (int &show_tick : visible_from)
+        show_tick = ClampWorldMarkedVisibleFrom(show_tick);
+}
+
+static int WorldMarkedTickForFrame(int slot, int frame_count, int frame_idx)
+{
+    EnsureWorldMarkedFrameDelays(slot, frame_count);
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 0;
+    if (frame_idx < 0) frame_idx = 0;
+    if (frame_idx >= frame_count) frame_idx = frame_count - 1;
+    int tick = 0;
+    for (int i = 0; i < frame_idx; i++)
+        tick += ClampTimelineHold(g_world_marked_frame_delays[slot][i]);
+    return tick;
+}
+
+static int WorldMarkedSequenceTicks(int slot, int frame_count)
+{
+    EnsureWorldMarkedFrameDelays(slot, frame_count);
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 1;
+    int ticks = 0;
+    for (int i = 0; i < frame_count; i++)
+        ticks += ClampTimelineHold(g_world_marked_frame_delays[slot][i]);
+    return ticks > 0 ? ticks : 1;
+}
+
+static int WorldMarkedFrameForTick(int slot, int frame_count, int tick, bool hold_final)
+{
+    EnsureWorldMarkedFrameDelays(slot, frame_count);
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 0;
+    int cycle_ticks = WorldMarkedSequenceTicks(slot, frame_count);
+    if (hold_final && tick >= cycle_ticks) return frame_count - 1;
+
+    int t = tick % cycle_ticks;
+    if (t < 0) t += cycle_ticks;
+    for (int i = 0; i < frame_count; i++) {
+        int delay = ClampTimelineHold(g_world_marked_frame_delays[slot][i]);
+        if (t < delay) return i;
+        t -= delay;
+    }
+    return frame_count - 1;
+}
+
+static const int kWorldDummyDecapOrder[] = {
+    1, 2, 3,
+    4, 3, 4, 3, 4, 3,
+    4, 5, 6, 7
+};
+
+static const int kWorldDummyDecapDefaultDelays[] = {
+    48, 6, 6,
+    10, 10, 10, 10, 10, 10,
+    6, 6, 6, 6
+};
+
+static bool WorldReadDecapFrameNo(const std::string &upper, size_t pos, int *frame_no, size_t *end_pos)
+{
+    if (pos >= upper.size() || !std::isdigit((unsigned char)upper[pos])) return false;
+
+    int val = 0;
+    size_t p = pos;
+    while (p < upper.size() && std::isdigit((unsigned char)upper[p])) {
+        val = val * 10 + (upper[p] - '0');
+        p++;
+    }
+    if (val < 1 || val > 7) return false;
+    if (frame_no) *frame_no = val;
+    if (end_pos) *end_pos = p;
+    return true;
+}
+
+static std::string WorldUpperName(const std::string &name)
+{
+    std::string upper;
+    upper.reserve(name.size());
+    for (char c : name)
+        upper.push_back((char)std::toupper((unsigned char)c));
+    return upper;
+}
+
+static bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *prefix)
+{
+    std::string upper = WorldUpperName(name);
+    if (upper.find("DECAPHEAD") != std::string::npos ||
+        upper.find("DECAPLEG") != std::string::npos ||
+        upper.find("DECAPTORSO") != std::string::npos)
+        return false;
+
+    size_t pos = upper.rfind("DECAP");
+    if (pos == std::string::npos) return false;
+    size_t p = pos + 5;
+    int val = 0;
+    if (!WorldReadDecapFrameNo(upper, p, &val, &p)) return false;
+    if (p != upper.size()) return false;
+
+    if (frame_no) *frame_no = val;
+    if (prefix) *prefix = upper.substr(0, pos);
+    return true;
+}
+
+static bool WorldDecapBodyPieceInfo(const std::string &name, int *frame_no,
+                                    std::string *prefix, int *kind)
+{
+    std::string upper = WorldUpperName(name);
+    size_t pos = upper.rfind("DECAPLEG");
+    int piece_kind = 0; /* leg before torso */
+    size_t token_len = 8;
+    if (pos == std::string::npos) {
+        pos = upper.rfind("DECAPTORSO");
+        piece_kind = 1;
+        token_len = 10;
+    }
+    if (pos == std::string::npos) return false;
+
+    size_t p = pos + token_len;
+    int val = 0;
+    if (!WorldReadDecapFrameNo(upper, p, &val, &p)) return false;
+
+    if (frame_no) *frame_no = val;
+    if (prefix) *prefix = upper.substr(0, pos);
+    if (kind) *kind = piece_kind;
+    return true;
+}
+
+static bool WorldDecapPrefixFromName(const std::string &name, std::string *prefix)
+{
+    int frame_no = 0;
+    if (WorldDecapBodyFrameNo(name, &frame_no, prefix)) return true;
+    int kind = 0;
+    if (WorldDecapBodyPieceInfo(name, &frame_no, prefix, &kind)) return true;
+    return false;
+}
+
+static void WorldResetDummyDecapDelays(int frame_count)
+{
+    if (frame_count < 0) frame_count = 0;
+    std::vector<int> &delays = g_world_marked_frame_delays[kWorldDummyDecapSlot];
+    delays.assign((size_t)frame_count, 1);
+    g_world_marked_local_dx[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    g_world_marked_local_dy[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    g_world_marked_visible_from[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    int n = (int)(sizeof(kWorldDummyDecapDefaultDelays) / sizeof(kWorldDummyDecapDefaultDelays[0]));
+    if (frame_count < n) n = frame_count;
+    for (int i = 0; i < n; i++)
+        delays[i] = ClampTimelineHold(kWorldDummyDecapDefaultDelays[i]);
+    g_world_dummy_decap_reset = false;
+}
+
+static std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
+{
+    std::string out;
+    out.reserve(raw.size() + 8);
+    for (char c : raw) {
+        unsigned char uc = (unsigned char)c;
+        if (std::isalnum(uc) || c == '_' || c == '+' || c == '-' || c == '*' ||
+            c == '(' || c == ')')
+            out.push_back(c);
+    }
+    if (out.empty() && fallback) out = fallback;
+    if (!out.empty() && std::isdigit((unsigned char)out[0]))
+        out.insert(out.begin(), '_');
+    return out;
+}
+
+static std::string WorldMarkedAsmLabelPart(const char *raw, int slot)
+{
+    std::string out;
+    if (raw) {
+        for (size_t i = 0; raw[i] && i < 64; i++) {
+            char c = raw[i];
+            if (c == '.') break;
+            unsigned char uc = (unsigned char)c;
+            if (std::isalnum(uc))
+                out.push_back((char)std::tolower(uc));
+            else if (c == '_')
+                out.push_back('_');
+        }
+    }
+    if (out.empty()) {
+        char fallback[24];
+        snprintf(fallback, sizeof(fallback), "tab%d", slot + 1);
+        out = fallback;
+    }
+    if (std::isdigit((unsigned char)out[0]))
+        out.insert(out.begin(), '_');
+    return out;
 }
 
 static IMG *doc_get_img(Document *doc, int idx)
@@ -1316,6 +1746,116 @@ static std::string img_name_string(const IMG *img)
     size_t n = 0;
     while (n < sizeof(img->n_s) && img->n_s[n] != '\0') n++;
     return std::string(img->n_s, img->n_s + n);
+}
+
+static void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
+                                            std::vector<std::vector<int>> &frame_pieces,
+                                            std::vector<std::string> &frame_labels)
+{
+    frame_pieces.clear();
+    frame_labels.clear();
+    frame_pieces.reserve(frames.size());
+    frame_labels.reserve(frames.size());
+    for (int idx : frames) {
+        frame_pieces.push_back(std::vector<int>(1, idx));
+        frame_labels.push_back(img_name_string(doc_get_img(doc, idx)));
+    }
+}
+
+static void WorldMarkedClearSequenceState(int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    g_world_marked_frame_delays[slot].clear();
+    g_world_marked_local_dx[slot].clear();
+    g_world_marked_local_dy[slot].clear();
+    g_world_marked_visible_from[slot].clear();
+}
+
+static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx,
+                                            std::vector<int> &frames,
+                                            std::vector<std::vector<int>> &frame_pieces,
+                                            std::vector<std::string> &frame_labels)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || !doc)
+        return;
+
+    const std::vector<int> defaults = frames;
+    bool reset_sequence =
+        g_world_marked_sequence_doc[slot] != doc ||
+        g_world_marked_sequence_doc_idx[slot] != doc_idx ||
+        g_world_marked_default_frames[slot] != defaults ||
+        g_world_marked_sequence_frames[slot].empty();
+
+    if (!reset_sequence) {
+        for (int idx : g_world_marked_sequence_frames[slot]) {
+            if (!doc_get_img(doc, idx)) {
+                reset_sequence = true;
+                break;
+            }
+        }
+    }
+
+    if (reset_sequence) {
+        g_world_marked_sequence_doc[slot] = doc;
+        g_world_marked_sequence_doc_idx[slot] = doc_idx;
+        g_world_marked_default_frames[slot] = defaults;
+        g_world_marked_sequence_frames[slot] = defaults;
+        WorldMarkedClearSequenceState(slot);
+    }
+
+    frames = g_world_marked_sequence_frames[slot];
+    WorldMarkedBuildSingleFrameLane(doc, frames, frame_pieces, frame_labels);
+    EnsureWorldMarkedFrameDelays(slot, (int)frames.size());
+}
+
+static void WorldMarkedResetSequenceToDefaults(int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    g_world_marked_sequence_frames[slot] = g_world_marked_default_frames[slot];
+    WorldMarkedClearSequenceState(slot);
+    EnsureWorldMarkedFrameDelays(slot, (int)g_world_marked_sequence_frames[slot].size());
+    WorldMarkedRestart();
+}
+
+static void WorldMarkedDuplicateSequenceEntry(int slot, int frame_idx)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    std::vector<int> &frames = g_world_marked_sequence_frames[slot];
+    if (frame_idx < 0 || frame_idx >= (int)frames.size()) return;
+    EnsureWorldMarkedFrameDelays(slot, (int)frames.size());
+
+    int insert_at = frame_idx + 1;
+    frames.insert(frames.begin() + insert_at, frames[frame_idx]);
+    g_world_marked_frame_delays[slot].insert(g_world_marked_frame_delays[slot].begin() + insert_at,
+                                             g_world_marked_frame_delays[slot][frame_idx]);
+    g_world_marked_local_dx[slot].insert(g_world_marked_local_dx[slot].begin() + insert_at,
+                                         g_world_marked_local_dx[slot][frame_idx]);
+    g_world_marked_local_dy[slot].insert(g_world_marked_local_dy[slot].begin() + insert_at,
+                                         g_world_marked_local_dy[slot][frame_idx]);
+    g_world_marked_visible_from[slot].insert(g_world_marked_visible_from[slot].begin() + insert_at,
+                                             g_world_marked_visible_from[slot][frame_idx]);
+    g_world_marked_paused = true;
+    g_world_dual_timer = 0.0f;
+    g_world_dual_frame = WorldMarkedTickForFrame(slot, (int)frames.size(), insert_at);
+}
+
+static void WorldMarkedDeleteSequenceEntry(int slot, int frame_idx)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    std::vector<int> &frames = g_world_marked_sequence_frames[slot];
+    if ((int)frames.size() <= 1 || frame_idx < 0 || frame_idx >= (int)frames.size()) return;
+    EnsureWorldMarkedFrameDelays(slot, (int)frames.size());
+
+    frames.erase(frames.begin() + frame_idx);
+    g_world_marked_frame_delays[slot].erase(g_world_marked_frame_delays[slot].begin() + frame_idx);
+    g_world_marked_local_dx[slot].erase(g_world_marked_local_dx[slot].begin() + frame_idx);
+    g_world_marked_local_dy[slot].erase(g_world_marked_local_dy[slot].begin() + frame_idx);
+    g_world_marked_visible_from[slot].erase(g_world_marked_visible_from[slot].begin() + frame_idx);
+    if (frame_idx >= (int)frames.size())
+        frame_idx = (int)frames.size() - 1;
+    g_world_marked_paused = true;
+    g_world_dual_timer = 0.0f;
+    g_world_dual_frame = WorldMarkedTickForFrame(slot, (int)frames.size(), frame_idx);
 }
 
 static std::string regex_escape(const std::string &s)
@@ -1568,7 +2108,7 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
         if (p[i].top    < min_y) min_y = p[i].top;
         if (p[i].right  > max_x) max_x = p[i].right;
         if (p[i].bottom > max_y) max_y = p[i].bottom;
-        if ((short)p[i].img->anix2 >= 0 && (short)p[i].img->aniy2 >= 0) {
+        if (secondary_anipoint_in_use(p[i].img)) {
             int sx2 = p[i].left + (int)(short)p[i].img->anix2;
             int sy2 = p[i].top  + (int)(short)p[i].img->aniy2;
             if (sx2 < min_x) min_x = sx2;
@@ -1638,7 +2178,7 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
         dl->AddImage((ImTextureID)(intptr_t)tex[i], sp, se);
         dl->AddRect(sp, se, p[i].outline, 0.0f, 0, 1.0f);
 
-        if ((short)p[i].img->anix2 >= 0 && (short)p[i].img->aniy2 >= 0) {
+        if (secondary_anipoint_in_use(p[i].img)) {
             ImVec2 s2(sp.x + (short)p[i].img->anix2 * scale,
                       sp.y + (short)p[i].img->aniy2 * scale);
             draw_crosshair(s2, p[i].outline, 9.0f, 1.2f);
@@ -1775,45 +2315,273 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
 
 static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 {
-    if (!g_world_dual_marked_play || document_tab_count() < 2)
+    if (!g_world_dual_marked_play)
         return false;
 
-    std::vector<int> active_frames;
-    std::vector<int> other_frames;
-    Document *active_doc = g_doc;
-    Document *other_doc = NULL;
-    int active_doc_idx = document_active_index();
-    int other_doc_idx = -1;
+    struct MarkedLane {
+        Document *doc;
+        int doc_idx;
+        int delay_slot;
+        std::vector<int> frames;
+        std::vector<std::vector<int>> frame_pieces;
+        std::vector<std::string> frame_labels;
+        int frame_pos;
+        IMG *img;
+        bool dummy_decap;
+        std::string label;
+        std::string asm_label_part;
+    };
 
-    collect_marked_frames(active_doc, active_frames);
-    if (active_frames.empty()) return false;
+    struct DecapCandidate {
+        Document *doc;
+        int doc_idx;
+        std::string prefix;
+        int frame_idx[8];
+        std::vector<int> pieces[8];
+        bool has_leg[8];
+        bool has_torso[8];
+        int wrapper_count;
+        int piece_frame_count;
+    };
+
+    auto find_dummy_decap = [&]() -> MarkedLane {
+        auto candidate_complete = [](const DecapCandidate &cand) {
+            if (cand.wrapper_count >= 7) return true;
+            for (int frame_no = 1; frame_no <= 7; frame_no++) {
+                if (!cand.has_leg[frame_no] || !cand.has_torso[frame_no])
+                    return false;
+            }
+            return true;
+        };
+
+        auto candidate_score = [](const DecapCandidate &cand) {
+            int piece_frames = 0;
+            for (int frame_no = 1; frame_no <= 7; frame_no++)
+                if (cand.has_leg[frame_no] && cand.has_torso[frame_no])
+                    piece_frames++;
+            return cand.wrapper_count * 10 + piece_frames;
+        };
+
+        std::vector<DecapCandidate> candidates;
+        for (int doc_idx = 0; doc_idx < document_tab_count(); doc_idx++) {
+            Document *doc = document_get(doc_idx);
+            if (!doc) continue;
+            for (unsigned int img_idx = 0; img_idx < doc->imgcnt; img_idx++) {
+                IMG *img = doc_get_img(doc, (int)img_idx);
+                int frame_no = 0;
+                std::string prefix;
+                int piece_kind = -1;
+                bool is_wrapper = WorldDecapBodyFrameNo(img_name_string(img), &frame_no, &prefix);
+                bool is_piece = !is_wrapper &&
+                    WorldDecapBodyPieceInfo(img_name_string(img), &frame_no, &prefix, &piece_kind);
+                if (!is_wrapper && !is_piece)
+                    continue;
+
+                int cand_idx = -1;
+                for (int i = 0; i < (int)candidates.size(); i++) {
+                    if (candidates[i].doc_idx == doc_idx &&
+                        candidates[i].prefix == prefix) {
+                        cand_idx = i;
+                        break;
+                    }
+                }
+                if (cand_idx < 0) {
+                    DecapCandidate cand = {};
+                    cand.doc = doc;
+                    cand.doc_idx = doc_idx;
+                    cand.prefix = prefix;
+                    for (int i = 0; i < 8; i++) cand.frame_idx[i] = -1;
+                    for (int i = 0; i < 8; i++) {
+                        cand.has_leg[i] = false;
+                        cand.has_torso[i] = false;
+                    }
+                    cand.wrapper_count = 0;
+                    cand.piece_frame_count = 0;
+                    candidates.push_back(cand);
+                    cand_idx = (int)candidates.size() - 1;
+                }
+                DecapCandidate &cand = candidates[cand_idx];
+                if (is_wrapper && cand.frame_idx[frame_no] < 0) {
+                    candidates[cand_idx].frame_idx[frame_no] = (int)img_idx;
+                    candidates[cand_idx].wrapper_count++;
+                } else if (is_piece) {
+                    bool had_frame = !cand.pieces[frame_no].empty();
+                    cand.pieces[frame_no].push_back((int)img_idx);
+                    if (piece_kind == 0) cand.has_leg[frame_no] = true;
+                    else cand.has_torso[frame_no] = true;
+                    if (!had_frame) cand.piece_frame_count++;
+                }
+            }
+        }
+
+        int best = -1;
+        for (int i = 0; i < (int)candidates.size(); i++) {
+            if (!candidate_complete(candidates[i])) continue;
+            if (g_world_dummy_decap_manual) {
+                if (candidates[i].doc_idx != g_world_dummy_decap_doc_idx ||
+                    candidates[i].prefix != g_world_dummy_decap_prefix)
+                    continue;
+                best = i;
+                break;
+            }
+            if (best < 0)
+                best = i;
+            else if (candidates[i].doc_idx == document_active_index() &&
+                     candidates[best].doc_idx != document_active_index())
+                best = i;
+            else if (candidates[i].doc_idx == candidates[best].doc_idx &&
+                     candidate_score(candidates[i]) > candidate_score(candidates[best]))
+                best = i;
+        }
+
+        MarkedLane lane = {};
+        lane.delay_slot = kWorldDummyDecapSlot;
+        lane.frame_pos = 0;
+        lane.img = NULL;
+        lane.dummy_decap = true;
+        lane.label = "Dummy Decap Body";
+        lane.asm_label_part = "dummy_decap_body";
+        if (best < 0) {
+            lane.doc = NULL;
+            lane.doc_idx = -1;
+            return lane;
+        }
+
+        DecapCandidate &cand = candidates[best];
+        lane.doc = cand.doc;
+        lane.doc_idx = cand.doc_idx;
+        lane.asm_label_part = "dummy_decap_body_" +
+                              WorldMarkedAsmLabelPart(cand.prefix.c_str(), kWorldDummyDecapSlot);
+        char label_buf[96];
+        snprintf(label_buf, sizeof(label_buf), "Dummy Decap Body [%s]", cand.prefix.c_str());
+        lane.label = label_buf;
+
+        int n = (int)(sizeof(kWorldDummyDecapOrder) / sizeof(kWorldDummyDecapOrder[0]));
+        lane.frames.reserve((size_t)n);
+        lane.frame_pieces.reserve((size_t)n);
+        lane.frame_labels.reserve((size_t)n);
+        for (int i = 0; i < n; i++) {
+            int frame_no = kWorldDummyDecapOrder[i];
+            char frame_label[96];
+            snprintf(frame_label, sizeof(frame_label), "%sDECAP%d",
+                     cand.prefix.c_str(), frame_no);
+            lane.frame_labels.push_back(frame_label);
+
+            std::vector<int> pieces;
+            if (cand.frame_idx[frame_no] >= 0) {
+                pieces.push_back(cand.frame_idx[frame_no]);
+            } else {
+                pieces = cand.pieces[frame_no];
+                std::sort(pieces.begin(), pieces.end(), [&](int a, int b) {
+                    IMG *ia = doc_get_img(cand.doc, a);
+                    IMG *ib = doc_get_img(cand.doc, b);
+                    int fa = 0, fb = 0, ka = 0, kb = 0;
+                    std::string pa, pb;
+                    WorldDecapBodyPieceInfo(img_name_string(ia), &fa, &pa, &ka);
+                    WorldDecapBodyPieceInfo(img_name_string(ib), &fb, &pb, &kb);
+                    if (ka != kb) return ka < kb;
+                    return img_name_string(ia) < img_name_string(ib);
+                });
+            }
+            int representative = pieces.empty() ? -1 : pieces[0];
+            lane.frames.push_back(representative);
+            lane.frame_pieces.push_back(pieces);
+        }
+
+        if (g_world_dummy_decap_reset ||
+            g_world_dummy_decap_doc_idx != cand.doc_idx ||
+            g_world_dummy_decap_prefix != cand.prefix ||
+            (int)g_world_marked_frame_delays[kWorldDummyDecapSlot].size() != (int)lane.frames.size()) {
+            g_world_dummy_decap_doc_idx = cand.doc_idx;
+            g_world_dummy_decap_prefix = cand.prefix;
+            WorldResetDummyDecapDelays((int)lane.frames.size());
+        }
+        EnsureWorldMarkedFrameDelays(kWorldDummyDecapSlot, (int)lane.frames.size());
+        return lane;
+    };
+
+    std::vector<MarkedLane> lanes;
+    lanes.reserve(kWorldMarkedMaxTabs);
+    auto add_lane = [&](int doc_idx) {
+        if ((int)lanes.size() >= kWorldMarkedSourceTabs) return;
+        Document *doc = document_get(doc_idx);
+        if (!doc) return;
+        MarkedLane lane = {};
+        lane.doc = doc;
+        lane.doc_idx = doc_idx;
+        lane.delay_slot = (int)lanes.size();
+        lane.frame_pos = 0;
+        lane.img = NULL;
+        lane.dummy_decap = false;
+        collect_marked_frames(doc, lane.frames);
+        if (!lane.frames.empty()) {
+            WorldMarkedBuildSingleFrameLane(doc, lane.frames, lane.frame_pieces, lane.frame_labels);
+            WorldMarkedSyncSequenceOverride(lane.delay_slot, doc, doc_idx,
+                                            lane.frames, lane.frame_pieces, lane.frame_labels);
+            lanes.push_back(lane);
+        }
+    };
 
     for (int i = 0; i < document_tab_count(); i++) {
-        if (i == active_doc_idx) continue;
-        Document *doc = document_get(i);
-        collect_marked_frames(doc, other_frames);
-        if (!other_frames.empty()) {
-            other_doc = doc;
-            other_doc_idx = i;
-            break;
-        }
+        add_lane(i);
+        if ((int)lanes.size() >= kWorldMarkedSourceTabs) break;
     }
-    if (!other_doc || other_frames.empty()) return false;
+
+    bool dummy_decap_missing = false;
+    if (g_world_dummy_decap_body) {
+        MarkedLane dummy = find_dummy_decap();
+        if (dummy.doc && !dummy.frames.empty())
+            lanes.push_back(dummy);
+        else
+            dummy_decap_missing = true;
+    }
+
+    auto assign_selected_dummy_decap = [&]() {
+        IMG *sel = get_img(g_doc ? g_doc->ilselected : -1);
+        std::string prefix;
+        if (!sel || !WorldDecapPrefixFromName(img_name_string(sel), &prefix)) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Select a DECAP body frame/piece first.");
+            g_restore_msg_timer = 4.0f;
+            return;
+        }
+        g_world_dummy_decap_body = true;
+        g_world_dummy_decap_manual = true;
+        g_world_dummy_decap_doc_idx = document_active_index();
+        g_world_dummy_decap_prefix = prefix;
+        g_world_dummy_decap_reset = true;
+        g_world_marked_hold_end[kWorldDummyDecapSlot] = true;
+        WorldMarkedRestart();
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Assigned dummy body to [%d] %sDECAP.",
+                 g_world_dummy_decap_doc_idx, g_world_dummy_decap_prefix.c_str());
+        g_restore_msg_timer = 4.0f;
+    };
+
+    if (lanes.empty()) return false;
+    if (lanes.size() < 2) return false;
 
     if (g_world_dual_fps < 1.0f) g_world_dual_fps = 1.0f;
     if (g_world_dual_fps > 60.0f) g_world_dual_fps = 60.0f;
-    g_world_dual_timer += io.DeltaTime;
+    if (!g_world_marked_paused)
+        g_world_dual_timer += io.DeltaTime;
     float step = 1.0f / g_world_dual_fps;
     while (g_world_dual_timer >= step) {
         g_world_dual_timer -= step;
         g_world_dual_frame++;
     }
 
-    int aidx = active_frames[g_world_dual_frame % (int)active_frames.size()];
-    int bidx = other_frames[g_world_dual_frame % (int)other_frames.size()];
-    IMG *aimg = doc_get_img(active_doc, aidx);
-    IMG *bimg = doc_get_img(other_doc, bidx);
-    if (!aimg || !bimg) return false;
+    bool have_image = false;
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        MarkedLane &lane = lanes[slot];
+        int n = (int)lane.frames.size();
+        if (n <= 0) continue;
+        lane.frame_pos = WorldMarkedFrameForTick(lane.delay_slot, n, g_world_dual_frame,
+                                                 g_world_marked_hold_end[lane.delay_slot]);
+        lane.img = doc_get_img(lane.doc, lane.frames[lane.frame_pos]);
+        if (lane.img) have_image = true;
+    }
+    if (!have_image) return false;
 
     float fit_x = avail.x / (float)g_world_w;
     float fit_y = avail.y / (float)g_world_h;
@@ -1837,45 +2605,559 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
                 IM_COL32(120, 120, 120, 255));
 
-    SDL_Texture *btex = BuildWorldSpriteTexture(other_doc, bimg, 165);
-    SDL_Texture *atex = BuildWorldSpriteTexture(active_doc, aimg, 255);
-    auto draw_sprite = [&](IMG *img, SDL_Texture *tex, bool mirror_x) {
-        if (!img || !tex) return;
-        int ax = (int)(short)img->anix;
-        int ay = (int)(short)img->aniy;
-        float spw = img->w * wscale;
-        float sph = img->h * wscale;
-        float left = mirror_x ? (ox - ((int)img->w - ax) * wscale)
-                              : (ox - ax * wscale);
-        ImVec2 spos(left, oy - ay * wscale);
-        ImVec2 uv0 = mirror_x ? ImVec2(1, 0) : ImVec2(0, 0);
-        ImVec2 uv1 = mirror_x ? ImVec2(0, 1) : ImVec2(1, 1);
-        dl->AddImage((ImTextureID)(intptr_t)tex,
-                     spos, ImVec2(spos.x + spw, spos.y + sph), uv0, uv1);
+    const unsigned char alpha_by_slot[kWorldMarkedMaxTabs] = {255, 185, 170, 155, 205};
+    const ImU32 outline_by_slot[kWorldMarkedMaxTabs] = {
+        IM_COL32(120, 190, 255, 230),
+        IM_COL32(255, 190, 90, 230),
+        IM_COL32(120, 230, 150, 230),
+        IM_COL32(230, 130, 230, 230),
+        IM_COL32(240, 80, 80, 230)
     };
-    draw_sprite(bimg, btex, g_world_mirror_other);
-    draw_sprite(aimg, atex, g_world_mirror_active);
+    bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false};
+    ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
+    ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
+
+    auto draw_sprite = [&](int slot) {
+        if (slot < 0 || slot >= (int)lanes.size()) return;
+        MarkedLane &lane = lanes[slot];
+        int state_slot = lane.delay_slot;
+        EnsureWorldMarkedFrameDelays(state_slot, (int)lane.frames.size());
+        if (lane.frame_pos >= 0 &&
+            lane.frame_pos < (int)g_world_marked_visible_from[state_slot].size() &&
+            g_world_dual_frame < g_world_marked_visible_from[state_slot][lane.frame_pos])
+            return;
+        bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
+        bool mirror_x = mirror_flag ? *mirror_flag : false;
+        const std::vector<int> *pieces = NULL;
+        if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frame_pieces.size())
+            pieces = &lane.frame_pieces[lane.frame_pos];
+        std::vector<int> fallback_piece;
+        if (!pieces || pieces->empty()) {
+            if (!lane.img) return;
+            fallback_piece.push_back(lane.frames[lane.frame_pos]);
+            pieces = &fallback_piece;
+        }
+        for (int piece_idx : *pieces) {
+            IMG *img = doc_get_img(lane.doc, piece_idx);
+            if (!img) continue;
+            SDL_Texture *tex = BuildWorldSpriteTexture(lane.doc, img, alpha_by_slot[slot]);
+            if (!tex) continue;
+            int ax = (int)(short)img->anix + g_world_marked_local_dx[state_slot][lane.frame_pos];
+            int ay = (int)(short)img->aniy + g_world_marked_local_dy[state_slot][lane.frame_pos];
+            float spw = img->w * wscale;
+            float sph = img->h * wscale;
+            float left = mirror_x ? (ox - ((int)img->w - ax) * wscale)
+                                  : (ox - ax * wscale);
+            ImVec2 spos(left, oy - ay * wscale);
+            ImVec2 uv0 = mirror_x ? ImVec2(1, 0) : ImVec2(0, 0);
+            ImVec2 uv1 = mirror_x ? ImVec2(0, 1) : ImVec2(1, 1);
+            dl->AddImage((ImTextureID)(intptr_t)tex,
+                         spos, ImVec2(spos.x + spw, spos.y + sph), uv0, uv1);
+            dl->AddRect(spos, ImVec2(spos.x + spw, spos.y + sph),
+                        outline_by_slot[slot], 0.0f, 0, 1.0f);
+            ImVec2 rmax(spos.x + spw, spos.y + sph);
+            if (!lane_rect_valid[slot]) {
+                lane_rect_valid[slot] = true;
+                lane_rect_min[slot] = spos;
+                lane_rect_max[slot] = rmax;
+            } else {
+                if (spos.x < lane_rect_min[slot].x) lane_rect_min[slot].x = spos.x;
+                if (spos.y < lane_rect_min[slot].y) lane_rect_min[slot].y = spos.y;
+                if (rmax.x > lane_rect_max[slot].x) lane_rect_max[slot].x = rmax.x;
+                if (rmax.y > lane_rect_max[slot].y) lane_rect_max[slot].y = rmax.y;
+            }
+        }
+    };
+
+    for (int slot = (int)lanes.size() - 1; slot >= 1; slot--)
+        draw_sprite(slot);
+    draw_sprite(0);
 
     dl->AddCircle(ImVec2(ox, oy), 4.0f,
                   IM_COL32(255, 200, 0, 255), 0, 1.5f);
 
-    const char *aname = active_doc->fname_s[0] ? active_doc->fname_s : "Untitled";
-    const char *bname = other_doc->fname_s[0] ? other_doc->fname_s : "Untitled";
-    char buf[160];
-    snprintf(buf, sizeof(buf),
-             "Marked tabs: [%d] %s:%s%s + [%d] %s:%s%s   fps=%.1f",
-             active_doc_idx, aname, aimg->n_s,
-             g_world_mirror_active ? " mirror" : "",
-             other_doc_idx, bname, bimg->n_s,
-             g_world_mirror_other ? " mirror" : "",
-             g_world_dual_fps);
+    std::string label = "Marked tabs: ";
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        MarkedLane &lane = lanes[slot];
+        if (!lane.img) continue;
+        const char *doc_name = !lane.label.empty()
+                             ? lane.label.c_str()
+                             : (lane.doc->fname_s[0] ? lane.doc->fname_s : "Untitled");
+        bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
+        char part[224];
+        snprintf(part, sizeof(part), "%s[%d] %s:%s %d/%d%s%s",
+                 slot == 0 ? "" : " + ",
+                 lane.doc_idx, doc_name, img_name_string(lane.img).c_str(),
+                 lane.frame_pos + 1, (int)lane.frames.size(),
+                 (mirror_flag && *mirror_flag) ? " mirror" : "",
+                 g_world_marked_hold_end[lane.delay_slot] ? " hold" : "");
+        label += part;
+    }
+    char fps_buf[32];
+    snprintf(fps_buf, sizeof(fps_buf), "   fps=%.1f", g_world_dual_fps);
+    label += fps_buf;
+    ImVec2 label_sz = ImGui::CalcTextSize(label.c_str());
+    float label_w = label_sz.x + 8.0f;
+    if (label_w > ww) label_w = ww;
     dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
-                      ImVec2(wpos.x + 520, wpos.y + 18),
+                      ImVec2(wpos.x + label_w, wpos.y + 18),
                       IM_COL32(0, 0, 0, 180));
+    dl->PushClipRect(ImVec2(wpos.x, wpos.y),
+                     ImVec2(wpos.x + label_w, wpos.y + 18), true);
     dl->AddText(ImVec2(wpos.x + 4, wpos.y + 2),
-                IM_COL32(220, 220, 220, 255), buf);
+                IM_COL32(220, 220, 220, 255), label.c_str());
+    dl->PopClipRect();
 
+    float panel_w = ww - 16.0f;
+    if (panel_w < 320.0f) panel_w = avail.x - 16.0f;
+    if (panel_w < 240.0f) panel_w = 240.0f;
+    if (panel_w > avail.x - 16.0f) panel_w = avail.x - 16.0f;
+    float panel_h = 54.0f + (float)lanes.size() * 104.0f;
+    float max_panel_h = avail.y - 24.0f;
+    if (max_panel_h > 380.0f) max_panel_h = 380.0f;
+    if (panel_h > max_panel_h) panel_h = max_panel_h;
+    if (panel_h < 96.0f) panel_h = 96.0f;
+    ImVec2 panel_pos(img_pos.x + (avail.x - panel_w) * 0.5f,
+                     wpos.y + wh - panel_h - 8.0f);
+    if (panel_pos.y < img_pos.y + 8.0f) panel_pos.y = img_pos.y + 8.0f;
+
+    ImVec2 mouse = ImGui::GetMousePos();
+    bool over_panel =
+        mouse.x >= panel_pos.x && mouse.x <= panel_pos.x + panel_w &&
+        mouse.y >= panel_pos.y && mouse.y <= panel_pos.y + panel_h;
+    bool over_world =
+        mouse.x >= wpos.x && mouse.x <= wpos.x + ww &&
+        mouse.y >= wpos.y && mouse.y <= wpos.y + wh;
+    int hover_slot = -1;
+    if (over_world && !over_panel) {
+        for (int slot = 0; slot < (int)lanes.size(); slot++) {
+            if (!lane_rect_valid[slot]) continue;
+            if (mouse.x >= lane_rect_min[slot].x && mouse.x <= lane_rect_max[slot].x &&
+                mouse.y >= lane_rect_min[slot].y && mouse.y <= lane_rect_max[slot].y) {
+                hover_slot = slot;
+                break;
+            }
+        }
+    }
+    if (hover_slot >= 0) {
+        dl->AddRect(lane_rect_min[hover_slot], lane_rect_max[hover_slot],
+                    IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+    if (hover_slot >= 0 && ImGui::IsWindowHovered() &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        MarkedLane &lane = lanes[hover_slot];
+        int state_slot = lane.delay_slot;
+        EnsureWorldMarkedFrameDelays(state_slot, (int)lane.frames.size());
+        if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size()) {
+            g_world_marked_paused = true;
+            g_world_marked_drag_slot = state_slot;
+            g_world_marked_drag_frame = lane.frame_pos;
+            g_world_marked_drag_mouse = mouse;
+            g_world_marked_drag_dx = g_world_marked_local_dx[state_slot][lane.frame_pos];
+            g_world_marked_drag_dy = g_world_marked_local_dy[state_slot][lane.frame_pos];
+        }
+    }
+    if (g_world_marked_drag_slot >= 0) {
+        int state_slot = g_world_marked_drag_slot;
+        int frame_idx = g_world_marked_drag_frame;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+            state_slot < 0 || state_slot >= kWorldMarkedMaxTabs ||
+            frame_idx < 0 || frame_idx >= (int)g_world_marked_local_dx[state_slot].size()) {
+            g_world_marked_drag_slot = -1;
+            g_world_marked_drag_frame = -1;
+        } else {
+            int px = (int)((mouse.x - g_world_marked_drag_mouse.x) / wscale);
+            int py = (int)((mouse.y - g_world_marked_drag_mouse.y) / wscale);
+            g_world_marked_local_dx[state_slot][frame_idx] =
+                ClampWorldMarkedAniptDelta(g_world_marked_drag_dx - px);
+            g_world_marked_local_dy[state_slot][frame_idx] =
+                ClampWorldMarkedAniptDelta(g_world_marked_drag_dy - py);
+        }
+    }
+
+    ImGui::SetCursorScreenPos(img_pos);
     ImGui::Dummy(ImVec2(avail.x, avail.y));
+
+    auto build_world_marked_asm = [&]() -> std::string {
+        std::string out;
+        out.reserve(4096);
+        out += "; IMGTOOL World View fatality sequence draft\n";
+        out += "; One lane is one actor/object animation table.\n";
+        out += "; Delay ticks are encoded by repeating that frame label.\n";
+        out += "; Hidden entries export as 0 until their Show@ preview tick.\n";
+        out += "; Each *_local_anipts table is aligned 1:1 with the .long rows.\n";
+        out += "; Run these lanes at the same animation sleep/FPS used in the preview.\n\n";
+
+        for (int slot = 0; slot < (int)lanes.size(); slot++) {
+            MarkedLane &lane = lanes[slot];
+            const char *doc_name = lane.doc && lane.doc->fname_s[0]
+                                 ? lane.doc->fname_s : "Untitled";
+            if (!lane.label.empty())
+                doc_name = lane.label.c_str();
+            std::string doc_part = !lane.asm_label_part.empty()
+                                 ? lane.asm_label_part
+                                 : WorldMarkedAsmLabelPart(doc_name, slot);
+            char label_buf[96];
+            if (lane.dummy_decap)
+                snprintf(label_buf, sizeof(label_buf), "a_imgtool_%s", doc_part.c_str());
+            else
+                snprintf(label_buf, sizeof(label_buf), "a_imgtool_slot%d_%s",
+                         slot + 1, doc_part.c_str());
+            std::string anim_label = label_buf;
+
+            char comment[192];
+            snprintf(comment, sizeof(comment),
+                     "; Slot %d  [%d] %s  %d frame%s%s\n",
+                     slot + 1, lane.doc_idx, doc_name,
+                     (int)lane.frames.size(), lane.frames.size() == 1 ? "" : "s",
+                     g_world_marked_hold_end[lane.delay_slot] ? "  stop-on-final" : "  looping");
+            out += comment;
+            if (lane.dummy_decap)
+                out += "; Stock decap body timing: stand, fall-to-knees, wobble, fall-to-ground.\n";
+
+            bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
+            if (mirror_flag && *mirror_flag)
+                out += "; Preview mirror is enabled; spawn/draw this object mirrored in routine code.\n";
+
+            out += anim_label;
+            out += "\n";
+            EnsureWorldMarkedFrameDelays(lane.delay_slot, (int)lane.frames.size());
+            std::string local_table;
+            local_table += anim_label;
+            local_table += "_local_anipts\n";
+            int tick = 0;
+            for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+                IMG *frame_img = doc_get_img(lane.doc, lane.frames[fi]);
+                char fallback[32];
+                snprintf(fallback, sizeof(fallback), "slot%d_frame%d", slot + 1, fi + 1);
+                std::string raw_label = (fi < (int)lane.frame_labels.size() &&
+                                         !lane.frame_labels[fi].empty())
+                                      ? lane.frame_labels[fi]
+                                      : img_name_string(frame_img);
+                std::string sprite = WorldMarkedAsmToken(raw_label, fallback);
+                int delay = ClampTimelineHold(g_world_marked_frame_delays[lane.delay_slot][fi]);
+                int local_dx = g_world_marked_local_dx[lane.delay_slot][fi];
+                int local_dy = g_world_marked_local_dy[lane.delay_slot][fi];
+                int visible_from = g_world_marked_visible_from[lane.delay_slot][fi];
+                for (int repeat = 0; repeat < delay; repeat++) {
+                    bool hidden = tick < visible_from;
+                    out += "\t.long\t";
+                    out += hidden ? "0" : sprite;
+                    if (repeat == 0) {
+                        out += "\t; ";
+                        out += sprite;
+                        out += " delay x";
+                        out += std::to_string(delay);
+                        if (local_dx || local_dy) {
+                            out += " dAX=";
+                            out += std::to_string(local_dx);
+                            out += " dAY=";
+                            out += std::to_string(local_dy);
+                        }
+                        if (visible_from > 0) {
+                            out += " show>=";
+                            out += std::to_string(visible_from);
+                        }
+                    } else if (hidden) {
+                        out += "\t; hidden";
+                    }
+                    out += "\n";
+
+                    local_table += "\t.word\t";
+                    local_table += std::to_string(local_dx);
+                    local_table += ",";
+                    local_table += std::to_string(local_dy);
+                    local_table += "\t; tick ";
+                    local_table += std::to_string(tick);
+                    local_table += hidden ? " hidden " : " ";
+                    local_table += sprite;
+                    local_table += "\n";
+                    tick++;
+                }
+            }
+            if (g_world_marked_hold_end[lane.delay_slot]) {
+                out += "\t.long\t0\t; stop on final frame\n\n";
+            } else {
+                out += "\t.long\tani_jump,";
+                out += anim_label;
+                out += "\t; loop\n\n";
+            }
+            out += local_table;
+            out += "\n";
+        }
+        return out;
+    };
+
+    ImGui::SetCursorScreenPos(panel_pos);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.03f, 0.03f, 0.035f, 0.90f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+    if (ImGui::BeginChild("##world_marked_sequence",
+                          ImVec2(panel_w, panel_h), true,
+                          ImGuiWindowFlags_HorizontalScrollbar)) {
+        ImGui::Text("Frame Sequence");
+        ImGui::SameLine();
+        if (ImGui::SmallButton(g_world_marked_paused ? "Play##world_marked_pause"
+                                                     : "Pause##world_marked_pause")) {
+            g_world_marked_paused = !g_world_marked_paused;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Refresh##world_marked_restart"))
+            WorldMarkedRestart();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Restart every marked tab sequence from frame 1.");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(105.0f);
+        ImGui::SliderFloat("FPS##world_marked_panel_fps", &g_world_dual_fps, 1.0f, 60.0f, "%.1f");
+        ImGui::SameLine();
+        ImGui::TextDisabled("Tick %d", g_world_dual_frame);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Copy ASM##world_marked_copy_asm")) {
+            g_world_marked_generated_asm = build_world_marked_asm();
+            ImGui::SetClipboardText(g_world_marked_generated_asm.c_str());
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Copied World View ASM for %d lane%s.",
+                     (int)lanes.size(), lanes.size() == 1 ? "" : "s");
+            g_restore_msg_timer = 4.0f;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned local-anipoint tables.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("View ASM##world_marked_view_asm")) {
+            g_world_marked_generated_asm = build_world_marked_asm();
+            g_world_marked_show_asm = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Preview the generated animation-table source.");
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body", &g_world_dummy_decap_body)) {
+            g_world_dummy_decap_reset = true;
+            g_world_marked_hold_end[kWorldDummyDecapSlot] = true;
+            WorldMarkedRestart();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Adds the stock fatality decap body as its own sync lane using *DECAP1-7 frames from open tabs.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Use Selected##world_dummy_assign")) {
+            assign_selected_dummy_decap();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Assign the dummy body from the selected *DECAP frame, *DECAPLEG piece, or *DECAPTORSO piece.");
+        if (g_world_dummy_decap_manual) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("[%d] %sDECAP",
+                                g_world_dummy_decap_doc_idx,
+                                g_world_dummy_decap_prefix.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Auto##world_dummy_auto")) {
+                g_world_dummy_decap_manual = false;
+                g_world_dummy_decap_reset = true;
+                WorldMarkedRestart();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Return to automatic dummy body selection.");
+        }
+        if (g_world_dummy_decap_body && dummy_decap_missing) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("No assigned *DECAP body found");
+        }
+
+        for (int slot = 0; slot < (int)lanes.size(); slot++) {
+            MarkedLane &lane = lanes[slot];
+            ImGui::PushID(slot);
+            ImGui::Separator();
+            const char *doc_name = !lane.label.empty()
+                                 ? lane.label.c_str()
+                                 : (lane.doc->fname_s[0] ? lane.doc->fname_s : "Untitled");
+            ImGui::Text("Slot %d  [%d] %s", slot + 1, lane.doc_idx, doc_name);
+            ImGui::SameLine();
+            ImGui::Checkbox("Stop##world_lane_stop", &g_world_marked_hold_end[lane.delay_slot]);
+            if (lane.dummy_decap) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset Body##world_dummy_decap_reset")) {
+                    WorldResetDummyDecapDelays((int)lane.frames.size());
+                    WorldMarkedRestart();
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Restore stock decap timing: 48, 6/6, 10-tick wobble, 6-tick fall.");
+            }
+            bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
+            if (mirror_flag) {
+                ImGui::SameLine();
+                ImGui::Checkbox("Mirror##world_lane_mirror", mirror_flag);
+            }
+
+            EnsureWorldMarkedFrameDelays(lane.delay_slot, (int)lane.frames.size());
+            int edit_fi = lane.frame_pos;
+            if (edit_fi < 0) edit_fi = 0;
+            if (edit_fi >= (int)lane.frames.size()) edit_fi = (int)lane.frames.size() - 1;
+
+            auto refresh_lane_after_sequence_edit = [&]() {
+                if (!lane.dummy_decap) {
+                    lane.frames = g_world_marked_sequence_frames[lane.delay_slot];
+                    WorldMarkedBuildSingleFrameLane(lane.doc, lane.frames,
+                                                    lane.frame_pieces, lane.frame_labels);
+                }
+                EnsureWorldMarkedFrameDelays(lane.delay_slot, (int)lane.frames.size());
+                lane.frame_pos = WorldMarkedFrameForTick(lane.delay_slot, (int)lane.frames.size(),
+                                                         g_world_dual_frame,
+                                                         g_world_marked_hold_end[lane.delay_slot]);
+                if (lane.frame_pos < 0) lane.frame_pos = 0;
+                if (lane.frame_pos >= (int)lane.frames.size())
+                    lane.frame_pos = (int)lane.frames.size() - 1;
+                lane.img = (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size())
+                         ? doc_get_img(lane.doc, lane.frames[lane.frame_pos])
+                         : NULL;
+                edit_fi = lane.frame_pos;
+            };
+
+            if (edit_fi >= 0) {
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("Entry %d/%d", edit_fi + 1, (int)lane.frames.size());
+                if (!lane.dummy_decap) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("+##world_seq_dup")) {
+                        WorldMarkedDuplicateSequenceEntry(lane.delay_slot, edit_fi);
+                        refresh_lane_after_sequence_edit();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Duplicate this sequence entry so the same sprite can use different local anipoints later.");
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("-##world_seq_del")) {
+                        WorldMarkedDeleteSequenceEntry(lane.delay_slot, edit_fi);
+                        refresh_lane_after_sequence_edit();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Remove this sequence entry. The sprite itself is not deleted.");
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset Seq##world_seq_reset")) {
+                        WorldMarkedResetSequenceToDefaults(lane.delay_slot);
+                        refresh_lane_after_sequence_edit();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Rebuild this lane from the currently marked sprites and clear local sequence offsets.");
+                }
+
+                int delay = g_world_marked_frame_delays[lane.delay_slot][edit_fi];
+                int local_dx = g_world_marked_local_dx[lane.delay_slot][edit_fi];
+                int local_dy = g_world_marked_local_dy[lane.delay_slot][edit_fi];
+                int show_at = g_world_marked_visible_from[lane.delay_slot][edit_fi];
+                ImGui::SameLine();
+                ImGui::TextDisabled("Delay");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(38.0f);
+                if (ImGui::InputInt("##world_edit_delay", &delay, 0, 0))
+                    g_world_marked_frame_delays[lane.delay_slot][edit_fi] = ClampTimelineHold(delay);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Repeat count for this sequence entry.");
+                ImGui::SameLine();
+                ImGui::TextDisabled("dAX");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(46.0f);
+                if (ImGui::InputInt("##world_edit_dax", &local_dx, 0, 0))
+                    g_world_marked_local_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(local_dx);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Local anipoint X delta for this entry. You can also drag the sprite in the world canvas.");
+                ImGui::SameLine();
+                ImGui::TextDisabled("dAY");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(46.0f);
+                if (ImGui::InputInt("##world_edit_day", &local_dy, 0, 0))
+                    g_world_marked_local_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(local_dy);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Local anipoint Y delta for this entry. Positive values move the effective anipoint down.");
+                ImGui::SameLine();
+                ImGui::TextDisabled("Show@");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(52.0f);
+                if (ImGui::InputInt("##world_edit_show", &show_at, 0, 0))
+                    g_world_marked_visible_from[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleFrom(show_at);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Hide this entry until the global preview tick reaches this value.");
+            }
+
+            ImGui::BeginChild("##world_lane_frames", ImVec2(0.0f, 42.0f), false,
+                              ImGuiWindowFlags_HorizontalScrollbar |
+                              ImGuiWindowFlags_NoBackground);
+            for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+                if (fi > 0) ImGui::SameLine(0.0f, 6.0f);
+                ImGui::PushID(fi);
+                ImGui::BeginGroup();
+                int img_idx = lane.frames[fi];
+                IMG *thumb_img = doc_get_img(lane.doc, img_idx);
+                SDL_Texture *thumb_tex = BuildWorldSpriteTexture(lane.doc, thumb_img, 255);
+                bool current = (fi == lane.frame_pos);
+                if (current)
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.46f, 0.72f, 1.0f));
+                bool clicked = false;
+                if (thumb_tex) {
+                    clicked = ImGui::ImageButton("##world_thumb",
+                                                 (ImTextureID)(intptr_t)thumb_tex,
+                                                 ImVec2(34.0f, 34.0f),
+                                                 ImVec2(0, 0), ImVec2(1, 1),
+                                                 ImVec4(0, 0, 0, 0),
+                                                 ImVec4(1, 1, 1, 1));
+                } else {
+                    char fallback[16];
+                    snprintf(fallback, sizeof(fallback), "%d", img_idx);
+                    clicked = ImGui::Button(fallback, ImVec2(34.0f, 34.0f));
+                }
+                if (current)
+                    ImGui::PopStyleColor();
+                if (clicked) {
+                    g_world_marked_paused = true;
+                    g_world_dual_timer = 0.0f;
+                    g_world_dual_frame = WorldMarkedTickForFrame(lane.delay_slot,
+                                                                 (int)lane.frames.size(), fi);
+                    lane.frame_pos = fi;
+                    if (lane.doc_idx != document_active_index()) {
+                        document_set_active(lane.doc_idx);
+                        ResetPerDocumentUiState(false);
+                        g_doc_tab_select_request = lane.doc_idx;
+                    }
+                    g_doc->ilselected = img_idx;
+                    g_zoom_reset = true;
+                }
+                if (ImGui::IsItemHovered()) {
+                    std::string sprite_name = (fi < (int)lane.frame_labels.size() &&
+                                               !lane.frame_labels[fi].empty())
+                                            ? lane.frame_labels[fi]
+                                            : (thumb_img ? img_name_string(thumb_img) : std::string());
+                    ImGui::SetTooltip("[%d] %s", img_idx, sprite_name.c_str());
+                }
+                ImGui::EndGroup();
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+
+    if (g_world_marked_show_asm)
+        ImGui::OpenPopup("World View ASM");
+    if (ImGui::BeginPopupModal("World View ASM", &g_world_marked_show_asm,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextDisabled("Generated from the current marked-tab World View sequence.");
+        ImGui::BeginChild("##world_marked_asm_text", ImVec2(720.0f, 420.0f), true,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+        ImGui::TextUnformatted(g_world_marked_generated_asm.c_str());
+        ImGui::EndChild();
+        if (ImGui::Button("Copy to Clipboard")) {
+            ImGui::SetClipboardText(g_world_marked_generated_asm.c_str());
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied World View ASM.");
+            g_restore_msg_timer = 4.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close")) {
+            g_world_marked_show_asm = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     return true;
 }
 
@@ -1949,7 +3231,7 @@ static int   g_histogram_img_count = 0;
 static bool g_show_restore_regex = false;
 static bool g_show_auto_chop = false;
 static int  g_chop_w = 64;
-static int  g_chop_h = 256;
+static int  g_chop_h = 64;
 static bool g_chop_trim = true;
 
 struct AutoChopPiecePreview {
@@ -1972,6 +3254,49 @@ struct AutoChopPreview {
     long long split_uncomp_bits;
     long long split_zcom_bits;
 };
+
+static IMG *AutoChopPrimaryTarget(int *out_idx = NULL)
+{
+    int marked = CountMarkedImages();
+    if (g_doc->ilselected >= 0) {
+        IMG *selected = get_img(g_doc->ilselected);
+        if (selected && (marked == 0 || (selected->flags & 1))) {
+            if (out_idx) *out_idx = g_doc->ilselected;
+            return selected;
+        }
+    }
+
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (marked == 0 || (img->flags & 1)) {
+            if (out_idx) *out_idx = idx;
+            return img;
+        }
+    }
+
+    if (out_idx) *out_idx = -1;
+    return NULL;
+}
+
+static void AutoChopSetThreeBandSize(void)
+{
+    int idx = -1;
+    IMG *img = AutoChopPrimaryTarget(&idx);
+    if (!img || img->w == 0 || img->h == 0) return;
+
+    g_chop_w = (int)img->w;
+    g_chop_h = ((int)img->h + 2) / 3;
+    if (g_chop_h < 1) g_chop_h = 1;
+
+    if (idx >= 0)
+        g_doc->ilselected = idx;
+}
+
+static void OpenAutoChopDialog(void)
+{
+    AutoChopSetThreeBandSize();
+    g_show_auto_chop = true;
+}
 
 static void AutoChopPreviewClear(AutoChopPreview *p)
 {
@@ -2251,76 +3576,312 @@ static bool g_restore_regex_error = false;
  * edits to the master, leaving every untouched pixel alone). Diff is the
  * right choice when adding a small detail to a master sprite. */
 static int g_restore_diff_mode = 1;
+static int g_last_delete_removed_palettes = 0;
 
-static void DeleteImage(int idx)
+static void NormalizeImageDeleteIndices(std::vector<int> *indices)
 {
-    if (idx < 0 || (unsigned)idx >= g_doc->imgcnt) return;
+    if (!indices) return;
+    indices->erase(std::remove_if(indices->begin(), indices->end(),
+        [](int idx) { return idx < 0 || (unsigned int)idx >= g_doc->imgcnt; }),
+        indices->end());
+    std::sort(indices->begin(), indices->end());
+    indices->erase(std::unique(indices->begin(), indices->end()), indices->end());
+}
+
+static void RemapTimelineAfterImageDelete(const std::vector<int> &deleted)
+{
+    if (deleted.empty()) return;
+
+    auto remap_index = [&](int idx) {
+        if (idx < 0) return -1;
+        if (std::binary_search(deleted.begin(), deleted.end(), idx)) return -1;
+        int shift = (int)(std::lower_bound(deleted.begin(), deleted.end(), idx) - deleted.begin());
+        return idx - shift;
+    };
+
+    EnsureTimelineHolds();
+    std::vector<int> remapped_frames;
+    std::vector<int> remapped_holds;
+    remapped_frames.reserve(g_timeline_frames.size());
+    remapped_holds.reserve(g_timeline_holds.size());
+    for (size_t i = 0; i < g_timeline_frames.size(); i++) {
+        int idx = remap_index(g_timeline_frames[i]);
+        if (idx < 0) continue;
+        remapped_frames.push_back(idx);
+        remapped_holds.push_back(g_timeline_holds[i]);
+    }
+    g_timeline_frames.swap(remapped_frames);
+    g_timeline_holds.swap(remapped_holds);
+
+    for (int i = 0; i < 2; i++) {
+        g_timeline_composite[i] = remap_index(g_timeline_composite[i]);
+        if (g_timeline_composite[i] < 0)
+            g_timeline_composite_locked[i] = false;
+    }
+    CompactTimelineCompositeSelection();
+    if (g_timeline_composite[0] < 0 || g_timeline_composite[1] < 0)
+        ClearTimelineCompositeSelection();
+
+    if (g_timeline_play_idx >= (int)g_timeline_frames.size())
+        g_timeline_play_idx = 0;
+    g_timeline_built_for_imgcnt = g_doc->imgcnt;
+    ClearTimelineThumbCache();
+}
+
+static int DeleteImagesByIndices(std::vector<int> indices)
+{
+    g_last_delete_removed_palettes = 0;
+    NormalizeImageDeleteIndices(&indices);
+    if (indices.empty()) return 0;
+
+    std::vector<int> candidate_palettes;
+    candidate_palettes.reserve(indices.size());
+    for (int delete_idx : indices) {
+        IMG *img = get_img(delete_idx);
+        if (img) candidate_palettes.push_back((int)img->palnum);
+    }
+    std::sort(candidate_palettes.begin(), candidate_palettes.end());
+    candidate_palettes.erase(std::unique(candidate_palettes.begin(), candidate_palettes.end()),
+                             candidate_palettes.end());
 
     doc_undo_push();
 
     IMG *prev = NULL;
     IMG *curr = (IMG *)g_doc->img_p;
-    for (int i = 0; curr && i < idx; i++) {
-        prev = curr;
-        curr = (IMG *)curr->nxt_p;
-    }
-    if (!curr) return;
-
-    if (prev) prev->nxt_p = curr->nxt_p;
-    else g_doc->img_p = curr->nxt_p;
-    g_doc->imgcnt--;
-
-    if (idx < g_doc->ilselected) g_doc->ilselected--;
-    else if (idx == g_doc->ilselected && (unsigned)g_doc->ilselected >= g_doc->imgcnt)
-        g_doc->ilselected = (int)g_doc->imgcnt - 1;
-
-    if (curr->data_p) free(curr->data_p);
-    if (curr->pttbl_p) free(curr->pttbl_p);
-    if (curr->baseline_p) free(curr->baseline_p);
-    free(curr);
-
-    g_img_tex_idx = -2;
-}
-
-static void DeleteMarkedImages(void)
-{
-    undo_push();
-
-    IMG *prev = NULL;
-    IMG *curr = (IMG *)g_doc->img_p;
     int idx = 0;
+    int deleted_count = 0;
     int deleted_before_sel = 0;
     bool sel_was_deleted = false;
+    int old_sel = g_doc->ilselected;
 
     while (curr) {
-        if (curr->flags & 1) {
+        bool delete_this = std::binary_search(indices.begin(), indices.end(), idx);
+        if (delete_this) {
             IMG *to_delete = curr;
             if (prev) prev->nxt_p = curr->nxt_p;
             else g_doc->img_p = curr->nxt_p;
             curr = (IMG *)curr->nxt_p;
             g_doc->imgcnt--;
+            deleted_count++;
 
-            if (idx < g_doc->ilselected) deleted_before_sel++;
-            else if (idx == g_doc->ilselected) sel_was_deleted = true;
+            if (idx < old_sel) deleted_before_sel++;
+            else if (idx == old_sel) sel_was_deleted = true;
 
             if (to_delete->data_p) free(to_delete->data_p);
             if (to_delete->pttbl_p) free(to_delete->pttbl_p);
             if (to_delete->baseline_p) free(to_delete->baseline_p);
             free(to_delete);
-            /* idx tracks the original list position; advance it for the deleted entry */
-            idx++;
         } else {
             prev = curr;
             curr = (IMG *)curr->nxt_p;
-            idx++;
         }
+        idx++;
     }
 
-    g_doc->ilselected -= deleted_before_sel;
-    if (sel_was_deleted || (unsigned)g_doc->ilselected >= g_doc->imgcnt)
-        g_doc->ilselected = g_doc->imgcnt ? (int)g_doc->imgcnt - 1 : -1;
+    if (g_doc->imgcnt == 0) {
+        g_doc->ilselected = -1;
+    } else {
+        int new_sel = old_sel - deleted_before_sel;
+        if (sel_was_deleted && new_sel >= (int)g_doc->imgcnt)
+            new_sel = (int)g_doc->imgcnt - 1;
+        if (new_sel < 0) new_sel = 0;
+        if (new_sel >= (int)g_doc->imgcnt) new_sel = (int)g_doc->imgcnt - 1;
+        g_doc->ilselected = new_sel;
+    }
 
+    RemapTimelineAfterImageDelete(indices);
+    int deleted_palettes = 0;
+    if (!candidate_palettes.empty() && g_doc->palcnt > 0) {
+        std::vector<unsigned char> used((size_t)g_doc->palcnt, 0);
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+            int pal_idx = (int)img->palnum;
+            if (pal_idx >= 0 && (unsigned int)pal_idx < g_doc->palcnt)
+                used[(size_t)pal_idx] = 1;
+        }
+
+        std::sort(candidate_palettes.begin(), candidate_palettes.end(), std::greater<int>());
+        for (int pal_idx : candidate_palettes) {
+            if (pal_idx < 0 || (unsigned int)pal_idx >= g_doc->palcnt) continue;
+            if (used[(size_t)pal_idx]) continue;
+
+            PAL *prev_pal = NULL;
+            PAL *pal = (PAL *)g_doc->pal_p;
+            for (int i = 0; pal && i < pal_idx; i++) {
+                prev_pal = pal;
+                pal = (PAL *)pal->nxt_p;
+            }
+            if (!pal) continue;
+
+            if (prev_pal) prev_pal->nxt_p = pal->nxt_p;
+            else g_doc->pal_p = pal->nxt_p;
+            FreePal(pal);
+            g_doc->palcnt--;
+            deleted_palettes++;
+
+            for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+                if ((int)img->palnum > pal_idx)
+                    img->palnum--;
+            }
+            if (g_doc->plselected == pal_idx)
+                g_doc->plselected = -1;
+            else if (g_doc->plselected > pal_idx)
+                g_doc->plselected--;
+        }
+    }
+    g_last_delete_removed_palettes = deleted_palettes;
+
+    IMG *sel = get_img(g_doc->ilselected);
+    if (sel && (unsigned int)sel->palnum < g_doc->palcnt)
+        g_doc->plselected = (int)sel->palnum;
+    else if (g_doc->palcnt == 0)
+        g_doc->plselected = -1;
+    else if (g_doc->plselected < 0 || (unsigned int)g_doc->plselected >= g_doc->palcnt)
+        g_doc->plselected = (int)g_doc->palcnt - 1;
+    ApplyPalette(g_doc->plselected);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    InvalidatePaletteSync();
     g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_palette_nav = false;
+    if (deleted_palettes > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Deleted %d sprite%s and %d now-unused palette%s.",
+                 deleted_count, deleted_count == 1 ? "" : "s",
+                 deleted_palettes, deleted_palettes == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    }
+    return deleted_count;
+}
+
+static int DeleteImage(int idx)
+{
+    std::vector<int> indices;
+    indices.push_back(idx);
+    return DeleteImagesByIndices(indices);
+}
+
+static int DeleteMarkedImages(void)
+{
+    std::vector<int> indices;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img->flags & 1) indices.push_back(idx);
+    }
+    return DeleteImagesByIndices(indices);
+}
+
+static void CollectSubframeIndicesForParent(int parent_idx, std::vector<int> *out)
+{
+    if (!out) return;
+    out->clear();
+    IMG *parent = get_img(parent_idx);
+    if (!parent) return;
+
+    std::string parent_name = img_name_string(parent);
+    if (parent_name.empty()) return;
+    std::string parent_src = parent->src_filename[0] ? parent->src_filename : "Workspace";
+
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (idx == parent_idx) continue;
+        std::string src = img->src_filename[0] ? img->src_filename : "Workspace";
+        if (src != parent_src) continue;
+        std::string child_name = img_name_string(img);
+        if (InferSubframeParentName(child_name.c_str()) == parent_name)
+            out->push_back(idx);
+    }
+}
+
+static void CollectExtraSubframeIndices(const std::vector<int> &base_indices,
+                                        std::vector<int> *extra_indices,
+                                        int *parent_count)
+{
+    if (extra_indices) extra_indices->clear();
+    if (parent_count) *parent_count = 0;
+    if (!extra_indices || base_indices.empty()) return;
+
+    std::vector<int> base = base_indices;
+    NormalizeImageDeleteIndices(&base);
+
+    for (int idx : base) {
+        std::vector<int> children;
+        CollectSubframeIndicesForParent(idx, &children);
+
+        bool parent_has_extra = false;
+        for (int child_idx : children) {
+            if (std::binary_search(base.begin(), base.end(), child_idx)) continue;
+            if (std::find(extra_indices->begin(), extra_indices->end(), child_idx) != extra_indices->end()) continue;
+            extra_indices->push_back(child_idx);
+            parent_has_extra = true;
+        }
+        if (parent_has_extra && parent_count) (*parent_count)++;
+    }
+
+    NormalizeImageDeleteIndices(extra_indices);
+}
+
+static void ClearPendingImageDelete(void)
+{
+    g_pending_delete_base_indices.clear();
+    g_pending_delete_subframe_indices.clear();
+    g_pending_delete_parent_name[0] = '\0';
+    g_show_delete_images_confirm = false;
+}
+
+static void RequestDeleteImage(int idx)
+{
+    if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt) return;
+
+    std::vector<int> base;
+    std::vector<int> extra;
+    base.push_back(idx);
+    CollectExtraSubframeIndices(base, &extra, NULL);
+    if (extra.empty()) {
+        DeleteImage(idx);
+        return;
+    }
+
+    IMG *img = get_img(idx);
+    snprintf(g_pending_delete_parent_name, sizeof(g_pending_delete_parent_name),
+             "%.15s", img ? img->n_s : "sprite");
+    g_pending_delete_base_indices = base;
+    g_pending_delete_subframe_indices = extra;
+    g_show_delete_images_confirm = true;
+}
+
+static void RequestDeleteMarkedImages(void)
+{
+    std::vector<int> base;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img->flags & 1) base.push_back(idx);
+    }
+    NormalizeImageDeleteIndices(&base);
+    if (base.empty()) return;
+
+    std::vector<int> extra;
+    CollectExtraSubframeIndices(base, &extra, NULL);
+    if (extra.empty()) {
+        int deleted = DeleteMarkedImages();
+        if (g_last_delete_removed_palettes > 0) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Deleted %d marked sprite%s and %d now-unused palette%s.",
+                     deleted, deleted == 1 ? "" : "s",
+                     g_last_delete_removed_palettes,
+                     g_last_delete_removed_palettes == 1 ? "" : "s");
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Deleted %d marked sprite%s.", deleted, deleted == 1 ? "" : "s");
+        }
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    g_pending_delete_parent_name[0] = '\0';
+    g_pending_delete_base_indices = base;
+    g_pending_delete_subframe_indices = extra;
+    g_show_delete_images_confirm = true;
 }
 
 /* Swap two adjacent IMG nodes in the linked list. `before_a` is the node
@@ -2425,11 +3986,10 @@ static void DeletePalette(void)
     if (curr->data_p) free(curr->data_p);
     free(curr);
 
-    if (g_doc->plselected >= 0) {
-        ApplyPalette(g_doc->plselected);
-        save_palette_baseline();
-    }
+    ApplyPalette(g_doc->plselected);
+    save_palette_baseline();
     reset_palette_adjust_sliders();
+    InvalidatePaletteSync();
     g_img_tex_idx = -2;
 }
 
@@ -2496,14 +4056,14 @@ static void TogglePointTable(void)
 }
 
 /* Clear all "extra" anipt/pttbl data on every image. Mirrors ilst_clrxdata:
-   zeros anix2/aniy2/aniz2 and the contents of any attached PTTBL (without
-   freeing the PTTBL itself, so toggle state is preserved). */
+   clears the secondary anipoint sentinel and the contents of any attached
+   PTTBL (without freeing the PTTBL itself, so toggle state is preserved). */
 static void ClearExtraData(void)
 {
     if (!g_doc->img_p) return;
     undo_push();
     for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
-        p->anix2 = p->aniy2 = p->aniz2 = 0;
+        clear_secondary_anipoint(p);
         if (p->pttbl_p) {
             /* PTTBL is 40 bytes per wmpstruc.inc: 8 dw header + 5 PTBOX
                (4 b each) + 1 PTCBOX (4 b). */
@@ -2769,6 +4329,7 @@ static void ClearAll(void)
     g_palette_nav = false;
     reset_palette_adjust_sliders();
     g_palette_baseline_nc = 0;
+    InvalidatePaletteSync();
 }
 
 /* Swap to the alternate (second) image list.  Purely swaps globals —
@@ -2934,9 +4495,7 @@ static void AddNewBlankImage(int w = 32, int h = 32)
     img->flags    = 0;
     img->anix     = 0;
     img->aniy     = 0;
-    img->anix2    = 0;
-    img->aniy2    = 0;
-    img->aniz2    = 0;
+    clear_secondary_anipoint(img);
     img->opals    = (unsigned short)-1;
     img->pttbl_p  = NULL;
     img->palnum   = (g_doc->plselected >= 0) ? (unsigned short)g_doc->plselected : 0;
@@ -2998,6 +4557,10 @@ static void AddNewPalette(void)
     g_doc->plselected = (int)g_doc->palcnt - 1;
     IMG *cur = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (cur) cur->palnum = (unsigned short)g_doc->plselected;
+    ApplyPalette(g_doc->plselected);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    InvalidatePaletteSync();
     g_img_tex_idx = -2;
 }
 
@@ -3023,6 +4586,10 @@ static void DuplicatePalette(void)
     memcpy(buf, src->data_p, col_sz);
 
     g_doc->plselected = (int)g_doc->palcnt - 1;
+    ApplyPalette(g_doc->plselected);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    InvalidatePaletteSync();
     g_img_tex_idx = -2;
 }
 
@@ -3068,6 +4635,10 @@ static void PastePaletteFromClipboard(void)
     memcpy(buf, g_pal_clipboard.data, col_sz);
 
     if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
+    ApplyPalette(g_doc->plselected);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    InvalidatePaletteSync();
 }
 
 static void BuildPaletteMergeRemap(const PAL *src, const PAL *dst, unsigned char remap[256])
@@ -3196,6 +4767,7 @@ static void MergeMarkedPalettes(bool force_quality_merge)
     if (BuildMarkedPaletteMergeQuality(&quality)) {
         g_palette_merge_quality = quality;
         if (!force_quality_merge && PaletteMergeQualityHasDrift(quality)) {
+            g_palette_merge_preview_only = false;
             g_show_palette_merge_quality = true;
             return;
         }
@@ -3305,6 +4877,105 @@ static void MergeMarkedPalettes(bool force_quality_merge)
                  quality.source_palettes, quality.source_palettes == 1 ? "" : "s");
     }
     g_restore_msg_timer = 5.0f;
+}
+
+static void OpenPaletteMergePreview(void)
+{
+    PaletteMergeQuality quality = {};
+    if (!BuildMarkedPaletteMergeQuality(&quality)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark one source palette, then select the target palette.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    g_palette_merge_quality = quality;
+    g_palette_merge_preview_only = true;
+    g_show_palette_merge_quality = true;
+}
+
+static void DrawPaletteMergeMappingPreview(const PaletteMergeQuality &q)
+{
+    PAL *target = get_pal(q.target_idx);
+    if (!target || !target->data_p) return;
+    int target_count = (int)target->numc;
+    if (target_count > 256) target_count = 256;
+    const unsigned char *target_data = (const unsigned char *)target->data_p;
+
+    ImGui::TextDisabled("Swatch top = source color, bottom = mapped target color.");
+    ImGui::BeginChild("##pal_merge_preview", ImVec2(560, 210), true);
+    int pal_idx = 0;
+    for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p, pal_idx++) {
+        if (!(pal->flags & 1) || pal_idx == q.target_idx ||
+            !pal->data_p || pal->numc <= 1)
+            continue;
+
+        ImGui::Text("%.9s -> %.9s", pal->n_s, q.target_name);
+        unsigned char remap[256];
+        BuildPaletteMergeRemap(pal, target, remap);
+        const unsigned char *src_data = (const unsigned char *)pal->data_p;
+        int src_count = (int)pal->numc;
+        if (src_count > 256) src_count = 256;
+
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 base = ImGui::GetCursorScreenPos();
+        const float sw = 14.0f;
+        const float gap = 2.0f;
+        const int cols = 16;
+        int shown = src_count - 1;
+        int rows = (shown + cols - 1) / cols;
+        if (rows < 1) rows = 1;
+
+        for (int si = 1; si < src_count; si++) {
+            int k = si - 1;
+            int row = k / cols;
+            int col = k % cols;
+            ImVec2 p0(base.x + col * (sw + gap), base.y + row * (sw + gap));
+            ImVec2 p1(p0.x + sw, p0.y + sw);
+
+            unsigned char sr = 0, sg = 0, sb = 0;
+            pal_word_to_rgb8(src_data + si * 2, &sr, &sg, &sb);
+            unsigned char mapped = remap[si];
+            unsigned char dr = 0, dg = 0, db = 0;
+            bool valid = mapped > 0 && (int)mapped < target_count;
+            if (valid)
+                pal_word_to_rgb8(target_data + mapped * 2, &dr, &dg, &db);
+
+            dl->AddRectFilled(p0, p1, IM_COL32(sr, sg, sb, 255));
+            dl->AddRectFilled(ImVec2(p0.x, p0.y + sw - 4.0f), p1,
+                              valid ? IM_COL32(dr, dg, db, 255)
+                                    : IM_COL32(255, 0, 0, 255));
+
+            unsigned short src_word =
+                (unsigned short)(src_data[si * 2] | (src_data[si * 2 + 1] << 8));
+            unsigned short dst_word = valid
+                ? (unsigned short)(target_data[mapped * 2] |
+                                   (target_data[mapped * 2 + 1] << 8))
+                : 0;
+            int dist = valid ? PaletteColorDistance5(src_word, dst_word) : 9999;
+            ImU32 border = dist == 0 ? IM_COL32(70, 90, 110, 220)
+                          : dist < 36 ? IM_COL32(255, 190, 60, 255)
+                                      : IM_COL32(255, 80, 80, 255);
+            dl->AddRect(p0, p1, border);
+
+            ImGui::SetCursorScreenPos(p0);
+            ImGui::PushID(pal_idx * 1000 + si);
+            ImGui::InvisibleButton("##map", ImVec2(sw, sw));
+            if (ImGui::IsItemHovered()) {
+                if (valid) {
+                    ImGui::SetTooltip("%.9s #%d -> %.9s #%d\nRGB drift %.2f",
+                                      pal->n_s, si, q.target_name, (int)mapped,
+                                      sqrt((double)dist));
+                } else {
+                    ImGui::SetTooltip("%.9s #%d would map to transparent/invalid",
+                                      pal->n_s, si);
+                }
+            }
+            ImGui::PopID();
+        }
+        ImGui::Dummy(ImVec2(cols * (sw + gap), rows * (sw + gap)));
+        ImGui::Spacing();
+    }
+    ImGui::EndChild();
 }
 
 static bool PalettesAreIdentical(const PAL *a, const PAL *b)
@@ -3600,29 +5271,119 @@ static void ApplyMarkedImageRename(const char *base)
     }
 }
 
+static void InvalidatePaletteUsage(void)
+{
+    g_palette_usage_serial++;
+    if (g_palette_usage_serial == 0) {
+        g_palette_usage_serial = 1;
+        g_palette_usage_built_serial = 0;
+    }
+}
+
+static void BuildSelectedPaletteUsage(void)
+{
+    int pal_idx = g_doc ? g_doc->plselected : -1;
+    PAL *pal = (pal_idx >= 0) ? get_pal(pal_idx) : NULL;
+    int pal_numc = (pal && pal->data_p) ? (int)pal->numc : 0;
+    if (pal_numc < 0) pal_numc = 0;
+    if (pal_numc > 256) pal_numc = 256;
+
+    bool needs_rebuild =
+        g_palette_usage_doc != g_doc ||
+        g_palette_usage_img_head != (g_doc ? g_doc->img_p : NULL) ||
+        g_palette_usage_imgcnt_seen != (g_doc ? g_doc->imgcnt : 0) ||
+        g_palette_usage_pal_idx != pal_idx ||
+        g_palette_usage_pal_numc != pal_numc ||
+        g_palette_usage_built_serial != g_palette_usage_serial;
+    if (!needs_rebuild) return;
+
+    memset(g_palette_usage_counts, 0, sizeof(g_palette_usage_counts));
+    g_palette_usage_doc = g_doc;
+    g_palette_usage_img_head = g_doc ? g_doc->img_p : NULL;
+    g_palette_usage_imgcnt_seen = g_doc ? g_doc->imgcnt : 0;
+    g_palette_usage_pal_idx = pal_idx;
+    g_palette_usage_pal_numc = pal_numc;
+    g_palette_usage_img_count = 0;
+    g_palette_usage_used_colors = 0;
+    g_palette_usage_unused_colors = 0;
+    g_palette_usage_low_colors = 0;
+    g_palette_usage_built_serial = g_palette_usage_serial;
+
+    if (!g_doc || pal_idx < 0 || !pal || !pal->data_p || pal_numc <= 0)
+        return;
+
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if ((int)img->palnum != pal_idx || !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+
+        g_palette_usage_img_count++;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *pixels = (const unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++) {
+            const unsigned char *row = pixels + y * stride;
+            for (int x = 0; x < img->w; x++)
+                g_palette_usage_counts[row[x]]++;
+        }
+    }
+
+    if (g_palette_usage_low_threshold < 1) g_palette_usage_low_threshold = 1;
+    for (int i = 1; i < pal_numc; i++) {
+        unsigned long long count = g_palette_usage_counts[i];
+        if (count == 0) {
+            g_palette_usage_unused_colors++;
+        } else {
+            g_palette_usage_used_colors++;
+            if (count <= (unsigned long long)g_palette_usage_low_threshold)
+                g_palette_usage_low_colors++;
+        }
+    }
+}
+
+static int FindNearestUsedPaletteSlotForUsage(int color_idx, int *dist_out)
+{
+    if (dist_out) *dist_out = 0;
+    BuildSelectedPaletteUsage();
+
+    PAL *pal = (g_palette_usage_pal_idx >= 0) ? get_pal(g_palette_usage_pal_idx) : NULL;
+    if (!pal || !pal->data_p ||
+        color_idx <= 0 || color_idx >= g_palette_usage_pal_numc)
+        return -1;
+
+    const unsigned char *pd = (const unsigned char *)pal->data_p;
+    unsigned short target =
+        (unsigned short)(pd[color_idx * 2] | (pd[color_idx * 2 + 1] << 8));
+    int best = -1;
+    int best_dist = 0x7FFFFFFF;
+
+    for (int i = 1; i < g_palette_usage_pal_numc; i++) {
+        if (i == color_idx || g_palette_usage_counts[i] == 0)
+            continue;
+        unsigned short w = (unsigned short)(pd[i * 2] | (pd[i * 2 + 1] << 8));
+        int dist = PaletteColorDistance5(target, w);
+        if (dist < best_dist) {
+            best = i;
+            best_dist = dist;
+            if (dist == 0) break;
+        }
+    }
+
+    if (dist_out && best >= 0) *dist_out = best_dist;
+    return best;
+}
+
 static void CalculatePaletteHistogram()
 {
     memset(g_histogram_data, 0, sizeof(g_histogram_data));
     g_histogram_max = 0.0f;
     g_histogram_img_count = 0;
 
-    if (g_doc->plselected < 0) return;
+    BuildSelectedPaletteUsage();
+    g_histogram_img_count = g_palette_usage_img_count;
+    for (int i = 0; i < 256; i++)
+        g_histogram_data[i] = (float)g_palette_usage_counts[i];
 
-    IMG *img = (IMG *)g_doc->img_p;
-    while (img) {
-        if (img->palnum == g_doc->plselected && img->data_p && img->w > 0 && img->h > 0) {
-            g_histogram_img_count++;
-            unsigned short stride = (img->w + 3) & ~3; // DMA hardware alignment
-            unsigned char *pixels = (unsigned char *)img->data_p;
-            int total_pixels = stride * img->h;
-            for (int i = 0; i < total_pixels; i++) {
-                g_histogram_data[pixels[i]] += 1.0f;
-            }
-        }
-        img = (IMG *)img->nxt_p;
-    }
-
-    // Find max (skipping index 0, matching original ASM behavior so transparent bg doesn't dwarf the chart)
+    /* Find max (skipping index 0, so transparent background doesn't dwarf
+       the chart). */
     for (int i = 1; i < 256; i++) {
         if (g_histogram_data[i] > g_histogram_max) {
             g_histogram_max = g_histogram_data[i];
@@ -4902,6 +6663,374 @@ static void ApplyVariantToSelection(void)
     g_restore_msg_timer = 4.0f;
 }
 
+struct SelectionPropagateSample {
+    int src_idx;
+    int pal_idx;
+    int target_idx;
+    bool source_colors[256];
+    std::vector<std::pair<int,int>> exact_pixels;
+    std::vector<std::pair<int,int>> rel_seeds;
+    int area;
+    int min_x, min_y, max_x, max_y;
+    double rel_cx, rel_cy;
+};
+
+struct SelectionPropagateMatch {
+    int img_idx;
+    std::vector<std::pair<int,int>> pixels;
+};
+
+struct SelectionComponentStats {
+    int area;
+    int min_x, min_y, max_x, max_y;
+    long long sum_x, sum_y;
+};
+
+static bool BuildSelectionPropagateSample(SelectionPropagateSample *sample,
+                                          char *err, size_t err_sz)
+{
+    if (err && err_sz) err[0] = '\0';
+    if (!sample) return false;
+    sample->src_idx = g_doc->ilselected;
+    sample->pal_idx = -1;
+    sample->target_idx = g_sel_color;
+    memset(sample->source_colors, 0, sizeof(sample->source_colors));
+    sample->exact_pixels.clear();
+    sample->rel_seeds.clear();
+    sample->area = 0;
+    sample->min_x = sample->min_y = 0x7FFFFFFF;
+    sample->max_x = sample->max_y = -1;
+    sample->rel_cx = 0.0;
+    sample->rel_cy = 0.0;
+
+    IMG *src = (sample->src_idx >= 0) ? get_img(sample->src_idx) : NULL;
+    if (!src || !src->data_p || src->w == 0 || src->h == 0) {
+        snprintf(err, err_sz, "Select a source sprite first.");
+        return false;
+    }
+    if (!g_grid_sel.active) {
+        snprintf(err, err_sz, "Select the feature first, then propagate it.");
+        return false;
+    }
+    if (g_sel_color <= 0 || g_sel_color >= 256) {
+        snprintf(err, err_sz, "Pick a non-transparent destination swatch first.");
+        return false;
+    }
+
+    sample->pal_idx = (int)src->palnum;
+    PAL *pal = get_pal(sample->pal_idx);
+    if (!pal || !pal->data_p) {
+        snprintf(err, err_sz, "Source sprite has no usable palette.");
+        return false;
+    }
+
+    int stride = (src->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)src->data_p;
+    long long sum_x = 0;
+    long long sum_y = 0;
+
+    for (int y = 0; y < src->h; y++) {
+        for (int x = 0; x < src->w; x++) {
+            if (!selection_contains_pixel(src, x, y)) continue;
+            unsigned char ci = pix[y * stride + x];
+            if (ci == 0 || ci == (unsigned char)g_sel_color) continue;
+            sample->source_colors[ci] = true;
+            sample->exact_pixels.push_back({x, y});
+            sum_x += x;
+            sum_y += y;
+            if (x < sample->min_x) sample->min_x = x;
+            if (x > sample->max_x) sample->max_x = x;
+            if (y < sample->min_y) sample->min_y = y;
+            if (y > sample->max_y) sample->max_y = y;
+        }
+    }
+
+    sample->area = (int)sample->exact_pixels.size();
+    if (sample->area <= 0) {
+        snprintf(err, err_sz,
+                 "Selection has no source-colored opaque pixels to remap.");
+        return false;
+    }
+
+    sample->rel_cx = (double)sum_x / (double)sample->area - (double)(short)src->anix;
+    sample->rel_cy = (double)sum_y / (double)sample->area - (double)(short)src->aniy;
+
+    int seed_limit = 768;
+    int step = sample->area > seed_limit
+        ? (sample->area + seed_limit - 1) / seed_limit
+        : 1;
+    sample->rel_seeds.reserve((size_t)((sample->area + step - 1) / step));
+    for (int i = 0; i < sample->area; i += step) {
+        int x = sample->exact_pixels[i].first;
+        int y = sample->exact_pixels[i].second;
+        sample->rel_seeds.push_back({x - (int)(short)src->anix,
+                                     y - (int)(short)src->aniy});
+    }
+    return true;
+}
+
+static bool SelectionPropagateColorMatch(const SelectionPropagateSample &sample,
+                                         unsigned char ci)
+{
+    return ci != 0 && ci != (unsigned char)sample.target_idx &&
+           sample.source_colors[ci];
+}
+
+static bool FindNearestSelectionSeedPixel(IMG *img,
+                                          const SelectionPropagateSample &sample,
+                                          int cx, int cy, int radius,
+                                          int *out_x, int *out_y)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+    int w = img->w;
+    int h = img->h;
+    int stride = (w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+
+    int best_x = -1;
+    int best_y = -1;
+    int best_d2 = 0x7FFFFFFF;
+    int x0 = cx - radius; if (x0 < 0) x0 = 0;
+    int y0 = cy - radius; if (y0 < 0) y0 = 0;
+    int x1 = cx + radius; if (x1 >= w) x1 = w - 1;
+    int y1 = cy + radius; if (y1 >= h) y1 = h - 1;
+
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            if (!SelectionPropagateColorMatch(sample, pix[y * stride + x]))
+                continue;
+            int dx = x - cx;
+            int dy = y - cy;
+            int d2 = dx * dx + dy * dy;
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best_x = x;
+                best_y = y;
+                if (d2 == 0) {
+                    if (out_x) *out_x = best_x;
+                    if (out_y) *out_y = best_y;
+                    return true;
+                }
+            }
+        }
+    }
+
+    if (best_x < 0) return false;
+    if (out_x) *out_x = best_x;
+    if (out_y) *out_y = best_y;
+    return true;
+}
+
+static void FloodSelectionPropagateComponent(IMG *img,
+                                             const SelectionPropagateSample &sample,
+                                             int sx, int sy,
+                                             std::vector<unsigned char> &visited,
+                                             std::vector<std::pair<int,int>> &out,
+                                             SelectionComponentStats *stats)
+{
+    if (!img || !img->data_p || !stats) return;
+    int w = img->w;
+    int h = img->h;
+    int stride = (w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+    if (sx < 0 || sy < 0 || sx >= w || sy >= h) return;
+    if (visited[(size_t)sy * w + sx]) return;
+    if (!SelectionPropagateColorMatch(sample, pix[sy * stride + sx])) return;
+
+    stats->area = 0;
+    stats->min_x = stats->min_y = 0x7FFFFFFF;
+    stats->max_x = stats->max_y = -1;
+    stats->sum_x = stats->sum_y = 0;
+
+    std::vector<std::pair<int,int>> stack;
+    stack.push_back({sx, sy});
+    visited[(size_t)sy * w + sx] = 1;
+
+    while (!stack.empty()) {
+        std::pair<int,int> pt = stack.back();
+        stack.pop_back();
+        int x = pt.first;
+        int y = pt.second;
+
+        out.push_back(pt);
+        stats->area++;
+        stats->sum_x += x;
+        stats->sum_y += y;
+        if (x < stats->min_x) stats->min_x = x;
+        if (x > stats->max_x) stats->max_x = x;
+        if (y < stats->min_y) stats->min_y = y;
+        if (y > stats->max_y) stats->max_y = y;
+
+        const int dx[4] = {0, 1, 0, -1};
+        const int dy[4] = {-1, 0, 1, 0};
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx[i];
+            int ny = y + dy[i];
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            size_t off = (size_t)ny * w + nx;
+            if (visited[off]) continue;
+            if (!SelectionPropagateColorMatch(sample, pix[ny * stride + nx]))
+                continue;
+            visited[off] = 1;
+            stack.push_back({nx, ny});
+        }
+    }
+}
+
+static bool SelectionPropagateComponentLooksLikely(IMG *img,
+                                                   const SelectionPropagateSample &sample,
+                                                   const SelectionComponentStats &stats)
+{
+    if (!img || stats.area <= 0 || sample.area <= 0) return false;
+    double ratio = (double)stats.area / (double)sample.area;
+    if (ratio < 0.04 || ratio > 8.0) return false;
+
+    double cx = (double)stats.sum_x / (double)stats.area - (double)(short)img->anix;
+    double cy = (double)stats.sum_y / (double)stats.area - (double)(short)img->aniy;
+    double dx = cx - sample.rel_cx;
+    double dy = cy - sample.rel_cy;
+    double dist = sqrt(dx * dx + dy * dy);
+
+    int sample_w = sample.max_x - sample.min_x + 1;
+    int sample_h = sample.max_y - sample.min_y + 1;
+    if (sample_w < 1) sample_w = 1;
+    if (sample_h < 1) sample_h = 1;
+    double reach = (double)(sample_w > sample_h ? sample_w : sample_h) * 2.5 + 12.0;
+    if (reach < 28.0) reach = 28.0;
+    return dist <= reach;
+}
+
+static std::vector<std::pair<int,int>>
+FindSelectionPropagationPixels(IMG *img, const SelectionPropagateSample &sample,
+                               int img_idx)
+{
+    std::vector<std::pair<int,int>> result;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return result;
+
+    if (img_idx == sample.src_idx) {
+        result = sample.exact_pixels;
+        return result;
+    }
+
+    int sample_w = sample.max_x - sample.min_x + 1;
+    int sample_h = sample.max_y - sample.min_y + 1;
+    int radius = (sample_w > sample_h ? sample_w : sample_h) / 2;
+    if (radius < 6) radius = 6;
+    if (radius > 18) radius = 18;
+
+    int w = img->w;
+    int h = img->h;
+    std::vector<unsigned char> visited((size_t)w * h, 0);
+    for (const auto &seed : sample.rel_seeds) {
+        int ex = (int)(short)img->anix + seed.first;
+        int ey = (int)(short)img->aniy + seed.second;
+        int sx = 0, sy = 0;
+        if (!FindNearestSelectionSeedPixel(img, sample, ex, ey, radius, &sx, &sy))
+            continue;
+        if (visited[(size_t)sy * w + sx])
+            continue;
+
+        std::vector<std::pair<int,int>> component;
+        SelectionComponentStats stats = {};
+        FloodSelectionPropagateComponent(img, sample, sx, sy,
+                                         visited, component, &stats);
+        if (component.empty())
+            continue;
+        if (!SelectionPropagateComponentLooksLikely(img, sample, stats))
+            continue;
+        result.insert(result.end(), component.begin(), component.end());
+    }
+    return result;
+}
+
+static void ApplySelectionRemapToMatchingSprites(void)
+{
+    SelectionPropagateSample sample = {};
+    char err[160];
+    if (!BuildSelectionPropagateSample(&sample, err, sizeof(err))) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", err);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    std::vector<SelectionPropagateMatch> matches;
+    int scanned = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if ((int)img->palnum != sample.pal_idx ||
+            !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+        scanned++;
+        std::vector<std::pair<int,int>> pts =
+            FindSelectionPropagationPixels(img, sample, idx);
+        if (!pts.empty())
+            matches.push_back({idx, std::move(pts)});
+    }
+
+    if (matches.empty()) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No matching regions found in %d same-palette sprite%s.",
+                 scanned, scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    if (!doc_undo_push()) return;
+
+    PAL *pal = get_pal(sample.pal_idx);
+    if (!ensure_palette_numc(pal, sample.target_idx + 1)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Could not extend palette to index %d.", sample.target_idx);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int changed_pixels = 0;
+    int changed_images = 0;
+    for (SelectionPropagateMatch &m : matches) {
+        IMG *img = get_img(m.img_idx);
+        if (!img || !img->data_p) continue;
+        int stride = (img->w + 3) & ~3;
+        unsigned char *pix = (unsigned char *)img->data_p;
+        int image_changed = 0;
+        for (const auto &pt : m.pixels) {
+            int x = pt.first;
+            int y = pt.second;
+            if (x < 0 || y < 0 || x >= (int)img->w || y >= (int)img->h)
+                continue;
+            unsigned char *p = pix + y * stride + x;
+            if (!SelectionPropagateColorMatch(sample, *p))
+                continue;
+            *p = (unsigned char)sample.target_idx;
+            image_changed++;
+        }
+        if (image_changed > 0) {
+            changed_pixels += image_changed;
+            changed_images++;
+            InvalidateThumb(m.img_idx);
+        }
+    }
+
+    if (changed_pixels > 0) {
+        ApplyPalette(sample.pal_idx);
+        save_palette_baseline();
+        g_img_tex_idx = -2;
+        mark_dirty();
+    }
+
+    if (changed_pixels > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Remapped %d likely-matching pixel%s in %d/%d sprite%s to #%d.",
+                 changed_pixels, changed_pixels == 1 ? "" : "s",
+                 changed_images, scanned, scanned == 1 ? "" : "s",
+                 sample.target_idx);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Matching regions were already using #%d.", sample.target_idx);
+    }
+    g_restore_msg_timer = 5.0f;
+}
+
 static void unlink_and_free_img(IMG *victim)
 {
     if (!victim) return;
@@ -4996,6 +7125,187 @@ static void SplitSelectionToOverlayFrame(bool clear_source)
     g_restore_msg_timer = 4.0f;
 }
 
+/* ---- Hard Stroke Remover ----
+   Detects a 1-2 px matte/outline ring around transparent sprite edges. Unlike
+   Strip Edge, this requires the edge color to contrast against nearby inner
+   sprite colors, so normal antialiasing and same-color silhouette detail are
+   less likely to be erased. */
+static int StrokeWordLuma8(unsigned short w)
+{
+    int r = (int)((w >> 10) & 0x1F) * 255 / 31;
+    int g = (int)((w >>  5) & 0x1F) * 255 / 31;
+    int b = (int)( w        & 0x1F) * 255 / 31;
+    return (r * 54 + g * 183 + b * 19) >> 8;
+}
+
+static int RemoveHardStrokeFromImage(IMG *img, PAL *pal, int max_width, bool apply)
+{
+    if (!img || !img->data_p || !pal || !pal->data_p ||
+        img->w == 0 || img->h == 0)
+        return 0;
+    if (max_width < 1) max_width = 1;
+    if (max_width > 2) max_width = 2;
+
+    int w = img->w;
+    int h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    size_t bytes = (size_t)stride * h;
+    std::vector<unsigned char> work(bytes);
+    memcpy(work.data(), pixels, bytes);
+    int removed = 0;
+
+    auto is_transparent = [&](int x, int y) -> bool {
+        if (x < 0 || y < 0 || x >= w || y >= h) return true;
+        return work[(size_t)y * stride + x] == 0;
+    };
+
+    auto transparent_neighbors = [&](int x, int y) -> int {
+        int n = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dy == 0) continue;
+                if (is_transparent(x + dx, y + dy)) n++;
+            }
+        }
+        return n;
+    };
+
+    for (int pass = 0; pass < max_width; pass++) {
+        std::vector<unsigned char> kill((size_t)w * h, 0);
+        int pass_kill = 0;
+
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                unsigned char ci = work[(size_t)y * stride + x];
+                if (ci == 0) continue;
+
+                int trans = transparent_neighbors(x, y);
+                if (trans <= 0) continue;
+
+                unsigned short edge_word = pal_word_or_black(pal, ci);
+                int edge_luma = StrokeWordLuma8(edge_word);
+                int same_edge_neighbors = 0;
+                int interior_count = 0;
+                int interior_luma_sum = 0;
+                int min_dist = 0x7FFFFFFF;
+
+                for (int dy = -3; dy <= 3; dy++) {
+                    for (int dx = -3; dx <= 3; dx++) {
+                        if (dx == 0 && dy == 0) continue;
+                        int nx = x + dx;
+                        int ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                        unsigned char ni = work[(size_t)ny * stride + nx];
+                        if (ni == 0) continue;
+                        unsigned short nw = pal_word_or_black(pal, ni);
+                        int dist = PaletteColorDistance5(edge_word, nw);
+                        if (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1 &&
+                            dist <= 6)
+                            same_edge_neighbors++;
+
+                        if (dist <= 6) continue; /* likely same outline run */
+                        interior_count++;
+                        interior_luma_sum += StrokeWordLuma8(nw);
+                        if (dist < min_dist) min_dist = dist;
+                    }
+                }
+
+                if (interior_count <= 0) continue;
+                int avg_luma = interior_luma_sum / interior_count;
+                int luma_delta = avg_luma - edge_luma;
+                if (luma_delta < 0) luma_delta = -luma_delta;
+
+                bool hard_color_step = min_dist >= 36 || luma_delta >= 42;
+                bool dark_outline = edge_luma + 24 < avg_luma && min_dist >= 16;
+                bool stroke_supported = same_edge_neighbors >= 1 || trans >= 3;
+                if (stroke_supported && (hard_color_step || dark_outline)) {
+                    kill[(size_t)y * w + x] = 1;
+                    pass_kill++;
+                }
+            }
+        }
+
+        if (pass_kill == 0) break;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (kill[(size_t)y * w + x])
+                    work[(size_t)y * stride + x] = 0;
+            }
+        }
+        removed += pass_kill;
+    }
+
+    if (apply && removed > 0)
+        memcpy(pixels, work.data(), bytes);
+    return removed;
+}
+
+static int RemoveHardStrokeFromTargets(int max_width)
+{
+    int marked = CountMarkedImages();
+    int selected = g_doc->ilselected;
+    if (marked == 0 && selected < 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark sprites, or select one sprite, before removing hard strokes.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    std::vector<int> changed_indices;
+    int expected_pixels = 0;
+    int scanned = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        bool target = marked > 0 ? ((img->flags & 1) != 0) : (idx == selected);
+        if (!target || !img->data_p || img->w == 0 || img->h == 0) continue;
+        scanned++;
+        PAL *pal = get_pal((int)img->palnum);
+        int n = RemoveHardStrokeFromImage(img, pal, max_width, false);
+        if (n > 0) {
+            changed_indices.push_back(idx);
+            expected_pixels += n;
+        }
+    }
+
+    if (expected_pixels <= 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No hard 1-2px stroke found in %d sprite%s.",
+                 scanned, scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 5.0f;
+        return 0;
+    }
+
+    doc_undo_push();
+    int changed_images = 0;
+    int changed_pixels = 0;
+    for (int changed_idx : changed_indices) {
+        IMG *img = get_img(changed_idx);
+        PAL *pal = img ? get_pal((int)img->palnum) : NULL;
+        int n = RemoveHardStrokeFromImage(img, pal, max_width, true);
+        if (n > 0) {
+            changed_images++;
+            changed_pixels += n;
+            InvalidateThumb(changed_idx);
+        }
+    }
+
+    if (changed_pixels > 0) {
+        g_img_tex_idx = -2;
+        mark_dirty();
+    }
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Removed %d hard-stroke pixel%s from %d/%d sprite%s.",
+             changed_pixels,
+             changed_pixels == 1 ? "" : "s",
+             changed_images,
+             scanned,
+             scanned == 1 ? "" : "s");
+    g_restore_msg_timer = 5.0f;
+    return changed_pixels;
+}
+
 /* ---- Strip Edge (DMA Compression Prep) ---- */
 static void StripMarkedImages(int max_transparent_neighbors, int specific_color = -1)
 {
@@ -5007,7 +7317,7 @@ static void StripMarkedImages(int max_transparent_neighbors, int specific_color 
             int h = img->h;
             int stride = (w + 3) & ~3;
             unsigned char *pixels = (unsigned char *)img->data_p;
-            
+
             unsigned char *flags = (unsigned char *)calloc(1, stride * h);
             if (!flags) {
                 img = (IMG *)img->nxt_p;
@@ -6528,7 +8838,8 @@ Image list:
   Space                Mark / Unmark current image
   Shift+M              Set all marks (typed as "M")
   M                    Clear all marks (typed as "m")
-  Shift+Del            Delete image
+  Del                  Delete image when image list is active
+  Shift+Del            Delete image from anywhere
   Ctrl+R               Rename current image
   Ctrl+P               Add / Remove point table on current image
   Alt+PgUp / PgDn      Move current image up / down in the list
@@ -6553,14 +8864,20 @@ Palette (only fire when no paint tool is active):
   ]                    Set palette for current image
   Shift+8 (`*`)        Merge marked palettes
   Shift+R              Rename selected palette
-  Del                  Delete selected palette
+  Del                  Delete selected palette when palette list is active
 
 Timeline / Anim:
   K                    Toggle timeline play / stop
   Left / Right         Step prev / next animation frame
   Ctrl+Left / Right    Move current timeline frame earlier / later
+  Hold                 Set extra base ticks before the current frame advances
   Ctrl-click frames    Pair two frames; Play/Left/Right advances both
   Drag paired sprite   Move sprite by editing its anipoint; lock Back/Front to protect it
+  Auto Anipts          With a paired frame locked, align the sequence by sprite sizes
+  World Marked         Play marked animations from up to four IMG tabs together
+  World Sequence       On-canvas Pause/Refresh plus per-frame delay thumbnails
+  Dummy Body           Adds stock *DECAP1-7 body fall as an editable sync lane
+  World Left / Right   Pause and scrub all marked-tab sequences together
 
 View / Help:
   H                    Show this help
@@ -6993,12 +9310,28 @@ static void reset_palette_to_baseline(void)
     mark_dirty();
 }
 
+static void ClearWorkingPalette(void)
+{
+    for (int i = 0; i < 256; i++) {
+        g_palette[i].r = 0;
+        g_palette[i].g = 0;
+        g_palette[i].b = 0;
+        g_palette[i].a = 255;
+    }
+}
+
 /* Load the selected palette into g_palette[] so the canvas/swatches reflect it. */
 static void ApplyPalette(int pal_idx)
 {
-    if (pal_idx < 0) return;
+    if (pal_idx < 0) {
+        ClearWorkingPalette();
+        return;
+    }
     PAL *pal = get_pal(pal_idx);
-    if (!pal || !pal->data_p) return;
+    if (!pal || !pal->data_p) {
+        ClearWorkingPalette();
+        return;
+    }
     const unsigned char *src = (const unsigned char *)pal->data_p;
     int n = pal->numc;
     if (n > 256) n = 256;
@@ -7061,6 +9394,7 @@ void undo_push(void)
         if (last->image_idx == g_doc->ilselected &&
             last->anix == img->anix && last->aniy == img->aniy &&
             last->anix2 == img->anix2 && last->aniy2 == img->aniy2 &&
+            last->aniz2 == img->aniz2 &&
             last->hitbox_x == g_hitbox_x && last->hitbox_y == g_hitbox_y &&
             last->hitbox_w == g_hitbox_w && last->hitbox_h == g_hitbox_h)
             return;
@@ -7077,7 +9411,7 @@ void undo_push(void)
     s->seq = ++g_undo_seq;
     s->image_idx = g_doc->ilselected;
     s->anix  = img->anix;  s->aniy  = img->aniy;
-    s->anix2 = img->anix2; s->aniy2 = img->aniy2;
+    s->anix2 = img->anix2; s->aniy2 = img->aniy2; s->aniz2 = img->aniz2;
     s->w = img->w; s->h = img->h;
     s->palnum = img->palnum; s->flags = img->flags;
     s->hitbox_x = g_hitbox_x; s->hitbox_y = g_hitbox_y;
@@ -7095,7 +9429,7 @@ static void undo_apply(int idx)
     IMG *img = get_img(s->image_idx);
     if (!img) return;
     img->anix  = s->anix;  img->aniy  = s->aniy;
-    img->anix2 = s->anix2; img->aniy2 = s->aniy2;
+    img->anix2 = s->anix2; img->aniy2 = s->aniy2; img->aniz2 = s->aniz2;
     img->w = s->w; img->h = s->h;
     img->palnum = s->palnum; img->flags = s->flags;
     g_hitbox_x = s->hitbox_x; g_hitbox_y = s->hitbox_y;
@@ -7273,14 +9607,17 @@ static void PasteClipboardAsNewImage(void)
         dst->palnum = (g_doc->plselected >= 0 && (unsigned)g_doc->plselected < g_doc->palcnt)
                     ? (unsigned short)g_doc->plselected : 0;
     dst->opals = g_clipboard.has_meta ? g_clipboard.opals : 0;
-    dst->aniz2 = g_clipboard.has_meta ? g_clipboard.aniz2 : 0;
+    if (g_clipboard.has_meta) dst->aniz2 = g_clipboard.aniz2;
+    else clear_secondary_anipoint(dst);
 
     if (g_clipboard.has_meta) {
         dst->anix  = (unsigned short)((short)g_clipboard.anix  - (short)g_clipboard.origin_x);
         dst->aniy  = (unsigned short)((short)g_clipboard.aniy  - (short)g_clipboard.origin_y);
-        if (g_clipboard.anix2 != 0 || g_clipboard.aniy2 != 0 || g_clipboard.aniz2 != 0) {
+        if (clipboard_secondary_anipoint_in_use()) {
             dst->anix2 = (unsigned short)((short)g_clipboard.anix2 - (short)g_clipboard.origin_x);
             dst->aniy2 = (unsigned short)((short)g_clipboard.aniy2 - (short)g_clipboard.origin_y);
+        } else {
+            clear_secondary_anipoint(dst);
         }
         strncpy(dst->src_filename, g_clipboard.src_filename, sizeof(dst->src_filename) - 1);
         dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
@@ -7304,6 +9641,13 @@ static void CutSelectionToNewImage(void)
 {
     if (g_doc->ilselected < 0) return;
     copy_image(true);
+    if (g_clipboard.valid) PasteClipboardAsNewImage();
+}
+
+static void CopySelectionToNewImage(void)
+{
+    if (g_doc->ilselected < 0) return;
+    copy_image(false);
     if (g_clipboard.valid) PasteClipboardAsNewImage();
 }
 
@@ -7598,6 +9942,45 @@ static unsigned short signed_to_img_word(int v)
     return (unsigned short)(short)v;
 }
 
+static void clear_secondary_anipoint(IMG *img)
+{
+    if (!img) return;
+    img->anix2 = (unsigned short)-1;
+    img->aniy2 = (unsigned short)-1;
+    img->aniz2 = (unsigned short)-1;
+}
+
+static void activate_secondary_anipoint(IMG *img)
+{
+    if (!img) return;
+    if ((short)img->anix2 < 0) img->anix2 = 0;
+    if ((short)img->aniy2 < 0) img->aniy2 = 0;
+    if ((short)img->aniz2 == -1) img->aniz2 = 0;
+}
+
+static bool secondary_anipoint_words_in_use(unsigned short x,
+                                            unsigned short y,
+                                            unsigned short z)
+{
+    if ((short)x < 0 || (short)y < 0) return false;
+    return (short)z != -1;
+}
+
+static bool clipboard_secondary_anipoint_in_use(void)
+{
+    return secondary_anipoint_words_in_use(g_clipboard.anix2,
+                                           g_clipboard.aniy2,
+                                           g_clipboard.aniz2);
+}
+
+static void default_anipoints_to_center(IMG *img)
+{
+    if (!img) return;
+    img->anix = signed_to_img_word((int)img->w / 2);
+    img->aniy = signed_to_img_word((int)img->h / 2);
+    clear_secondary_anipoint(img);
+}
+
 static int scaled_coord(unsigned short coord, int old_dim, int new_dim)
 {
     if (old_dim <= 0) return (int)(short)coord;
@@ -7829,7 +10212,7 @@ static bool trim_image_to_content(IMG *img, bool shrink_empty, int *out_trim_x, 
         img->h = 1;
         img->anix = 0;
         img->aniy = 0;
-        img->anix2 = img->aniy2 = 0;
+        clear_secondary_anipoint(img);
         return true;
     }
 
@@ -7849,7 +10232,7 @@ static bool trim_image_to_content(IMG *img, bool shrink_empty, int *out_trim_x, 
     img->h = (unsigned short)new_h;
     img->anix = signed_to_img_word((int)(short)img->anix - min_x);
     img->aniy = signed_to_img_word((int)(short)img->aniy - min_y);
-    if (img->anix2 != 0 || img->aniy2 != 0 || img->aniz2 != 0) {
+    if (secondary_anipoint_in_use(img)) {
         img->anix2 = signed_to_img_word((int)(short)img->anix2 - min_x);
         img->aniy2 = signed_to_img_word((int)(short)img->aniy2 - min_y);
     }
@@ -7895,6 +10278,12 @@ static const char *sprite_transform_name(SpriteTransformOp op)
     case SpriteTransformOp::Rotate180:      return "Rotated 180";
     }
     return "Transformed";
+}
+
+static bool sprite_transform_preserves_anipoints(SpriteTransformOp op)
+{
+    return op == SpriteTransformOp::Rotate90CW ||
+           op == SpriteTransformOp::Rotate90CCW;
 }
 
 static void transform_hitbox(SpriteTransformOp op, int old_w, int old_h)
@@ -7970,8 +10359,105 @@ static void transform_anipoint(SpriteTransformOp op, int old_w, int old_h,
 static bool secondary_anipoint_in_use(const IMG *img)
 {
     if (!img) return false;
-    if ((short)img->anix2 < 0 || (short)img->aniy2 < 0) return false;
-    return img->anix2 != 0 || img->aniy2 != 0 || img->aniz2 != 0;
+    return secondary_anipoint_words_in_use(img->anix2, img->aniy2, img->aniz2);
+}
+
+static int rounded_half_delta(int current_dim, int reference_dim)
+{
+    return round_to_int(((double)current_dim - (double)reference_dim) * 0.5);
+}
+
+static bool timeline_image_locked(int img_idx)
+{
+    for (int i = 0; i < 2; i++) {
+        if (g_timeline_composite_locked[i] && g_timeline_composite[i] == img_idx)
+            return true;
+    }
+    return false;
+}
+
+static int locked_timeline_anchor_position(void)
+{
+    if (!TimelineAnyCompositeLocked()) return -1;
+
+    for (int slot = 0; slot < 2; slot++) {
+        if (g_timeline_composite_locked[slot] &&
+            g_timeline_composite[slot] == g_doc->ilselected) {
+            return TimelineFramePosition(g_timeline_composite[slot]);
+        }
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        if (g_timeline_composite_locked[slot])
+            return TimelineFramePosition(g_timeline_composite[slot]);
+    }
+    return -1;
+}
+
+static int AutoCalculateTimelineAnipointsFromLock(void)
+{
+    int n = (int)g_timeline_frames.size();
+    int anchor_pos = locked_timeline_anchor_position();
+    if (n < 2 || anchor_pos < 0 || anchor_pos >= n) return 0;
+
+    struct FrameAnipointState {
+        int img_idx;
+        int w, h;
+        int anix, aniy;
+        bool valid;
+        bool locked;
+    };
+
+    std::vector<FrameAnipointState> states;
+    states.reserve(g_timeline_frames.size());
+    for (int img_idx : g_timeline_frames) {
+        IMG *img = get_img(img_idx);
+        FrameAnipointState st = {};
+        st.img_idx = img_idx;
+        st.valid = img && img->w > 0 && img->h > 0;
+        st.locked = timeline_image_locked(img_idx);
+        if (st.valid) {
+            st.w = img->w;
+            st.h = img->h;
+            st.anix = (int)(short)img->anix;
+            st.aniy = (int)(short)img->aniy;
+        }
+        states.push_back(st);
+    }
+    if (!states[anchor_pos].valid) return 0;
+
+    for (int i = anchor_pos + 1; i < n; i++) {
+        if (!states[i].valid || !states[i - 1].valid || states[i].locked) continue;
+        states[i].anix = states[i - 1].anix + rounded_half_delta(states[i].w, states[i - 1].w);
+        states[i].aniy = states[i - 1].aniy + rounded_half_delta(states[i].h, states[i - 1].h);
+    }
+
+    for (int i = anchor_pos - 1; i >= 0; i--) {
+        if (!states[i].valid || !states[i + 1].valid || states[i].locked) continue;
+        states[i].anix = states[i + 1].anix + rounded_half_delta(states[i].w, states[i + 1].w);
+        states[i].aniy = states[i + 1].aniy + rounded_half_delta(states[i].h, states[i + 1].h);
+    }
+
+    int changed = 0;
+    for (const FrameAnipointState &st : states) {
+        if (!st.valid || st.locked) continue;
+        IMG *img = get_img(st.img_idx);
+        if (!img) continue;
+        if ((short)img->anix != st.anix || (short)img->aniy != st.aniy)
+            changed++;
+    }
+    if (changed == 0) return 0;
+    if (!doc_undo_push()) return 0;
+
+    for (const FrameAnipointState &st : states) {
+        if (!st.valid || st.locked) continue;
+        IMG *img = get_img(st.img_idx);
+        if (!img) continue;
+        img->anix = signed_to_img_word(st.anix);
+        img->aniy = signed_to_img_word(st.aniy);
+    }
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    return changed;
 }
 
 static bool TransformSelectedSprite(SpriteTransformOp op)
@@ -8034,9 +10520,11 @@ static bool TransformSelectedSprite(SpriteTransformOp op)
     img->data_p = dst;
     img->w = (unsigned short)new_w;
     img->h = (unsigned short)new_h;
-    transform_anipoint(op, old_w, old_h, &img->anix, &img->aniy);
-    if (secondary_anipoint_in_use(img))
-        transform_anipoint(op, old_w, old_h, &img->anix2, &img->aniy2);
+    if (!sprite_transform_preserves_anipoints(op)) {
+        transform_anipoint(op, old_w, old_h, &img->anix, &img->aniy);
+        if (secondary_anipoint_in_use(img))
+            transform_anipoint(op, old_w, old_h, &img->anix2, &img->aniy2);
+    }
     transform_hitbox(op, old_w, old_h);
 
     push_pixel_history_entry(&snap);
@@ -8050,7 +10538,9 @@ static bool TransformSelectedSprite(SpriteTransformOp op)
     InvalidateThumb(g_doc->ilselected);
 
     snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "%s: %s (%dx%d -> %dx%d).",
+             sprite_transform_preserves_anipoints(op)
+                 ? "%s: %s (%dx%d -> %dx%d), anipoints preserved."
+                 : "%s: %s (%dx%d -> %dx%d).",
              sprite_transform_name(op), img->n_s, old_w, old_h, new_w, new_h);
     g_restore_msg_timer = 4.0f;
     return true;
@@ -8061,11 +10551,11 @@ static void DrawSpriteTransformMenuItems(void)
     if (ImGui::MenuItem("Rotate 90 Clockwise"))
         TransformSelectedSprite(SpriteTransformOp::Rotate90CW);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-        "Rotates pixels, anipoints, and hitbox together.");
+        "Rotates pixels and hitbox; preserves existing anim points.");
     if (ImGui::MenuItem("Rotate 90 Counterclockwise"))
         TransformSelectedSprite(SpriteTransformOp::Rotate90CCW);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-        "Rotates pixels, anipoints, and hitbox together.");
+        "Rotates pixels and hitbox; preserves existing anim points.");
     if (ImGui::MenuItem("Rotate 180"))
         TransformSelectedSprite(SpriteTransformOp::Rotate180);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -8176,8 +10666,13 @@ static bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool tri
     img->h = (unsigned short)nh;
     img->anix = signed_to_img_word(scaled_coord(snap.anix, old_w, nw));
     img->aniy = signed_to_img_word(scaled_coord(snap.aniy, old_h, nh));
-    img->anix2 = signed_to_img_word(scaled_coord(snap.anix2, old_w, nw));
-    img->aniy2 = signed_to_img_word(scaled_coord(snap.aniy2, old_h, nh));
+    if (secondary_anipoint_words_in_use(snap.anix2, snap.aniy2, snap.aniz2)) {
+        img->anix2 = signed_to_img_word(scaled_coord(snap.anix2, old_w, nw));
+        img->aniy2 = signed_to_img_word(scaled_coord(snap.aniy2, old_h, nh));
+        img->aniz2 = snap.aniz2;
+    } else {
+        clear_secondary_anipoint(img);
+    }
     if (g_hitbox_w > 0 && g_hitbox_h > 0) {
         g_hitbox_x = scaled_coord((unsigned short)(short)g_hitbox_x, old_w, nw);
         g_hitbox_y = scaled_coord((unsigned short)(short)g_hitbox_y, old_h, nh);
@@ -8439,19 +10934,22 @@ int imgui_overlay_wants_keyboard(void)
    unsaved-changes flow because it writes a completely different file
    (MKSTK.ASM, not the IMG container). */
 static bool g_show_mk2_unsaved_confirm = false;
+static bool g_show_mk2_fatality_unsaved_confirm = false;
 
 int imgui_overlay_check_unsaved_and_quit(void)
 {
     int dirty_idx = FindDirtyDocumentIndex();
     bool img_dirty = dirty_idx >= 0;
     bool mk2_dirty = g_mk2_doc.dirty && !g_mk2_doc.source_path.empty();
+    bool mk2_fatality_dirty = g_mk2_fatality_doc.dirty && !g_mk2_fatality_doc.files.empty();
     if (img_dirty) {
         ActivateDocumentTab(dirty_idx);
         g_pending_action = PendingAction::Quit;
         g_show_unsaved_confirm = true;
     }
     if (mk2_dirty)  g_show_mk2_unsaved_confirm = true;
-    if (img_dirty || mk2_dirty) return 0;
+    if (mk2_fatality_dirty) g_show_mk2_fatality_unsaved_confirm = true;
+    if (img_dirty || mk2_dirty || mk2_fatality_dirty) return 0;
     return 1;
 }
 
@@ -8462,9 +10960,12 @@ void imgui_overlay_request_quit(void)
 
 int imgui_overlay_should_quit(void)
 {
+    bool mk2_dirty = g_mk2_doc.dirty && !g_mk2_doc.source_path.empty();
+    bool mk2_fatality_dirty = g_mk2_fatality_doc.dirty && !g_mk2_fatality_doc.files.empty();
     /* If we're pending quit and no unsaved popup is showing, it's safe to exit */
-    return (g_pending_quit && !HasDirtyDocuments() &&
-            !g_show_unsaved_confirm && !g_show_mk2_unsaved_confirm) ? 1 : 0;
+    return (g_pending_quit && !HasDirtyDocuments() && !mk2_dirty && !mk2_fatality_dirty &&
+            !g_show_unsaved_confirm && !g_show_mk2_unsaved_confirm &&
+            !g_show_mk2_fatality_unsaved_confirm) ? 1 : 0;
 }
 
 void imgui_overlay_mark_saved(void)
@@ -8696,14 +11197,20 @@ static void DrawPaletteMergeQualityDialog(void)
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("Merge Anyway", ImVec2(120, 0))) {
+    DrawPaletteMergeMappingPreview(q);
+
+    ImGui::Spacing();
+    const char *merge_label = g_palette_merge_preview_only ? "Merge" : "Merge Anyway";
+    if (ImGui::Button(merge_label, ImVec2(120, 0))) {
         g_show_palette_merge_quality = false;
+        g_palette_merge_preview_only = false;
         ImGui::CloseCurrentPopup();
         MergeMarkedPalettes(true);
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(100, 0))) {
         g_show_palette_merge_quality = false;
+        g_palette_merge_preview_only = false;
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -9001,6 +11508,1108 @@ static void DrawMk2HitboxWindow(void)
     ImGui::End();
 }
 
+static bool Mk2FatalityFilterMatch(const std::string &text, const char *filter)
+{
+    if (!filter || !filter[0]) return true;
+    std::string a = text;
+    std::string b = filter;
+    for (char &c : a) c = (char)std::tolower((unsigned char)c);
+    for (char &c : b) c = (char)std::tolower((unsigned char)c);
+    return a.find(b) != std::string::npos;
+}
+
+struct Mk2FatalityFighterDef {
+    const char *name;
+    const char *source_file;
+    const char *command_prefix[4];
+    const char *img_files[24];
+    const char *fatal_anims[10];
+    const char *db1_anim;
+    const char *db2_anim;
+    const char *db1_victim;
+    const char *db2_victim;
+};
+
+static const char *g_mk2_fatality_cage_deaths[] = {
+    "a_torso_ripped", "a_decapfall", "a_head", "a_headhole", "a_swipe_torso",
+    "a_nutcrunched", "a_bike_kicked", "a_drained", "a_banged", "a_impaled",
+    "a_back_broke", "a_jc_arms_ripped", NULL
+};
+
+static const Mk2FatalityFighterDef g_mk2_fatality_fighters[] = {
+    { "Johnny Cage", "MKJC.ASM", { "jc_", NULL },
+      { "data/CAGE1.IMG", "data/CAGE2.IMG", "data/CAGE3.IMG", "data/CAGE4.IMG", "data/CAGE5.IMG",
+        "data/CAGE6.IMG", "data/CAGE7.IMG", "data/CAGE8.IMG", "data/CAGE9.IMG", "data/CAGE10.IMG", NULL },
+      { "a_jcrip", "a_jc_pp", "a_jc_headhole", "a_splits", NULL },
+      "a_jcrip", "a_jc_pp", "a_torso_ripped", "a_head" },
+
+    { "Liu Kang", "MKLK.ASM", { "lk_", NULL },
+      { "data/KANG1.IMG", "data/KANG2.IMG", "data/KANG3.IMG", "data/KANG4.IMG", "data/KANG5.IMG",
+        "data/KANG6.IMG", "data/KANG7.IMG", "data/KANG8.IMG", "data/KANG9.IMG", "data/KANG10.IMG",
+        "data/LKBFIST.IMG", NULL },
+      { "a_lkdragon", "a_lkwheel", "a_lkbike", NULL },
+      "a_lkdragon", "a_lkwheel", "a_torso_ripped", "a_decapfall" },
+
+    { "Raiden", "MKRD.ASM", { "rd_", NULL },
+      { "data/RAID1.IMG", "data/RAID2.IMG", "data/RAID3.IMG", "data/RAID4.IMG", "data/RAID5.IMG",
+        "data/RAID6.IMG", "data/RAID7.IMG", "data/RAID8.IMG", "data/RAID9.IMG", "data/RAIDWALK.IMG",
+        "data/RADBOLT1.IMG", "data/RADBOLT2.IMG", NULL },
+      { "a_death_zap1", "a_death_bolt1", "a_death_zap2", "a_death_shock", NULL },
+      "a_death_zap1", "a_death_zap2", "a_torso_ripped", "a_decapfall" },
+
+    { "Shang Tsung", "MKST.ASM", { "st_", NULL },
+      { "data/TSUNG1.IMG", "data/TSUNG2.IMG", "data/TSUNG3.IMG", "data/TSUNG4.IMG", "data/TSUNG5.IMG",
+        "data/TSUNG6.IMG", "data/TSUNG7.IMG", "data/TSUNG8.IMG", "data/TSUNG9.IMG", "data/TSUNG10.IMG",
+        "data/TSUNG1G.IMG", "data/OLDSHNG.IMG", NULL },
+      { "a_st_kano_morph", "a_st_kano_roll", "a_st_kano_back", "a_st_2_jc", NULL },
+      "a_st_kano_roll", "a_st_kano_morph", "a_decapfall", "a_drained" },
+
+    { "Baraka", "MKSA.ASM", { "sa_", NULL },
+      { "data/UGMO1.IMG", "data/UGMO2.IMG", "data/UGMO3.IMG", "data/UGMO4.IMG", "data/UGMO5.IMG",
+        "data/UGMO6.IMG", "data/UGMO7.IMG", "data/UGMO8.IMG", "data/UGMO9.IMG", "data/UGMO10.IMG",
+        "data/UGMO1SHO.IMG", NULL },
+      { "a_sashred", "a_sastab", "a_swipe", NULL },
+      "a_sashred", "a_sastab", "a_decapfall", "a_impaled" },
+
+    { "Kitana", "MKFN.ASM", { "fn1_", NULL },
+      { "data/KAT1.IMG", "data/KAT2.IMG", "data/KAT3.IMG", "data/KAT4.IMG", "data/KAT5.IMG",
+        "data/KAT6.IMG", "data/KAT7.IMG", "data/KAT8.IMG", "data/KAT9.IMG", "data/KAT10.IMG",
+        "data/KAT11.IMG", NULL },
+      { "a_death_kiss1", "a_fan_swipe", NULL },
+      "a_death_kiss1", "a_fan_swipe", "a_drained", "a_decapfall" },
+
+    { "Mileena", "MKFN.ASM", { "fn2_", NULL },
+      { "data/KAT1.IMG", "data/KAT2.IMG", "data/KAT3.IMG", "data/KAT4.IMG", "data/KAT5.IMG",
+        "data/KAT6.IMG", "data/KAT7.IMG", "data/KAT8.IMG", "data/KAT9.IMG", "data/KAT10.IMG",
+        "data/KAT11.IMG", NULL },
+      { "a_fn2_stab", "a_death_kiss2", NULL },
+      "a_fn2_stab", "a_death_kiss2", "a_impaled", "a_drained" },
+
+    { "Sub-Zero", "MKNJ.ASM", { "sz_", NULL },
+      { "data/NINJAS1.IMG", "data/NINJAS2.IMG", "data/NINJAS3.IMG", "data/NINJAS4.IMG", "data/NINJAS5.IMG",
+        "data/NINJAS6.IMG", "data/NINJAS7.IMG", "data/NINJAS8.IMG", "data/NINJAS9.IMG", "data/NINJAS10.IMG",
+        "data/NINJAS11.IMG", "data/NINJAS12.IMG", "data/FREEZE1.IMG", "data/FROZEN.IMG", "data/SNOBALL.IMG", NULL },
+      { "a_sz_tornado", "a_pitch", "a_ice_ball", NULL },
+      "a_sz_tornado", "a_pitch", "a_torso_ripped", "a_decapfall" },
+
+    { "Scorpion", "MKNJ.ASM", { "sc_", NULL },
+      { "data/NINJAS1.IMG", "data/NINJAS2.IMG", "data/NINJAS3.IMG", "data/NINJAS4.IMG", "data/NINJAS5.IMG",
+        "data/NINJAS6.IMG", "data/NINJAS7.IMG", "data/NINJAS8.IMG", "data/NINJAS9.IMG", "data/NINJAS10.IMG",
+        "data/NINJAS11.IMG", "data/NINJAS12.IMG", "data/NEWROPE.IMG", NULL },
+      { "a_scortch", "a_scorpion_skull", "a_sc_swipe", "a_death_spear", NULL },
+      "a_scortch", "a_sc_swipe", "a_torso_ripped", "a_swipe_torso" },
+
+    { "Reptile", "MKNJ.ASM", { "rp_", NULL },
+      { "data/NINJAS1.IMG", "data/NINJAS2.IMG", "data/NINJAS3.IMG", "data/NINJAS4.IMG", "data/NINJAS5.IMG",
+        "data/NINJAS6.IMG", "data/NINJAS7.IMG", "data/NINJAS8.IMG", "data/NINJAS9.IMG", "data/NINJAS10.IMG",
+        "data/NINJAS11.IMG", "data/NINJAS12.IMG", "data/ACID1.IMG", NULL },
+      { "a_eat_head", "a_spit", "a_slow_proj", NULL },
+      "a_eat_head", "a_eat_head", "a_head", "a_head" },
+
+    { "Jax", "MKJX.ASM", { "jx_", NULL },
+      { "data/NUJAX1.IMG", "data/NUJAX2.IMG", "data/NUJAX3.IMG", "data/NUJAX4.IMG", "data/NUJAX5.IMG",
+        "data/NUJAX6.IMG", "data/NUJAX7.IMG", "data/NUJAX8.IMG", "data/NUJAX9.IMG", "data/NUJAX10.IMG",
+        "data/JAXPRO.IMG", "data/MKJXARMS.IMG", NULL },
+      { "a_clap", "a_back_breaker", "a_arm_rip", NULL },
+      "a_clap", "a_arm_rip", "a_head", "a_jc_arms_ripped" },
+
+    { "Kung Lao", "MKHH.ASM", { "hh_", NULL },
+      { "data/HATHED1.IMG", "data/HATHED2.IMG", "data/HATHED3.IMG", "data/HATHED4.IMG", "data/HATHED5.IMG",
+        "data/HATHED6.IMG", "data/HATHED7.IMG", "data/HATHED8.IMG", "data/HATHED9.IMG", "data/HATHED10.IMG",
+        "data/HATHED11.IMG", "data/HATHED12.IMG", NULL },
+      { "a_spin", "a_hh_hat_swipe", NULL },
+      "a_spin", "a_hh_hat_swipe", "a_torso_ripped", "a_decapfall" },
+};
+
+static const int kMk2FatalityFighterCount =
+    (int)(sizeof(g_mk2_fatality_fighters) / sizeof(g_mk2_fatality_fighters[0]));
+
+static void Mk2FatalityClampSelections(void)
+{
+    if (g_mk2_fatality_command_idx < 0) g_mk2_fatality_command_idx = 0;
+    if (g_mk2_fatality_combo_idx < 0) g_mk2_fatality_combo_idx = 0;
+    if (g_mk2_fatality_anim_idx < 0) g_mk2_fatality_anim_idx = 0;
+    if (g_mk2_fatality_command_idx >= (int)g_mk2_fatality_doc.commands.size())
+        g_mk2_fatality_command_idx = (int)g_mk2_fatality_doc.commands.size() - 1;
+    if (g_mk2_fatality_combo_idx >= (int)g_mk2_fatality_doc.combos.size())
+        g_mk2_fatality_combo_idx = (int)g_mk2_fatality_doc.combos.size() - 1;
+    if (g_mk2_fatality_anim_idx >= (int)g_mk2_fatality_doc.animations.size())
+        g_mk2_fatality_anim_idx = (int)g_mk2_fatality_doc.animations.size() - 1;
+    if (g_mk2_fatality_command_idx < 0) g_mk2_fatality_command_idx = 0;
+    if (g_mk2_fatality_combo_idx < 0) g_mk2_fatality_combo_idx = 0;
+    if (g_mk2_fatality_anim_idx < 0) g_mk2_fatality_anim_idx = 0;
+}
+
+static void Mk2FatalityLoadRoot(const char *root)
+{
+    std::string err;
+    if (mk2fatal::load(&g_mk2_fatality_doc, root, &err)) {
+        char buf[192];
+        snprintf(buf, sizeof(buf), "Loaded %d command blocks, %d combos, %d animation blocks",
+                 (int)g_mk2_fatality_doc.commands.size(),
+                 (int)g_mk2_fatality_doc.combos.size(),
+                 (int)g_mk2_fatality_doc.animations.size());
+        g_mk2_fatality_status = buf;
+        g_mk2_fatality_status_sticky = false;
+        g_mk2_fatality_command_idx = 0;
+        g_mk2_fatality_combo_idx = 0;
+        g_mk2_fatality_anim_idx = 0;
+        g_mk2_fatality_selected_line = 0;
+        g_mk2_fatality_filter[0] = '\0';
+    } else {
+        g_mk2_fatality_status = std::string("Load failed: ") + err;
+        g_mk2_fatality_status_sticky = true;
+    }
+}
+
+static bool DrawMk2FatalitySourceEditor(const char *id, int file_idx, int start_line, int end_line,
+                                        int *selected_line, char *insert_buf,
+                                        size_t insert_buf_size, bool allow_insert_delete)
+{
+    const mk2fatal::SourceFile *sf = mk2fatal::get_file(&g_mk2_fatality_doc, file_idx);
+    if (!sf) {
+        ImGui::TextDisabled("Source file unavailable.");
+        return false;
+    }
+    if (start_line <= 0) start_line = 1;
+    if (end_line > (int)sf->lines.size()) end_line = (int)sf->lines.size();
+    if (end_line < start_line) {
+        ImGui::TextDisabled("No source lines in this block.");
+        return false;
+    }
+    if (*selected_line < start_line || *selected_line > end_line) *selected_line = start_line;
+
+    ImGui::TextDisabled("%s  lines %d-%d", sf->rel_path.c_str(), start_line, end_line);
+    const float footer_h = allow_insert_delete ? 64.0f : 0.0f;
+    bool changed = false;
+    bool structural = false;
+
+    ImGui::BeginChild(id, ImVec2(0, -footer_h), true);
+    if (ImGui::BeginTable("##mk2fatal_src_table", 2,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+        ImGui::TableSetupColumn("Line", ImGuiTableColumnFlags_WidthFixed, 54.0f);
+        ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthStretch);
+        for (int line = start_line; line <= end_line; line++) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::PushID(line);
+            char lbuf[24];
+            snprintf(lbuf, sizeof(lbuf), "%d", line);
+            if (ImGui::Selectable(lbuf, *selected_line == line))
+                *selected_line = line;
+            ImGui::TableSetColumnIndex(1);
+            char buf[1024];
+            const std::string &src = sf->lines[line - 1];
+            size_t n = src.size() < sizeof(buf) - 1 ? src.size() : sizeof(buf) - 1;
+            memcpy(buf, src.data(), n);
+            buf[n] = '\0';
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText("##src", buf, sizeof(buf))) {
+                if (mk2fatal::set_line(&g_mk2_fatality_doc, file_idx, line, buf))
+                    changed = true;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+
+    if (allow_insert_delete) {
+        ImGui::SetNextItemWidth(-220);
+        ImGui::InputTextWithHint("##mk2fatal_insert", "assembly line to insert", insert_buf, insert_buf_size);
+        ImGui::SameLine();
+        bool can_insert = insert_buf && insert_buf[0] && *selected_line >= start_line && *selected_line <= end_line;
+        if (!can_insert) ImGui::BeginDisabled();
+        if (ImGui::Button("Insert Before")) {
+            if (mk2fatal::insert_line(&g_mk2_fatality_doc, file_idx, *selected_line, insert_buf)) {
+                structural = true;
+                end_line++;
+            }
+        }
+        if (!can_insert) ImGui::EndDisabled();
+        ImGui::SameLine();
+        bool can_delete = *selected_line > start_line && *selected_line <= end_line;
+        if (!can_delete) ImGui::BeginDisabled();
+        if (ImGui::Button("Delete Line")) {
+            if (mk2fatal::delete_line(&g_mk2_fatality_doc, file_idx, *selected_line)) {
+                structural = true;
+                if (*selected_line > start_line) (*selected_line)--;
+            }
+        }
+        if (!can_delete) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The label line is protected; select a .long/.word line to delete.");
+    }
+
+    if (changed || structural) {
+        std::string err;
+        mk2fatal::reparse(&g_mk2_fatality_doc, &err);
+        if (!g_mk2_fatality_status_sticky && !g_mk2_fatality_status.empty())
+            g_mk2_fatality_status.clear();
+        Mk2FatalityClampSelections();
+    }
+    return changed || structural;
+}
+
+static bool Mk2FatalityFileExists(const std::string &path)
+{
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+static std::string Mk2FatalityResolveProjectAsset(const std::string &rel_path)
+{
+    std::string root = g_mk2_fatality_doc.root_path.empty()
+                     ? std::string(g_mk2_fatality_root)
+                     : g_mk2_fatality_doc.root_path;
+    std::string p = PathCombine(root, rel_path);
+    if (Mk2FatalityFileExists(p)) return p;
+
+    std::string parent = GetParentDirectory(root);
+    p = PathCombine(parent, rel_path);
+    if (Mk2FatalityFileExists(p)) return p;
+
+    return PathCombine(root, rel_path);
+}
+
+static bool Mk2FatalityNameEquals(const std::string &a, const std::string &b)
+{
+    size_t na = a.size();
+    size_t nb = b.size();
+    while (na > 0 && a[na - 1] == '\0') na--;
+    while (nb > 0 && b[nb - 1] == '\0') nb--;
+    if (na != nb) return false;
+    for (size_t i = 0; i < na; i++)
+        if (std::toupper((unsigned char)a[i]) != std::toupper((unsigned char)b[i]))
+            return false;
+    return true;
+}
+
+static bool Mk2FatalityVectorHas(const std::vector<std::string> &items, const std::string &value)
+{
+    for (const std::string &item : items)
+        if (Mk2FatalityNameEquals(item, value)) return true;
+    return false;
+}
+
+static void Mk2FatalityPushUnique(std::vector<std::string> *items, const std::string &value)
+{
+    if (value.empty()) return;
+    if (Mk2FatalityVectorHas(*items, value)) return;
+    items->push_back(value);
+}
+
+static void Mk2FatalityMergePlan(mk2fatal::AssetPlan *dst, const mk2fatal::AssetPlan &src)
+{
+    if (!dst) return;
+    if (dst->root_label.empty()) dst->root_label = src.root_label;
+    if (dst->resolved_label.empty()) dst->resolved_label = src.resolved_label;
+    if (dst->preferred_file.empty()) dst->preferred_file = src.preferred_file;
+    for (const std::string &s : src.animation_labels) Mk2FatalityPushUnique(&dst->animation_labels, s);
+    for (const std::string &s : src.sprite_labels) Mk2FatalityPushUnique(&dst->sprite_labels, s);
+    for (const std::string &s : src.missing_labels) Mk2FatalityPushUnique(&dst->missing_labels, s);
+    for (const std::string &s : src.img_files) Mk2FatalityPushUnique(&dst->img_files, s);
+}
+
+static int Mk2FatalityFindImageBySpriteLabel(Document *doc, const std::string &label)
+{
+    if (!doc) return -1;
+    for (int i = 0; i < (int)doc->imgcnt; i++) {
+        IMG *img = doc_get_img(doc, i);
+        if (!img) continue;
+        if (Mk2FatalityNameEquals(img_name_string(img), label)) return i;
+    }
+    return -1;
+}
+
+static int Mk2FatalityFindImageBySpriteLabel(const std::string &label)
+{
+    return Mk2FatalityFindImageBySpriteLabel(g_doc, label);
+}
+
+static mk2fatal::AssetPlan Mk2FatalityBuildPlanForLabels(const std::vector<std::string> &labels,
+                                                         const char *preferred_file,
+                                                         const char *const *img_files)
+{
+    mk2fatal::AssetPlan plan;
+    plan.root_label = labels.empty() ? "" : labels[0];
+    plan.preferred_file = preferred_file ? preferred_file : "";
+    for (const std::string &label : labels) {
+        mk2fatal::AssetPlan part;
+        std::string err;
+        if (mk2fatal::build_asset_plan(&g_mk2_fatality_doc, label.c_str(), preferred_file, &part, &err))
+            Mk2FatalityMergePlan(&plan, part);
+        else
+            Mk2FatalityPushUnique(&plan.missing_labels, label);
+    }
+    if (img_files) {
+        for (int i = 0; img_files[i]; i++)
+            Mk2FatalityPushUnique(&plan.img_files, img_files[i]);
+    }
+    return plan;
+}
+
+static bool Mk2FatalityCommandMatchesFighter(const mk2fatal::CommandBlock &cmd,
+                                             const Mk2FatalityFighterDef &fighter)
+{
+    for (int i = 0; i < 4 && fighter.command_prefix[i]; i++) {
+        const char *p = fighter.command_prefix[i];
+        size_t n = strlen(p);
+        if (cmd.label.size() >= n) {
+            bool match = true;
+            for (size_t j = 0; j < n; j++) {
+                if (std::tolower((unsigned char)cmd.label[j]) !=
+                    std::tolower((unsigned char)p[j])) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return true;
+        }
+        if (!cmd.combo_label.empty() && Mk2FatalityFilterMatch(cmd.combo_label, p))
+            return true;
+    }
+    return false;
+}
+
+static std::vector<int> Mk2FatalityFighterCommandIndices(const Mk2FatalityFighterDef &fighter)
+{
+    std::vector<int> out;
+    for (int i = 0; i < (int)g_mk2_fatality_doc.commands.size(); i++) {
+        const mk2fatal::CommandBlock &cmd = g_mk2_fatality_doc.commands[i];
+        if (Mk2FatalityCommandMatchesFighter(cmd, fighter))
+            out.push_back(i);
+    }
+    return out;
+}
+
+static int Mk2FatalityAnimListIndex(const char *const *items, const char *label)
+{
+    if (!items || !label || !label[0]) return 0;
+    for (int i = 0; items[i]; i++)
+        if (Mk2FatalityNameEquals(items[i], label)) return i;
+    return 0;
+}
+
+static const char *Mk2FatalitySelectedAttackerAnim(const Mk2FatalityFighterDef &fighter)
+{
+    int count = 0;
+    while (count < 10 && fighter.fatal_anims[count]) count++;
+    if (count == 0) return NULL;
+    if (g_mk2_fatality_attacker_anim_idx < 0) g_mk2_fatality_attacker_anim_idx = 0;
+    if (g_mk2_fatality_attacker_anim_idx >= count) g_mk2_fatality_attacker_anim_idx = count - 1;
+    return fighter.fatal_anims[g_mk2_fatality_attacker_anim_idx];
+}
+
+static const char *Mk2FatalitySelectedVictimAnim(void)
+{
+    int count = 0;
+    while (g_mk2_fatality_cage_deaths[count]) count++;
+    if (g_mk2_fatality_victim_anim_idx < 0) g_mk2_fatality_victim_anim_idx = 0;
+    if (g_mk2_fatality_victim_anim_idx >= count) g_mk2_fatality_victim_anim_idx = count - 1;
+    return g_mk2_fatality_cage_deaths[g_mk2_fatality_victim_anim_idx];
+}
+
+static std::string Mk2FatalityInferAnimationFromRoutine(const std::string &routine)
+{
+    if (routine.size() <= 3) return std::string();
+    std::string lower = routine;
+    for (char &c : lower) c = (char)std::tolower((unsigned char)c);
+    if (lower.find("do_") != 0) return std::string();
+
+    std::string candidate = std::string("a_") + routine.substr(3);
+    std::string err;
+    mk2fatal::AssetPlan tmp;
+    if (mk2fatal::build_asset_plan(&g_mk2_fatality_doc, candidate.c_str(), "MKJC.ASM", &tmp, &err))
+        return candidate;
+    return std::string();
+}
+
+static void Mk2FatalityApplyTimelineFromPlan(const mk2fatal::AssetPlan &plan,
+                                             int *matched_sprites,
+                                             int *missing_sprites)
+{
+    if (matched_sprites) *matched_sprites = 0;
+    if (missing_sprites) *missing_sprites = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p)
+        img->flags &= ~1u;
+
+    TimelineClearFrames();
+    g_timeline_play_dir = 1;
+    ClearTimelineCompositeSelection();
+
+    for (const std::string &sprite : plan.sprite_labels) {
+        int idx = Mk2FatalityFindImageBySpriteLabel(sprite);
+        if (idx >= 0) {
+            IMG *img = get_img(idx);
+            if (img) img->flags |= 1u;
+            if (std::find(g_timeline_frames.begin(), g_timeline_frames.end(), idx) == g_timeline_frames.end())
+                TimelinePushFrame(idx);
+            if (matched_sprites) (*matched_sprites)++;
+        } else if (missing_sprites) {
+            (*missing_sprites)++;
+        }
+    }
+
+    g_timeline_built_for_imgcnt = g_doc->imgcnt;
+    if (!g_timeline_frames.empty()) {
+        g_doc->ilselected = g_timeline_frames[0];
+        g_is_playing = true;
+        g_play_speed = 8.0f;
+        g_zoom_reset = true;
+    }
+}
+
+static void Mk2FatalityLoadPlanImagesIntoActiveDoc(const mk2fatal::AssetPlan &plan,
+                                                   int *loaded_files,
+                                                   int *missing_files)
+{
+    if (loaded_files) *loaded_files = 0;
+    if (missing_files) *missing_files = 0;
+    for (const std::string &rel : plan.img_files) {
+        std::string full = Mk2FatalityResolveProjectAsset(rel);
+        if (!Mk2FatalityFileExists(full)) {
+            if (missing_files) (*missing_files)++;
+            continue;
+        }
+        unsigned int before = g_doc->imgcnt;
+        SetActiveDocumentPath(full);
+        LoadImgFile();
+        if (g_doc->imgcnt > before) {
+            if (loaded_files) (*loaded_files)++;
+            RecentAdd(full);
+        }
+    }
+    g_dirty = false;
+}
+
+static void Mk2FatalityMarkPlanInDoc(Document *doc, const mk2fatal::AssetPlan &plan,
+                                     std::vector<int> *marked_indices,
+                                     int *matched_sprites,
+                                     int *missing_sprites)
+{
+    if (marked_indices) marked_indices->clear();
+    if (matched_sprites) *matched_sprites = 0;
+    if (missing_sprites) *missing_sprites = 0;
+    if (!doc) return;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p)
+        img->flags &= ~1u;
+
+    for (const std::string &sprite : plan.sprite_labels) {
+        int idx = Mk2FatalityFindImageBySpriteLabel(doc, sprite);
+        if (idx >= 0) {
+            IMG *img = doc_get_img(doc, idx);
+            if (img) img->flags |= 1u;
+            if (marked_indices &&
+                std::find(marked_indices->begin(), marked_indices->end(), idx) == marked_indices->end())
+                marked_indices->push_back(idx);
+            if (matched_sprites) (*matched_sprites)++;
+        } else if (missing_sprites) {
+            (*missing_sprites)++;
+        }
+    }
+}
+
+static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
+                                      const mk2fatal::AssetPlan &attacker_plan,
+                                      const mk2fatal::AssetPlan &victim_plan)
+{
+    PrepareDocumentForOpenedFile();
+    int attacker_doc_idx = document_active_index();
+    int attacker_loaded = 0, attacker_missing_files = 0;
+    Mk2FatalityLoadPlanImagesIntoActiveDoc(attacker_plan, &attacker_loaded, &attacker_missing_files);
+    Document *attacker_doc = document_get(attacker_doc_idx);
+
+    std::vector<int> attacker_marked;
+    int attacker_matched = 0, attacker_missing_sprites = 0;
+    Mk2FatalityMarkPlanInDoc(attacker_doc, attacker_plan, &attacker_marked,
+                             &attacker_matched, &attacker_missing_sprites);
+    if (attacker_doc) attacker_doc->dirty = 0;
+
+    int victim_doc_idx = document_new_tab();
+    ClearAll();
+    int victim_loaded = 0, victim_missing_files = 0;
+    Mk2FatalityLoadPlanImagesIntoActiveDoc(victim_plan, &victim_loaded, &victim_missing_files);
+    Document *victim_doc = document_get(victim_doc_idx);
+
+    std::vector<int> victim_marked;
+    int victim_matched = 0, victim_missing_sprites = 0;
+    Mk2FatalityMarkPlanInDoc(victim_doc, victim_plan, &victim_marked,
+                             &victim_matched, &victim_missing_sprites);
+    if (victim_doc) victim_doc->dirty = 0;
+
+    document_set_active(attacker_doc_idx);
+    TimelineSetFrames(attacker_marked);
+    g_timeline_play_idx = 0;
+    g_timeline_play_dir = 1;
+    g_timeline_built_for_imgcnt = g_doc->imgcnt;
+    if (!g_timeline_frames.empty())
+        g_doc->ilselected = g_timeline_frames[0];
+
+    g_world_view = true;
+    g_world_dual_marked_play = true;
+    g_world_dual_fps = g_mk2_fatality_preview_fps;
+    g_play_speed = g_mk2_fatality_preview_fps;
+    g_is_playing = true;
+    g_world_mirror_active = false;
+    g_world_mirror_other = true;
+    g_world_mirror_extra[0] = false;
+    g_world_mirror_extra[1] = false;
+    g_world_mirror_extra[2] = false;
+    for (int i = 0; i < kWorldMarkedMaxTabs; i++)
+        g_world_marked_hold_end[i] = false;
+    g_world_marked_hold_end[kWorldDummyDecapSlot] = true;
+    g_world_dummy_decap_body = false;
+    g_world_dummy_decap_reset = true;
+    g_world_dummy_decap_manual = false;
+    g_world_dummy_decap_doc_idx = -1;
+    g_world_dummy_decap_prefix.clear();
+    g_world_marked_paused = false;
+    WorldMarkedRestart();
+    g_zoom_reset = true;
+
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+             "%s staged: attacker %d IMG/%d sprite%s, Cage victim %d IMG/%d sprite%s%s%s.",
+             fighter.name,
+             attacker_loaded, attacker_matched, attacker_matched == 1 ? "" : "s",
+             victim_loaded, victim_matched, victim_matched == 1 ? "" : "s",
+             (attacker_missing_sprites || victim_missing_sprites) ? " (some sprite refs missing)" : "",
+             (attacker_missing_files || victim_missing_files) ? " (some IMG files missing)" : "");
+    g_mk2_fatality_stage_status = buf;
+}
+
+static mk2fatal::AssetPlan Mk2FatalityBuildCageDeathPlan(const std::vector<std::string> &labels)
+{
+    static const char *kCageImgs[] = {
+        "data/CAGE1.IMG", "data/CAGE2.IMG", "data/CAGE3.IMG", "data/CAGE4.IMG", "data/CAGE5.IMG",
+        "data/CAGE6.IMG", "data/CAGE7.IMG", "data/CAGE8.IMG", "data/CAGE9.IMG", "data/CAGE10.IMG", NULL
+    };
+    return Mk2FatalityBuildPlanForLabels(labels, "MKJC.ASM", kCageImgs);
+}
+
+static void Mk2FatalityStageFighterWorkspace(void)
+{
+    if (g_mk2_fatality_fighter_idx < 0 || g_mk2_fatality_fighter_idx >= kMk2FatalityFighterCount)
+        return;
+    const Mk2FatalityFighterDef &fighter = g_mk2_fatality_fighters[g_mk2_fatality_fighter_idx];
+
+    std::vector<std::string> attacker_labels;
+    for (int i = 0; i < 10 && fighter.fatal_anims[i]; i++)
+        attacker_labels.push_back(fighter.fatal_anims[i]);
+    mk2fatal::AssetPlan attacker_plan =
+        Mk2FatalityBuildPlanForLabels(attacker_labels, fighter.source_file, fighter.img_files);
+
+    std::vector<std::string> victim_labels;
+    for (int i = 0; g_mk2_fatality_cage_deaths[i]; i++)
+        victim_labels.push_back(g_mk2_fatality_cage_deaths[i]);
+    mk2fatal::AssetPlan victim_plan = Mk2FatalityBuildCageDeathPlan(victim_labels);
+
+    g_mk2_fatality_plan = victim_plan;
+    Mk2FatalityStageDualPlans(fighter, attacker_plan, victim_plan);
+}
+
+static void Mk2FatalityApplyFatalityDefaults(const mk2fatal::CommandBlock &cmd,
+                                             const Mk2FatalityFighterDef &fighter)
+{
+    const char *attacker = fighter.fatal_anims[0];
+    const char *victim = "a_torso_ripped";
+    if (cmd.routine == "do_fatality_1") {
+        attacker = fighter.db1_anim ? fighter.db1_anim : attacker;
+        victim = fighter.db1_victim ? fighter.db1_victim : victim;
+    } else if (cmd.routine == "do_fatality_2") {
+        attacker = fighter.db2_anim ? fighter.db2_anim : attacker;
+        victim = fighter.db2_victim ? fighter.db2_victim : victim;
+    } else if (Mk2FatalityFilterMatch(cmd.routine, "headhole")) {
+        attacker = "a_jc_headhole";
+        victim = "a_headhole";
+    } else if (Mk2FatalityFilterMatch(cmd.routine, "raiden_lift")) {
+        attacker = "a_death_zap1";
+        victim = "a_torso_ripped";
+    } else if (Mk2FatalityFilterMatch(cmd.routine, "decap")) {
+        victim = "a_decapfall";
+    } else if (Mk2FatalityFilterMatch(cmd.routine, "rip")) {
+        victim = "a_torso_ripped";
+    } else if (Mk2FatalityFilterMatch(cmd.routine, "head")) {
+        victim = "a_head";
+    }
+
+    g_mk2_fatality_attacker_anim_idx = Mk2FatalityAnimListIndex(fighter.fatal_anims, attacker);
+    g_mk2_fatality_victim_anim_idx = Mk2FatalityAnimListIndex(g_mk2_fatality_cage_deaths, victim);
+}
+
+static void Mk2FatalityStageSelectedFatality(void)
+{
+    if (g_mk2_fatality_fighter_idx < 0 || g_mk2_fatality_fighter_idx >= kMk2FatalityFighterCount)
+        return;
+    const Mk2FatalityFighterDef &fighter = g_mk2_fatality_fighters[g_mk2_fatality_fighter_idx];
+
+    std::vector<std::string> attacker_labels;
+    const char *attacker_anim = Mk2FatalitySelectedAttackerAnim(fighter);
+    if (attacker_anim) attacker_labels.push_back(attacker_anim);
+    mk2fatal::AssetPlan attacker_plan =
+        Mk2FatalityBuildPlanForLabels(attacker_labels, fighter.source_file, fighter.img_files);
+
+    std::vector<std::string> victim_labels;
+    const char *victim_anim = Mk2FatalitySelectedVictimAnim();
+    if (victim_anim) victim_labels.push_back(victim_anim);
+    mk2fatal::AssetPlan victim_plan = Mk2FatalityBuildCageDeathPlan(victim_labels);
+
+    g_mk2_fatality_plan = victim_plan;
+    Mk2FatalityStageDualPlans(fighter, attacker_plan, victim_plan);
+}
+
+static void Mk2FatalityStageAssetPlan(const mk2fatal::AssetPlan &plan)
+{
+    if (plan.img_files.empty()) {
+        g_mk2_fatality_stage_status = "No IMG libraries were resolved for this plan.";
+        return;
+    }
+
+    PrepareDocumentForOpenedFile();
+    int loaded_files = 0;
+    int missing_files = 0;
+    for (const std::string &rel : plan.img_files) {
+        std::string full = Mk2FatalityResolveProjectAsset(rel);
+        if (!Mk2FatalityFileExists(full)) {
+            missing_files++;
+            continue;
+        }
+        unsigned int before = g_doc->imgcnt;
+        SetActiveDocumentPath(full);
+        LoadImgFile();
+        if (g_doc->imgcnt > before) {
+            loaded_files++;
+            RecentAdd(full);
+        }
+    }
+
+    int matched = 0;
+    int missing_sprites = 0;
+    Mk2FatalityApplyTimelineFromPlan(plan, &matched, &missing_sprites);
+    g_dirty = false;
+    g_img_tex_idx = -2;
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "Staged %d IMG file%s, %d/%d referenced sprite%s matched%s%s.",
+             loaded_files, loaded_files == 1 ? "" : "s",
+             matched, (int)plan.sprite_labels.size(),
+             plan.sprite_labels.size() == 1 ? "" : "s",
+             missing_sprites ? " (some missing)" : "",
+             missing_files ? " (some IMG files missing)" : "");
+    g_mk2_fatality_stage_status = buf;
+}
+
+static void Mk2FatalityBuildAndStage(const char *animation_label)
+{
+    if (!animation_label || !animation_label[0]) return;
+    std::string err;
+    mk2fatal::AssetPlan plan;
+    if (!mk2fatal::build_asset_plan(&g_mk2_fatality_doc, animation_label, "MKJC.ASM", &plan, &err)) {
+        g_mk2_fatality_stage_status = std::string("Stage failed: ") + err;
+        return;
+    }
+    g_mk2_fatality_plan = plan;
+    Mk2FatalityStageAssetPlan(g_mk2_fatality_plan);
+}
+
+static void DrawMk2FatalityPlanSummary(void)
+{
+    if (g_mk2_fatality_plan.root_label.empty()) return;
+    ImGui::Separator();
+    ImGui::TextDisabled("Staged plan: %s via %s",
+                        g_mk2_fatality_plan.resolved_label.empty()
+                            ? g_mk2_fatality_plan.root_label.c_str()
+                            : g_mk2_fatality_plan.resolved_label.c_str(),
+                        g_mk2_fatality_plan.preferred_file.empty()
+                            ? "source" : g_mk2_fatality_plan.preferred_file.c_str());
+    ImGui::TextDisabled("%d animation label%s, %d sprite label%s, %d IMG librar%s",
+                        (int)g_mk2_fatality_plan.animation_labels.size(),
+                        g_mk2_fatality_plan.animation_labels.size() == 1 ? "" : "s",
+                        (int)g_mk2_fatality_plan.sprite_labels.size(),
+                        g_mk2_fatality_plan.sprite_labels.size() == 1 ? "" : "s",
+                        (int)g_mk2_fatality_plan.img_files.size(),
+                        g_mk2_fatality_plan.img_files.size() == 1 ? "y" : "ies");
+    if (!g_mk2_fatality_stage_status.empty())
+        ImGui::TextDisabled("%s", g_mk2_fatality_stage_status.c_str());
+}
+
+static void DrawMk2FatalityWindow(void)
+{
+    if (!g_show_mk2_fatality) return;
+
+    ImGui::SetNextWindowSize(ImVec2(980, 640), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("MK2 Fatality Lab", &g_show_mk2_fatality)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!g_mk2_fatality_status_sticky && g_mk2_fatality_doc.dirty && !g_mk2_fatality_status.empty())
+        g_mk2_fatality_status.clear();
+
+    ImGui::SetNextItemWidth(-360);
+    ImGui::InputTextWithHint("##mk2fatal_root", "path to mk2-main or its src folder", g_mk2_fatality_root, sizeof(g_mk2_fatality_root));
+    ImGui::SameLine();
+    if (ImGui::Button("Browse...")) {
+#ifdef _WIN32
+        char path[MAX_PATH] = "";
+        BROWSEINFOA bi = {};
+        bi.lpszTitle = "Select mk2-main folder";
+        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI;
+        LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
+        if (pidl) {
+            if (SHGetPathFromIDListA(pidl, path) && path[0]) {
+                strncpy(g_mk2_fatality_root, path, sizeof(g_mk2_fatality_root) - 1);
+                g_mk2_fatality_root[sizeof(g_mk2_fatality_root) - 1] = '\0';
+                save_last_dir_cat(path, "mk2fatal");
+            }
+            CoTaskMemFree(pidl);
+        }
+#else
+        g_mk2_fatality_status = "Browse not implemented on this platform - type the path manually";
+        g_mk2_fatality_status_sticky = true;
+#endif
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Use ../mk2-main")) {
+        strncpy(g_mk2_fatality_root, "..\\mk2-main", sizeof(g_mk2_fatality_root) - 1);
+        g_mk2_fatality_root[sizeof(g_mk2_fatality_root) - 1] = '\0';
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load")) {
+        Mk2FatalityLoadRoot(g_mk2_fatality_root);
+    }
+    ImGui::SameLine();
+    bool can_save = g_mk2_fatality_doc.dirty && !g_mk2_fatality_doc.files.empty();
+    if (!can_save) ImGui::BeginDisabled();
+    if (ImGui::Button("Save")) {
+        std::string err;
+        if (mk2fatal::save(&g_mk2_fatality_doc, &err)) {
+            g_mk2_fatality_status = "Saved MK2 fatality source edits";
+            g_mk2_fatality_status_sticky = false;
+        } else {
+            g_mk2_fatality_status = std::string("Save failed: ") + err;
+            g_mk2_fatality_status_sticky = true;
+        }
+    }
+    if (!can_save) ImGui::EndDisabled();
+    ImGui::SameLine();
+    bool can_reload = !g_mk2_fatality_doc.root_path.empty();
+    if (!can_reload) ImGui::BeginDisabled();
+    if (ImGui::Button("Reload")) {
+        std::string root = g_mk2_fatality_doc.root_path;
+        Mk2FatalityLoadRoot(root.c_str());
+    }
+    if (!can_reload) ImGui::EndDisabled();
+
+    if (!g_mk2_fatality_status.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", g_mk2_fatality_status.c_str());
+    }
+
+    if (g_mk2_fatality_doc.files.empty()) {
+        ImGui::Spacing();
+        ImGui::TextWrapped("Load an MK2 source root to browse fatality command blocks, controller combo tables, and body-ending animation sequences.");
+        ImGui::End();
+        return;
+    }
+
+    Mk2FatalityClampSelections();
+    ImGui::Separator();
+    ImGui::TextDisabled("%d files loaded. Dirty files save back to the same ASM paths.",
+                        (int)g_mk2_fatality_doc.files.size());
+
+    if (g_mk2_fatality_fighter_idx < 0) g_mk2_fatality_fighter_idx = 0;
+    if (g_mk2_fatality_fighter_idx >= kMk2FatalityFighterCount)
+        g_mk2_fatality_fighter_idx = kMk2FatalityFighterCount - 1;
+    const Mk2FatalityFighterDef &fighter = g_mk2_fatality_fighters[g_mk2_fatality_fighter_idx];
+    std::vector<int> fighter_cmds = Mk2FatalityFighterCommandIndices(fighter);
+    if (g_mk2_fatality_selected_fatality < 0) g_mk2_fatality_selected_fatality = 0;
+    if (g_mk2_fatality_selected_fatality >= (int)fighter_cmds.size())
+        g_mk2_fatality_selected_fatality = (int)fighter_cmds.size() - 1;
+    if (g_mk2_fatality_selected_fatality < 0) g_mk2_fatality_selected_fatality = 0;
+    if (!fighter_cmds.empty() &&
+        std::find(fighter_cmds.begin(), fighter_cmds.end(), g_mk2_fatality_command_idx) == fighter_cmds.end())
+        g_mk2_fatality_command_idx = fighter_cmds[g_mk2_fatality_selected_fatality];
+
+    ImGui::SetNextItemWidth(210);
+    if (ImGui::BeginCombo("Fighter##mk2fatal_fighter", fighter.name)) {
+        for (int i = 0; i < kMk2FatalityFighterCount; i++) {
+            bool selected = (g_mk2_fatality_fighter_idx == i);
+            if (ImGui::Selectable(g_mk2_fatality_fighters[i].name, selected)) {
+                g_mk2_fatality_fighter_idx = i;
+                g_mk2_fatality_selected_fatality = 0;
+                g_mk2_fatality_attacker_anim_idx = 0;
+                g_mk2_fatality_victim_anim_idx = 0;
+                std::vector<int> new_cmds = Mk2FatalityFighterCommandIndices(g_mk2_fatality_fighters[i]);
+                if (!new_cmds.empty())
+                    Mk2FatalityApplyFatalityDefaults(g_mk2_fatality_doc.commands[new_cmds[0]],
+                                                     g_mk2_fatality_fighters[i]);
+                Mk2FatalityStageFighterWorkspace();
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load Fighter")) {
+        Mk2FatalityStageFighterWorkspace();
+    }
+    ImGui::SameLine();
+    if (g_mk2_fatality_preview_fps < 1.0f) g_mk2_fatality_preview_fps = 1.0f;
+    if (g_mk2_fatality_preview_fps > 30.0f) g_mk2_fatality_preview_fps = 30.0f;
+    ImGui::SetNextItemWidth(86);
+    if (ImGui::InputFloat("FPS##mk2fatal_fps", &g_mk2_fatality_preview_fps, 1.0f, 4.0f, "%.1f")) {
+        if (g_mk2_fatality_preview_fps < 1.0f) g_mk2_fatality_preview_fps = 1.0f;
+        if (g_mk2_fatality_preview_fps > 30.0f) g_mk2_fatality_preview_fps = 30.0f;
+        g_world_dual_fps = g_mk2_fatality_preview_fps;
+        g_play_speed = g_mk2_fatality_preview_fps;
+    }
+
+    const char *fatality_preview = fighter_cmds.empty()
+        ? "(none found)"
+        : g_mk2_fatality_doc.commands[fighter_cmds[g_mk2_fatality_selected_fatality]].label.c_str();
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::BeginCombo("Fatality##mk2fatal_pick", fatality_preview)) {
+        for (int i = 0; i < (int)fighter_cmds.size(); i++) {
+            const mk2fatal::CommandBlock &cmd = g_mk2_fatality_doc.commands[fighter_cmds[i]];
+            char label[192];
+            snprintf(label, sizeof(label), "%s  %s", cmd.label.c_str(),
+                     cmd.routine.empty() ? "" : cmd.routine.c_str());
+            bool selected = (g_mk2_fatality_selected_fatality == i);
+            if (ImGui::Selectable(label, selected)) {
+                g_mk2_fatality_selected_fatality = i;
+                Mk2FatalityApplyFatalityDefaults(cmd, fighter);
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (!fighter_cmds.empty()) {
+        const mk2fatal::CommandBlock &cmd = g_mk2_fatality_doc.commands[fighter_cmds[g_mk2_fatality_selected_fatality]];
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s  %s",
+                            cmd.combo_label.empty() ? "combo?" : cmd.combo_label.c_str(),
+                            cmd.range_note.empty() ? "" : cmd.range_note.c_str());
+    }
+
+    ImGui::SetNextItemWidth(220);
+    const char *attacker_preview = Mk2FatalitySelectedAttackerAnim(fighter);
+    if (ImGui::BeginCombo("Attacker Animation##mk2fatal_attacker_anim",
+                          attacker_preview ? attacker_preview : "(none)")) {
+        for (int i = 0; i < 10 && fighter.fatal_anims[i]; i++) {
+            bool selected = (g_mk2_fatality_attacker_anim_idx == i);
+            if (ImGui::Selectable(fighter.fatal_anims[i], selected))
+                g_mk2_fatality_attacker_anim_idx = i;
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(220);
+    const char *victim_preview = Mk2FatalitySelectedVictimAnim();
+    if (ImGui::BeginCombo("Cage Victim Animation##mk2fatal_victim_anim", victim_preview)) {
+        for (int i = 0; g_mk2_fatality_cage_deaths[i]; i++) {
+            bool selected = (g_mk2_fatality_victim_anim_idx == i);
+            if (ImGui::Selectable(g_mk2_fatality_cage_deaths[i], selected))
+                g_mk2_fatality_victim_anim_idx = i;
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (fighter_cmds.empty()) ImGui::BeginDisabled();
+    if (ImGui::Button("Animate Fatality")) {
+        Mk2FatalityStageSelectedFatality();
+    }
+    if (fighter_cmds.empty()) ImGui::EndDisabled();
+    if (!g_mk2_fatality_stage_status.empty())
+        ImGui::TextDisabled("%s", g_mk2_fatality_stage_status.c_str());
+    ImGui::Separator();
+
+    if (ImGui::BeginTabBar("##mk2fatal_tabs")) {
+        if (ImGui::BeginTabItem("Fatalities")) {
+            const float h = ImGui::GetContentRegionAvail().y - 4.0f;
+            ImGui::BeginChild("##mk2fatal_cmd_list", ImVec2(300, h), true);
+            ImGui::TextDisabled("Command Blocks");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputTextWithHint("##mk2fatal_filter_cmd", "filter...", g_mk2_fatality_filter, sizeof(g_mk2_fatality_filter));
+            for (int ci = 0; ci < (int)fighter_cmds.size(); ci++) {
+                int i = fighter_cmds[ci];
+                const auto &cmd = g_mk2_fatality_doc.commands[i];
+                std::string hay = cmd.label + " " + cmd.routine + " " + cmd.combo_label + " " + cmd.trigger;
+                if (!Mk2FatalityFilterMatch(hay, g_mk2_fatality_filter)) continue;
+                char label[192];
+                snprintf(label, sizeof(label), "%s  %s", cmd.label.c_str(),
+                         cmd.routine.empty() ? "(routine?)" : cmd.routine.c_str());
+                if (ImGui::Selectable(label, g_mk2_fatality_command_idx == i)) {
+                    g_mk2_fatality_command_idx = i;
+                    g_mk2_fatality_selected_fatality = ci;
+                    Mk2FatalityApplyFatalityDefaults(cmd, fighter);
+                    g_mk2_fatality_selected_line = 0;
+                }
+            }
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+            ImGui::BeginChild("##mk2fatal_cmd_detail", ImVec2(0, h), true);
+            if (fighter_cmds.empty()) {
+                ImGui::TextDisabled("No fatality command blocks found for this fighter.");
+            } else {
+                if (g_mk2_fatality_command_idx < 0 ||
+                    g_mk2_fatality_command_idx >= (int)g_mk2_fatality_doc.commands.size())
+                    g_mk2_fatality_command_idx = fighter_cmds[0];
+                mk2fatal::CommandBlock cmd = g_mk2_fatality_doc.commands[g_mk2_fatality_command_idx];
+                ImGui::Text("%s", cmd.label.c_str());
+                ImGui::TextDisabled("Routine: %s   Transfer: %s   Finish Him: %s",
+                                    cmd.routine.empty() ? "(not detected)" : cmd.routine.c_str(),
+                                    cmd.transfer.empty() ? "(not detected)" : cmd.transfer.c_str(),
+                                    cmd.finish_him_only ? "yes" : "no");
+                ImGui::TextDisabled("Combo: %s   Trigger: %s",
+                                    cmd.combo_label.empty() ? "(direct / timing)" : cmd.combo_label.c_str(),
+                                    cmd.trigger.empty() ? "(not detected)" : cmd.trigger.c_str());
+                if (!cmd.range_note.empty()) ImGui::TextDisabled("%s", cmd.range_note.c_str());
+                std::string inferred_anim = Mk2FatalityInferAnimationFromRoutine(cmd.routine);
+                if (!inferred_anim.empty()) {
+                    if (ImGui::Button("Use Routine Animation")) {
+                        g_mk2_fatality_attacker_anim_idx =
+                            Mk2FatalityAnimListIndex(fighter.fatal_anims, inferred_anim.c_str());
+                        Mk2FatalityStageSelectedFatality();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", inferred_anim.c_str());
+                } else {
+                    ImGui::TextDisabled("No direct victim animation mapping.");
+                }
+                DrawMk2FatalityPlanSummary();
+                ImGui::Separator();
+                if (ImGui::CollapsingHeader("Command Source", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    DrawMk2FatalitySourceEditor("##mk2fatal_cmd_src", cmd.file_idx, cmd.start_line, cmd.end_line,
+                                                &g_mk2_fatality_selected_line, NULL, 0, false);
+                }
+                int combo_idx = cmd.combo_label.empty() ? -1 : mk2fatal::find_combo(&g_mk2_fatality_doc, cmd.combo_label.c_str());
+                if (combo_idx >= 0) {
+                    mk2fatal::ComboBlock combo = g_mk2_fatality_doc.combos[combo_idx];
+                    if (ImGui::CollapsingHeader("Controller Combo", ImGuiTreeNodeFlags_DefaultOpen)) {
+                        ImGui::TextDisabled("%s   time %s   %d words",
+                                            combo.label.c_str(),
+                                            combo.time_token.empty() ? "?" : combo.time_token.c_str(),
+                                            (int)combo.words.size());
+                        DrawMk2FatalitySourceEditor("##mk2fatal_cmd_combo_src", combo.file_idx, combo.start_line, combo.end_line,
+                                                    &g_mk2_fatality_selected_line,
+                                                    g_mk2_fatality_insert_combo, sizeof(g_mk2_fatality_insert_combo), true);
+                    }
+                }
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Animations")) {
+            const float h = ImGui::GetContentRegionAvail().y - 4.0f;
+            ImGui::BeginChild("##mk2fatal_anim_list", ImVec2(320, h), true);
+            ImGui::TextDisabled("Animation / Body Blocks");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputTextWithHint("##mk2fatal_filter_anim", "filter...", g_mk2_fatality_filter, sizeof(g_mk2_fatality_filter));
+            ImGui::Checkbox("Body endings only", &g_mk2_fatality_body_only);
+            for (int i = 0; i < (int)g_mk2_fatality_doc.animations.size(); i++) {
+                const auto &anim = g_mk2_fatality_doc.animations[i];
+                if (!Mk2FatalityFilterMatch(anim.file_rel, fighter.source_file)) continue;
+                if (g_mk2_fatality_body_only && !anim.body_ending) continue;
+                std::string hay = anim.label + " " + anim.file_rel;
+                if (!Mk2FatalityFilterMatch(hay, g_mk2_fatality_filter)) continue;
+                char label[224];
+                snprintf(label, sizeof(label), "%s  [%s]", anim.label.c_str(), anim.file_rel.c_str());
+                if (ImGui::Selectable(label, g_mk2_fatality_anim_idx == i)) {
+                    g_mk2_fatality_anim_idx = i;
+                    g_mk2_fatality_selected_line = 0;
+                }
+            }
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+            ImGui::BeginChild("##mk2fatal_anim_detail", ImVec2(0, h), true);
+            if (g_mk2_fatality_doc.animations.empty()) {
+                ImGui::TextDisabled("No animation blocks found.");
+            } else {
+                mk2fatal::AnimationBlock anim = g_mk2_fatality_doc.animations[g_mk2_fatality_anim_idx];
+                ImGui::Text("%s", anim.label.c_str());
+                ImGui::TextDisabled("%s   .long tokens %d   .word tokens %d   adjustxy %d",
+                                    anim.file_rel.c_str(), anim.long_count, anim.word_count, anim.adjust_count);
+                if (anim.body_ending) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("body ending");
+                }
+                if (ImGui::Button("Animate With Cage")) {
+                    std::vector<std::string> attacker_labels;
+                    attacker_labels.push_back(anim.label);
+                    mk2fatal::AssetPlan attacker_plan =
+                        Mk2FatalityBuildPlanForLabels(attacker_labels, fighter.source_file, fighter.img_files);
+                    std::vector<std::string> victim_labels;
+                    victim_labels.push_back(Mk2FatalitySelectedVictimAnim());
+                    mk2fatal::AssetPlan victim_plan = Mk2FatalityBuildCageDeathPlan(victim_labels);
+                    g_mk2_fatality_plan = victim_plan;
+                    Mk2FatalityStageDualPlans(fighter, attacker_plan, victim_plan);
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("Johnny Cage");
+                DrawMk2FatalityPlanSummary();
+                ImGui::Separator();
+                DrawMk2FatalitySourceEditor("##mk2fatal_anim_src", anim.file_idx, anim.start_line, anim.end_line,
+                                            &g_mk2_fatality_selected_line,
+                                            g_mk2_fatality_insert_anim, sizeof(g_mk2_fatality_insert_anim), true);
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Controller")) {
+            const float h = ImGui::GetContentRegionAvail().y - 4.0f;
+            ImGui::BeginChild("##mk2fatal_combo_list", ImVec2(300, h), true);
+            ImGui::TextDisabled("scom_* Tables");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputTextWithHint("##mk2fatal_filter_combo", "filter...", g_mk2_fatality_filter, sizeof(g_mk2_fatality_filter));
+            for (int i = 0; i < (int)g_mk2_fatality_doc.combos.size(); i++) {
+                const auto &combo = g_mk2_fatality_doc.combos[i];
+                std::string hay = combo.label + " " + combo.time_token;
+                if (!Mk2FatalityFilterMatch(hay, g_mk2_fatality_filter)) continue;
+                char label[160];
+                snprintf(label, sizeof(label), "%s  (%s)", combo.label.c_str(),
+                         combo.time_token.empty() ? "time?" : combo.time_token.c_str());
+                if (ImGui::Selectable(label, g_mk2_fatality_combo_idx == i)) {
+                    g_mk2_fatality_combo_idx = i;
+                    g_mk2_fatality_selected_line = 0;
+                }
+            }
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+            ImGui::BeginChild("##mk2fatal_combo_detail", ImVec2(0, h), true);
+            if (g_mk2_fatality_doc.combos.empty()) {
+                ImGui::TextDisabled("No controller combo tables found.");
+            } else {
+                mk2fatal::ComboBlock combo = g_mk2_fatality_doc.combos[g_mk2_fatality_combo_idx];
+                ImGui::Text("%s", combo.label.c_str());
+                ImGui::TextDisabled("time %s   %d words",
+                                    combo.time_token.empty() ? "?" : combo.time_token.c_str(),
+                                    (int)combo.words.size());
+                ImGui::Separator();
+                DrawMk2FatalitySourceEditor("##mk2fatal_combo_src", combo.file_idx, combo.start_line, combo.end_line,
+                                            &g_mk2_fatality_selected_line,
+                                            g_mk2_fatality_insert_combo, sizeof(g_mk2_fatality_insert_combo), true);
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    ImGui::End();
+}
+
 static void DrawPaletteHistogramDialog(void)
 {
     if (g_show_histogram) ImGui::OpenPopup("Palette Histogram");
@@ -9245,10 +12854,12 @@ static void DrawAutoChopDialog(void)
                        "into Midway-style A/B/C pieces and recalculates ANIX/ANIY.\n"
                        "MK2 character art usually splits into horizontal pieces; ANIX/ANIY keeps them lined up.");
     ImGui::Spacing();
+    if (ImGui::Button("Auto 3 Subframes", ImVec2(140, 0))) AutoChopSetThreeBandSize();
+    ImGui::SameLine();
     ImGui::SetNextItemWidth(100);
-    if (ImGui::InputInt("Grid Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
+    if (ImGui::InputInt("Piece Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
     ImGui::SetNextItemWidth(100);
-    if (ImGui::InputInt("Grid Height", &g_chop_h)) { if (g_chop_h < 1) g_chop_h = 1; }
+    if (ImGui::InputInt("Piece Height", &g_chop_h)) { if (g_chop_h < 1) g_chop_h = 1; }
     ImGui::Checkbox("Trim empty space (Highly recommended)", &g_chop_trim);
 
     AutoChopPreview summary;
@@ -9488,6 +13099,87 @@ static void DrawBulkRestoreRegexDialog(void)
         g_restore_matches.clear();
         ImGui::CloseCurrentPopup();
     }
+    ImGui::EndPopup();
+}
+
+static void DrawDeleteImagesConfirm(void)
+{
+    if (g_show_delete_images_confirm) ImGui::OpenPopup("Delete Sprite Subframes");
+    if (!ImGui::BeginPopupModal("Delete Sprite Subframes", &g_show_delete_images_confirm,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    std::vector<int> base = g_pending_delete_base_indices;
+    std::vector<int> extra = g_pending_delete_subframe_indices;
+    NormalizeImageDeleteIndices(&base);
+    NormalizeImageDeleteIndices(&extra);
+
+    int base_count = (int)base.size();
+    int extra_count = (int)extra.size();
+    bool bulk = base_count > 1 || g_pending_delete_parent_name[0] == '\0';
+
+    if (bulk) {
+        ImGui::TextWrapped("Delete %d marked sprite%s?", base_count,
+                           base_count == 1 ? "" : "s");
+        ImGui::TextWrapped("%d subframe%s belong to marked parent sprite%s.",
+                           extra_count,
+                           extra_count == 1 ? "" : "s",
+                           base_count == 1 ? "" : "s");
+    } else {
+        ImGui::TextWrapped("\"%s\" has %d subframe%s.",
+                           g_pending_delete_parent_name,
+                           extra_count,
+                           extra_count == 1 ? "" : "s");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    const char *base_label = bulk ? "Delete Marked Only" : "Delete Parent Only";
+    if (ImGui::Button(base_label, ImVec2(150, 0))) {
+        int deleted = DeleteImagesByIndices(base);
+        if (g_last_delete_removed_palettes > 0) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Deleted %d sprite%s and %d now-unused palette%s.",
+                     deleted, deleted == 1 ? "" : "s",
+                     g_last_delete_removed_palettes,
+                     g_last_delete_removed_palettes == 1 ? "" : "s");
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Deleted %d sprite%s.", deleted, deleted == 1 ? "" : "s");
+        }
+        g_restore_msg_timer = 4.0f;
+        ClearPendingImageDelete();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+
+    std::vector<int> all = base;
+    all.insert(all.end(), extra.begin(), extra.end());
+    const char *all_label = bulk ? "Delete Marked + Subframes" : "Delete Parent + Subframes";
+    if (ImGui::Button(all_label, ImVec2(210, 0))) {
+        int deleted = DeleteImagesByIndices(all);
+        if (g_last_delete_removed_palettes > 0) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Deleted %d sprite%s and %d now-unused palette%s.",
+                     deleted, deleted == 1 ? "" : "s",
+                     g_last_delete_removed_palettes,
+                     g_last_delete_removed_palettes == 1 ? "" : "s");
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Deleted %d sprite%s.", deleted, deleted == 1 ? "" : "s");
+        }
+        g_restore_msg_timer = 4.0f;
+        ClearPendingImageDelete();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+
+    if (ImGui::Button("Cancel", ImVec2(90, 0))) {
+        ClearPendingImageDelete();
+        ImGui::CloseCurrentPopup();
+    }
+
     ImGui::EndPopup();
 }
 
@@ -9770,10 +13462,15 @@ static void DrawMk2UnsavedChangesConfirm(void)
     ImGui::Separator();
     if (ImGui::Button("Save", ImVec2(80, 0))) {
         std::string err;
-        if (mk2::save(&g_mk2_doc, &err)) { g_mk2_status = "Saved MKSTK.ASM"; g_mk2_status_sticky = false; }
-        else                              { g_mk2_status = std::string("Save failed: ") + err; g_mk2_status_sticky = true; }
-        g_show_mk2_unsaved_confirm = false;
-        ImGui::CloseCurrentPopup();
+        if (mk2::save(&g_mk2_doc, &err)) {
+            g_mk2_status = "Saved MKSTK.ASM";
+            g_mk2_status_sticky = false;
+            g_show_mk2_unsaved_confirm = false;
+            ImGui::CloseCurrentPopup();
+        } else {
+            g_mk2_status = std::string("Save failed: ") + err;
+            g_mk2_status_sticky = true;
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button("Discard", ImVec2(80, 0))) {
@@ -9784,6 +13481,44 @@ static void DrawMk2UnsavedChangesConfirm(void)
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(80, 0))) {
         g_show_mk2_unsaved_confirm = false;
+        g_pending_quit = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+static void DrawMk2FatalityUnsavedChangesConfirm(void)
+{
+    if (g_show_mk2_fatality_unsaved_confirm) ImGui::OpenPopup("MK2 Fatality Lab - Unsaved");
+    if (!ImGui::BeginPopupModal("MK2 Fatality Lab - Unsaved", &g_show_mk2_fatality_unsaved_confirm,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::Text("You have unsaved edits in MK2 fatality source files.");
+    ImGui::Text("Do you want to save them before quitting?");
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Save", ImVec2(80, 0))) {
+        std::string err;
+        if (mk2fatal::save(&g_mk2_fatality_doc, &err)) {
+            g_mk2_fatality_status = "Saved MK2 fatality source edits";
+            g_mk2_fatality_status_sticky = false;
+            g_show_mk2_fatality_unsaved_confirm = false;
+            ImGui::CloseCurrentPopup();
+        } else {
+            g_mk2_fatality_status = std::string("Save failed: ") + err;
+            g_mk2_fatality_status_sticky = true;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Discard", ImVec2(80, 0))) {
+        g_mk2_fatality_doc.dirty = false;
+        for (auto &sf : g_mk2_fatality_doc.files) sf.dirty = false;
+        g_show_mk2_fatality_unsaved_confirm = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        g_show_mk2_fatality_unsaved_confirm = false;
         g_pending_quit = false;
         ImGui::CloseCurrentPopup();
     }
@@ -10132,9 +13867,13 @@ static float DrawDocumentTabBar(float y, float sw)
                 if (was_on) ImGui::PopStyleColor(3);
             };
             tab_toggle(g_world_onion ? "Onion: On" : "Onion", &g_world_onion);
+            bool marked_was_on = g_world_dual_marked_play;
             tab_toggle(g_world_dual_marked_play ? "Marked: On" : "Marked", &g_world_dual_marked_play);
-            tab_toggle(g_world_mirror_active ? "Mirror Active: On" : "Mirror Active", &g_world_mirror_active);
-            tab_toggle(g_world_mirror_other ? "Mirror Paired: On" : "Mirror Paired", &g_world_mirror_other);
+            if (marked_was_on != g_world_dual_marked_play) {
+                WorldMarkedRestart();
+            }
+            tab_toggle(g_world_mirror_active ? "Mirror 1: On" : "Mirror 1", &g_world_mirror_active);
+            tab_toggle(g_world_mirror_other ? "Mirror 2: On" : "Mirror 2", &g_world_mirror_other);
         }
 
         if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
@@ -10210,6 +13949,7 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) DoRedo();
 
     /* Clipboard */
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C, route)) CopySelectionToNewImage();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_X, route)) CutSelectionToNewImage();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_V, route)) PasteClipboardAsNewImage();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) copy_image(false);
@@ -10239,10 +13979,10 @@ void imgui_overlay_render(void)
             g_pasted.dragging = false;
         }
     }
-    /* Delete Image moves to Shift+Del to free Ctrl+D for Adobe-standard
-       Deselect. The File/Edit menu accelerator label is updated to match. */
+    /* Shift+Del is an always-image delete escape hatch. Plain Del below follows
+       the active side-panel list (images vs palettes). */
     if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_Delete, route)) {
-        if (g_doc->ilselected >= 0) DeleteImage(g_doc->ilselected);
+        if (g_doc->ilselected >= 0) RequestDeleteImage(g_doc->ilselected);
     }
     /* Image-list ops the menu advertises but were previously unbound. */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_R, route))     OpenRenameImage();
@@ -10323,7 +14063,11 @@ void imgui_overlay_render(void)
         }
     }
     if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_R, route)) OpenRenamePalette(g_doc->plselected);
-    if (ImGui::Shortcut(ImGuiKey_Delete, route)) DeletePalette();
+    if (!popup_using_keyboard && !io.WantTextInput && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt &&
+        ImGui::Shortcut(ImGuiKey_Delete, route)) {
+        if (g_palette_nav) DeletePalette();
+        else RequestDeleteImage(g_doc->ilselected);
+    }
 
     /* Tool Intercepts. Esc/Enter have a three-level priority: transform
        takes precedence, then floating paste, then marquee. */
@@ -10349,25 +14093,29 @@ void imgui_overlay_render(void)
     }
     /* Timeline play/pause (K = standard video editor convention). */
     if (ImGui::Shortcut(ImGuiKey_K, route)) imgtool_toggle_timeline_play();
-    /* Left/Right scrub the animation timeline. With a composite pair selected,
-       both slots advance together and remain grouped until the pair is cleared. */
+    /* Left/Right scrub the animation timeline, or the marked-tab World View
+       sequence when that preview is active. */
     bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() || ImGui::IsAnyItemFocused() || io.WantTextInput;
     if (!widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
-        if (ImGui::Shortcut(ImGuiKey_LeftArrow, route))  StepTimelinePlayhead(-1);
-        if (ImGui::Shortcut(ImGuiKey_RightArrow, route)) StepTimelinePlayhead(1);
+        if (ImGui::Shortcut(ImGuiKey_LeftArrow, route)) {
+            if (g_world_view && g_world_dual_marked_play) StepWorldMarkedSequence(-1);
+            else StepTimelinePlayhead(-1);
+        }
+        if (ImGui::Shortcut(ImGuiKey_RightArrow, route)) {
+            if (g_world_view && g_world_dual_marked_play) StepWorldMarkedSequence(1);
+            else StepTimelinePlayhead(1);
+        }
     }
     /* Ctrl+Left/Right reorders the current play-head frame within the timeline. */
     if (!widget_using_keyboard && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, route)) {
         if (g_timeline_play_idx > 0 && g_timeline_play_idx < (int)g_timeline_frames.size()) {
-            std::swap(g_timeline_frames[g_timeline_play_idx],
-                      g_timeline_frames[g_timeline_play_idx - 1]);
+            TimelineSwapFrames(g_timeline_play_idx, g_timeline_play_idx - 1);
             g_timeline_play_idx--;
         }
     }
     if (!widget_using_keyboard && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, route)) {
         if (g_timeline_play_idx + 1 < (int)g_timeline_frames.size()) {
-            std::swap(g_timeline_frames[g_timeline_play_idx],
-                      g_timeline_frames[g_timeline_play_idx + 1]);
+            TimelineSwapFrames(g_timeline_play_idx, g_timeline_play_idx + 1);
             g_timeline_play_idx++;
         }
     }
@@ -10475,6 +14223,8 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             if (ImGui::MenuItem("Copy",  "Ctrl+C", false, g_doc->ilselected >= 0)) copy_image(false);
             if (ImGui::MenuItem("Cut",   "Ctrl+X", false, g_doc->ilselected >= 0)) copy_image(true);
+            if (ImGui::MenuItem("Copy to New Sprite", "Ctrl+Shift+C", false, g_doc->ilselected >= 0))
+                CopySelectionToNewImage();
             if (ImGui::MenuItem("Cut to New Sprite", "Ctrl+Shift+X", false, g_doc->ilselected >= 0))
                 CutSelectionToNewImage();
             if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && g_doc->ilselected >= 0))
@@ -10497,7 +14247,7 @@ void imgui_overlay_render(void)
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",     "Ctrl+R"))     OpenRenameImage();
-            if (ImGui::MenuItem("Delete Image",     "Shift+Del"))  DeleteImage(g_doc->ilselected);
+            if (ImGui::MenuItem("Delete Image",     "Del"))        RequestDeleteImage(g_doc->ilselected);
             if (ImGui::MenuItem("Duplicate",        "Ctrl+J"))     DuplicateImage();
             if (ImGui::MenuItem("Trim Transparent Bounds", NULL, false, g_doc->ilselected >= 0)) {
                 int n = CropSelectedImageToContent();
@@ -10545,7 +14295,7 @@ void imgui_overlay_render(void)
         }
         if (ImGui::BeginMenu("Operations")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
-            if (ImGui::MenuItem("Break into Subframes...")) g_show_auto_chop = true;
+            if (ImGui::MenuItem("Break into Subframes...")) OpenAutoChopDialog();
             if (ImGui::MenuItem("Resize Sprite...", NULL, false, g_doc->ilselected >= 0)) OpenResizeSpriteDialog();
             if (ImGui::BeginMenu("Transform Selected", g_doc->ilselected >= 0)) {
                 DrawSpriteTransformMenuItems();
@@ -10581,6 +14331,13 @@ void imgui_overlay_render(void)
                 "One-pass edge defringe: every pixel touching a transparent\n"
                 "neighbor is averaged toward its non-transparent neighbors,\n"
                 "killing the 1px halo of blue/green-spill on digitized actors.");
+            if (ImGui::MenuItem("Remove Hard Stroke (1-2px)")) {
+                RemoveHardStrokeFromTargets(2);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Detects a thin high-contrast outline/matte ring around\n"
+                "transparent sprite edges and removes it. Uses marked sprites,\n"
+                "or the selected sprite if none are marked.");
             if (ImGui::MenuItem("Align Marked Anipoints to Selected")) {
                 int n = AlignAnipointsToMarked(g_doc->ilselected);
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -10606,6 +14363,10 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Dither Replace"))                           DitherReplaceMarkedImages(g_sel_color);
             ImGui::Separator();
             if (ImGui::MenuItem("Apply Variant Paint to Selection"))          ApplyVariantToSelection();
+            if (ImGui::MenuItem("Remap Similar Regions to Current Swatch"))   ApplySelectionRemapToMatchingSprites();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Uses the current selection as a sample, then remaps likely\n"
+                "matching same-palette regions across the IMG to the current swatch.");
             if (ImGui::MenuItem("Split Selection to Overlay Frame"))          SplitSelectionToOverlayFrame(true);
             if (ImGui::MenuItem("Copy Selection to Overlay Frame"))           SplitSelectionToOverlayFrame(false);
             ImGui::Separator();
@@ -10642,7 +14403,7 @@ void imgui_overlay_render(void)
                 "then restores child pixels from their parent automatically.");
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Marked"))                            OpenRenameMarkedImages();
-            if (ImGui::MenuItem("Delete Marked"))                            DeleteMarkedImages();
+            if (ImGui::MenuItem("Delete Marked"))                            RequestDeleteMarkedImages();
             if (ImGui::MenuItem("Set Palette for Marked", "["))              SetPaletteOfMarked();
             ImGui::PopStyleVar();
             ImGui::EndMenu();
@@ -10654,6 +14415,9 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             if (ImGui::MenuItem("Set for Image",       "]"))       SetPaletteOfSelected();
             if (ImGui::MenuItem("Merge Marked into Selected", "*")) MergeMarkedPalettes();
+            if (ImGui::MenuItem("Preview Merge Marked into Selected")) OpenPaletteMergePreview();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Shows source-to-target palette mapping and drift before merging.");
             if (ImGui::MenuItem("Delete Palette",      "Del"))     DeletePalette();
             if (ImGui::MenuItem("Rename Palette",      "Shift+R")) OpenRenamePalette(g_doc->plselected);
             ImGui::Separator();
@@ -10698,8 +14462,40 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             ImGui::MenuItem("World View",      NULL,   &g_world_view);
             if (g_world_view) {
+                if (ImGui::MenuItem("Marked Tab Playback", NULL, &g_world_dual_marked_play)) {
+                    WorldMarkedRestart();
+                }
+                ImGui::MenuItem("Marked Playback Paused", NULL, &g_world_marked_paused);
                 ImGui::SetNextItemWidth(80);
                 ImGui::SliderFloat("Marked FPS", &g_world_dual_fps, 1.0f, 60.0f, "%.1f");
+                if (ImGui::MenuItem("Dummy Decap Body", NULL, &g_world_dummy_decap_body)) {
+                    g_world_dummy_decap_reset = true;
+                    g_world_marked_hold_end[kWorldDummyDecapSlot] = true;
+                    WorldMarkedRestart();
+                }
+                if (ImGui::BeginMenu("Marked Tab Lanes")) {
+                    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
+                        ImGui::PushID(slot);
+                        char label[64];
+                        if (slot == kWorldDummyDecapSlot)
+                            snprintf(label, sizeof(label), "Dummy Body Hold Final Frame");
+                        else
+                            snprintf(label, sizeof(label), "Slot %d Hold Final Frame", slot + 1);
+                        if (ImGui::MenuItem(label, NULL, &g_world_marked_hold_end[slot])) {
+                            WorldMarkedRestart();
+                        }
+                        bool *mirror = WorldMarkedMirrorFlag(slot);
+                        if (mirror) {
+                            if (slot == kWorldDummyDecapSlot)
+                                snprintf(label, sizeof(label), "Dummy Body Mirror");
+                            else
+                                snprintf(label, sizeof(label), "Slot %d Mirror", slot + 1);
+                            ImGui::MenuItem(label, NULL, mirror);
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndMenu();
+                }
                 ImGui::SetNextItemWidth(80);
                 ImGui::InputInt("World W",      &g_world_w, 0, 0);
                 ImGui::SetNextItemWidth(80);
@@ -10721,6 +14517,7 @@ void imgui_overlay_render(void)
             }
             ImGui::Separator();
             if (ImGui::MenuItem("MK2 Hitboxes (MKSTK.ASM)...")) g_show_mk2 = true;
+            if (ImGui::MenuItem("MK2 Fatality Lab...")) g_show_mk2_fatality = true;
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
@@ -10762,19 +14559,47 @@ void imgui_overlay_render(void)
     float work_h = sh - work_y;
 
     /* ---- Sync Palette State ---- */
-    static int last_ilselected = -1;
-    static int last_plselected = -1;
-    static void* last_pal_p = NULL;
+    static Document *last_palette_doc = NULL;
+    static int last_ilselected = -2;
+    static int last_plselected = -2;
+    static void *last_pal_p = (void *)-1;
+    static unsigned int last_palcnt = ~0u;
+    static unsigned int last_palette_sync_serial = 0;
 
-    if (g_doc->ilselected != last_ilselected || g_doc->pal_p != last_pal_p) {
+    bool document_changed = g_doc != last_palette_doc;
+    bool palette_head_changed = g_doc->pal_p != last_pal_p;
+    bool palette_count_changed = g_doc->palcnt != last_palcnt;
+    bool palette_sync_forced = g_palette_sync_serial != last_palette_sync_serial;
+    bool palette_list_changed =
+        document_changed ||
+        palette_head_changed ||
+        palette_count_changed ||
+        palette_sync_forced;
+    bool image_selection_changed = g_doc->ilselected != last_ilselected;
+
+    if (palette_list_changed || image_selection_changed) {
+        last_palette_doc = g_doc;
         last_ilselected = g_doc->ilselected;
         last_pal_p = g_doc->pal_p;
+        last_palcnt = g_doc->palcnt;
+        last_palette_sync_serial = g_palette_sync_serial;
         IMG* img = get_img(g_doc->ilselected);
-        if (img) g_doc->plselected = img->palnum;
-        last_plselected = -1; /* force palette reapply when g_doc->pal_p changes */
+        bool sync_selection_to_image = document_changed ||
+                                       palette_head_changed ||
+                                       image_selection_changed;
+        if (sync_selection_to_image && img) {
+            if ((unsigned)img->palnum < g_doc->palcnt)
+                g_doc->plselected = img->palnum;
+            else if (g_doc->palcnt == 0)
+                g_doc->plselected = -1;
+            else if (g_doc->plselected < 0 || (unsigned)g_doc->plselected >= g_doc->palcnt)
+                g_doc->plselected = (int)g_doc->palcnt - 1;
+        } else if (g_doc->plselected < 0 || (unsigned)g_doc->plselected >= g_doc->palcnt) {
+            g_doc->plselected = g_doc->palcnt ? (int)g_doc->palcnt - 1 : -1;
+        }
     }
 
-    if (g_doc->plselected != last_plselected) {
+    if (palette_list_changed || g_doc->plselected != last_plselected) {
         last_plselected = g_doc->plselected;
         ApplyPalette(g_doc->plselected);
         g_img_tex_idx = -2; /* Force texture rebuild to use new palette */
@@ -11080,6 +14905,8 @@ void imgui_overlay_render(void)
         if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
             float list_h = panel_h * 0.30f;
             if (ImGui::BeginListBox("##imglist", ImVec2(-1, list_h))) {
+                if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    g_palette_nav = false;
                 /* Auto-scroll: when g_doc->ilselected changes (typically via Up/Down
                    keyboard nav, but also Prev/Next-Marked jumps or programmatic
                    selection), make sure the selected row is visible. Without
@@ -11173,7 +15000,9 @@ void imgui_overlay_render(void)
                             g_restore_msg_timer = 4.0f;
                             if (n > 0) g_zoom_reset = true;
                         }
-                        if (ImGui::MenuItem("Delete"))        DeleteImage(g_doc->ilselected);
+                        if (ImGui::MenuItem("Delete"))        RequestDeleteImage(g_doc->ilselected);
+                        if (ImGui::MenuItem("Delete Marked", NULL, false, CountMarkedImages() > 0))
+                            RequestDeleteMarkedImages();
                         ImGui::Separator();
                         if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
                         if (ImGui::MenuItem("Set Palette"))   SetPaletteOfSelected();
@@ -11466,8 +15295,22 @@ void imgui_overlay_render(void)
             }
             if (g_doc->ilselected >= 0 && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Remove transparent padding from selected sprite");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Del##img")) RequestDeleteImage(g_doc->ilselected);
+            if (g_doc->ilselected >= 0 && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Delete selected sprite (Del)");
             if (g_doc->ilselected < 0) ImGui::EndDisabled();
 
+            if (g_doc->ilselected < 0) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Copy+##img")) CopySelectionToNewImage();
+            if (g_doc->ilselected >= 0 && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Copy selection, or the whole sprite, into a new sprite (Ctrl+Shift+C)");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Cut+##img")) CutSelectionToNewImage();
+            if (g_doc->ilselected >= 0 && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Cut selection, or the whole sprite, into a new sprite (Ctrl+Shift+X)");
+            ImGui::SameLine();
+            if (g_doc->ilselected < 0) ImGui::EndDisabled();
             if (!g_clipboard.valid) ImGui::BeginDisabled();
             if (ImGui::SmallButton("Paste+##img")) PasteClipboardAsNewImage();
             if (g_clipboard.valid && ImGui::IsItemHovered())
@@ -11478,11 +15321,15 @@ void imgui_overlay_render(void)
             if (ImGui::SmallButton("Bulk Rename##img")) OpenRenameMarkedImages();
             if (n_marked_imgs > 0 && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Rename marked sprites as Base1, Base2, Base3...");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Del Marked##img")) RequestDeleteMarkedImages();
+            if (n_marked_imgs > 0 && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Delete marked sprites");
             if (n_marked_imgs == 0) ImGui::EndDisabled();
 
             bool can_break_subframes = (n_marked_imgs > 0 || g_doc->ilselected >= 0);
             if (!can_break_subframes) ImGui::BeginDisabled();
-            if (ImGui::SmallButton("Break Sub##img")) g_show_auto_chop = true;
+            if (ImGui::SmallButton("Break Sub##img")) OpenAutoChopDialog();
             if (can_break_subframes && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Break marked sprites, or selected sprite if none are marked, into A/B/C subframes");
             if (!can_break_subframes) ImGui::EndDisabled();
@@ -11493,6 +15340,8 @@ void imgui_overlay_render(void)
         if (ImGui::CollapsingHeader("Palettes", ImGuiTreeNodeFlags_DefaultOpen)) {
             float list_h = panel_h * 0.22f;
             if (ImGui::BeginListBox("##pallist", ImVec2(-1, list_h))) {
+                if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    g_palette_nav = true;
                 for (int i = 0; i < n_pals; i++) {
                     PAL *pal = get_pal(i);
                     if (!pal) break;
@@ -11519,6 +15368,7 @@ void imgui_overlay_render(void)
                         if (ImGui::MenuItem("Set for Image",         "]"))       SetPaletteOfSelected();
                         if (ImGui::MenuItem("Set for Marked Images", "["))       SetPaletteOfMarked();
                         if (ImGui::MenuItem("Merge Marked into Selected", "*"))  MergeMarkedPalettes();
+                        if (ImGui::MenuItem("Preview Merge"))                    OpenPaletteMergePreview();
                         ImGui::Separator();
                         if (ImGui::MenuItem("Clean Up Palette")) CleanupSelectedPalette();
                         if (ImGui::MenuItem("Clean Copy Palette")) CreateCleanedPaletteCopy();
@@ -11560,6 +15410,10 @@ void imgui_overlay_render(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank 256-color palette");
 
             if (ImGui::SmallButton("Merge"))     MergeMarkedPalettes();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Merge marked palettes into selected palette");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Prev"))      OpenPaletteMergePreview();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preview marked-palette merge before applying it");
             ImGui::SameLine();
             if (ImGui::SmallButton("Dup"))       DuplicatePalette();
             ImGui::SameLine();
@@ -11655,11 +15509,50 @@ void imgui_overlay_render(void)
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img) {
                 int ax = (short)img->anix, ay = (short)img->aniy;
-                int ax2 = (short)img->anix2, ay2 = (short)img->aniy2;
+                int ax2 = (short)img->anix2, ay2 = (short)img->aniy2, az2 = (short)img->aniz2;
                 if (AnimPointSliderInt("X1##ptx",  &ax,  -1024, 1024)) { undo_push(); img->anix  = (unsigned short)(short)ax;  }
                 if (AnimPointSliderInt("Y1##pty",  &ay,  -1024, 1024)) { undo_push(); img->aniy  = (unsigned short)(short)ay;  }
-                if (AnimPointSliderInt("X2##ptx2", &ax2, -1024, 1024)) { undo_push(); img->anix2 = (unsigned short)(short)ax2; }
-                if (AnimPointSliderInt("Y2##pty2", &ay2, -1024, 1024)) { undo_push(); img->aniy2 = (unsigned short)(short)ay2; }
+                if (AnimPointSliderInt("X2##ptx2", &ax2, -1024, 1024)) {
+                    undo_push();
+                    activate_secondary_anipoint(img);
+                    img->anix2 = (unsigned short)(short)ax2;
+                }
+                if (AnimPointSliderInt("Y2##pty2", &ay2, -1024, 1024)) {
+                    undo_push();
+                    activate_secondary_anipoint(img);
+                    img->aniy2 = (unsigned short)(short)ay2;
+                }
+                if (AnimPointSliderInt("AZ2##ptz2", &az2, -1024, 1024)) {
+                    undo_push();
+                    if (az2 == -1) {
+                        clear_secondary_anipoint(img);
+                    } else {
+                        activate_secondary_anipoint(img);
+                        img->aniz2 = (unsigned short)(short)az2;
+                    }
+                }
+
+                ImGui::Spacing();
+                if (ImGui::Button("Default Center", ImVec2(-1, 0))) {
+                    undo_push();
+                    default_anipoints_to_center(img);
+                    g_img_tex_idx = -2;
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Centered anim point for %s and cleared secondary.", img->n_s);
+                    g_restore_msg_timer = 3.0f;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Sets X1/Y1 to the sprite center and clears X2/Y2/AZ2 to -1.");
+
+                bool had_second_point = secondary_anipoint_in_use(img);
+                if (!had_second_point) ImGui::BeginDisabled();
+                if (ImGui::Button("Clear 2nd Point", ImVec2(-1, 0))) {
+                    undo_push();
+                    clear_secondary_anipoint(img);
+                }
+                if (had_second_point && ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Clears X2/Y2/AZ2. AZ2 becomes -1.");
+                if (!had_second_point) ImGui::EndDisabled();
 
                 ImGui::Spacing();
                 if (ImGui::Button("Push to Open Tabs", ImVec2(-1, 0))) {
@@ -11865,6 +15758,11 @@ void imgui_overlay_render(void)
                 ImGui::SetTooltip("Use the current swatch as the target-palette color,\n"
                                   "but keep selected pixels visually unchanged on other palettes.");
             ImGui::SameLine();
+            if (ImGui::SmallButton("Remap Similar")) ApplySelectionRemapToMatchingSprites();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Use the current selection as a sample, then remap likely\n"
+                                  "matching regions in every same-palette sprite to the\n"
+                                  "current swatch index.");
             if (ImGui::SmallButton("Split Overlay")) SplitSelectionToOverlayFrame(true);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Move selected opaque pixels into a new transparent overlay frame.");
@@ -12311,7 +16209,9 @@ void imgui_overlay_render(void)
                     rotate_button_hovered = true;
                     rotate_button_hover_idx = i;
                     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-                    ImGui::SetTooltip(i == 0 ? "Rotate 90 Counterclockwise" : "Rotate 90 Clockwise");
+                    ImGui::SetTooltip(i == 0
+                        ? "Rotate 90 Counterclockwise (preserve anim points)"
+                        : "Rotate 90 Clockwise (preserve anim points)");
                     widget_consumed_click = true;
                     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         TransformSelectedSprite(i == 0 ? SpriteTransformOp::Rotate90CCW
@@ -12394,7 +16294,7 @@ void imgui_overlay_render(void)
                         ImVec2 a1(img_pos.x + (short)cimg->anix * sx, img_pos.y + (short)cimg->aniy * sy);
                         ImVec2 da1 = mouse - a1;
                         if (da1.x*da1.x + da1.y*da1.y < 10*10) over_anipoint = true;
-                        if (!over_anipoint && (short)cimg->anix2 >= 0 && (short)cimg->aniy2 >= 0) {
+                        if (!over_anipoint && secondary_anipoint_in_use(cimg)) {
                             ImVec2 a2(img_pos.x + (short)cimg->anix2 * sx, img_pos.y + (short)cimg->aniy2 * sy);
                             ImVec2 da2 = mouse - a2;
                             if (da2.x*da2.x + da2.y*da2.y < 10*10) over_anipoint = true;
@@ -12612,7 +16512,7 @@ void imgui_overlay_render(void)
                     if (prev) {
                         ImVec2 sp(img_pos.x + (short)prev->anix * sx, img_pos.y + (short)prev->aniy * sy);
                         draw_crosshair(sp, IM_COL32(160, 160, 160, 180), 12.f, 1.f);
-                        if ((short)prev->anix2 >= 0 && (short)prev->aniy2 >= 0) {
+                        if (secondary_anipoint_in_use(prev)) {
                             ImVec2 sp2(img_pos.x + (short)prev->anix2 * sx, img_pos.y + (short)prev->aniy2 * sy);
                             draw_crosshair(sp2, IM_COL32(160, 160, 160, 140), 9.f, 1.f);
                         }
@@ -12637,7 +16537,7 @@ void imgui_overlay_render(void)
 
                 /* Secondary anipoint sentinel is signed -1; cast first so
                    (-1, -1) doesn't read as 0xFFFF and emit a phantom line. */
-                if ((short)img->anix2 >= 0 && (short)img->aniy2 >= 0) {
+                if (secondary_anipoint_in_use(img)) {
                     ImVec2 s2(img_pos.x + (short)img->anix2 * sx, img_pos.y + (short)img->aniy2 * sy);
                     ImVec2 d2 = mouse - s2;
                     bool h2 = (d2.x*d2.x + d2.y*d2.y) < 10*10;
@@ -12653,6 +16553,7 @@ void imgui_overlay_render(void)
                         int ny = (int)((mouse.y - img_pos.y) / sy);
                         img->anix2 = (unsigned short)(short)nx;
                         img->aniy2 = (unsigned short)(short)ny;
+                        if ((short)img->aniz2 == -1) img->aniz2 = 0;
                         widget_consumed_click = true;
                     } else if (!mbdn && g_anipoint_drag2) { g_anipoint_drag2 = false; undo_push(); }
                 }
@@ -13569,10 +17470,19 @@ void imgui_overlay_render(void)
 
     /* Drop stale frame indices if the underlying image set shrank or was reloaded */
     if (g_doc->imgcnt != g_timeline_built_for_imgcnt) {
-        g_timeline_frames.erase(
-            std::remove_if(g_timeline_frames.begin(), g_timeline_frames.end(),
-                [](int idx){ return idx < 0 || (unsigned int)idx >= g_doc->imgcnt; }),
-            g_timeline_frames.end());
+        EnsureTimelineHolds();
+        std::vector<int> valid_frames;
+        std::vector<int> valid_holds;
+        valid_frames.reserve(g_timeline_frames.size());
+        valid_holds.reserve(g_timeline_holds.size());
+        for (size_t i = 0; i < g_timeline_frames.size(); i++) {
+            int idx = g_timeline_frames[i];
+            if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt) continue;
+            valid_frames.push_back(idx);
+            valid_holds.push_back(g_timeline_holds[i]);
+        }
+        g_timeline_frames.swap(valid_frames);
+        g_timeline_holds.swap(valid_holds);
         /* Free thumbnail textures past the new end. */
         for (size_t i = g_doc->imgcnt; i < g_thumb_cache.size(); i++) {
             if (g_thumb_cache[i].tex) SDL_DestroyTexture(g_thumb_cache[i].tex);
@@ -13586,10 +17496,10 @@ void imgui_overlay_render(void)
     if (g_timeline_frames.empty() && g_doc->imgcnt > 0) {
         for (unsigned int i = 0; i < g_doc->imgcnt; i++) {
             IMG *p = get_img(i);
-            if (p && (p->flags & 1)) g_timeline_frames.push_back(i);
+            if (p && (p->flags & 1)) TimelinePushFrame((int)i);
         }
         if (g_timeline_frames.empty()) {
-            for (unsigned int i = 0; i < g_doc->imgcnt; i++) g_timeline_frames.push_back(i);
+            for (unsigned int i = 0; i < g_doc->imgcnt; i++) TimelinePushFrame((int)i);
         }
     }
 
@@ -13598,8 +17508,11 @@ void imgui_overlay_render(void)
     
     /* Playback logic */
     if (g_is_playing && !g_timeline_frames.empty()) {
+        EnsureTimelineHolds();
         g_play_timer += ImGui::GetIO().DeltaTime;
-        if (g_play_timer >= 1.0f / g_play_speed) {
+        float frame_seconds = (float)TimelineHoldAt(g_timeline_play_idx) / g_play_speed;
+        if (frame_seconds < 0.001f) frame_seconds = 0.001f;
+        if (g_play_timer >= frame_seconds) {
             g_play_timer = 0.0f;
             int n = (int)g_timeline_frames.size();
             int step_delta = 1;
@@ -13667,10 +17580,19 @@ void imgui_overlay_render(void)
         ImGui::PushItemWidth(120);
         ImGui::SliderFloat("FPS", &g_play_speed, 1.0f, 60.0f, "%.1f");
         ImGui::PopItemWidth();
+
+        ImGui::SameLine();
+        int cur_hold = TimelineHoldAt(g_timeline_play_idx);
+        ImGui::PushItemWidth(72);
+        if (ImGui::InputInt("Hold", &cur_hold, 1, 4))
+            TimelineSetHoldAt(g_timeline_play_idx, cur_hold);
+        ImGui::PopItemWidth();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Base ticks to wait before this frame advances. At 12 FPS, Hold 3 lasts 0.25 seconds.");
         
         ImGui::SameLine();
         if (ImGui::Button("Reset Sequence")) {
-            g_timeline_frames.clear();
+            TimelineClearFrames();
             ClearTimelineCompositeSelection();
         }
         ImGui::SameLine();
@@ -13690,6 +17612,26 @@ void imgui_overlay_render(void)
             DrawTimelineCompositeLockToggle(0, "Back");
             ImGui::SameLine();
             DrawTimelineCompositeLockToggle(1, "Front");
+            ImGui::SameLine();
+            bool can_auto_anipts = TimelineAnyCompositeLocked() &&
+                                   g_timeline_frames.size() > 1;
+            if (!can_auto_anipts) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Auto Anipts")) {
+                int changed = AutoCalculateTimelineAnipointsFromLock();
+                if (changed > 0) {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Auto-calculated anim points for %d timeline frame%s.",
+                             changed, changed == 1 ? "" : "s");
+                } else {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Timeline anim points already match sprite sizes.");
+                }
+                g_restore_msg_timer = 4.0f;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Uses the locked frame as the anchor, then offsets each neighboring frame by half the sprite size difference.");
+            }
+            if (!can_auto_anipts) ImGui::EndDisabled();
         }
 
         /* Draw a horizontal scrolling list of frames with drag & drop. Buttons
@@ -13740,8 +17682,20 @@ void imgui_overlay_render(void)
                     item_min = ImGui::GetItemRectMin();
                     item_max = ImGui::GetItemRectMax();
                 }
+                int frame_hold = TimelineHoldAt((int)i);
+                if (frame_hold > 1) {
+                    char hold_label[16];
+                    snprintf(hold_label, sizeof(hold_label), "x%d", frame_hold);
+                    ImDrawList *fdl = ImGui::GetWindowDrawList();
+                    ImVec2 hold_sz = ImGui::CalcTextSize(hold_label);
+                    ImVec2 hold_min(item_max.x - hold_sz.x - 8.0f, item_max.y - hold_sz.y - 6.0f);
+                    ImVec2 hold_max(item_max.x - 2.0f, item_max.y - 2.0f);
+                    fdl->AddRectFilled(hold_min, hold_max, IM_COL32(0, 0, 0, 185), 2.0f);
+                    fdl->AddText(ImVec2(hold_min.x + 3.0f, hold_min.y + 1.0f),
+                                 IM_COL32(255, 235, 130, 255), hold_label);
+                }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Ctrl-click two frames to pair them.\nPlay or Left/Right advances both positions together.\nIn the canvas, drag an unlocked sprite to adjust its anipoint.");
+                    ImGui::SetTooltip("Ctrl-click two frames to pair them.\nPlay or Left/Right advances both positions together.\nHold: x%d", frame_hold);
                 }
                 if (composite_slot >= 0) {
                     ImDrawList *fdl = ImGui::GetWindowDrawList();
@@ -13775,14 +17729,7 @@ void imgui_overlay_render(void)
                     if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TIMELINE_FRAME")) {
                         int src_idx = *(const int*)payload->Data;
                         int dst_idx = (int)i;
-                        if (src_idx != dst_idx) {
-                            int val = g_timeline_frames[src_idx];
-                            g_timeline_frames.erase(g_timeline_frames.begin() + src_idx);
-                            g_timeline_frames.insert(g_timeline_frames.begin() + dst_idx, val);
-                            if (g_timeline_play_idx == src_idx) g_timeline_play_idx = dst_idx;
-                            else if (src_idx < g_timeline_play_idx && dst_idx >= g_timeline_play_idx) g_timeline_play_idx--;
-                            else if (src_idx > g_timeline_play_idx && dst_idx <= g_timeline_play_idx) g_timeline_play_idx++;
-                        }
+                        TimelineMoveFrame(src_idx, dst_idx);
                     }
                     ImGui::EndDragDropTarget();
                 }
@@ -13811,12 +17758,17 @@ void imgui_overlay_render(void)
         float       gap  = 1.0f;
         float       row_h = sh16 + gap;
         float       col_w = sw16 + gap;
+        BuildSelectedPaletteUsage();
+        PAL        *usage_pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+        int         usage_numc = g_palette_usage_pal_numc;
 
         for (int i = 0; i < 256; i++) {
             int row = i / 16, col = i % 16;
             ImVec2 p0(pos0.x + col * col_w, pos0.y + row * row_h);
             ImVec2 p1(p0.x + sw16, p0.y + sh16);
             SDL_Color c = g_palette[i];
+            bool in_palette = (i < usage_numc);
+            unsigned long long use_count = g_palette_usage_counts[i];
             dl->AddRectFilled(p0, p1, IM_COL32(c.r, c.g, c.b, 255));
             /* Borders: the swatch can have multiple states at once
                (e.g. it's the current color AND in the multi-selection).
@@ -13835,6 +17787,24 @@ void imgui_overlay_render(void)
             /* Isolation badge */
             if (g_isolate_color == i) {
                 dl->AddRect(p0, p1, IM_COL32(255, 0, 255, 255), 0, 0, 2.0f);
+            }
+
+            if (in_palette && i > 0 && use_count == 0) {
+                ImVec2 t0(p1.x - 6.0f, p0.y);
+                ImVec2 t1(p1.x, p0.y);
+                ImVec2 t2(p1.x, p0.y + 6.0f);
+                dl->AddTriangleFilled(t0, t1, t2, IM_COL32(0, 220, 255, 235));
+                dl->AddLine(ImVec2(p0.x + 2.0f, p1.y - 2.0f),
+                            ImVec2(p1.x - 2.0f, p0.y + 2.0f),
+                            IM_COL32(0, 0, 0, 220), 1.25f);
+                dl->AddLine(ImVec2(p0.x + 2.0f, p1.y - 2.0f),
+                            ImVec2(p1.x - 2.0f, p0.y + 2.0f),
+                            IM_COL32(255, 255, 255, 235), 0.75f);
+            } else if (in_palette && i > 0 &&
+                       use_count <= (unsigned long long)g_palette_usage_low_threshold) {
+                ImVec2 dot(p1.x - 3.0f, p0.y + 3.0f);
+                dl->AddCircleFilled(dot, 2.6f, IM_COL32(0, 0, 0, 210), 8);
+                dl->AddCircleFilled(dot, 1.8f, IM_COL32(255, 185, 40, 255), 8);
             }
 
             ImGui::SetCursorScreenPos(p0);
@@ -13890,8 +17860,35 @@ void imgui_overlay_render(void)
             if (ImGui::IsItemHovered()) {
                 ImGui::BeginTooltip();
                 ImGui::Text("Palette index %d", i);
-                if (i == 0)
+                if (!in_palette) {
+                    ImGui::TextDisabled("Outside selected palette (%d colors)", usage_numc);
+                } else if (i == 0) {
                     ImGui::TextDisabled("Index 0 pixels are transparent");
+                    ImGui::Text("Usage: %llu pixel%s",
+                                (unsigned long long)use_count,
+                                use_count == 1 ? "" : "s");
+                } else {
+                    if (use_count == 0) {
+                        ImGui::TextColored(ImVec4(0.35f, 0.90f, 1.0f, 1.0f),
+                                           "Unused by sprites using this palette");
+                    } else {
+                        ImGui::Text("Usage: %llu pixel%s across %d sprite%s",
+                                    (unsigned long long)use_count,
+                                    use_count == 1 ? "" : "s",
+                                    g_palette_usage_img_count,
+                                    g_palette_usage_img_count == 1 ? "" : "s");
+                        if (use_count <= (unsigned long long)g_palette_usage_low_threshold) {
+                            ImGui::TextColored(ImVec4(1.0f, 0.74f, 0.24f, 1.0f),
+                                               "Low-use candidate");
+                        }
+                    }
+                    int nearest_dist = 0;
+                    int nearest = FindNearestUsedPaletteSlotForUsage(i, &nearest_dist);
+                    if (nearest >= 0) {
+                        ImGui::TextDisabled("Nearest used color: #%d (distance %.1f)",
+                                            nearest, sqrt((double)nearest_dist));
+                    }
+                }
                 ImGui::TextDisabled("Right-click: #0 relocation tools");
                 ImGui::TextDisabled("Alt+click: isolate this color in the canvas");
                 ImGui::TextDisabled("Ctrl/Shift+click: multi-select — selected swatches stay lit, rest dim on canvas");
@@ -13903,6 +17900,23 @@ void imgui_overlay_render(void)
         ImGui::SetCursorScreenPos(ImVec2(pos0.x + 16 * col_w + 8, pos0.y + 4));
         SDL_Color &c = g_palette[g_sel_color];
         ImGui::Text("#%d  R:%d G:%d B:%d", g_sel_color, c.r, c.g, c.b);
+        int candidate_colors = usage_numc > 0 ? usage_numc - 1 : 0;
+        ImGui::TextDisabled("Pal %d %.9s: %d/%d used, %d free, %d low<=%d",
+                            g_doc->plselected,
+                            usage_pal ? usage_pal->n_s : "",
+                            g_palette_usage_used_colors,
+                            candidate_colors,
+                            g_palette_usage_unused_colors,
+                            g_palette_usage_low_colors,
+                            g_palette_usage_low_threshold);
+        if (g_sel_color >= 0 && g_sel_color < 256 && g_sel_color < usage_numc) {
+            unsigned long long sel_use = g_palette_usage_counts[g_sel_color];
+            ImGui::TextDisabled("#%d use: %llu px in %d sprite%s",
+                                g_sel_color,
+                                (unsigned long long)sel_use,
+                                g_palette_usage_img_count,
+                                g_palette_usage_img_count == 1 ? "" : "s");
+        }
             }
             ImGui::PopStyleVar();
     ImGui::End();
@@ -13919,11 +17933,15 @@ void imgui_overlay_render(void)
 
     DrawMk2HitboxWindow();
 
+    DrawMk2FatalityWindow();
+
     DrawAutoChopDialog();
 
     DrawResizeSpriteDialog();
 
     DrawBulkRestoreRegexDialog();
+
+    DrawDeleteImagesConfirm();
 
     DrawDebugInfoModal();
 
@@ -13937,6 +17955,8 @@ void imgui_overlay_render(void)
     DrawUnsavedChangesConfirm();
 
     DrawMk2UnsavedChangesConfirm();
+
+    DrawMk2FatalityUnsavedChangesConfirm();
 
     DrawHelpModal();
 

@@ -938,6 +938,63 @@ int ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches)
 }
 
 /* ---- Auto-Sprite Chopper ---- */
+static bool img_secondary_anipoint_in_use(const IMG *img)
+{
+    if (!img) return false;
+    if ((short)img->anix2 < 0 || (short)img->aniy2 < 0) return false;
+    return (short)img->aniz2 != -1;
+}
+
+static void img_clear_secondary_anipoint(IMG *img)
+{
+    if (!img) return;
+    img->anix2 = (unsigned short)-1;
+    img->aniy2 = (unsigned short)-1;
+    img->aniz2 = (unsigned short)-1;
+}
+
+static size_t img_name_len15(const char *s)
+{
+    size_t n = 0;
+    while (n < 15 && s && s[n] != '\0') n++;
+    return n;
+}
+
+static std::string shorten_parent_name_for_suffix(const char *name,
+                                                  size_t suffix_len)
+{
+    if (suffix_len >= 15) suffix_len = 14;
+    std::string base(name ? name : "", img_name_len15(name));
+    if (base.empty()) base = "SPRITE";
+
+    while (base.size() + suffix_len > 15 && !base.empty()) {
+        size_t digit_start = base.size();
+        while (digit_start > 0 &&
+               base[digit_start - 1] >= '0' &&
+               base[digit_start - 1] <= '9') {
+            digit_start--;
+        }
+
+        size_t remove_pos = std::string::npos;
+        if (digit_start < base.size() && digit_start > 0) {
+            size_t before_digits = digit_start - 1;
+            if ((base[before_digits] >= 'A' && base[before_digits] <= 'Z') ||
+                (base[before_digits] >= 'a' && base[before_digits] <= 'z')) {
+                remove_pos = before_digits;
+            }
+        }
+
+        if (remove_pos == std::string::npos)
+            remove_pos = base.size() - 1;
+        base.erase(remove_pos, 1);
+    }
+
+    if (base.empty()) base = "SPRITE";
+    if (base.size() > 15 - suffix_len)
+        base.resize(15 - suffix_len);
+    return base;
+}
+
 int ChopMarkedImages(int grid_w, int grid_h, bool trim)
 {
     if (grid_w <= 0 || grid_h <= 0) return 0;
@@ -958,6 +1015,12 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
 
     for (IMG *master : targets) {
         if (!master->data_p || master->w == 0 || master->h == 0) continue;
+
+        std::string child_base = shorten_parent_name_for_suffix(master->n_s, 1);
+        if (child_base != std::string(master->n_s, img_name_len15(master->n_s))) {
+            strncpy(master->n_s, child_base.c_str(), 15);
+            master->n_s[15] = '\0';
+        }
 
         int rows = (master->h + grid_h - 1) / grid_h;
         int cols = (master->w + grid_w - 1) / grid_w;
@@ -1034,9 +1097,9 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
                 }
                 piece_no++;
                 size_t suf_len = strlen(suffix);
-                size_t budget = (suf_len < 15) ? (15 - suf_len) : 0;
-                std::string base_name = master->n_s;
-                if (base_name.length() > budget) base_name = base_name.substr(0, budget);
+                std::string base_name = child_base;
+                if (base_name.length() + suf_len > 15)
+                    base_name = shorten_parent_name_for_suffix(child_base.c_str(), suf_len);
                 base_name += suffix;
                 strncpy(new_img->n_s, base_name.c_str(), 15);
                 new_img->n_s[15] = '\0';
@@ -1160,7 +1223,7 @@ static int CropOneImageToContent(IMG *img, bool apply)
     img->h = (unsigned short)new_h;
     img->anix = (unsigned short)((short)img->anix - (short)min_x);
     img->aniy = (unsigned short)((short)img->aniy - (short)min_y);
-    if (img->anix2 != 0 || img->aniy2 != 0 || img->aniz2 != 0) {
+    if (img_secondary_anipoint_in_use(img)) {
         img->anix2 = (unsigned short)((short)img->anix2 - (short)min_x);
         img->aniy2 = (unsigned short)((short)img->aniy2 - (short)min_y);
     }
@@ -1255,7 +1318,7 @@ int MirrorMarkedAnipointsToReverse(void)
         if (!(p->flags & 1)) continue;
 
         unsigned short mx1 = mirror_anipoint_x(p->anix, p->w);
-        bool has_second = (p->anix2 != 0 || p->aniy2 != 0 || p->aniz2 != 0);
+        bool has_second = img_secondary_anipoint_in_use(p);
         unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w) : p->anix2;
         if (p->anix != mx1 || p->anix2 != mx2) {
             any_change = true;
@@ -1270,7 +1333,7 @@ int MirrorMarkedAnipointsToReverse(void)
         if (!(p->flags & 1)) continue;
 
         unsigned short mx1 = mirror_anipoint_x(p->anix, p->w);
-        bool has_second = (p->anix2 != 0 || p->aniy2 != 0 || p->aniz2 != 0);
+        bool has_second = img_secondary_anipoint_in_use(p);
         unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w) : p->anix2;
         if (p->anix == mx1 && p->anix2 == mx2) continue;
 
@@ -1783,7 +1846,7 @@ void LoadTga(const char *filepath)
     img->palnum = (unsigned short)g_doc->palcnt;
     img->flags  = 0;
     img->anix   = 0; img->aniy  = 0;
-    img->anix2  = 0; img->aniy2 = 0; img->aniz2 = 0;
+    img_clear_secondary_anipoint(img);
     img->pttbl_p = NULL;
     img->opals  = (unsigned short)-1;
 
@@ -1967,7 +2030,7 @@ void LoadLbm(const char *filepath)
             if (!loaded_img->data_p) { try_close(); return; }
 
             loaded_img->palnum=(unsigned short)(g_doc->palcnt-1); loaded_img->flags=0;
-            loaded_img->anix=0; loaded_img->aniy=0; loaded_img->anix2=0; loaded_img->aniy2=0; loaded_img->aniz2=0;
+            loaded_img->anix=0; loaded_img->aniy=0; img_clear_secondary_anipoint(loaded_img);
             loaded_img->pttbl_p=NULL; loaded_img->opals=(unsigned short)-1;
             { std::string n=g_doc->fnametmp_s; size_t d=n.find_last_of('.'); if(d!=std::string::npos)n=n.substr(0,d);
               strncpy(loaded_img->n_s,n.c_str(),15); loaded_img->n_s[15]='\0'; }
@@ -2274,7 +2337,7 @@ static int import_rgba_frames_as_images(const char *path, const unsigned char *r
         if (!img) break;
         img->w = (unsigned short)w; img->h = (unsigned short)h;
         img->palnum = pal_idx; img->flags = 0;
-        img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
+        img->anix = 0; img->aniy = 0; img_clear_secondary_anipoint(img);
         img->pttbl_p = NULL; img->opals = (unsigned short)-1;
         img->data_p = PoolAlloc((size_t)stride * h);
         if (!img->data_p) break;
@@ -2535,7 +2598,7 @@ void ImportPng(const char *path)
     if (!img) { stbi_image_free(data); return; }
     img->w = (unsigned short)w; img->h = (unsigned short)h;
     img->palnum = (unsigned short)(g_doc->palcnt - 1); img->flags = 0;
-    img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
+    img->anix = 0; img->aniy = 0; img_clear_secondary_anipoint(img);
     img->pttbl_p = NULL; img->opals = (unsigned short)-1;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
     img->data_p = PoolAlloc((size_t)stride * h);
@@ -2614,7 +2677,7 @@ void ImportPngMatch(const char *path)
     if (!img) { stbi_image_free(data); return; }
     img->w = (unsigned short)w; img->h = (unsigned short)h;
     img->palnum = active_img->palnum; img->flags = 0;
-    img->anix = 0; img->aniy = 0; img->anix2 = 0; img->aniy2 = 0; img->aniz2 = 0;
+    img->anix = 0; img->aniy = 0; img_clear_secondary_anipoint(img);
     img->pttbl_p = NULL; img->opals = (unsigned short)-1;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
     img->data_p = PoolAlloc((size_t)stride * h);

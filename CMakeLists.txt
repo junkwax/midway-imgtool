@@ -62,6 +62,7 @@ set(IMGTOOL_SOURCES
     platform/load2_verify.cpp
     platform/lod_parser.cpp
     platform/mk2_hitbox.cpp
+    platform/mk2_fatality.cpp
     ${PLATFORM_RC}
 )
 

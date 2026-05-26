@@ -8,6 +8,54 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.6.0] — Fatality workspace and palette forensics
+
+Workflow release for editing MK2 fatality source, finding spare palette
+slots, and building multi-actor World View timing drafts.
+
+### MK2 Fatality Lab
+- **Source-backed fatality browser** — new helpers parse MK2 source files for
+  fatality command blocks, input combo tables, and animation labels while
+  preserving the original assembly line buffers for save.
+- **Fatality staging workspace** — staged fatality assets can open attacker and
+  victim IMG sets into marked World View lanes for side-by-side timing work.
+
+### World View
+- **Marked-lane sequence editor** — each marked IMG tab lane can now duplicate
+  or remove sequence entries, edit per-entry delay ticks, and scrub directly
+  to an entry by clicking its thumbnail.
+- **Local anipoint deltas** — sequence entries carry `dAX` / `dAY` offsets, so
+  repeated uses of the same sprite can have different preview anipoints
+  without editing the sprite record itself.
+- **Visibility gates** — `Show@` hides an entry until the selected global tick,
+  useful for actor/object reveals partway through a synced fatality preview.
+- **Richer ASM draft export** — World View ASM export now includes hidden-frame
+  placeholders and aligned `*_local_anipts` tables for local anipoint data.
+
+### Palette Editing
+- **Palette usage indicators** — the active palette strip marks unused nonzero
+  colors and low-use colors across sprites that reference the palette, with
+  tooltips showing counts and nearest used-color candidates.
+- **Similar-region remap** — selected pixels from tools like Magic Wand can be
+  remapped across matching same-palette sprites, helping separate shared
+  regions such as hair and pants without hand-editing every frame.
+- **Palette cleanup on sprite delete** — deleting sprites now removes palettes
+  that are no longer referenced by any remaining sprite and remaps later
+  palette indices safely.
+- **Palette merge preview** — marked-palette merges can be inspected before
+  applying, including source-to-target color mapping and drift.
+
+### Sprite Editing
+- **Hard-stroke remover** — marked sprites can automatically remove thin
+  1-2px high-contrast outline/matte strokes around transparent edges.
+- **Copy/Cut to new sprite** — selected regions can be copied or cut directly
+  into newly created sprites.
+- **Safer secondary anipoints** — imports and resize/mirror helpers now use the
+  proper unused secondary-anipoint sentinel instead of treating zero as
+  missing data.
+- **Subframe name shortening** — auto-chopped child names preserve suffix room
+  more reliably when parent names are near the IMG name-length limit.
+
 ## [v3.5.0] — Palette safety and subframe polish
 
 Follow-up polish for sprite hierarchy display and safer palette operations.
