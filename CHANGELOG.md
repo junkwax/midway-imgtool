@@ -8,6 +8,17 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.6.1] — Palette readout cleanup
+
+Patch release for making the new palette usage information easier to read.
+
+### Palette Editing
+- **Readable 8bpp palette bar** — the bottom palette area now reserves a clear
+  header band for selected color, RGB, usage counts, free colors, low-use
+  counts, and marker legend instead of drawing text over the swatches.
+- **Full 256-color grid fit** — the palette grid now adapts column count and
+  swatch size to show full 8bpp palettes cleanly across window sizes.
+
 ## [v3.6.0] — Fatality workspace and palette forensics
 
 Workflow release for editing MK2 fatality source, finding spare palette

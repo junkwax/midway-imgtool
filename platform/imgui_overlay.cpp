@@ -244,7 +244,7 @@ static void pixel_hist_push_stroke(void) {
 /* ---- Layout constants ---- */
 static const float TOOLBAR_W   = 40.0f;
 static const float PANEL_W     = 280.0f;
-static const float PALETTE_H   = 78.0f;
+static const float PALETTE_H   = 112.0f;
 static const float TIMELINE_H  = 96.0f;
 
 /* ---- Undo system ---- */
@@ -17753,19 +17753,83 @@ void imgui_overlay_render(void)
     {
         ImDrawList *dl   = ImGui::GetWindowDrawList();
         ImVec2      pos0 = ImGui::GetCursorScreenPos();
-        float       sw16 = 14.0f;
-        float       sh16 = 14.0f;
         float       gap  = 1.0f;
-        float       row_h = sh16 + gap;
-        float       col_w = sw16 + gap;
+        float       header_h = 34.0f;
+        int         pal_cols = 16;
+        float       swatch = 7.0f;
+        const int   col_options[] = {64, 48, 32, 16};
+        float       grid_h_avail = PALETTE_H - header_h - 10.0f;
+        float       grid_w_avail = sw - 8.0f;
+        for (int opt : col_options) {
+            int rows = (256 + opt - 1) / opt;
+            float h_fit = floorf((grid_h_avail - gap * (float)(rows - 1)) / (float)rows);
+            float w_fit = floorf((grid_w_avail - gap * (float)(opt - 1)) / (float)opt);
+            float size = h_fit < w_fit ? h_fit : w_fit;
+            if (size > 16.0f) size = 16.0f;
+            if (size >= 7.0f) {
+                pal_cols = opt;
+                swatch = size;
+                break;
+            }
+        }
+        float       row_h = swatch + gap;
+        float       col_w = swatch + gap;
+        ImVec2      grid_pos(pos0.x, pos0.y + header_h);
         BuildSelectedPaletteUsage();
         PAL        *usage_pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
         int         usage_numc = g_palette_usage_pal_numc;
+        int         candidate_colors = usage_numc > 0 ? usage_numc - 1 : 0;
+        SDL_Color  &selc = g_palette[g_sel_color];
+        unsigned long long sel_use =
+            (g_sel_color >= 0 && g_sel_color < 256) ? g_palette_usage_counts[g_sel_color] : 0;
+
+        dl->AddRectFilled(pos0, ImVec2(pos0.x + sw, pos0.y + header_h - 3.0f),
+                          IM_COL32(8, 8, 8, 245));
+        ImGui::SetCursorScreenPos(ImVec2(pos0.x + 6.0f, pos0.y + 1.0f));
+        ImGui::Text("Pal %d %.12s   #%d  R:%d G:%d B:%d",
+                    g_doc->plselected,
+                    usage_pal ? usage_pal->n_s : "",
+                    g_sel_color, selc.r, selc.g, selc.b);
+        if (sw >= 980.0f) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("selected %llu px", (unsigned long long)sel_use);
+            ImGui::SameLine();
+            ImGui::TextDisabled("%d/%d used   %d free   %d low <= %d",
+                                g_palette_usage_used_colors,
+                                candidate_colors,
+                                g_palette_usage_unused_colors,
+                                g_palette_usage_low_colors,
+                                g_palette_usage_low_threshold);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(pos0.x + 6.0f, pos0.y + 18.0f));
+        if (sw < 980.0f) {
+            ImGui::TextDisabled("selected %llu px   %d/%d used   %d free   %d low <= %d",
+                                (unsigned long long)sel_use,
+                                g_palette_usage_used_colors,
+                                candidate_colors,
+                                g_palette_usage_unused_colors,
+                                g_palette_usage_low_colors,
+                                g_palette_usage_low_threshold);
+        } else {
+            ImVec2 legend_pos = ImGui::GetCursorScreenPos();
+            dl->AddTriangleFilled(ImVec2(legend_pos.x, legend_pos.y + 2.0f),
+                                  ImVec2(legend_pos.x + 8.0f, legend_pos.y + 2.0f),
+                                  ImVec2(legend_pos.x + 8.0f, legend_pos.y + 10.0f),
+                                  IM_COL32(0, 220, 255, 235));
+            ImGui::SetCursorScreenPos(ImVec2(legend_pos.x + 14.0f, legend_pos.y));
+            ImGui::TextDisabled("unused");
+            ImGui::SameLine();
+            ImVec2 dot_pos = ImGui::GetCursorScreenPos();
+            dl->AddCircleFilled(ImVec2(dot_pos.x + 5.0f, dot_pos.y + 7.0f),
+                                3.0f, IM_COL32(255, 185, 40, 255), 8);
+            ImGui::SetCursorScreenPos(ImVec2(dot_pos.x + 14.0f, dot_pos.y));
+            ImGui::TextDisabled("low use");
+        }
 
         for (int i = 0; i < 256; i++) {
-            int row = i / 16, col = i % 16;
-            ImVec2 p0(pos0.x + col * col_w, pos0.y + row * row_h);
-            ImVec2 p1(p0.x + sw16, p0.y + sh16);
+            int row = i / pal_cols, col = i % pal_cols;
+            ImVec2 p0(grid_pos.x + col * col_w, grid_pos.y + row * row_h);
+            ImVec2 p1(p0.x + swatch, p0.y + swatch);
             SDL_Color c = g_palette[i];
             bool in_palette = (i < usage_numc);
             unsigned long long use_count = g_palette_usage_counts[i];
@@ -17790,25 +17854,28 @@ void imgui_overlay_render(void)
             }
 
             if (in_palette && i > 0 && use_count == 0) {
-                ImVec2 t0(p1.x - 6.0f, p0.y);
+                float tri = swatch < 10.0f ? 5.0f : 7.0f;
+                ImVec2 t0(p1.x - tri, p0.y);
                 ImVec2 t1(p1.x, p0.y);
-                ImVec2 t2(p1.x, p0.y + 6.0f);
+                ImVec2 t2(p1.x, p0.y + tri);
                 dl->AddTriangleFilled(t0, t1, t2, IM_COL32(0, 220, 255, 235));
-                dl->AddLine(ImVec2(p0.x + 2.0f, p1.y - 2.0f),
-                            ImVec2(p1.x - 2.0f, p0.y + 2.0f),
+                float inset = swatch < 10.0f ? 1.0f : 2.0f;
+                dl->AddLine(ImVec2(p0.x + inset, p1.y - inset),
+                            ImVec2(p1.x - inset, p0.y + inset),
                             IM_COL32(0, 0, 0, 220), 1.25f);
-                dl->AddLine(ImVec2(p0.x + 2.0f, p1.y - 2.0f),
-                            ImVec2(p1.x - 2.0f, p0.y + 2.0f),
+                dl->AddLine(ImVec2(p0.x + inset, p1.y - inset),
+                            ImVec2(p1.x - inset, p0.y + inset),
                             IM_COL32(255, 255, 255, 235), 0.75f);
             } else if (in_palette && i > 0 &&
                        use_count <= (unsigned long long)g_palette_usage_low_threshold) {
-                ImVec2 dot(p1.x - 3.0f, p0.y + 3.0f);
-                dl->AddCircleFilled(dot, 2.6f, IM_COL32(0, 0, 0, 210), 8);
-                dl->AddCircleFilled(dot, 1.8f, IM_COL32(255, 185, 40, 255), 8);
+                float r = swatch < 10.0f ? 1.6f : 2.2f;
+                ImVec2 dot(p1.x - r - 1.0f, p0.y + r + 1.0f);
+                dl->AddCircleFilled(dot, r + 0.7f, IM_COL32(0, 0, 0, 210), 8);
+                dl->AddCircleFilled(dot, r, IM_COL32(255, 185, 40, 255), 8);
             }
 
             ImGui::SetCursorScreenPos(p0);
-            ImGui::InvisibleButton(("##sw" + std::to_string(i)).c_str(), ImVec2(sw16, sh16));
+            ImGui::InvisibleButton(("##sw" + std::to_string(i)).c_str(), ImVec2(swatch, swatch));
             if (ImGui::IsItemClicked()) {
                 ImGuiIO &cio = ImGui::GetIO();
                 if (cio.KeyAlt) {
@@ -17894,28 +17961,6 @@ void imgui_overlay_render(void)
                 ImGui::TextDisabled("Ctrl/Shift+click: multi-select — selected swatches stay lit, rest dim on canvas");
                 ImGui::EndTooltip();
             }
-        }
-
-        /* Selected color index + RGB */
-        ImGui::SetCursorScreenPos(ImVec2(pos0.x + 16 * col_w + 8, pos0.y + 4));
-        SDL_Color &c = g_palette[g_sel_color];
-        ImGui::Text("#%d  R:%d G:%d B:%d", g_sel_color, c.r, c.g, c.b);
-        int candidate_colors = usage_numc > 0 ? usage_numc - 1 : 0;
-        ImGui::TextDisabled("Pal %d %.9s: %d/%d used, %d free, %d low<=%d",
-                            g_doc->plselected,
-                            usage_pal ? usage_pal->n_s : "",
-                            g_palette_usage_used_colors,
-                            candidate_colors,
-                            g_palette_usage_unused_colors,
-                            g_palette_usage_low_colors,
-                            g_palette_usage_low_threshold);
-        if (g_sel_color >= 0 && g_sel_color < 256 && g_sel_color < usage_numc) {
-            unsigned long long sel_use = g_palette_usage_counts[g_sel_color];
-            ImGui::TextDisabled("#%d use: %llu px in %d sprite%s",
-                                g_sel_color,
-                                (unsigned long long)sel_use,
-                                g_palette_usage_img_count,
-                                g_palette_usage_img_count == 1 ? "" : "s");
         }
             }
             ImGui::PopStyleVar();
