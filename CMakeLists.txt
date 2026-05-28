@@ -147,13 +147,31 @@ elseif(NOT WIN32)
 endif()
 
 # ---- Tests -----------------------------------------------------------------
+enable_testing()
+add_executable(sprite_sheet_import_test
+    test/sprite_sheet_import_test.cpp
+    platform/img_io.cpp
+    platform/load2_verify.cpp
+    platform/document.cpp
+    platform/globals.c
+)
+target_include_directories(sprite_sheet_import_test PRIVATE platform)
+target_link_libraries(sprite_sheet_import_test PRIVATE SDL2::SDL2)
+if(MSVC)
+    target_compile_options(sprite_sheet_import_test PRIVATE /W3)
+    target_compile_definitions(sprite_sheet_import_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+else()
+    target_compile_definitions(sprite_sheet_import_test PRIVATE SDL_MAIN_HANDLED)
+endif()
+add_test(NAME sprite_sheet_import
+         COMMAND sprite_sheet_import_test)
+
 # mk2_roundtrip_test: load + idempotent round-trip check on a real MKSTK.ASM.
 # Only built when MK2_MKSTK_PATH is set (so a fresh checkout without the mk2
 # source tree doesn't fail to configure). Run after build with:
 #   ctest --output-on-failure
 # or directly:
 #   build\test\Release\mk2_roundtrip_test path\to\MKSTK.ASM
-enable_testing()
 set(MK2_MKSTK_PATH "" CACHE FILEPATH
     "Path to MKSTK.ASM for the mk2_roundtrip_test. Empty disables the test.")
 if(MK2_MKSTK_PATH AND EXISTS "${MK2_MKSTK_PATH}")

@@ -52,6 +52,46 @@ void LoadTga(const char *filepath);
 void LoadLbm(const char *filepath);
 void ImportPng(const char *path);
 void ImportPngMatch(const char *path);
+
+enum SpriteSheetDetectMode {
+    SpriteSheetDetect_Auto = 0,
+    SpriteSheetDetect_Islands = 1,
+};
+
+struct SpriteSheetImportOptions {
+    int  detect_mode;
+    int  background_threshold;
+    int  min_pixels;
+    int  padding;
+    bool crop;
+    char name_prefix[12];
+};
+
+struct SpriteSheetDebugFrame {
+    int x0, y0, x1, y1; /* inclusive source bounds */
+    int pixels;
+    int islands;
+    int row;
+    int frame;
+};
+
+struct SpriteSheetDebugReport {
+    int sheet_w;
+    int sheet_h;
+    int raw_islands;
+    int accepted_frames;
+    int line_rows;
+    int line_cols;
+    std::vector<SpriteSheetDebugFrame> frames;
+};
+
+int ImportSpriteSheetMatch(const char *path, const SpriteSheetImportOptions *options);
+int AnalyzeSpriteSheet(const char *path, const SpriteSheetImportOptions *options,
+                       SpriteSheetDebugReport *report);
+int DebugSpriteSheetImport(const char *path, const char *output_dir,
+                           const SpriteSheetImportOptions *options,
+                           SpriteSheetDebugReport *report);
+
 enum GifBlendMode {
     GifBlend_Normal = 0,
     GifBlend_Dissolve,
@@ -112,5 +152,17 @@ int  AlignAnipointsToMarked(int reference_idx);
  * Uses the same horizontal anchor convention as World View mirroring:
  * mirrored_x = image_width - x. Y/Z values are left unchanged. */
 int  MirrorMarkedAnipointsToReverse(void);
+
+/* Recolor every sprite except source_idx so its opaque pixels use only
+ * palette indices that are present in the source sprite. Each target pixel is
+ * converted through its current palette RGB, matched to the nearest source
+ * sprite color, then the target is assigned to the source palette. Returns
+ * the number of images that would change and optionally reports byte-level
+ * pixel writes through pixels_changed_out. */
+int  PreviewMatchAllSpritesToSourceColors(int source_idx, int *pixels_changed_out);
+
+/* Apply the operation described above. Returns the number of images changed
+ * and optionally reports byte-level pixel writes through pixels_changed_out. */
+int  MatchAllSpritesToSourceColors(int source_idx, int *pixels_changed_out);
 
 #endif /* IMG_IO_H */

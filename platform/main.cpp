@@ -53,6 +53,7 @@ static bool is_headless_command(const char *arg)
          std::strcmp(arg, "--export-irw") == 0 ||
          std::strcmp(arg, "--export-png") == 0 ||
          std::strcmp(arg, "--build-tga") == 0 ||
+         std::strcmp(arg, "--debug-spritesheet") == 0 ||
          std::strcmp(arg, "--build-lod") == 0 ||
          std::strcmp(arg, "--verify-load2") == 0);
 }
@@ -78,6 +79,7 @@ static void print_cli_help(FILE *out, const char *exe)
         "  %s --export-irw <input.img> <output.irw> [options]\n"
         "  %s --export-png <input.img> <output_dir>\n"
         "  %s --build-tga <input.img> <output.tga>\n"
+        "  %s --debug-spritesheet <sheet.png|jpg|tga> <output_dir> [options]\n"
         "  %s --build-lod <manifest.lod> <output.img> [--override-dir=DIR]\n"
         "\n"
         "TBL options:\n"
@@ -96,12 +98,19 @@ static void print_cli_help(FILE *out, const char *exe)
         "  --no-align         disable 16-bit alignment\n"
         "  --base=HEX         ROM base address (default 02000000)\n"
         "\n"
+        "Sprite sheet debug options:\n"
+        "  --background=N     background cutoff, 180..255 (default 245)\n"
+        "  --min-pixels=N     minimum accepted frame pixels (default 160)\n"
+        "  --padding=N        extra transparent padding around crops (default 2)\n"
+        "  --no-crop          keep candidate box padding instead of tight crop\n"
+        "  --prefix=NAME      debug crop naming prefix (default FRAME)\n"
+        "\n"
         "Exit status: 0 on success; non-zero on invalid args, failed loads,\n"
         "or LOAD2 breaking issues.\n",
 #ifdef IMGTOOL_CLI_ONLY
-        exe, exe, exe, exe, exe, exe, exe);
-#else
         exe, exe, exe, exe, exe, exe, exe, exe);
+#else
+        exe, exe, exe, exe, exe, exe, exe, exe, exe);
 #endif
 }
 
@@ -312,6 +321,63 @@ static int run_headless_cli(int argc, char *argv[]) {
         }
         std::printf("  No issues found.\n");
         return 0;
+    }
+
+    if (std::strcmp(cmd, "--debug-spritesheet") == 0) {
+        if (argc < 4) {
+            std::fprintf(stderr, "Error: --debug-spritesheet requires <sheet image> <output_dir>\n");
+            return 2;
+        }
+        const char* sheet_file = argv[2];
+        const char* output_dir = argv[3];
+        SpriteSheetImportOptions opts = {};
+        opts.detect_mode = SpriteSheetDetect_Auto;
+        opts.background_threshold = 245;
+        opts.min_pixels = 160;
+        opts.padding = 2;
+        opts.crop = true;
+        std::strncpy(opts.name_prefix, "FRAME", sizeof(opts.name_prefix) - 1);
+
+        for (int i = 4; i < argc; i++) {
+            if (std::strncmp(argv[i], "--background=", 13) == 0) {
+                if (!parse_int_arg(argv[i], "--background=", 180, 255, &opts.background_threshold)) {
+                    std::fprintf(stderr, "Error: invalid --background value: %s\n", argv[i]);
+                    return 2;
+                }
+            } else if (std::strncmp(argv[i], "--min-pixels=", 13) == 0) {
+                if (!parse_int_arg(argv[i], "--min-pixels=", 1, 10000000, &opts.min_pixels)) {
+                    std::fprintf(stderr, "Error: invalid --min-pixels value: %s\n", argv[i]);
+                    return 2;
+                }
+            } else if (std::strncmp(argv[i], "--padding=", 10) == 0) {
+                if (!parse_int_arg(argv[i], "--padding=", 0, 256, &opts.padding)) {
+                    std::fprintf(stderr, "Error: invalid --padding value: %s\n", argv[i]);
+                    return 2;
+                }
+            } else if (std::strcmp(argv[i], "--no-crop") == 0) {
+                opts.crop = false;
+            } else if (std::strncmp(argv[i], "--prefix=", 9) == 0) {
+                std::strncpy(opts.name_prefix, argv[i] + 9, sizeof(opts.name_prefix) - 1);
+                opts.name_prefix[sizeof(opts.name_prefix) - 1] = '\0';
+            } else {
+                std::fprintf(stderr, "Error: unknown --debug-spritesheet option: %s\n", argv[i]);
+                return 2;
+            }
+        }
+
+        if (!path_exists(sheet_file)) {
+            std::fprintf(stderr, "Error: sprite sheet not found: %s\n", sheet_file);
+            return 1;
+        }
+        SpriteSheetDebugReport report = {};
+        int frames = DebugSpriteSheetImport(sheet_file, output_dir, &opts, &report);
+        std::printf("Sprite sheet debug for %s:\n", sheet_file);
+        std::printf("  Size: %dx%d\n", report.sheet_w, report.sheet_h);
+        std::printf("  Raw islands: %d\n", report.raw_islands);
+        std::printf("  Removed separator rows/cols: %d/%d\n", report.line_rows, report.line_cols);
+        std::printf("  Accepted frames: %d\n", report.accepted_frames);
+        std::printf("  Wrote debug artifacts to: %s\n", output_dir);
+        return frames > 0 ? 0 : 1;
     }
 
     if (std::strcmp(cmd, "--build-lod") == 0) {

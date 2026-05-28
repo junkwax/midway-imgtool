@@ -8,6 +8,49 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.7.0] — Sprite sheet imports and actor likeness tools
+
+Feature release for faster sprite cleanup, palette-safe paste/import workflows,
+and deterministic actor-likeness transfer between marked sprites.
+
+### Sprite Editing
+- **Marked likeness transfer** — one marked source sprite can now apply its
+  actor/costume likeness to the selected target while preserving the target
+  pose, silhouette, and digitized shading.
+- **Material-aware likeness pass** — transfer now separates head/skin, blue
+  robe, lower cloth, dark edge, and gold accent regions, adds source
+  microtexture, and cleans bad green/olive palette outliers.
+- **Softer hard-stroke removal** — edge cleanup now works from the true outer
+  edge, removes the harsh 1px stroke, and repaints saved edge pixels from the
+  nearest strong inward color instead of chewing into the sprite.
+- **Blank-area marquee start** — dragging from transparent canvas space now
+  starts a selection cutout workflow automatically.
+
+### Canvas And Paste
+- **Sprite zoom controls** — toolbar buttons, View menu items, mouse wheel,
+  `Ctrl+=`, `Ctrl+-`, and `Ctrl+0` now zoom in/out or fit the current sprite.
+- **Palette-matched paste** — copied pixels carry source palette metadata and
+  remap to the destination palette when pasted into a different palette.
+- **External rotate handle** — pasted/free-transform sprites now rotate from an
+  outside-corner handle so the controls do not cover the art.
+
+### Import And File Dialog
+- **Sprite sheet import** — PNG/JPG/TGA sheets can be split into individual
+  palette-matched frames using island detection, padding, and tight crop
+  options.
+- **Sprite sheet debug CLI** — `--debug-spritesheet` writes detection artifacts
+  and reports accepted frames for tuning sheet import behavior.
+- **GIF/PNG preview thumbnails** — the file picker now builds previews from
+  highlighted image files directly, not only after clicking the filename.
+- **Multi-file image imports** — PNG, matched-PNG, GIF, and sprite sheet import
+  dialogs support selecting multiple files in one pass.
+
+### Tests And Repo Hygiene
+- **Sprite sheet regression test** — CMake now builds and registers a
+  `sprite_sheet_import_test` target for the detector.
+- **Ignored scratch outputs** — local prototype output and test scratch folders
+  are ignored by git.
+
 ## [v3.6.1] — Palette readout cleanup
 
 Patch release for making the new palette usage information easier to read.

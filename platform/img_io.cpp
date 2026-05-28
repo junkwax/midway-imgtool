@@ -15,9 +15,14 @@
 #include <utility>
 #include <climits>
 #include <cmath>
+#include <cctype>
 #include <string>
 #include <regex>
 #include <stdarg.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 /* From imgui_overlay.cpp */
 extern void undo_push(void);
@@ -935,6 +940,127 @@ int ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches)
         g_img_tex_idx = -2;
     }
     return imgs_processed;
+}
+
+struct SourceSpriteColor {
+    unsigned char idx;
+    unsigned char r, g, b;
+};
+
+static int match_all_sprites_to_source_colors_impl(int source_idx,
+                                                   int *pixels_changed_out,
+                                                   bool apply)
+{
+    if (pixels_changed_out) *pixels_changed_out = 0;
+    IMG *source = get_img(source_idx);
+    if (!source || !source->data_p || source->w == 0 || source->h == 0)
+        return 0;
+    PAL *source_pal = get_pal(source->palnum);
+    if (!source_pal || !source_pal->data_p || source_pal->numc <= 1)
+        return 0;
+
+    bool used[256] = {};
+    const unsigned char *src_pix = (const unsigned char *)source->data_p;
+    int src_stride = (source->w + 3) & ~3;
+    int source_color_limit = source_pal->numc < 256 ? source_pal->numc : 256;
+    for (int y = 0; y < source->h; y++) {
+        for (int x = 0; x < source->w; x++) {
+            unsigned char ci = src_pix[y * src_stride + x];
+            if (ci != 0 && ci < source_color_limit)
+                used[ci] = true;
+        }
+    }
+
+    std::vector<SourceSpriteColor> source_colors;
+    source_colors.reserve(256);
+    const unsigned char *src_pal_data = (const unsigned char *)source_pal->data_p;
+    for (int i = 1; i < source_color_limit; i++) {
+        if (!used[i]) continue;
+        SourceSpriteColor c;
+        c.idx = (unsigned char)i;
+        pal_word_to_rgb8(src_pal_data + i * 2, &c.r, &c.g, &c.b);
+        source_colors.push_back(c);
+    }
+    if (source_colors.empty())
+        return 0;
+
+    int changed_images = 0;
+    int pixels_changed = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (idx == source_idx) continue;
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+        PAL *target_pal = get_pal(img->palnum);
+        if (!target_pal || !target_pal->data_p || target_pal->numc <= 1) continue;
+
+        unsigned char remap[256] = {};
+        bool remap_valid[256] = {};
+        const unsigned char *target_pal_data = (const unsigned char *)target_pal->data_p;
+        int target_color_limit = target_pal->numc < 256 ? target_pal->numc : 256;
+        for (int ci = 1; ci < target_color_limit; ci++) {
+            unsigned char r, g, b;
+            pal_word_to_rgb8(target_pal_data + ci * 2, &r, &g, &b);
+
+            int best_dist = INT_MAX;
+            unsigned char best_idx = source_colors[0].idx;
+            for (const SourceSpriteColor &src : source_colors) {
+                int dr = (int)r - (int)src.r;
+                int dg = (int)g - (int)src.g;
+                int db = (int)b - (int)src.b;
+                int dist = dr * dr + dg * dg + db * db;
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best_idx = src.idx;
+                }
+            }
+            remap[ci] = best_idx;
+            remap_valid[ci] = true;
+        }
+
+        unsigned char *dst_pix = (unsigned char *)img->data_p;
+        int stride = (img->w + 3) & ~3;
+        int writes_this = 0;
+        for (int y = 0; y < img->h; y++) {
+            for (int x = 0; x < img->w; x++) {
+                unsigned char old_idx = dst_pix[y * stride + x];
+                if (old_idx == 0 || !remap_valid[old_idx]) continue;
+                unsigned char new_idx = remap[old_idx];
+                if (dst_pix[y * stride + x] != new_idx) {
+                    if (apply)
+                        dst_pix[y * stride + x] = new_idx;
+                    writes_this++;
+                }
+            }
+        }
+
+        bool changed_this = writes_this > 0;
+        if (img->palnum != source->palnum) {
+            if (apply)
+                img->palnum = source->palnum;
+            changed_this = true;
+        }
+        if (writes_this > 0)
+            pixels_changed += writes_this;
+        if (changed_this)
+            changed_images++;
+    }
+
+    if (apply && changed_images > 0) {
+        g_doc->plselected = source->palnum;
+        g_img_tex_idx = -2;
+    }
+    if (pixels_changed_out) *pixels_changed_out = pixels_changed;
+    return changed_images;
+}
+
+int PreviewMatchAllSpritesToSourceColors(int source_idx, int *pixels_changed_out)
+{
+    return match_all_sprites_to_source_colors_impl(source_idx, pixels_changed_out, false);
+}
+
+int MatchAllSpritesToSourceColors(int source_idx, int *pixels_changed_out)
+{
+    return match_all_sprites_to_source_colors_impl(source_idx, pixels_changed_out, true);
 }
 
 /* ---- Auto-Sprite Chopper ---- */
@@ -2384,6 +2510,1052 @@ static int import_rgba_frames_as_images(const char *path, const unsigned char *r
     return imported;
 }
 
+struct SheetFrameCandidate {
+    int x0, y0, x1, y1; /* inclusive */
+    int pixels;
+    int islands;
+    int row;
+    int frame;
+};
+
+struct SheetIslandCandidate {
+    int x0, y0, x1, y1; /* inclusive */
+    int pixels;
+    int colorful_pixels;
+    int dark_gray_pixels;
+    int assigned;
+};
+
+struct SheetDetectTrace {
+    int raw_islands;
+    int line_rows;
+    int line_cols;
+    std::vector<unsigned char> mask;
+    std::vector<SheetIslandCandidate> islands;
+};
+
+struct SheetPalColor {
+    int r, g, b;
+};
+
+struct SheetPaletteMatch {
+    unsigned short palnum;
+    int count;
+    SheetPalColor colors[256];
+    unsigned char color_to_idx[32768];
+    bool color_resolved[32768];
+};
+
+static int sheet_clamp_int(int v, int lo, int hi)
+{
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static int sheet_box_gap(int ax0, int ay0, int ax1, int ay1,
+                         int bx0, int by0, int bx1, int by1)
+{
+    int dx = 0;
+    if (ax1 < bx0) dx = bx0 - ax1 - 1;
+    else if (bx1 < ax0) dx = ax0 - bx1 - 1;
+
+    int dy = 0;
+    if (ay1 < by0) dy = by0 - ay1 - 1;
+    else if (by1 < ay0) dy = ay0 - by1 - 1;
+
+    if (dx < 0) dx = 0;
+    if (dy < 0) dy = 0;
+    return dx > dy ? dx : dy;
+}
+
+static void sheet_expand_frame(SheetFrameCandidate *frame,
+                               const SheetIslandCandidate &island)
+{
+    if (!frame) return;
+    if (island.x0 < frame->x0) frame->x0 = island.x0;
+    if (island.y0 < frame->y0) frame->y0 = island.y0;
+    if (island.x1 > frame->x1) frame->x1 = island.x1;
+    if (island.y1 > frame->y1) frame->y1 = island.y1;
+    frame->pixels += island.pixels;
+    frame->islands++;
+}
+
+static bool sheet_is_skinny_box(int w, int h)
+{
+    return (w > h * 8 && h < 32) || (h > w * 8 && w < 32);
+}
+
+static bool sheet_is_core_island(const SheetIslandCandidate &island, int min_pixels)
+{
+    int bw = island.x1 - island.x0 + 1;
+    int bh = island.y1 - island.y0 + 1;
+    if (island.pixels < min_pixels) return false;
+    if (bw < 10 || bh < 14) return false;
+    if (sheet_is_skinny_box(bw, bh)) return false;
+
+    /* Plain text labels are mostly dark grayscale. A sprite core should have
+       at least a little color, or enough area that it is unlikely to be a
+       sheet label. This keeps row labels from turning into imported frames. */
+    int colorful_min = island.pixels / 60;
+    if (colorful_min < 6) colorful_min = 6;
+    if (island.colorful_pixels < colorful_min &&
+        island.dark_gray_pixels > (island.pixels * 3) / 4 &&
+        island.pixels < min_pixels * 6)
+        return false;
+    return true;
+}
+
+static bool sheet_can_attach_island(const SheetIslandCandidate &island, int gap,
+                                    int tight_gap)
+{
+    if (gap <= tight_gap) return true;
+    if (island.colorful_pixels > 0) return true;
+
+    /* Dark grayscale fragments at a loose distance are usually label glyphs,
+       not separated sprite parts. Light low-saturation fragments are allowed:
+       they often represent hands, hair highlights, or shoes. */
+    if (island.dark_gray_pixels > (island.pixels * 3) / 4)
+        return false;
+    return true;
+}
+
+static bool sheet_base_bg_pixel(const unsigned char *p, int threshold)
+{
+    if (!p || p[3] < 128) return true;
+    return p[0] >= threshold && p[1] >= threshold && p[2] >= threshold;
+}
+
+static bool sheet_detection_bg_pixel(const unsigned char *p, int threshold)
+{
+    if (sheet_base_bg_pixel(p, threshold)) return true;
+    int mn = (int)p[0];
+    if ((int)p[1] < mn) mn = (int)p[1];
+    if ((int)p[2] < mn) mn = (int)p[2];
+    int mx = (int)p[0];
+    if ((int)p[1] > mx) mx = (int)p[1];
+    if ((int)p[2] > mx) mx = (int)p[2];
+    return mn >= 220 && (mx - mn) <= 10; /* light gray grid paper */
+}
+
+static bool sheet_separator_rule_pixel(const unsigned char *p, int threshold)
+{
+    if (!p || p[3] < 128) return false;
+    int mn = (int)p[0];
+    if ((int)p[1] < mn) mn = (int)p[1];
+    if ((int)p[2] < mn) mn = (int)p[2];
+    int mx = (int)p[0];
+    if ((int)p[1] > mx) mx = (int)p[1];
+    if ((int)p[2] > mx) mx = (int)p[2];
+    if (mx - mn > 18) return false;
+    if (mx >= threshold) return false; /* ordinary white page background */
+    return mn >= 120;                  /* gray grid/page rules */
+}
+
+static bool sheet_flood_bg_pixel(const unsigned char *p, int threshold)
+{
+    if (sheet_base_bg_pixel(p, threshold)) return true;
+    int mn = (int)p[0];
+    if ((int)p[1] < mn) mn = (int)p[1];
+    if ((int)p[2] < mn) mn = (int)p[2];
+    int mx = (int)p[0];
+    if ((int)p[1] > mx) mx = (int)p[1];
+    if ((int)p[2] > mx) mx = (int)p[2];
+    return mn >= 205 && (mx - mn) <= 12; /* connected grid/page gray */
+}
+
+struct SheetBgSamples {
+    unsigned char rgba[4][4];
+    int count;
+};
+
+static void sheet_add_bg_sample(SheetBgSamples *samples, const unsigned char *p)
+{
+    if (!samples || !p || samples->count >= 4) return;
+    memcpy(samples->rgba[samples->count], p, 4);
+    samples->count++;
+}
+
+static void sheet_collect_corner_samples(const unsigned char *rgba, int sheet_w,
+                                         int x0, int y0, int w, int h,
+                                         SheetBgSamples *samples)
+{
+    if (!samples) return;
+    samples->count = 0;
+    sheet_add_bg_sample(samples, rgba + ((size_t)y0 * sheet_w + x0) * 4);
+    if (w > 1)
+        sheet_add_bg_sample(samples, rgba + ((size_t)y0 * sheet_w + (x0 + w - 1)) * 4);
+    if (h > 1)
+        sheet_add_bg_sample(samples, rgba + ((size_t)(y0 + h - 1) * sheet_w + x0) * 4);
+    if (w > 1 && h > 1)
+        sheet_add_bg_sample(samples, rgba + ((size_t)(y0 + h - 1) * sheet_w + (x0 + w - 1)) * 4);
+}
+
+static bool sheet_close_to_bg_sample(const unsigned char *p,
+                                     const SheetBgSamples *samples)
+{
+    if (!p || p[3] < 128 || !samples) return false;
+    for (int i = 0; i < samples->count; i++) {
+        const unsigned char *s = samples->rgba[i];
+        int dr = abs((int)p[0] - (int)s[0]);
+        int dg = abs((int)p[1] - (int)s[1]);
+        int db = abs((int)p[2] - (int)s[2]);
+        if (dr <= 32 && dg <= 32 && db <= 32)
+            return true;
+    }
+    return false;
+}
+
+static bool sheet_sample_bg_pixel(const unsigned char *p, int threshold,
+                                  const SheetBgSamples *samples)
+{
+    return sheet_flood_bg_pixel(p, threshold) ||
+           sheet_close_to_bg_sample(p, samples);
+}
+
+static void build_sheet_edge_bg_mask(const unsigned char *rgba, int w, int h,
+                                     int threshold,
+                                     std::vector<unsigned char> &edge_bg)
+{
+    edge_bg.assign((size_t)w * h, 0);
+    if (!rgba || w <= 0 || h <= 0) return;
+
+    SheetBgSamples samples;
+    sheet_collect_corner_samples(rgba, w, 0, 0, w, h, &samples);
+
+    std::vector<int> queue;
+    queue.reserve((size_t)(w + h) * 2);
+    auto try_seed = [&](int x, int y) {
+        size_t idx = (size_t)y * w + x;
+        if (edge_bg[idx]) return;
+        const unsigned char *p = rgba + idx * 4;
+        if (!sheet_sample_bg_pixel(p, threshold, &samples)) return;
+        edge_bg[idx] = 1;
+        queue.push_back((int)idx);
+    };
+
+    for (int x = 0; x < w; x++) {
+        try_seed(x, 0);
+        try_seed(x, h - 1);
+    }
+    for (int y = 1; y < h - 1; y++) {
+        try_seed(0, y);
+        try_seed(w - 1, y);
+    }
+
+    const int dx[4] = {-1, 1, 0, 0};
+    const int dy[4] = {0, 0, -1, 1};
+    for (int qpos = 0; qpos < (int)queue.size(); qpos++) {
+        int idx = queue[(size_t)qpos];
+        int x = idx % w;
+        int y = idx / w;
+        for (int n = 0; n < 4; n++) {
+            int nx = x + dx[n], ny = y + dy[n];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+            size_t ni = (size_t)ny * w + nx;
+            if (edge_bg[ni]) continue;
+            const unsigned char *p = rgba + ni * 4;
+            if (!sheet_sample_bg_pixel(p, threshold, &samples)) continue;
+            edge_bg[ni] = 1;
+            queue.push_back((int)ni);
+        }
+    }
+}
+
+static void sheet_sanitize_prefix(const char *src, char *dst, size_t dstsz)
+{
+    if (!dst || dstsz == 0) return;
+    size_t n = 0;
+    if (src) {
+        for (size_t i = 0; src[i] && n < dstsz - 1; i++) {
+            unsigned char c = (unsigned char)src[i];
+            if (isalnum(c))
+                dst[n++] = (char)toupper(c);
+        }
+    }
+    if (n == 0) {
+        const char *fallback = "FRAME";
+        while (*fallback && n < dstsz - 1) dst[n++] = *fallback++;
+    }
+    dst[n] = '\0';
+}
+
+static void sheet_row_code(int row, char *dst, size_t dstsz)
+{
+    if (!dst || dstsz == 0) return;
+    if (row < 0) row = 0;
+    char tmp[8];
+    int n = 0;
+    do {
+        tmp[n++] = (char)('A' + (row % 26));
+        row = row / 26 - 1;
+    } while (row >= 0 && n < (int)sizeof(tmp));
+    size_t out = 0;
+    while (n > 0 && out < dstsz - 1)
+        dst[out++] = tmp[--n];
+    dst[out] = '\0';
+}
+
+static void make_sheet_frame_name(const char *prefix, int row, int frame, char out[16])
+{
+    char clean[12];
+    char rowbuf[8];
+    char suffix[12];
+    sheet_sanitize_prefix(prefix, clean, sizeof(clean));
+    sheet_row_code(row, rowbuf, sizeof(rowbuf));
+    snprintf(suffix, sizeof(suffix), "%s%d", rowbuf, frame + 1);
+    size_t suffix_len = strlen(suffix);
+    int prefix_len = 15 - (int)suffix_len;
+    if (prefix_len < 1) prefix_len = 1;
+    snprintf(out, 16, "%.*s%s", prefix_len, clean, suffix);
+}
+
+static bool init_sheet_palette_match(SheetPaletteMatch *ctx, unsigned short palnum)
+{
+    if (!ctx) return false;
+    memset(ctx, 0, sizeof(*ctx));
+    PAL *pal = get_pal(palnum);
+    if (!pal || !pal->data_p || pal->numc <= 1) return false;
+    ctx->palnum = palnum;
+    ctx->count = pal->numc < 256 ? pal->numc : 256;
+    const unsigned char *pal_data = (const unsigned char *)pal->data_p;
+    for (int i = 1; i < ctx->count; i++) {
+        unsigned char r, g, b;
+        pal_word_to_rgb8(pal_data + i * 2, &r, &g, &b);
+        ctx->colors[i].r = r;
+        ctx->colors[i].g = g;
+        ctx->colors[i].b = b;
+    }
+    return true;
+}
+
+static unsigned char sheet_match_palette_index(SheetPaletteMatch *ctx,
+                                               const unsigned char *p)
+{
+    if (!ctx || !p || ctx->count <= 1) return 0;
+    unsigned short c = (unsigned short)(((p[0] >> 3) << 10) |
+                                        ((p[1] >> 3) <<  5) |
+                                         (p[2] >> 3));
+    if (ctx->color_resolved[c])
+        return ctx->color_to_idx[c];
+
+    int best_idx = 1;
+    int best_dist = INT_MAX;
+    for (int i = 1; i < ctx->count; i++) {
+        int dr = (int)p[0] - ctx->colors[i].r;
+        int dg = (int)p[1] - ctx->colors[i].g;
+        int db = (int)p[2] - ctx->colors[i].b;
+        int dist = dr * dr + dg * dg + db * db;
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_idx = i;
+        }
+    }
+    ctx->color_to_idx[c] = (unsigned char)best_idx;
+    ctx->color_resolved[c] = true;
+    return (unsigned char)best_idx;
+}
+
+static void detect_sheet_candidates(const unsigned char *rgba, int w, int h,
+                                    const SpriteSheetImportOptions *opts,
+                                    std::vector<SheetFrameCandidate> &frames,
+                                    SheetDetectTrace *trace = NULL)
+{
+    frames.clear();
+    if (trace) {
+        trace->raw_islands = 0;
+        trace->line_rows = 0;
+        trace->line_cols = 0;
+        trace->mask.clear();
+        trace->islands.clear();
+    }
+    if (!rgba || w <= 0 || h <= 0) return;
+
+    int threshold = sheet_clamp_int(opts ? opts->background_threshold : 245, 180, 255);
+    int min_pixels = opts ? opts->min_pixels : 160;
+    if (min_pixels < 1) min_pixels = 1;
+
+    const size_t total = (size_t)w * (size_t)h;
+    std::vector<unsigned char> edge_bg;
+    build_sheet_edge_bg_mask(rgba, w, h, threshold, edge_bg);
+
+    std::vector<unsigned char> mask(total, 0);
+    for (size_t i = 0; i < total; i++) {
+        const unsigned char *p = rgba + i * 4;
+        mask[i] = (edge_bg[i] || sheet_detection_bg_pixel(p, threshold)) ? 0 : 1;
+    }
+
+    /* Grid sheets often carry one-pixel separator rules. Removing rows/cols
+       that are mostly foreground prevents the grid itself becoming one giant
+       connected component while leaving sprite silhouettes intact. */
+    std::vector<unsigned char> line_rows((size_t)h, 0), line_cols((size_t)w, 0);
+    int line_row_count = 0;
+    int line_col_count = 0;
+    for (int y = 0; y < h; y++) {
+        int count = 0;
+        int sep_count = 0;
+        for (int x = 0; x < w; x++) {
+            count += mask[(size_t)y * w + x] ? 1 : 0;
+            const unsigned char *p = rgba + ((size_t)y * w + x) * 4;
+            sep_count += sheet_separator_rule_pixel(p, threshold) ? 1 : 0;
+        }
+        if (count > (w * 19) / 20 || sep_count > (w * 9) / 20) {
+            line_rows[(size_t)y] = 1;
+            line_row_count++;
+            if (trace) trace->line_rows++;
+        }
+    }
+    for (int x = 0; x < w; x++) {
+        int count = 0;
+        int sep_count = 0;
+        for (int y = 0; y < h; y++) {
+            count += mask[(size_t)y * w + x] ? 1 : 0;
+            const unsigned char *p = rgba + ((size_t)y * w + x) * 4;
+            sep_count += sheet_separator_rule_pixel(p, threshold) ? 1 : 0;
+        }
+        if (count > (h * 19) / 20 || sep_count > (h * 9) / 20) {
+            line_cols[(size_t)x] = 1;
+            line_col_count++;
+            if (trace) trace->line_cols++;
+        }
+    }
+    for (int y = 0; y < h; y++) {
+        if (!line_rows[(size_t)y]) continue;
+        for (int x = 0; x < w; x++) mask[(size_t)y * w + x] = 0;
+    }
+    for (int x = 0; x < w; x++) {
+        if (!line_cols[(size_t)x]) continue;
+        for (int y = 0; y < h; y++) mask[(size_t)y * w + x] = 0;
+    }
+    if (trace) trace->mask = mask;
+
+    std::vector<unsigned char> seen(total, 0);
+    std::vector<int> queue;
+    queue.reserve(4096);
+    const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    const int dy[8] = {-1,-1,-1,  0, 0,  1, 1, 1};
+    int island_min = min_pixels / 20;
+    if (island_min < 6) island_min = 6;
+    if (island_min > 64) island_min = 64;
+
+    std::vector<SheetIslandCandidate> islands;
+
+    for (int sy = 0; sy < h; sy++) {
+        for (int sx = 0; sx < w; sx++) {
+            size_t start = (size_t)sy * w + sx;
+            if (!mask[start] || seen[start]) continue;
+
+            queue.clear();
+            queue.push_back((int)start);
+            seen[start] = 1;
+            int qpos = 0;
+            int x0 = sx, y0 = sy, x1 = sx, y1 = sy, pixels = 0;
+            int colorful_pixels = 0;
+            int dark_gray_pixels = 0;
+            while (qpos < (int)queue.size()) {
+                int idx = queue[(size_t)qpos++];
+                int x = idx % w;
+                int y = idx / w;
+                pixels++;
+                if (x < x0) x0 = x; if (x > x1) x1 = x;
+                if (y < y0) y0 = y; if (y > y1) y1 = y;
+
+                const unsigned char *p = rgba + (size_t)idx * 4;
+                int mn = (int)p[0];
+                if ((int)p[1] < mn) mn = (int)p[1];
+                if ((int)p[2] < mn) mn = (int)p[2];
+                int mx = (int)p[0];
+                if ((int)p[1] > mx) mx = (int)p[1];
+                if ((int)p[2] > mx) mx = (int)p[2];
+                if (mx - mn >= 18 && mx >= 56) colorful_pixels++;
+                if (mx <= 96 && mx - mn <= 18) dark_gray_pixels++;
+
+                for (int n = 0; n < 8; n++) {
+                    int nx = x + dx[n], ny = y + dy[n];
+                    if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                    size_t ni = (size_t)ny * w + nx;
+                    if (mask[ni] && !seen[ni]) {
+                        seen[ni] = 1;
+                        queue.push_back((int)ni);
+                    }
+                }
+            }
+
+            int bw = x1 - x0 + 1;
+            int bh = y1 - y0 + 1;
+            if (pixels < island_min) continue;
+            if (bw < 2 || bh < 2) continue;
+
+            islands.push_back({x0, y0, x1, y1, pixels,
+                               colorful_pixels, dark_gray_pixels, -1});
+        }
+    }
+
+    if (trace) {
+        trace->raw_islands = (int)islands.size();
+        trace->islands = islands;
+    }
+    if (islands.empty()) return;
+
+    auto separated_by_lines = [&](int ax0, int ay0, int ax1, int ay1,
+                                  int bx0, int by0, int bx1, int by1) -> bool {
+        if (ax1 < bx0) {
+            for (int x = ax1 + 1; x < bx0; x++) {
+                if (x >= 0 && x < w && line_cols[(size_t)x]) return true;
+            }
+        } else if (bx1 < ax0) {
+            for (int x = bx1 + 1; x < ax0; x++) {
+                if (x >= 0 && x < w && line_cols[(size_t)x]) return true;
+            }
+        }
+        if (ay1 < by0) {
+            for (int y = ay1 + 1; y < by0; y++) {
+                if (y >= 0 && y < h && line_rows[(size_t)y]) return true;
+            }
+        } else if (by1 < ay0) {
+            for (int y = by1 + 1; y < ay0; y++) {
+                if (y >= 0 && y < h && line_rows[(size_t)y]) return true;
+            }
+        }
+        return false;
+    };
+    bool grid_guided = line_row_count >= 4 && line_col_count >= 4;
+
+    for (int i = 0; i < (int)islands.size(); i++) {
+        SheetIslandCandidate &island = islands[(size_t)i];
+        if (!sheet_is_core_island(island, min_pixels)) continue;
+        island.assigned = (int)frames.size();
+        frames.push_back({island.x0, island.y0, island.x1, island.y1,
+                          island.pixels, 1, 0, 0});
+    }
+
+    if (frames.empty()) {
+        /* Fallback for tiny sheets where every sprite is below the requested
+           core threshold: group islands by proximity, then let the final
+           filters decide what is large enough to import. */
+        int fallback_gap = sheet_clamp_int((w < h ? w : h) / 80, 4, 12);
+        for (int i = 0; i < (int)islands.size(); i++) {
+            SheetIslandCandidate &island = islands[(size_t)i];
+            if (island.assigned >= 0) continue;
+            int best = -1;
+            int best_gap = INT_MAX;
+            for (int f = 0; f < (int)frames.size(); f++) {
+                const SheetFrameCandidate &frame = frames[(size_t)f];
+                int gap = sheet_box_gap(island.x0, island.y0, island.x1, island.y1,
+                                        frame.x0, frame.y0, frame.x1, frame.y1);
+                if (gap <= fallback_gap && gap < best_gap) {
+                    if (separated_by_lines(island.x0, island.y0, island.x1, island.y1,
+                                           frame.x0, frame.y0, frame.x1, frame.y1))
+                        continue;
+                    best = f;
+                    best_gap = gap;
+                }
+            }
+            if (best >= 0) {
+                island.assigned = best;
+                sheet_expand_frame(&frames[(size_t)best], island);
+            } else {
+                island.assigned = (int)frames.size();
+                frames.push_back({island.x0, island.y0, island.x1, island.y1,
+                                  island.pixels, 1, 0, 0});
+            }
+        }
+    } else {
+        if (grid_guided) {
+            int core_merge_gap = sheet_clamp_int((w < h ? w : h) / 16, 36, 84);
+            bool merged_core = true;
+            while (merged_core) {
+                merged_core = false;
+                for (int a = 0; !merged_core && a < (int)frames.size(); a++) {
+                    for (int b = a + 1; b < (int)frames.size(); b++) {
+                        SheetFrameCandidate &fa = frames[(size_t)a];
+                        SheetFrameCandidate &fb = frames[(size_t)b];
+                        int gap = sheet_box_gap(fa.x0, fa.y0, fa.x1, fa.y1,
+                                                fb.x0, fb.y0, fb.x1, fb.y1);
+                        if (gap > core_merge_gap) continue;
+                        if (separated_by_lines(fa.x0, fa.y0, fa.x1, fa.y1,
+                                               fb.x0, fb.y0, fb.x1, fb.y1))
+                            continue;
+
+                        if (fb.x0 < fa.x0) fa.x0 = fb.x0;
+                        if (fb.y0 < fa.y0) fa.y0 = fb.y0;
+                        if (fb.x1 > fa.x1) fa.x1 = fb.x1;
+                        if (fb.y1 > fa.y1) fa.y1 = fb.y1;
+                        fa.pixels += fb.pixels;
+                        fa.islands += fb.islands;
+                        frames.erase(frames.begin() + b);
+                        for (SheetIslandCandidate &island : islands) {
+                            if (island.assigned == b) island.assigned = a;
+                            else if (island.assigned > b) island.assigned--;
+                        }
+                        merged_core = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        int span = w < h ? w : h;
+        int attach_gap = grid_guided
+            ? sheet_clamp_int(span / 18, 28, 72)
+            : sheet_clamp_int(span / 36, 14, 34);
+        int tight_gap = grid_guided
+            ? attach_gap
+            : sheet_clamp_int(attach_gap / 3, 4, 10);
+        bool changed = true;
+        for (int pass = 0; changed && pass < 4; pass++) {
+            changed = false;
+            for (int i = 0; i < (int)islands.size(); i++) {
+                SheetIslandCandidate &island = islands[(size_t)i];
+                if (island.assigned >= 0) continue;
+                int best = -1;
+                int best_gap = INT_MAX;
+                for (int f = 0; f < (int)frames.size(); f++) {
+                    const SheetFrameCandidate &frame = frames[(size_t)f];
+                    int gap = sheet_box_gap(island.x0, island.y0, island.x1, island.y1,
+                                            frame.x0, frame.y0, frame.x1, frame.y1);
+                    if (gap > attach_gap || gap >= best_gap) continue;
+                    if (separated_by_lines(island.x0, island.y0, island.x1, island.y1,
+                                           frame.x0, frame.y0, frame.x1, frame.y1))
+                        continue;
+                    if (!sheet_can_attach_island(island, gap, tight_gap)) continue;
+                    best = f;
+                    best_gap = gap;
+                }
+                if (best >= 0) {
+                    island.assigned = best;
+                    sheet_expand_frame(&frames[(size_t)best], island);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    std::vector<SheetFrameCandidate> filtered;
+    filtered.reserve(frames.size());
+    for (const SheetFrameCandidate &frame : frames) {
+        int bw = frame.x1 - frame.x0 + 1;
+        int bh = frame.y1 - frame.y0 + 1;
+        if (frame.pixels < min_pixels) continue;
+        if (bw < 10 || bh < 14) continue;
+        if (sheet_is_skinny_box(bw, bh)) continue;
+        filtered.push_back(frame);
+    }
+    frames.swap(filtered);
+    if (frames.empty()) return;
+
+    std::sort(frames.begin(), frames.end(),
+              [](const SheetFrameCandidate &a, const SheetFrameCandidate &b) {
+                  int acy = (a.y0 + a.y1) / 2;
+                  int bcy = (b.y0 + b.y1) / 2;
+                  if (acy != bcy) return acy < bcy;
+                  return a.x0 < b.x0;
+              });
+
+    struct SheetRow {
+        int center_sum;
+        int height_sum;
+        int count;
+        std::vector<int> indices;
+    };
+    std::vector<SheetRow> rows;
+    for (int i = 0; i < (int)frames.size(); i++) {
+        int cy = (frames[i].y0 + frames[i].y1) / 2;
+        int fh = frames[i].y1 - frames[i].y0 + 1;
+        int best = -1;
+        int best_dist = INT_MAX;
+        for (int r = 0; r < (int)rows.size(); r++) {
+            int row_center = rows[r].center_sum / rows[r].count;
+            int row_height = rows[r].height_sum / rows[r].count;
+            int max_h = fh > row_height ? fh : row_height;
+            int tol = max_h * 3 / 5;
+            if (tol < 16) tol = 16;
+            int dist = abs(cy - row_center);
+            if (dist <= tol && dist < best_dist) {
+                best = r;
+                best_dist = dist;
+            }
+        }
+        if (best < 0) {
+            rows.push_back({cy, fh, 1, std::vector<int>()});
+            best = (int)rows.size() - 1;
+        } else {
+            rows[best].center_sum += cy;
+            rows[best].height_sum += fh;
+            rows[best].count++;
+        }
+        rows[best].indices.push_back(i);
+    }
+
+    std::sort(rows.begin(), rows.end(),
+              [](const SheetRow &a, const SheetRow &b) {
+                  return (a.center_sum / a.count) < (b.center_sum / b.count);
+              });
+
+    std::vector<SheetFrameCandidate> ordered;
+    ordered.reserve(frames.size());
+    for (int r = 0; r < (int)rows.size(); r++) {
+        std::vector<int> &idxs = rows[r].indices;
+        std::sort(idxs.begin(), idxs.end(), [&frames](int a, int b) {
+            if (frames[a].x0 != frames[b].x0) return frames[a].x0 < frames[b].x0;
+            return frames[a].y0 < frames[b].y0;
+        });
+        for (int f = 0; f < (int)idxs.size(); f++) {
+            SheetFrameCandidate c = frames[idxs[(size_t)f]];
+            c.row = r;
+            c.frame = f;
+            ordered.push_back(c);
+        }
+    }
+    frames.swap(ordered);
+    if (trace) trace->islands = islands;
+}
+
+static bool build_sheet_bg_mask(const unsigned char *rgba, int sheet_w, int sheet_h,
+                                int x0, int y0, int w, int h, int threshold,
+                                std::vector<unsigned char> &bg)
+{
+    bg.assign((size_t)w * h, 0);
+    if (!rgba || w <= 0 || h <= 0) return false;
+
+    SheetBgSamples samples;
+    sheet_collect_corner_samples(rgba, sheet_w, x0, y0, w, h, &samples);
+
+    std::vector<int> queue;
+    queue.reserve((size_t)(w + h) * 2);
+    auto try_seed = [&](int lx, int ly) {
+        size_t bi = (size_t)ly * w + lx;
+        if (bg[bi]) return;
+        const unsigned char *p = rgba + ((size_t)(y0 + ly) * sheet_w + (x0 + lx)) * 4;
+        if (!sheet_sample_bg_pixel(p, threshold, &samples)) return;
+        bg[bi] = 1;
+        queue.push_back((int)bi);
+    };
+
+    for (int x = 0; x < w; x++) {
+        try_seed(x, 0);
+        try_seed(x, h - 1);
+    }
+    for (int y = 1; y < h - 1; y++) {
+        try_seed(0, y);
+        try_seed(w - 1, y);
+    }
+
+    const int dx[4] = {-1, 1, 0, 0};
+    const int dy[4] = {0, 0, -1, 1};
+    for (int qpos = 0; qpos < (int)queue.size(); qpos++) {
+        int idx = queue[(size_t)qpos];
+        int lx = idx % w;
+        int ly = idx / w;
+        for (int n = 0; n < 4; n++) {
+            int nx = lx + dx[n], ny = ly + dy[n];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+            size_t ni = (size_t)ny * w + nx;
+            if (bg[ni]) continue;
+            const unsigned char *p = rgba + ((size_t)(y0 + ny) * sheet_w + (x0 + nx)) * 4;
+            if (!sheet_sample_bg_pixel(p, threshold, &samples)) continue;
+            bg[ni] = 1;
+            queue.push_back((int)ni);
+        }
+    }
+    return true;
+}
+
+static bool import_sheet_candidate(const unsigned char *rgba, int sheet_w, int sheet_h,
+                                   const SheetFrameCandidate &candidate,
+                                   SheetPaletteMatch *palctx,
+                                   const SpriteSheetImportOptions *opts)
+{
+    if (!rgba || !palctx) return false;
+    int threshold = sheet_clamp_int(opts ? opts->background_threshold : 245, 180, 255);
+    int pad = opts ? opts->padding : 2;
+    if (pad < 0) pad = 0;
+
+    int x0 = sheet_clamp_int(candidate.x0 - pad, 0, sheet_w - 1);
+    int y0 = sheet_clamp_int(candidate.y0 - pad, 0, sheet_h - 1);
+    int x1 = sheet_clamp_int(candidate.x1 + pad, 0, sheet_w - 1);
+    int y1 = sheet_clamp_int(candidate.y1 + pad, 0, sheet_h - 1);
+    int cw = x1 - x0 + 1;
+    int ch = y1 - y0 + 1;
+
+    std::vector<unsigned char> bg;
+    if (!build_sheet_bg_mask(rgba, sheet_w, sheet_h, x0, y0, cw, ch, threshold, bg))
+        return false;
+
+    int tx0 = cw, ty0 = ch, tx1 = -1, ty1 = -1;
+    for (int y = 0; y < ch; y++) {
+        for (int x = 0; x < cw; x++) {
+            const unsigned char *p = rgba + ((size_t)(y0 + y) * sheet_w + (x0 + x)) * 4;
+            if (p[3] < 128 || bg[(size_t)y * cw + x]) continue;
+            if (x < tx0) tx0 = x; if (x > tx1) tx1 = x;
+            if (y < ty0) ty0 = y; if (y > ty1) ty1 = y;
+        }
+    }
+    if (tx1 < tx0 || ty1 < ty0) return false;
+
+    if (!(opts && opts->crop)) {
+        tx0 = 0; ty0 = 0; tx1 = cw - 1; ty1 = ch - 1;
+    }
+
+    int out_w = tx1 - tx0 + 1;
+    int out_h = ty1 - ty0 + 1;
+    if (out_w <= 0 || out_h <= 0 || out_w > 65535 || out_h > 65535) return false;
+
+    IMG *img = AllocImg();
+    if (!img) return false;
+    img->w = (unsigned short)out_w;
+    img->h = (unsigned short)out_h;
+    img->palnum = palctx->palnum;
+    img->flags = 0;
+    img->anix = 0;
+    img->aniy = 0;
+    img_clear_secondary_anipoint(img);
+    img->pttbl_p = NULL;
+    img->opals = (unsigned short)-1;
+    make_sheet_frame_name(opts ? opts->name_prefix : "FRAME",
+                          candidate.row, candidate.frame, img->n_s);
+
+    unsigned short stride = (unsigned short)((out_w + 3) & ~3);
+    img->data_p = PoolAlloc((size_t)stride * out_h);
+    if (!img->data_p) return false;
+    memset(img->data_p, 0, (size_t)stride * out_h);
+
+    unsigned char *dst = (unsigned char *)img->data_p;
+    for (int y = 0; y < out_h; y++) {
+        for (int x = 0; x < out_w; x++) {
+            int lx = tx0 + x;
+            int ly = ty0 + y;
+            const unsigned char *p = rgba + ((size_t)(y0 + ly) * sheet_w + (x0 + lx)) * 4;
+            if (p[3] < 128 || bg[(size_t)ly * cw + lx]) continue;
+            dst[(size_t)y * stride + x] = sheet_match_palette_index(palctx, p);
+        }
+    }
+    return true;
+}
+
+static void fill_sheet_debug_report(SpriteSheetDebugReport *report, int w, int h,
+                                    const SheetDetectTrace &trace,
+                                    const std::vector<SheetFrameCandidate> &frames)
+{
+    if (!report) return;
+    report->sheet_w = w;
+    report->sheet_h = h;
+    report->raw_islands = trace.raw_islands;
+    report->accepted_frames = (int)frames.size();
+    report->line_rows = trace.line_rows;
+    report->line_cols = trace.line_cols;
+    report->frames.clear();
+    report->frames.reserve(frames.size());
+    for (const SheetFrameCandidate &f : frames) {
+        report->frames.push_back({f.x0, f.y0, f.x1, f.y1,
+                                  f.pixels, f.islands, f.row, f.frame});
+    }
+}
+
+static bool ensure_sheet_debug_dir(const char *path)
+{
+    if (!path || !*path) return false;
+#ifdef _WIN32
+    if (_mkdir(path) == 0) return true;
+#else
+    if (mkdir(path, 0755) == 0) return true;
+#endif
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+#ifdef _WIN32
+    return (st.st_mode & _S_IFDIR) != 0;
+#else
+    return S_ISDIR(st.st_mode);
+#endif
+}
+
+static std::string sheet_join_path(const char *dir, const char *name)
+{
+    std::string out = dir && *dir ? std::string(dir) : std::string(".");
+    if (!out.empty()) {
+        char last = out[out.size() - 1];
+        if (last != '\\' && last != '/') {
+#ifdef _WIN32
+            out += "\\";
+#else
+            out += "/";
+#endif
+        }
+    }
+    out += name ? name : "";
+    return out;
+}
+
+static void sheet_blend_pixel(std::vector<unsigned char> &rgba, int w, int h,
+                              int x, int y,
+                              unsigned char r, unsigned char g,
+                              unsigned char b, unsigned char a)
+{
+    if (x < 0 || x >= w || y < 0 || y >= h || a == 0) return;
+    unsigned char *p = rgba.data() + ((size_t)y * w + x) * 4;
+    int ia = 255 - a;
+    p[0] = (unsigned char)((r * a + p[0] * ia + 127) / 255);
+    p[1] = (unsigned char)((g * a + p[1] * ia + 127) / 255);
+    p[2] = (unsigned char)((b * a + p[2] * ia + 127) / 255);
+    p[3] = 255;
+}
+
+static void sheet_draw_rect(std::vector<unsigned char> &rgba, int w, int h,
+                            int x0, int y0, int x1, int y1,
+                            unsigned char r, unsigned char g, unsigned char b)
+{
+    for (int t = 0; t < 2; t++) {
+        for (int x = x0; x <= x1; x++) {
+            sheet_blend_pixel(rgba, w, h, x, y0 + t, r, g, b, 255);
+            sheet_blend_pixel(rgba, w, h, x, y1 - t, r, g, b, 255);
+        }
+        for (int y = y0; y <= y1; y++) {
+            sheet_blend_pixel(rgba, w, h, x0 + t, y, r, g, b, 255);
+            sheet_blend_pixel(rgba, w, h, x1 - t, y, r, g, b, 255);
+        }
+    }
+}
+
+static void sheet_write_mask_png(const char *out_dir, int w, int h,
+                                 const std::vector<unsigned char> &mask)
+{
+    if ((int)mask.size() != w * h) return;
+    std::vector<unsigned char> rgba((size_t)w * h * 4, 0);
+    for (int i = 0; i < w * h; i++) {
+        unsigned char v = mask[(size_t)i] ? 255 : 0;
+        rgba[(size_t)i * 4 + 0] = v;
+        rgba[(size_t)i * 4 + 1] = v;
+        rgba[(size_t)i * 4 + 2] = v;
+        rgba[(size_t)i * 4 + 3] = 255;
+    }
+    std::string path = sheet_join_path(out_dir, "mask.png");
+    stbi_write_png(path.c_str(), w, h, 4, rgba.data(), w * 4);
+}
+
+static void sheet_write_overlay_png(const char *out_dir,
+                                    const unsigned char *src, int w, int h,
+                                    const std::vector<SheetFrameCandidate> &frames)
+{
+    if (!src || w <= 0 || h <= 0) return;
+    std::vector<unsigned char> rgba(src, src + (size_t)w * h * 4);
+    static const unsigned char colors[][3] = {
+        {255,  64,  64}, { 64, 220, 255}, {255, 210,  64}, {120, 255, 120},
+        {220, 120, 255}, {255, 150,  64}, { 64, 128, 255}, {255,  80, 180}
+    };
+    for (int i = 0; i < (int)frames.size(); i++) {
+        const SheetFrameCandidate &f = frames[(size_t)i];
+        const unsigned char *c = colors[i % (int)(sizeof(colors) / sizeof(colors[0]))];
+        sheet_draw_rect(rgba, w, h, f.x0, f.y0, f.x1, f.y1, c[0], c[1], c[2]);
+    }
+    std::string path = sheet_join_path(out_dir, "overlay.png");
+    stbi_write_png(path.c_str(), w, h, 4, rgba.data(), w * 4);
+}
+
+static bool build_sheet_candidate_rgba(const unsigned char *rgba,
+                                       int sheet_w, int sheet_h,
+                                       const SheetFrameCandidate &candidate,
+                                       const SpriteSheetImportOptions *opts,
+                                       std::vector<unsigned char> &out,
+                                       int *out_w, int *out_h)
+{
+    if (!rgba || !out_w || !out_h) return false;
+    int threshold = sheet_clamp_int(opts ? opts->background_threshold : 245, 180, 255);
+    int pad = opts ? opts->padding : 2;
+    if (pad < 0) pad = 0;
+
+    int x0 = sheet_clamp_int(candidate.x0 - pad, 0, sheet_w - 1);
+    int y0 = sheet_clamp_int(candidate.y0 - pad, 0, sheet_h - 1);
+    int x1 = sheet_clamp_int(candidate.x1 + pad, 0, sheet_w - 1);
+    int y1 = sheet_clamp_int(candidate.y1 + pad, 0, sheet_h - 1);
+    int cw = x1 - x0 + 1;
+    int ch = y1 - y0 + 1;
+
+    std::vector<unsigned char> bg;
+    if (!build_sheet_bg_mask(rgba, sheet_w, sheet_h, x0, y0, cw, ch, threshold, bg))
+        return false;
+
+    int tx0 = cw, ty0 = ch, tx1 = -1, ty1 = -1;
+    for (int y = 0; y < ch; y++) {
+        for (int x = 0; x < cw; x++) {
+            const unsigned char *p = rgba + ((size_t)(y0 + y) * sheet_w + (x0 + x)) * 4;
+            if (p[3] < 128 || bg[(size_t)y * cw + x]) continue;
+            if (x < tx0) tx0 = x; if (x > tx1) tx1 = x;
+            if (y < ty0) ty0 = y; if (y > ty1) ty1 = y;
+        }
+    }
+    if (tx1 < tx0 || ty1 < ty0) return false;
+    if (!(opts && opts->crop)) {
+        tx0 = 0; ty0 = 0; tx1 = cw - 1; ty1 = ch - 1;
+    }
+
+    *out_w = tx1 - tx0 + 1;
+    *out_h = ty1 - ty0 + 1;
+    out.assign((size_t)(*out_w) * (*out_h) * 4, 0);
+    for (int y = 0; y < *out_h; y++) {
+        for (int x = 0; x < *out_w; x++) {
+            int lx = tx0 + x;
+            int ly = ty0 + y;
+            const unsigned char *p = rgba + ((size_t)(y0 + ly) * sheet_w + (x0 + lx)) * 4;
+            unsigned char *d = out.data() + ((size_t)y * (*out_w) + x) * 4;
+            if (p[3] < 128 || bg[(size_t)ly * cw + lx]) {
+                d[0] = d[1] = d[2] = d[3] = 0;
+            } else {
+                d[0] = p[0];
+                d[1] = p[1];
+                d[2] = p[2];
+                d[3] = 255;
+            }
+        }
+    }
+    return true;
+}
+
+static void sheet_write_candidate_pngs(const char *out_dir,
+                                       const unsigned char *rgba,
+                                       int sheet_w, int sheet_h,
+                                       const std::vector<SheetFrameCandidate> &frames,
+                                       const SpriteSheetImportOptions *opts)
+{
+    for (int i = 0; i < (int)frames.size(); i++) {
+        std::vector<unsigned char> crop;
+        int cw = 0, ch = 0;
+        if (!build_sheet_candidate_rgba(rgba, sheet_w, sheet_h,
+                                        frames[(size_t)i], opts,
+                                        crop, &cw, &ch))
+            continue;
+        char name[64];
+        char frame_name[16];
+        make_sheet_frame_name(opts ? opts->name_prefix : "FRAME",
+                              frames[(size_t)i].row, frames[(size_t)i].frame,
+                              frame_name);
+        snprintf(name, sizeof(name), "%03d_%s.png", i + 1, frame_name);
+        std::string path = sheet_join_path(out_dir, name);
+        stbi_write_png(path.c_str(), cw, ch, 4, crop.data(), cw * 4);
+    }
+}
+
+static void sheet_write_report_txt(const char *out_dir, const char *src_path,
+                                   int w, int h,
+                                   const SheetDetectTrace &trace,
+                                   const std::vector<SheetFrameCandidate> &frames)
+{
+    std::string path = sheet_join_path(out_dir, "report.txt");
+    FILE *f = fopen(path.c_str(), "wb");
+    if (!f) return;
+    fprintf(f, "Sprite Sheet Debug Report\n");
+    fprintf(f, "Source: %s\n", src_path ? src_path : "(null)");
+    fprintf(f, "Size: %dx%d\n", w, h);
+    fprintf(f, "Raw islands: %d\n", trace.raw_islands);
+    fprintf(f, "Line rows removed: %d\n", trace.line_rows);
+    fprintf(f, "Line columns removed: %d\n", trace.line_cols);
+    fprintf(f, "Accepted frames: %d\n\n", (int)frames.size());
+    for (int i = 0; i < (int)frames.size(); i++) {
+        const SheetFrameCandidate &c = frames[(size_t)i];
+        fprintf(f, "%03d row=%d frame=%d box=%d,%d..%d,%d size=%dx%d pixels=%d islands=%d\n",
+                i + 1, c.row, c.frame, c.x0, c.y0, c.x1, c.y1,
+                c.x1 - c.x0 + 1, c.y1 - c.y0 + 1, c.pixels, c.islands);
+    }
+    fclose(f);
+}
+
 static int clamp255(int v)
 {
     return v < 0 ? 0 : (v > 255 ? 255 : v);
@@ -2712,6 +3884,181 @@ void ImportPngMatch(const char *path)
     if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
     g_img_tex_idx = -2;
     verbose_log("  -> %dx%d px, matched to palette %u", w, h, pal->numc);
+}
+
+int ImportSpriteSheetMatch(const char *path, const SpriteSheetImportOptions *options)
+{
+    verbose_log("ImportSpriteSheetMatch: %s", path ? path : "(null)");
+
+    SpriteSheetImportOptions opt = {
+        SpriteSheetDetect_Auto,
+        245,
+        160,
+        2,
+        true,
+        "FRAME"
+    };
+    if (options) {
+        opt = *options;
+        opt.name_prefix[sizeof(opt.name_prefix) - 1] = '\0';
+    }
+    opt.background_threshold = sheet_clamp_int(opt.background_threshold, 180, 255);
+    if (opt.min_pixels < 1) opt.min_pixels = 1;
+    if (opt.padding < 0) opt.padding = 0;
+    if (opt.detect_mode != SpriteSheetDetect_Auto &&
+        opt.detect_mode != SpriteSheetDetect_Islands)
+        opt.detect_mode = SpriteSheetDetect_Auto;
+
+    IMG *active_img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    unsigned short palnum = 0xFFFF;
+    if (active_img && get_pal(active_img->palnum))
+        palnum = active_img->palnum;
+    else if (g_doc->plselected >= 0 && get_pal(g_doc->plselected))
+        palnum = (unsigned short)g_doc->plselected;
+
+    SheetPaletteMatch palctx;
+    if (palnum == 0xFFFF || !init_sheet_palette_match(&palctx, palnum)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Sprite sheet import needs an active palette.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
+    if (!data || w <= 0 || h <= 0) {
+        if (data) stbi_image_free(data);
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Sprite sheet import failed: could not read image.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    std::vector<SheetFrameCandidate> frames;
+    detect_sheet_candidates(data, w, h, &opt, frames);
+    if (frames.empty()) {
+        stbi_image_free(data);
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No sprites detected. Try lowering Min Pixels or Background.");
+        g_restore_msg_timer = 5.0f;
+        verbose_log("  -> no sprite candidates detected (%dx%d)", w, h);
+        return 0;
+    }
+
+    int imported = 0;
+    for (const SheetFrameCandidate &frame : frames) {
+        if (import_sheet_candidate(data, w, h, frame, &palctx, &opt))
+            imported++;
+    }
+    stbi_image_free(data);
+
+    if (imported > 0) {
+        g_doc->plselected = (int)palctx.palnum;
+        if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
+        g_img_tex_idx = -2;
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Imported %d/%d sprite sheet frame(s) to palette %u.",
+                 imported, (int)frames.size(), palctx.palnum);
+        verbose_log("  -> %dx%d px, %d/%d frames matched to palette %u",
+                    w, h, imported, (int)frames.size(), palctx.palnum);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Sprite sheet import failed: no frames imported.");
+    }
+    g_restore_msg_timer = 4.0f;
+    return imported;
+}
+
+int AnalyzeSpriteSheet(const char *path, const SpriteSheetImportOptions *options,
+                       SpriteSheetDebugReport *report)
+{
+    if (report) {
+        report->sheet_w = report->sheet_h = 0;
+        report->raw_islands = 0;
+        report->accepted_frames = 0;
+        report->line_rows = report->line_cols = 0;
+        report->frames.clear();
+    }
+
+    SpriteSheetImportOptions opt = {
+        SpriteSheetDetect_Auto,
+        245,
+        160,
+        2,
+        true,
+        "FRAME"
+    };
+    if (options) {
+        opt = *options;
+        opt.name_prefix[sizeof(opt.name_prefix) - 1] = '\0';
+    }
+    opt.background_threshold = sheet_clamp_int(opt.background_threshold, 180, 255);
+    if (opt.min_pixels < 1) opt.min_pixels = 1;
+    if (opt.padding < 0) opt.padding = 0;
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
+    if (!data || w <= 0 || h <= 0) {
+        if (data) stbi_image_free(data);
+        return 0;
+    }
+
+    SheetDetectTrace trace;
+    std::vector<SheetFrameCandidate> frames;
+    detect_sheet_candidates(data, w, h, &opt, frames, &trace);
+    fill_sheet_debug_report(report, w, h, trace, frames);
+    stbi_image_free(data);
+    return (int)frames.size();
+}
+
+int DebugSpriteSheetImport(const char *path, const char *output_dir,
+                           const SpriteSheetImportOptions *options,
+                           SpriteSheetDebugReport *report)
+{
+    if (report) {
+        report->sheet_w = report->sheet_h = 0;
+        report->raw_islands = 0;
+        report->accepted_frames = 0;
+        report->line_rows = report->line_cols = 0;
+        report->frames.clear();
+    }
+    if (!ensure_sheet_debug_dir(output_dir)) return 0;
+
+    SpriteSheetImportOptions opt = {
+        SpriteSheetDetect_Auto,
+        245,
+        160,
+        2,
+        true,
+        "FRAME"
+    };
+    if (options) {
+        opt = *options;
+        opt.name_prefix[sizeof(opt.name_prefix) - 1] = '\0';
+    }
+    opt.background_threshold = sheet_clamp_int(opt.background_threshold, 180, 255);
+    if (opt.min_pixels < 1) opt.min_pixels = 1;
+    if (opt.padding < 0) opt.padding = 0;
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
+    if (!data || w <= 0 || h <= 0) {
+        if (data) stbi_image_free(data);
+        return 0;
+    }
+
+    SheetDetectTrace trace;
+    std::vector<SheetFrameCandidate> frames;
+    detect_sheet_candidates(data, w, h, &opt, frames, &trace);
+    fill_sheet_debug_report(report, w, h, trace, frames);
+
+    sheet_write_mask_png(output_dir, w, h, trace.mask);
+    sheet_write_overlay_png(output_dir, data, w, h, frames);
+    sheet_write_candidate_pngs(output_dir, data, w, h, frames, &opt);
+    sheet_write_report_txt(output_dir, path, w, h, trace, frames);
+
+    stbi_image_free(data);
+    return (int)frames.size();
 }
 
 /* ---- GIF Import ---- */

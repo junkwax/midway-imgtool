@@ -106,6 +106,8 @@ static bool g_icon_font_loaded = false;
 #define ICON_UNDO     "\xEE\x85\xA6"     /* U+E166 undo */
 #define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
 #define ICON_RESIZE   "\xEE\xA1\x9B"     /* U+E85B aspect_ratio */
+#define ICON_ZOOM_IN  "\xEE\xA3\xBF"     /* U+E8FF zoom_in */
+#define ICON_ZOOM_OUT "\xEE\xA4\x80"     /* U+E900 zoom_out */
 #define ICON_LOCK     "\xEE\xA2\x97"     /* U+E897 lock */
 #define ICON_UNLOCK   "\xEE\xA2\x98"     /* U+E898 lock_open */
 #define ICON_SUBFRAME "\xEE\x97\x9A"     /* U+E5DA subdirectory_arrow_right */
@@ -124,6 +126,8 @@ static bool g_icon_font_loaded = false;
 #define ICON_UNDO_TXT     "Uz"
 #define ICON_REDO_TXT     "Ry"
 #define ICON_RESIZE_TXT   "Sz"
+#define ICON_ZOOM_IN_TXT  "Z+"
+#define ICON_ZOOM_OUT_TXT "Z-"
 #define ICON_LOCK_TXT     "Lk"
 #define ICON_UNLOCK_TXT   "Un"
 #define ICON_SUBFRAME_TXT "|-"
@@ -138,9 +142,111 @@ extern int           g_img_tex_idx;
 static float g_zoom       = 1.0f;
 static float g_pan_x      = 0.0f;
 static float g_pan_y      = 0.0f;
+static bool  g_zoom_fit   = true;
 static bool  g_zoom_reset = true;
+static float g_zoom_wheel_accum = 0.0f;
+static int   g_zoom_pending_steps = 0;
+static bool  g_zoom_pending_fit = false;
 static unsigned char *g_pixel_undo = NULL;
 static int            g_pixel_undo_img = -1;  /* -2 = never built */
+
+static float ZoomFitScaleForAvailable(const ImVec2 &avail)
+{
+    if (g_img_tex_w <= 0 || g_img_tex_h <= 0) return 1.0f;
+    float fitscale = (float)(int)(avail.x / (float)g_img_tex_w);
+    if (fitscale < 1.0f) fitscale = 1.0f;
+    float fith = (float)g_img_tex_h * fitscale;
+    if (fith > avail.y) fitscale = (float)(int)(avail.y / (float)g_img_tex_h);
+    if (fitscale < 1.0f) fitscale = 1.0f;
+    return fitscale;
+}
+
+static float ZoomDisplayScaleForAvailable(const ImVec2 &avail)
+{
+    if (g_zoom_fit) return ZoomFitScaleForAvailable(avail);
+    if (g_zoom < 1.0f) return 1.0f;
+    if (g_zoom > 32.0f) return 32.0f;
+    return g_zoom;
+}
+
+static void ZoomImageRectForAvailable(const ImVec2 &avail, const ImVec2 &origin,
+                                      ImVec2 *pos, ImVec2 *size, float *scale_out)
+{
+    float scale = ZoomDisplayScaleForAvailable(avail);
+    float tw = (float)g_img_tex_w * scale;
+    float th = (float)g_img_tex_h * scale;
+    if (pos) {
+        pos->x = origin.x + (avail.x - tw) * 0.5f + g_pan_x;
+        pos->y = origin.y + (avail.y - th) * 0.5f + g_pan_y;
+    }
+    if (size) *size = ImVec2(tw, th);
+    if (scale_out) *scale_out = scale;
+}
+
+static float ZoomNextLevel(float current, int dir)
+{
+    static const float levels[] = {
+        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f, 10.0f,
+        12.0f, 16.0f, 24.0f, 32.0f
+    };
+    if (dir > 0) {
+        if (current >= 32.0f) return current;
+        if (current < 1.0f) current = 1.0f;
+        for (float level : levels)
+            if (level > current + 0.001f) return level;
+        return 32.0f;
+    }
+    if (dir < 0) {
+        if (current > 32.0f) return 32.0f;
+        if (current < 1.0f) current = 1.0f;
+        for (int i = (int)(sizeof(levels) / sizeof(levels[0])) - 1; i >= 0; i--)
+            if (levels[i] < current - 0.001f) return levels[i];
+        return 1.0f;
+    }
+    return current;
+}
+
+static void ResetZoomToFit(void)
+{
+    g_zoom = 1.0f;
+    g_pan_x = 0.0f;
+    g_pan_y = 0.0f;
+    g_zoom_fit = true;
+    g_zoom_reset = false;
+    g_zoom_wheel_accum = 0.0f;
+}
+
+static void QueueZoomStep(int dir)
+{
+    if (dir > 0) g_zoom_pending_steps++;
+    else if (dir < 0) g_zoom_pending_steps--;
+}
+
+static void QueueZoomFit(void)
+{
+    g_zoom_pending_fit = true;
+    g_zoom_pending_steps = 0;
+}
+
+static bool ApplyZoomScale(float old_scale, float new_scale,
+                           const ImVec2 &anchor, const ImVec2 &old_pos,
+                           const ImVec2 &old_size)
+{
+    if (old_scale <= 0.0f) old_scale = 1.0f;
+    if (new_scale < 1.0f) new_scale = 1.0f;
+    if (new_scale > 32.0f) new_scale = 32.0f;
+    if (fabsf(new_scale - old_scale) < 0.001f) return false;
+
+    float cx = old_pos.x + old_size.x * 0.5f;
+    float cy = old_pos.y + old_size.y * 0.5f;
+    float ratio = new_scale / old_scale;
+    g_pan_x = (g_pan_x + cx - anchor.x) * ratio - (cx - anchor.x);
+    g_pan_y = (g_pan_y + cy - anchor.y) * ratio - (cy - anchor.y);
+    g_zoom = new_scale;
+    g_zoom_fit = false;
+    g_zoom_reset = false;
+    return true;
+}
 
 /* Per-stroke pixel history. Stack of pre-stroke snapshots: each entry
    captures the full pixel buffer of one image at the moment a paint
@@ -277,6 +383,9 @@ struct CopiedImage {
     unsigned short anix, aniy;
     unsigned short anix2, aniy2, aniz2;
     unsigned short opals;
+    bool           has_palette;
+    unsigned short palette_numc;
+    unsigned char  palette_data[512];
     char           source_name[16];
     char           src_filename[16];
 };
@@ -286,6 +395,69 @@ static void ClearPixelClipboard(void)
 {
     if (g_clipboard.data_p) free(g_clipboard.data_p);
     memset(&g_clipboard, 0, sizeof(g_clipboard));
+}
+
+static unsigned short palette_word_at(const unsigned char *data, int idx)
+{
+    return (unsigned short)(data[idx * 2] | (data[idx * 2 + 1] << 8));
+}
+
+static int palette_word_distance_sq(unsigned short a, unsigned short b)
+{
+    int ar = (a >> 10) & 0x1F, ag = (a >> 5) & 0x1F, ab = a & 0x1F;
+    int br = (b >> 10) & 0x1F, bg = (b >> 5) & 0x1F, bb = b & 0x1F;
+    int dr = ar - br, dg = ag - bg, db = ab - bb;
+    return dr * dr + dg * dg + db * db;
+}
+
+static unsigned char nearest_palette_index_for_word(unsigned short src_word,
+                                                    const PAL *target_pal)
+{
+    if (!target_pal || !target_pal->data_p || target_pal->numc <= 1) return 0;
+    const unsigned char *td = (const unsigned char *)target_pal->data_p;
+    int n = target_pal->numc;
+    if (n > 256) n = 256;
+
+    int best_idx = 1;
+    int best_dist = 0x7FFFFFFF;
+    for (int i = 1; i < n; i++) {
+        int dist = palette_word_distance_sq(src_word, palette_word_at(td, i));
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_idx = i;
+            if (dist == 0) break;
+        }
+    }
+    return (unsigned char)best_idx;
+}
+
+static bool BuildClipboardPaletteMap(const PAL *target_pal, unsigned char map[256])
+{
+    for (int i = 0; i < 256; i++) map[i] = (unsigned char)i;
+    if (!g_clipboard.has_palette || !target_pal || !target_pal->data_p)
+        return false;
+
+    int src_n = g_clipboard.palette_numc;
+    int dst_n = target_pal->numc;
+    if (src_n > 256) src_n = 256;
+    if (dst_n > 256) dst_n = 256;
+    if (src_n <= 0 || dst_n <= 0) return false;
+
+    const unsigned char *td = (const unsigned char *)target_pal->data_p;
+    if (src_n == dst_n &&
+        memcmp(g_clipboard.palette_data, td, (size_t)src_n * 2u) == 0)
+        return false;
+
+    map[0] = 0;
+    for (int i = 1; i < 256; i++) {
+        if (i < src_n) {
+            unsigned short src_word = palette_word_at(g_clipboard.palette_data, i);
+            map[i] = nearest_palette_index_for_word(src_word, target_pal);
+        } else {
+            map[i] = (i < dst_n) ? (unsigned char)i : 0;
+        }
+    }
+    return true;
 }
 
 /* ---- Palette clipboard ----
@@ -449,6 +621,10 @@ struct GridSelection {
     std::vector<bool> pixel_mask; /* the actual selected pixels */
 };
 static GridSelection g_grid_sel = {false, false, 0, 0, 0, 0, false, 0, 0, {}};
+static bool g_selection_add_drag = false;
+static int  g_selection_add_mask_w = 0;
+static int  g_selection_add_mask_h = 0;
+static std::vector<bool> g_selection_add_mask;
 
 /* Active tool state */
 enum class ActiveTool { None, Pencil, PaintBucket, VariantPaint, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper };
@@ -840,7 +1016,7 @@ void imgtool_toggle_timeline_play(void)
 }
 
 /* Magic Wand state */
-static int  g_wand_tolerance = 0;       /* 0..16, palette-index distance */
+static int  g_wand_tolerance = 0;       /* 0..64, palette-index distance */
 static bool g_wand_contiguous = true;   /* false = select all matching pixels globally */
 
 /* Background Eraser ("Smart Eraser") state */
@@ -885,6 +1061,7 @@ static PastedImage g_pasted = {false};
    for the rest of the session, Shift inverts it temporarily for one drag. */
 enum class TransformHandle {
     None,
+    Rotate,
     TL, T, TR,
     L,      R,
     BL, B, BR
@@ -897,14 +1074,17 @@ struct FreeTransform {
     /* Snapshot taken when Ctrl+T was pressed — used to compute the scale
        factor for the final nearest-neighbor resample, and to revert on Esc. */
     int          start_x, start_y, start_w, start_h;
+    float        angle_deg;
+    float        start_angle_deg;
     /* Per-drag state. */
     TransformHandle handle;
     float        drag_mx, drag_my;
     int          drag_rx, drag_ry, drag_rw, drag_rh;
+    float        drag_angle_deg;
     /* Reference aspect ratio captured at drag-start (w / h). */
     float        ref_aspect;
 };
-static FreeTransform g_xform = {false, true, 0,0,0,0, 0,0,0,0, TransformHandle::None, 0,0, 0,0,0,0, 1.0f};
+static FreeTransform g_xform = {false, true, 0,0,0,0, 0,0,0,0, 0.0f,0.0f, TransformHandle::None, 0,0, 0,0,0,0, 0.0f, 1.0f};
 
 static void ApplyPalette(int pal_idx);
 static void save_palette_baseline(void);
@@ -7031,6 +7211,1846 @@ static void ApplySelectionRemapToMatchingSprites(void)
     g_restore_msg_timer = 5.0f;
 }
 
+/* ---- Marked Likeness Transfer ----
+   One marked sprite acts as the source "look"; the selected sprite keeps its
+   own silhouette and pose, but is recolored through normalized body-space
+   samples from the source. This is deliberately deterministic and palette-
+   native: no ML dependency, no bitmap import round-trip, undoable as one doc
+   operation. */
+struct LikenessBBox {
+    int x1, y1, x2, y2;
+    int w, h;
+    float anchor_u, anchor_v;
+    bool anchor_ok;
+};
+
+struct LikenessSample {
+    float u, v;
+    int x, y;
+    unsigned char idx;
+    int r, g, b, luma;
+};
+
+struct LikenessColor {
+    unsigned char idx;
+    float r, g, b, luma;
+    bool found;
+};
+
+static bool LikenessOpaqueBBox(IMG *img, LikenessBBox *bbox)
+{
+    if (!img || !img->data_p || !bbox || img->w == 0 || img->h == 0)
+        return false;
+
+    int min_x = img->w, min_y = img->h, max_x = -1, max_y = -1;
+    int stride = (img->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            if (pix[y * stride + x] == 0) continue;
+            if (x < min_x) min_x = x;
+            if (x > max_x) max_x = x;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
+    }
+    if (max_x < min_x || max_y < min_y) return false;
+
+    bbox->x1 = min_x; bbox->y1 = min_y;
+    bbox->x2 = max_x; bbox->y2 = max_y;
+    bbox->w = max_x - min_x + 1;
+    bbox->h = max_y - min_y + 1;
+
+    float span_x = (bbox->w > 1) ? (float)(bbox->w - 1) : 1.0f;
+    float span_y = (bbox->h > 1) ? (float)(bbox->h - 1) : 1.0f;
+    bbox->anchor_u = ((float)(short)img->anix - (float)bbox->x1) / span_x;
+    bbox->anchor_v = ((float)(short)img->aniy - (float)bbox->y1) / span_y;
+    bbox->anchor_ok = bbox->anchor_u >= -0.25f && bbox->anchor_u <= 1.25f &&
+                      bbox->anchor_v >= -0.25f && bbox->anchor_v <= 1.25f;
+    return true;
+}
+
+static int LikenessWordLuma8(unsigned short word)
+{
+    int r = (int)((word >> 10) & 0x1F) * 255 / 31;
+    int g = (int)((word >>  5) & 0x1F) * 255 / 31;
+    int b = (int)( word        & 0x1F) * 255 / 31;
+    return (r * 54 + g * 183 + b * 19) >> 8;
+}
+
+static void LikenessWordRgb8(unsigned short word, int *r, int *g, int *b)
+{
+    if (r) *r = (int)((word >> 10) & 0x1F) * 255 / 31;
+    if (g) *g = (int)((word >>  5) & 0x1F) * 255 / 31;
+    if (b) *b = (int)( word        & 0x1F) * 255 / 31;
+}
+
+static void LikenessBuildSamples(IMG *src, PAL *src_pal,
+                                 const LikenessBBox &bbox,
+                                 std::vector<LikenessSample> &samples,
+                                 bool used_slots[256],
+                                 int *mean_luma)
+{
+    samples.clear();
+    memset(used_slots, 0, sizeof(bool) * 256);
+    if (mean_luma) *mean_luma = 128;
+    if (!src || !src->data_p || !src_pal || !src_pal->data_p) return;
+
+    int stride = (src->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)src->data_p;
+    float span_x = (bbox.w > 1) ? (float)(bbox.w - 1) : 1.0f;
+    float span_y = (bbox.h > 1) ? (float)(bbox.h - 1) : 1.0f;
+    long long luma_sum = 0;
+
+    samples.reserve((size_t)bbox.w * bbox.h / 2);
+    for (int y = bbox.y1; y <= bbox.y2; y++) {
+        for (int x = bbox.x1; x <= bbox.x2; x++) {
+            unsigned char ci = pix[y * stride + x];
+            if (ci == 0) continue;
+            unsigned short word = pal_word_or_black(src_pal, ci);
+            int r, g, b;
+            LikenessWordRgb8(word, &r, &g, &b);
+            int luma = LikenessWordLuma8(word);
+            LikenessSample s = {};
+            s.u = ((float)x - (float)bbox.x1) / span_x;
+            s.v = ((float)y - (float)bbox.y1) / span_y;
+            s.x = x;
+            s.y = y;
+            s.idx = ci;
+            s.r = r; s.g = g; s.b = b; s.luma = luma;
+            samples.push_back(s);
+            used_slots[ci] = true;
+            luma_sum += luma;
+        }
+    }
+    if (mean_luma && !samples.empty())
+        *mean_luma = (int)(luma_sum / (long long)samples.size());
+}
+
+static float LikenessMaskScore(IMG *target, const LikenessBBox &tb,
+                               const std::vector<LikenessSample> &samples,
+                               bool mirror)
+{
+    const int G = 32;
+    bool src_occ[G * G] = {};
+    for (const LikenessSample &s : samples) {
+        float u = mirror ? (1.0f - s.u) : s.u;
+        int bx = (int)(u * (G - 1) + 0.5f);
+        int by = (int)(s.v * (G - 1) + 0.5f);
+        if (bx < 0) bx = 0; if (bx >= G) bx = G - 1;
+        if (by < 0) by = 0; if (by >= G) by = G - 1;
+        src_occ[by * G + bx] = true;
+    }
+
+    int stride = (target->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)target->data_p;
+    float span_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float span_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    float score = 0.0f;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            if (pix[y * stride + x] == 0) continue;
+            int bx = (int)((((float)x - tb.x1) / span_x) * (G - 1) + 0.5f);
+            int by = (int)((((float)y - tb.y1) / span_y) * (G - 1) + 0.5f);
+            if (bx < 0) bx = 0; if (bx >= G) bx = G - 1;
+            if (by < 0) by = 0; if (by >= G) by = G - 1;
+            if (src_occ[by * G + bx]) {
+                score += 2.0f;
+            } else {
+                bool has_near_source = false;
+                for (int dy = -1; dy <= 1 && !has_near_source; dy++) {
+                    for (int dx = -1; dx <= 1 && !has_near_source; dx++) {
+                        int nx = bx + dx, ny = by + dy;
+                        if (nx < 0 || nx >= G || ny < 0 || ny >= G) continue;
+                        if (src_occ[ny * G + nx]) has_near_source = true;
+                    }
+                }
+                if (has_near_source) score += 0.75f;
+            }
+        }
+    }
+    return score;
+}
+
+static int LikenessNearestUsedSlot(PAL *pal, const bool used_slots[256],
+                                   int r, int g, int b)
+{
+    if (!pal || !pal->data_p) return 0;
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    unsigned short desired = rgb_to_word15((unsigned char)r,
+                                           (unsigned char)g,
+                                           (unsigned char)b);
+    int count = pal->numc;
+    if (count > 256) count = 256;
+    int best = 0;
+    int best_dist = 0x7FFFFFFF;
+    for (int i = 1; i < count; i++) {
+        if (!used_slots[i]) continue;
+        int dist = PaletteColorDistance5(desired, pal_word_or_black(pal, i));
+        if (dist < best_dist) {
+            best_dist = dist;
+            best = i;
+            if (dist == 0) break;
+        }
+    }
+    if (best > 0) return best;
+    return FindNearestPaletteSlot(pal, desired);
+}
+
+static bool LikenessSampleSourceColor(const std::vector<LikenessSample> &samples,
+                                      const std::vector<std::vector<int>> &bins,
+                                      float u, float v,
+                                      LikenessColor *out)
+{
+    if (out) *out = {};
+    if (samples.empty() || !out) return false;
+    const int G = 32;
+    const float radii[] = { 0.055f, 0.095f, 0.16f, 0.27f };
+    for (float radius : radii) {
+        float r2 = radius * radius;
+        int bx0 = (int)((u - radius) * G);
+        int bx1 = (int)((u + radius) * G);
+        int by0 = (int)((v - radius) * G);
+        int by1 = (int)((v + radius) * G);
+        if (bx0 < 0) bx0 = 0; if (bx1 >= G) bx1 = G - 1;
+        if (by0 < 0) by0 = 0; if (by1 >= G) by1 = G - 1;
+
+        double wr = 0.0, wg = 0.0, wb = 0.0, wl = 0.0, wsum = 0.0;
+        const LikenessSample *nearest = NULL;
+        float nearest_d2 = 9999.0f;
+        for (int by = by0; by <= by1; by++) {
+            for (int bx = bx0; bx <= bx1; bx++) {
+                const std::vector<int> &bucket = bins[by * G + bx];
+                for (int si : bucket) {
+                    const LikenessSample &s = samples[si];
+                    float dx = (s.u - u) * 1.12f;
+                    float dy = s.v - v;
+                    float d2 = dx * dx + dy * dy;
+                    if (d2 > r2) continue;
+                    if (d2 < nearest_d2) {
+                        nearest_d2 = d2;
+                        nearest = &s;
+                    }
+                    double wt = 1.0 / (0.0009 + (double)d2);
+                    wr += (double)s.r * wt;
+                    wg += (double)s.g * wt;
+                    wb += (double)s.b * wt;
+                    wl += (double)s.luma * wt;
+                    wsum += wt;
+                }
+            }
+        }
+        if (wsum > 0.0) {
+            out->r = (float)(wr / wsum);
+            out->g = (float)(wg / wsum);
+            out->b = (float)(wb / wsum);
+            out->luma = (float)(wl / wsum);
+            if (nearest) {
+                out->r = out->r * 0.65f + nearest->r * 0.35f;
+                out->g = out->g * 0.65f + nearest->g * 0.35f;
+                out->b = out->b * 0.65f + nearest->b * 0.35f;
+                out->luma = out->luma * 0.65f + nearest->luma * 0.35f;
+                out->idx = nearest->idx;
+            }
+            out->found = true;
+            return true;
+        }
+    }
+
+    const LikenessSample *nearest = &samples[0];
+    float best_d2 = 9999.0f;
+    for (const LikenessSample &s : samples) {
+        float dx = (s.u - u) * 1.12f;
+        float dy = s.v - v;
+        float d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            nearest = &s;
+        }
+    }
+    out->r = (float)nearest->r;
+    out->g = (float)nearest->g;
+    out->b = (float)nearest->b;
+    out->luma = (float)nearest->luma;
+    out->idx = nearest->idx;
+    out->found = true;
+    return true;
+}
+
+struct LikenessPartBox {
+    int x1, y1, x2, y2;
+    int count;
+    float cx, cy;
+    bool valid;
+};
+
+static int LikenessClampInt(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static int LikenessAbsInt(int v)
+{
+    return v < 0 ? -v : v;
+}
+
+static void LikenessPaletteRgb(PAL *pal, unsigned char ci,
+                               int *r, int *g, int *b, int *luma)
+{
+    unsigned short word = pal_word_or_black(pal, ci);
+    int rr, gg, bb;
+    LikenessWordRgb8(word, &rr, &gg, &bb);
+    if (r) *r = rr;
+    if (g) *g = gg;
+    if (b) *b = bb;
+    if (luma) *luma = LikenessWordLuma8(word);
+}
+
+static bool LikenessIsGoldPixel(PAL *pal, unsigned char ci)
+{
+    if (!pal || ci == 0) return false;
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    return luma >= 48 && luma <= 212 &&
+           r >= 82 && g >= 50 &&
+           r > b + 34 && g > b + 16 &&
+           r >= g - 28;
+}
+
+static bool LikenessIsHeadPixel(PAL *pal, unsigned char ci)
+{
+    if (!pal || ci == 0) return false;
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    int mn = r < g ? r : g; if (b < mn) mn = b;
+    int mx = r > g ? r : g; if (b > mx) mx = b;
+    int chroma = mx - mn;
+
+    bool pale_hair = luma >= 108 && chroma <= 88;
+    bool skin = luma >= 78 &&
+                r >= g - 18 && g >= b - 34 &&
+                r > b + 10 && chroma <= 132;
+    bool hot_gold = LikenessIsGoldPixel(pal, ci) && b < 72 && luma < 150;
+    return (pale_hair || skin) && !hot_gold;
+}
+
+static int LikenessTransparentNeighborCount(const unsigned char *pix,
+                                            int w, int h, int stride,
+                                            int x, int y)
+{
+    int n = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h ||
+                pix[(size_t)ny * stride + nx] == 0)
+                n++;
+        }
+    }
+    return n;
+}
+
+static bool LikenessHasLocalContrast(const unsigned char *pix,
+                                     int w, int h, int stride,
+                                     int x, int y, PAL *pal)
+{
+    if (!pix || !pal) return false;
+    unsigned char ci = pix[(size_t)y * stride + x];
+    if (ci == 0) return false;
+    unsigned short self = pal_word_or_black(pal, ci);
+    int self_luma = LikenessWordLuma8(self);
+    int max_dist = 0;
+    int max_luma_delta = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            unsigned char ni = pix[(size_t)ny * stride + nx];
+            if (ni == 0 || ni == ci) continue;
+            unsigned short nw = pal_word_or_black(pal, ni);
+            int dist = PaletteColorDistance5(self, nw);
+            int ld = self_luma - LikenessWordLuma8(nw);
+            if (ld < 0) ld = -ld;
+            if (dist > max_dist) max_dist = dist;
+            if (ld > max_luma_delta) max_luma_delta = ld;
+        }
+    }
+    return max_dist >= 86 || max_luma_delta >= 34;
+}
+
+static bool LikenessFindHeadPart(const unsigned char *pix,
+                                 int w, int h, int stride,
+                                 PAL *pal,
+                                 const LikenessBBox &bbox,
+                                 bool prefer_top,
+                                 LikenessPartBox *out)
+{
+    if (out) *out = {};
+    if (!pix || !pal || !out) return false;
+
+    std::vector<unsigned char> visited((size_t)stride * h, 0);
+    std::vector<int> queue;
+    float best_score = -1.0f;
+    float span_y = (bbox.h > 1) ? (float)(bbox.h - 1) : 1.0f;
+
+    for (int y = bbox.y1; y <= bbox.y2; y++) {
+        for (int x = bbox.x1; x <= bbox.x2; x++) {
+            size_t off = (size_t)y * stride + x;
+            if (visited[off] || !LikenessIsHeadPixel(pal, pix[off])) continue;
+
+            int min_x = x, min_y = y, max_x = x, max_y = y;
+            int count = 0;
+            long long sum_x = 0, sum_y = 0;
+            queue.clear();
+            queue.push_back(y * stride + x);
+            visited[off] = 1;
+
+            for (size_t qi = 0; qi < queue.size(); qi++) {
+                int qoff = queue[qi];
+                int cy = qoff / stride;
+                int cx = qoff - cy * stride;
+                count++;
+                sum_x += cx;
+                sum_y += cy;
+                if (cx < min_x) min_x = cx;
+                if (cy < min_y) min_y = cy;
+                if (cx > max_x) max_x = cx;
+                if (cy > max_y) max_y = cy;
+
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (dx == 0 && dy == 0) continue;
+                        int nx = cx + dx;
+                        int ny = cy + dy;
+                        if (nx < bbox.x1 || nx > bbox.x2 ||
+                            ny < bbox.y1 || ny > bbox.y2)
+                            continue;
+                        size_t noff = (size_t)ny * stride + nx;
+                        if (visited[noff] || !LikenessIsHeadPixel(pal, pix[noff]))
+                            continue;
+                        visited[noff] = 1;
+                        queue.push_back(ny * stride + nx);
+                    }
+                }
+            }
+
+            if (count < 3) continue;
+            int bw = max_x - min_x + 1;
+            int bh = max_y - min_y + 1;
+            float cx = (float)sum_x / (float)count;
+            float cy = (float)sum_y / (float)count;
+            float norm_y = (cy - (float)bbox.y1) / span_y;
+            float density = (float)count / (float)(bw * bh);
+            float score = (float)count * (1.0f + density * 0.8f);
+            if (prefer_top) score *= 1.0f + (1.0f - norm_y) * 1.15f;
+            if (bw > bbox.w * 7 / 10 || bh > bbox.h * 5 / 10) score *= 0.45f;
+            if (prefer_top && norm_y > 0.70f) score *= 0.25f;
+
+            if (score > best_score) {
+                best_score = score;
+                out->x1 = min_x; out->y1 = min_y;
+                out->x2 = max_x; out->y2 = max_y;
+                out->count = count;
+                out->cx = cx; out->cy = cy;
+                out->valid = true;
+            }
+        }
+    }
+    return out->valid;
+}
+
+static void LikenessExpandPartBox(LikenessPartBox *box,
+                                  int w, int h, int px, int py)
+{
+    if (!box || !box->valid) return;
+    box->x1 = LikenessClampInt(box->x1 - px, 0, w - 1);
+    box->x2 = LikenessClampInt(box->x2 + px, 0, w - 1);
+    box->y1 = LikenessClampInt(box->y1 - py, 0, h - 1);
+    box->y2 = LikenessClampInt(box->y2 + py, 0, h - 1);
+}
+
+static bool LikenessPointInPartBox(const LikenessPartBox &box, int x, int y)
+{
+    return box.valid &&
+           x >= box.x1 && x <= box.x2 &&
+           y >= box.y1 && y <= box.y2;
+}
+
+static unsigned char LikenessNearestOpaqueInBox(const unsigned char *pix,
+                                                int w, int h, int stride,
+                                                const LikenessPartBox &box,
+                                                int x, int y)
+{
+    if (!pix || !box.valid) return 0;
+    x = LikenessClampInt(x, box.x1, box.x2);
+    y = LikenessClampInt(y, box.y1, box.y2);
+    unsigned char direct = pix[(size_t)y * stride + x];
+    if (direct != 0) return direct;
+
+    int max_radius = box.x2 - box.x1;
+    int bh = box.y2 - box.y1;
+    if (bh > max_radius) max_radius = bh;
+    if (max_radius > 4) max_radius = 4;
+    for (int r = 1; r <= max_radius; r++) {
+        unsigned char best = 0;
+        int best_d2 = 0x7FFFFFFF;
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                int sx = x + dx;
+                int sy = y + dy;
+                if (sx < box.x1 || sx > box.x2 ||
+                    sy < box.y1 || sy > box.y2 ||
+                    sx < 0 || sy < 0 || sx >= w || sy >= h)
+                    continue;
+                unsigned char ci = pix[(size_t)sy * stride + sx];
+                if (ci == 0) continue;
+                int d2 = dx * dx + dy * dy;
+                if (d2 < best_d2) {
+                    best_d2 = d2;
+                    best = ci;
+                }
+            }
+        }
+        if (best != 0) return best;
+    }
+    return 0;
+}
+
+static LikenessPartBox LikenessProjectPartBox(const LikenessPartBox &src_box,
+                                              const LikenessBBox &sb,
+                                              const LikenessBBox &tb,
+                                              bool mirror,
+                                              int target_w, int target_h)
+{
+    LikenessPartBox out = {};
+    if (!src_box.valid) return out;
+    float sxspan = (sb.w > 1) ? (float)(sb.w - 1) : 1.0f;
+    float syspan = (sb.h > 1) ? (float)(sb.h - 1) : 1.0f;
+    float txspan = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float tyspan = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+
+    float u1 = ((float)src_box.x1 - (float)sb.x1) / sxspan;
+    float u2 = ((float)src_box.x2 - (float)sb.x1) / sxspan;
+    if (mirror) {
+        float mu1 = 1.0f - u2;
+        float mu2 = 1.0f - u1;
+        u1 = mu1; u2 = mu2;
+    }
+    float v1 = ((float)src_box.y1 - (float)sb.y1) / syspan;
+    float v2 = ((float)src_box.y2 - (float)sb.y1) / syspan;
+
+    if (sb.anchor_ok && tb.anchor_ok) {
+        float src_anchor_u = mirror ? (1.0f - sb.anchor_u) : sb.anchor_u;
+        float du = 0.28f * (src_anchor_u - tb.anchor_u);
+        float dv = 0.24f * (sb.anchor_v - tb.anchor_v);
+        u1 -= du; u2 -= du;
+        v1 -= dv; v2 -= dv;
+    }
+
+    out.x1 = LikenessClampInt((int)(tb.x1 + u1 * txspan + 0.5f), 0, target_w - 1);
+    out.x2 = LikenessClampInt((int)(tb.x1 + u2 * txspan + 0.5f), 0, target_w - 1);
+    out.y1 = LikenessClampInt((int)(tb.y1 + v1 * tyspan + 0.5f), 0, target_h - 1);
+    out.y2 = LikenessClampInt((int)(tb.y1 + v2 * tyspan + 0.5f), 0, target_h - 1);
+    if (out.x1 > out.x2) { int t = out.x1; out.x1 = out.x2; out.x2 = t; }
+    if (out.y1 > out.y2) { int t = out.y1; out.y1 = out.y2; out.y2 = t; }
+    out.count = src_box.count;
+    out.cx = (out.x1 + out.x2) * 0.5f;
+    out.cy = (out.y1 + out.y2) * 0.5f;
+    out.valid = out.x2 >= out.x1 && out.y2 >= out.y1;
+    return out;
+}
+
+static bool LikenessProjectSourceToTarget(float raw_u, float raw_v,
+                                          const LikenessBBox &sb,
+                                          const LikenessBBox &tb,
+                                          bool mirror,
+                                          float *out_u, float *out_v)
+{
+    float u = mirror ? (1.0f - raw_u) : raw_u;
+    float v = raw_v;
+    if (sb.anchor_ok && tb.anchor_ok) {
+        float src_anchor_u = mirror ? (1.0f - sb.anchor_u) : sb.anchor_u;
+        u -= 0.28f * (src_anchor_u - tb.anchor_u);
+        v -= 0.24f * (sb.anchor_v - tb.anchor_v);
+    }
+    if (u < -0.08f || u > 1.08f || v < -0.08f || v > 1.08f)
+        return false;
+    if (u < 0.0f) u = 0.0f; if (u > 1.0f) u = 1.0f;
+    if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
+    if (out_u) *out_u = u;
+    if (out_v) *out_v = v;
+    return true;
+}
+
+static int LikenessMaskMismatch(const unsigned char *src_pix,
+                                int sw, int sh, int ss, int sx, int sy,
+                                const unsigned char *dst_pix,
+                                int dw, int dh, int ds, int dx0, int dy0)
+{
+    int mismatch = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            bool so = false;
+            bool do_ = false;
+            int ax = sx + dx, ay = sy + dy;
+            int bx = dx0 + dx, by = dy0 + dy;
+            if (ax >= 0 && ay >= 0 && ax < sw && ay < sh)
+                so = src_pix[(size_t)ay * ss + ax] != 0;
+            if (bx >= 0 && by >= 0 && bx < dw && by < dh)
+                do_ = dst_pix[(size_t)by * ds + bx] != 0;
+            if (so != do_) mismatch++;
+        }
+    }
+    return mismatch;
+}
+
+static int LikenessApplyHeadPatch(const unsigned char *source_pix,
+                                  int sw, int sh, int ss,
+                                  const unsigned char *target_original,
+                                  int tw, int th, int ts,
+                                  unsigned char *target_pix,
+                                  PAL *source_pal, PAL *target_pal,
+                                  const LikenessBBox &sb,
+                                  const LikenessBBox &tb,
+                                  bool mirror,
+                                  std::vector<unsigned char> &patch_mask,
+                                  LikenessPartBox *source_head_out)
+{
+    LikenessPartBox source_head = {};
+    LikenessPartBox target_head = {};
+    if (!LikenessFindHeadPart(source_pix, sw, sh, ss, source_pal, sb,
+                              true, &source_head))
+        return 0;
+
+    if (!LikenessFindHeadPart(target_original, tw, th, ts, target_pal, tb,
+                              false, &target_head))
+        target_head = LikenessProjectPartBox(source_head, sb, tb, mirror, tw, th);
+
+    if (!target_head.valid) return 0;
+    if (source_head_out) *source_head_out = source_head;
+
+    LikenessExpandPartBox(&source_head, sw, sh, 1, 1);
+    LikenessExpandPartBox(&target_head, tw, th, 1, 1);
+
+    float source_span_x = (source_head.x2 > source_head.x1)
+        ? (float)(source_head.x2 - source_head.x1) : 1.0f;
+    float source_span_y = (source_head.y2 > source_head.y1)
+        ? (float)(source_head.y2 - source_head.y1) : 1.0f;
+    float target_span_x = (target_head.x2 > target_head.x1)
+        ? (float)(target_head.x2 - target_head.x1) : 1.0f;
+    float target_span_y = (target_head.y2 > target_head.y1)
+        ? (float)(target_head.y2 - target_head.y1) : 1.0f;
+
+    int changed = 0;
+    for (int y = target_head.y1; y <= target_head.y2; y++) {
+        for (int x = target_head.x1; x <= target_head.x2; x++) {
+            int off = y * ts + x;
+            if (target_original[(size_t)off] == 0) continue;
+
+            float rx = ((float)x - (float)target_head.x1) / target_span_x;
+            float ry = ((float)y - (float)target_head.y1) / target_span_y;
+            float sx_f = mirror
+                ? (float)source_head.x2 - rx * source_span_x
+                : (float)source_head.x1 + rx * source_span_x;
+            float sy_f = (float)source_head.y1 + ry * source_span_y;
+            int sx = LikenessClampInt((int)(sx_f + 0.5f), 0, sw - 1);
+            int sy = LikenessClampInt((int)(sy_f + 0.5f), 0, sh - 1);
+            unsigned char ci = LikenessNearestOpaqueInBox(source_pix, sw, sh, ss,
+                                                          source_head, sx, sy);
+            if (ci == 0) continue;
+            if (target_pix[off] != ci) {
+                target_pix[off] = ci;
+                changed++;
+            }
+            patch_mask[(size_t)off] = 1;
+        }
+    }
+    return changed;
+}
+
+static int LikenessApplyDetailPatches(const unsigned char *source_pix,
+                                      int sw, int sh, int ss,
+                                      const unsigned char *target_original,
+                                      int tw, int th, int ts,
+                                      unsigned char *target_pix,
+                                      PAL *source_pal, PAL *target_pal,
+                                      const LikenessBBox &sb,
+                                      const LikenessBBox &tb,
+                                      bool mirror,
+                                      const LikenessPartBox &source_head,
+                                      std::vector<unsigned char> &patch_mask)
+{
+    if (!source_pix || !target_original || !target_pix ||
+        !source_pal || !target_pal)
+        return 0;
+
+    float sspan_x = (sb.w > 1) ? (float)(sb.w - 1) : 1.0f;
+    float sspan_y = (sb.h > 1) ? (float)(sb.h - 1) : 1.0f;
+    float tspan_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float tspan_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    int search_radius = 2 + ((tb.w > tb.h ? tb.w : tb.h) / 46);
+    if (search_radius < 2) search_radius = 2;
+    if (search_radius > 5) search_radius = 5;
+
+    std::vector<int> best_score((size_t)ts * th, 0x7FFFFFFF);
+    int changed = 0;
+
+    for (int sy = sb.y1; sy <= sb.y2; sy++) {
+        for (int sx = sb.x1; sx <= sb.x2; sx++) {
+            int soff = sy * ss + sx;
+            unsigned char ci = source_pix[(size_t)soff];
+            if (ci == 0) continue;
+            if (LikenessPointInPartBox(source_head, sx, sy)) continue;
+
+            float raw_u = ((float)sx - (float)sb.x1) / sspan_x;
+            float raw_v = ((float)sy - (float)sb.y1) / sspan_y;
+            bool gold = LikenessIsGoldPixel(source_pal, ci);
+            bool headish = LikenessIsHeadPixel(source_pal, ci);
+            bool contrast = LikenessHasLocalContrast(source_pix, sw, sh, ss,
+                                                     sx, sy, source_pal);
+            bool edge = LikenessTransparentNeighborCount(source_pix, sw, sh, ss,
+                                                         sx, sy) > 0;
+            if (!(gold && (raw_v < 0.80f || contrast || edge)) &&
+                !(headish && contrast && raw_v < 0.70f) &&
+                !(contrast && raw_v < 0.72f && edge))
+                continue;
+
+            float tu, tv;
+            if (!LikenessProjectSourceToTarget(raw_u, raw_v, sb, tb, mirror,
+                                               &tu, &tv))
+                continue;
+            int tx0 = LikenessClampInt((int)(tb.x1 + tu * tspan_x + 0.5f),
+                                       0, tw - 1);
+            int ty0 = LikenessClampInt((int)(tb.y1 + tv * tspan_y + 0.5f),
+                                       0, th - 1);
+
+            int best_off = -1;
+            int best = 0x7FFFFFFF;
+            for (int dy = -search_radius; dy <= search_radius; dy++) {
+                for (int dx = -search_radius; dx <= search_radius; dx++) {
+                    int tx = tx0 + dx;
+                    int ty = ty0 + dy;
+                    if (tx < 0 || ty < 0 || tx >= tw || ty >= th) continue;
+                    int toff = ty * ts + tx;
+                    if (target_original[(size_t)toff] == 0) continue;
+                    if (patch_mask[(size_t)toff] == 1) continue;
+
+                    int dist2 = dx * dx + dy * dy;
+                    int mismatch = LikenessMaskMismatch(source_pix, sw, sh, ss,
+                                                        sx, sy,
+                                                        target_original,
+                                                        tw, th, ts, tx, ty);
+                    unsigned char old_ci = target_original[(size_t)toff];
+                    bool target_warm = LikenessIsGoldPixel(target_pal, old_ci) ||
+                                       LikenessIsHeadPixel(target_pal, old_ci);
+                    int target_edge = LikenessTransparentNeighborCount(
+                        target_original, tw, th, ts, tx, ty);
+
+                    int score = dist2 * 7 + mismatch * 8;
+                    if (gold && target_warm) score -= 10;
+                    else if (gold) score += 4;
+                    if (contrast) score -= 4;
+                    if (target_edge > 0) score -= 3;
+
+                    if (score < best) {
+                        best = score;
+                        best_off = toff;
+                    }
+                }
+            }
+
+            if (best_off < 0 || best > 70 || best >= best_score[(size_t)best_off])
+                continue;
+            best_score[(size_t)best_off] = best;
+            if (target_pix[best_off] != ci) {
+                target_pix[best_off] = ci;
+                changed++;
+            }
+            patch_mask[(size_t)best_off] = 2;
+        }
+    }
+    return changed;
+}
+
+static int LikenessBlendPatchEdges(unsigned char *target_pix,
+                                   const unsigned char *target_original,
+                                   int w, int h, int stride,
+                                   PAL *source_pal,
+                                   const bool used_slots[256],
+                                   const std::vector<unsigned char> &patch_mask)
+{
+    if (!target_pix || !target_original || !source_pal || !used_slots)
+        return 0;
+
+    struct BlendWrite { int off; unsigned char ci; };
+    std::vector<BlendWrite> writes;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int off = y * stride + x;
+            if (target_original[(size_t)off] == 0 || patch_mask[(size_t)off])
+                continue;
+            unsigned char old_ci = target_pix[off];
+            if (old_ci == 0) continue;
+
+            int patch_neighbors = 0;
+            int rsum = 0, gsum = 0, bsum = 0;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    int noff = ny * stride + nx;
+                    if (!patch_mask[(size_t)noff]) continue;
+                    unsigned char pci = target_pix[noff];
+                    if (pci == 0) continue;
+                    int pr, pg, pb;
+                    LikenessPaletteRgb(source_pal, pci, &pr, &pg, &pb, NULL);
+                    rsum += pr; gsum += pg; bsum += pb;
+                    patch_neighbors++;
+                }
+            }
+            if (patch_neighbors < 2) continue;
+
+            int sr, sg, sbc;
+            LikenessPaletteRgb(source_pal, old_ci, &sr, &sg, &sbc, NULL);
+            int ar = rsum / patch_neighbors;
+            int ag = gsum / patch_neighbors;
+            int ab = bsum / patch_neighbors;
+            int mix = patch_neighbors >= 4 ? 112 : 78; /* 0..256 */
+            int nr = (sr * (256 - mix) + ar * mix) >> 8;
+            int ng = (sg * (256 - mix) + ag * mix) >> 8;
+            int nb = (sbc * (256 - mix) + ab * mix) >> 8;
+            int ci = LikenessNearestUsedSlot(source_pal, used_slots, nr, ng, nb);
+            if (ci > 0 && ci != old_ci)
+                writes.push_back({off, (unsigned char)ci});
+        }
+    }
+
+    int changed = 0;
+    for (const BlendWrite &wr : writes) {
+        if (target_pix[wr.off] != wr.ci) {
+            target_pix[wr.off] = wr.ci;
+            changed++;
+        }
+    }
+    return changed;
+}
+
+enum LikenessMaterial {
+    LK_MATERIAL_ANY = 0,
+    LK_MATERIAL_HEAD,
+    LK_MATERIAL_SKIN,
+    LK_MATERIAL_BLUE,
+    LK_MATERIAL_LOWER,
+    LK_MATERIAL_BLACK
+};
+
+struct LikenessActorStats {
+    int opaque;
+    int remapped;
+    int accents;
+    int cleaned;
+    int edge_darkened;
+    int head_pixels;
+    int skin_pixels;
+};
+
+static int LikenessClampByte(int v)
+{
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return v;
+}
+
+static int LikenessRgbLuma8(int r, int g, int b)
+{
+    return (r * 54 + g * 183 + b * 19) >> 8;
+}
+
+static bool LikenessIsBadGreenRgb(int r, int g, int b, int luma)
+{
+    (void)luma;
+    return g > 65 && g > r + 7 && g > b + 18 &&
+           (r < 105 || b < 55);
+}
+
+static bool LikenessIsBadGreenPixel(PAL *pal, unsigned char ci)
+{
+    if (!pal || ci == 0) return false;
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    return LikenessIsBadGreenRgb(r, g, b, luma);
+}
+
+static bool LikenessIsBlackRgb(int r, int g, int b, int luma)
+{
+    return luma <= 34 || (r < 44 && g < 44 && b < 54);
+}
+
+static bool LikenessIsBlueRgb(int r, int g, int b, int luma)
+{
+    if (LikenessIsBadGreenRgb(r, g, b, luma)) return false;
+    int mn = r < g ? r : g; if (b < mn) mn = b;
+    int mx = r > g ? r : g; if (b > mx) mx = b;
+    int chroma = mx - mn;
+    return luma >= 14 && luma <= 184 &&
+           b >= r + 4 && b >= g - 12 &&
+           (b >= 46 || chroma >= 26);
+}
+
+static bool LikenessIsLowerRgb(int r, int g, int b, int luma)
+{
+    if (LikenessIsBadGreenRgb(r, g, b, luma)) return false;
+    if (luma < 28 || luma > 214) return false;
+    return r >= 54 && g >= 34 &&
+           r > b + 22 && g > b + 7 &&
+           r >= g - 38;
+}
+
+static bool LikenessIsSkinRgb(int r, int g, int b, int luma)
+{
+    if (LikenessIsBadGreenRgb(r, g, b, luma) ||
+        LikenessIsBlueRgb(r, g, b, luma))
+        return false;
+
+    int mn = r < g ? r : g; if (b < mn) mn = b;
+    int mx = r > g ? r : g; if (b > mx) mx = b;
+    int chroma = mx - mn;
+    bool warm_skin = luma >= 58 &&
+                     r >= g - 28 && g >= b - 42 &&
+                     r > b + 7 && chroma <= 140;
+    bool pale_hair = luma >= 102 &&
+                     chroma <= 86 &&
+                     r >= b - 18 && g >= b - 24;
+    bool goldish = LikenessIsLowerRgb(r, g, b, luma) &&
+                   b < 96 && r > b + 34 && g > b + 18;
+    return (warm_skin || pale_hair) && !goldish;
+}
+
+static bool LikenessIsHeadRgb(int r, int g, int b, int luma)
+{
+    int mn = r < g ? r : g; if (b < mn) mn = b;
+    int mx = r > g ? r : g; if (b > mx) mx = b;
+    int chroma = mx - mn;
+    bool grey_hair = luma >= 94 && chroma <= 78 &&
+                     !LikenessIsBlueRgb(r, g, b, luma) &&
+                     !LikenessIsLowerRgb(r, g, b, luma);
+    return LikenessIsSkinRgb(r, g, b, luma) || grey_hair;
+}
+
+static bool LikenessPaletteSlotMatchesMaterial(PAL *pal, unsigned char ci,
+                                               LikenessMaterial material)
+{
+    if (!pal || ci == 0) return false;
+    if (material == LK_MATERIAL_ANY) return true;
+
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    switch (material) {
+    case LK_MATERIAL_HEAD:
+        return LikenessIsHeadPixel(pal, ci) || LikenessIsHeadRgb(r, g, b, luma);
+    case LK_MATERIAL_SKIN:
+        return LikenessIsHeadRgb(r, g, b, luma) ||
+               LikenessIsSkinRgb(r, g, b, luma);
+    case LK_MATERIAL_BLUE:
+        return LikenessIsBlueRgb(r, g, b, luma) ||
+               (LikenessIsBlackRgb(r, g, b, luma) && b >= r - 4);
+    case LK_MATERIAL_LOWER:
+        return LikenessIsGoldPixel(pal, ci) ||
+               LikenessIsLowerRgb(r, g, b, luma);
+    case LK_MATERIAL_BLACK:
+        return LikenessIsBlackRgb(r, g, b, luma);
+    default:
+        return true;
+    }
+}
+
+static LikenessMaterial LikenessClassifyPaletteSlot(PAL *pal, unsigned char ci)
+{
+    if (!pal || ci == 0) return LK_MATERIAL_ANY;
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    if (LikenessIsBlackRgb(r, g, b, luma)) return LK_MATERIAL_BLACK;
+    if (LikenessPaletteSlotMatchesMaterial(pal, ci, LK_MATERIAL_SKIN))
+        return LK_MATERIAL_SKIN;
+    if (LikenessPaletteSlotMatchesMaterial(pal, ci, LK_MATERIAL_BLUE))
+        return LK_MATERIAL_BLUE;
+    if (LikenessPaletteSlotMatchesMaterial(pal, ci, LK_MATERIAL_LOWER))
+        return LK_MATERIAL_LOWER;
+    return LK_MATERIAL_ANY;
+}
+
+static int LikenessNearestMaterialSlot(PAL *pal, const bool used_slots[256],
+                                       LikenessMaterial material,
+                                       int r, int g, int b,
+                                       int prefer_r = -1,
+                                       int prefer_g = -1,
+                                       int prefer_b = -1,
+                                       bool forbid_bad_green = false)
+{
+    if (!pal || !pal->data_p || !used_slots) return 0;
+    r = LikenessClampByte(r);
+    g = LikenessClampByte(g);
+    b = LikenessClampByte(b);
+    int want_luma = LikenessRgbLuma8(r, g, b);
+    int prefer_luma = (prefer_r >= 0 && prefer_g >= 0 && prefer_b >= 0)
+        ? LikenessRgbLuma8(prefer_r, prefer_g, prefer_b)
+        : -1;
+
+    int count = pal->numc;
+    if (count > 256) count = 256;
+    int pass_count = forbid_bad_green ? 2 : 4;
+    for (int pass = 0; pass < pass_count; pass++) {
+        bool require_material = (pass == 0 || pass == 2) &&
+                                material != LK_MATERIAL_ANY;
+        bool avoid_green = forbid_bad_green || pass < 2;
+        int best = 0;
+        double best_score = DBL_MAX;
+        for (int i = 1; i < count; i++) {
+            if (!used_slots[i]) continue;
+            int pr, pg, pb, pl;
+            LikenessPaletteRgb(pal, (unsigned char)i, &pr, &pg, &pb, &pl);
+            bool bad_green = LikenessIsBadGreenRgb(pr, pg, pb, pl);
+            if (avoid_green && bad_green) continue;
+            bool material_match =
+                LikenessPaletteSlotMatchesMaterial(pal, (unsigned char)i, material);
+            if (require_material && !material_match) continue;
+
+            int dr = pr - r, dg = pg - g, db = pb - b;
+            int dl = pl - want_luma; if (dl < 0) dl = -dl;
+            double score = (double)dl * 6.0 +
+                           (double)(dr * dr + dg * dg + db * db) * 0.020;
+            if (prefer_luma >= 0) {
+                int pdr = pr - prefer_r, pdg = pg - prefer_g, pdb = pb - prefer_b;
+                int pdl = pl - prefer_luma; if (pdl < 0) pdl = -pdl;
+                score += (double)(pdr * pdr + pdg * pdg + pdb * pdb) * 0.010;
+                score += (double)pdl * 0.75;
+            }
+            if (!require_material && material != LK_MATERIAL_ANY && !material_match)
+                score += 160.0;
+            if (material == LK_MATERIAL_BLACK)
+                score += (double)pl * 2.5;
+            if (bad_green)
+                score += 9000.0;
+
+            if (score < best_score) {
+                best_score = score;
+                best = i;
+            }
+        }
+        if (best > 0) return best;
+    }
+
+    if (forbid_bad_green) return 0;
+    return LikenessNearestUsedSlot(pal, used_slots, r, g, b);
+}
+
+static bool LikenessSourceSampleMatches(const LikenessSample &s,
+                                        PAL *source_pal,
+                                        LikenessMaterial material,
+                                        const LikenessPartBox *source_head,
+                                        bool strict_head)
+{
+    if (s.idx == 0) return false;
+    if (material != LK_MATERIAL_ANY &&
+        LikenessIsBadGreenRgb(s.r, s.g, s.b, s.luma))
+        return false;
+
+    if (material == LK_MATERIAL_HEAD &&
+        source_head && source_head->valid && strict_head) {
+        return LikenessPointInPartBox(*source_head, s.x, s.y) &&
+               (LikenessIsHeadRgb(s.r, s.g, s.b, s.luma) ||
+                LikenessPaletteSlotMatchesMaterial(source_pal, s.idx,
+                                                   LK_MATERIAL_SKIN));
+    }
+
+    return LikenessPaletteSlotMatchesMaterial(source_pal, s.idx, material);
+}
+
+static bool LikenessSampleMaterialSource(const std::vector<LikenessSample> &samples,
+                                         const std::vector<std::vector<int>> &bins,
+                                         PAL *source_pal,
+                                         LikenessMaterial material,
+                                         const LikenessPartBox *source_head,
+                                         float u, float v,
+                                         LikenessColor *out,
+                                         const LikenessSample **nearest_out)
+{
+    if (out) *out = {};
+    if (nearest_out) *nearest_out = NULL;
+    if (samples.empty() || !out) return false;
+
+    const int G = 32;
+    const float radii[] = { 0.052f, 0.088f, 0.145f, 0.24f, 0.39f, 0.66f };
+    int attempts = (material == LK_MATERIAL_HEAD &&
+                    source_head && source_head->valid) ? 2 : 1;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        bool strict_head = attempt == 0;
+        for (float radius : radii) {
+            float r2 = radius * radius;
+            int bx0 = (int)((u - radius) * G);
+            int bx1 = (int)((u + radius) * G);
+            int by0 = (int)((v - radius) * G);
+            int by1 = (int)((v + radius) * G);
+            if (bx0 < 0) bx0 = 0; if (bx1 >= G) bx1 = G - 1;
+            if (by0 < 0) by0 = 0; if (by1 >= G) by1 = G - 1;
+
+            double wr = 0.0, wg = 0.0, wb = 0.0, wl = 0.0, wsum = 0.0;
+            const LikenessSample *nearest = NULL;
+            float nearest_d2 = 9999.0f;
+            for (int by = by0; by <= by1; by++) {
+                for (int bx = bx0; bx <= bx1; bx++) {
+                    const std::vector<int> &bucket = bins[by * G + bx];
+                    for (int si : bucket) {
+                        const LikenessSample &s = samples[si];
+                        if (!LikenessSourceSampleMatches(s, source_pal, material,
+                                                         source_head, strict_head))
+                            continue;
+                        float dx = (s.u - u) * 1.10f;
+                        float dy = s.v - v;
+                        float d2 = dx * dx + dy * dy;
+                        if (d2 > r2) continue;
+                        if (d2 < nearest_d2) {
+                            nearest_d2 = d2;
+                            nearest = &s;
+                        }
+                        double wt = 1.0 / (0.0008 + (double)d2);
+                        wr += (double)s.r * wt;
+                        wg += (double)s.g * wt;
+                        wb += (double)s.b * wt;
+                        wl += (double)s.luma * wt;
+                        wsum += wt;
+                    }
+                }
+            }
+            if (wsum > 0.0) {
+                out->r = (float)(wr / wsum);
+                out->g = (float)(wg / wsum);
+                out->b = (float)(wb / wsum);
+                out->luma = (float)(wl / wsum);
+                if (nearest) {
+                    out->r = out->r * 0.56f + nearest->r * 0.44f;
+                    out->g = out->g * 0.56f + nearest->g * 0.44f;
+                    out->b = out->b * 0.56f + nearest->b * 0.44f;
+                    out->luma = out->luma * 0.56f + nearest->luma * 0.44f;
+                    out->idx = nearest->idx;
+                }
+                out->found = true;
+                if (nearest_out) *nearest_out = nearest;
+                return true;
+            }
+        }
+    }
+
+    const LikenessSample *nearest = NULL;
+    float best_d2 = 9999.0f;
+    for (const LikenessSample &s : samples) {
+        if (!LikenessSourceSampleMatches(s, source_pal, material,
+                                         source_head, false))
+            continue;
+        float dx = (s.u - u) * 1.10f;
+        float dy = s.v - v;
+        float d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            nearest = &s;
+        }
+    }
+    if (!nearest) return false;
+    out->r = (float)nearest->r;
+    out->g = (float)nearest->g;
+    out->b = (float)nearest->b;
+    out->luma = (float)nearest->luma;
+    out->idx = nearest->idx;
+    out->found = true;
+    if (nearest_out) *nearest_out = nearest;
+    return true;
+}
+
+static int LikenessLocalSourceMeanLuma(const unsigned char *pix,
+                                       int w, int h, int stride,
+                                       PAL *pal,
+                                       const LikenessSample *sample,
+                                       LikenessMaterial material,
+                                       const LikenessPartBox *source_head)
+{
+    if (!pix || !pal || !sample) return 128;
+    int radius = (material == LK_MATERIAL_HEAD) ? 1 : 2;
+    int sum = 0, count = 0;
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            int x = sample->x + dx;
+            int y = sample->y + dy;
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            unsigned char ci = pix[(size_t)y * stride + x];
+            if (ci == 0) continue;
+            int r, g, b, luma;
+            LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+            LikenessSample temp = {};
+            temp.x = x; temp.y = y; temp.idx = ci;
+            temp.r = r; temp.g = g; temp.b = b; temp.luma = luma;
+            if (!LikenessSourceSampleMatches(temp, pal, material,
+                                             source_head, false))
+                continue;
+            sum += luma;
+            count++;
+        }
+    }
+    return count > 0 ? sum / count : sample->luma;
+}
+
+static void LikenessBuildActorMasks(const unsigned char *target_original,
+                                    int w, int h, int stride,
+                                    PAL *target_pal,
+                                    const LikenessBBox &tb,
+                                    std::vector<unsigned char> &head_mask,
+                                    std::vector<unsigned char> &skin_mask,
+                                    int *head_pixels,
+                                    int *skin_pixels)
+{
+    size_t bytes = (size_t)stride * h;
+    head_mask.assign(bytes, 0);
+    skin_mask.assign(bytes, 0);
+    if (head_pixels) *head_pixels = 0;
+    if (skin_pixels) *skin_pixels = 0;
+    if (!target_original || !target_pal) return;
+
+    LikenessPartBox target_head = {};
+    LikenessFindHeadPart(target_original, w, h, stride, target_pal, tb,
+                         true, &target_head);
+    LikenessPartBox head_zone = target_head;
+    if (head_zone.valid)
+        LikenessExpandPartBox(&head_zone, w, h, 1, 1);
+
+    float span_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float span_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            size_t off = (size_t)y * stride + x;
+            unsigned char ci = target_original[off];
+            if (ci == 0) continue;
+            int r, g, b, luma;
+            LikenessPaletteRgb(target_pal, ci, &r, &g, &b, &luma);
+            float u = ((float)x - (float)tb.x1) / span_x;
+            float v = ((float)y - (float)tb.y1) / span_y;
+            bool headish = LikenessIsHeadRgb(r, g, b, luma) ||
+                            LikenessIsHeadPixel(target_pal, ci);
+            bool skinish = LikenessIsSkinRgb(r, g, b, luma);
+            bool in_head_zone = LikenessPointInPartBox(head_zone, x, y);
+            bool fallback_head = !head_zone.valid &&
+                                 v < 0.56f && u > 0.08f && u < 0.94f;
+            if (headish && (in_head_zone || fallback_head)) {
+                head_mask[off] = 1;
+                skin_mask[off] = 1;
+            } else if (skinish && v < 0.82f &&
+                       !LikenessIsBlueRgb(r, g, b, luma) &&
+                       !LikenessIsLowerRgb(r, g, b, luma)) {
+                skin_mask[off] = 1;
+            }
+        }
+    }
+
+    std::vector<unsigned char> dilated = head_mask;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            size_t off = (size_t)y * stride + x;
+            if (target_original[off] == 0 || head_mask[off]) continue;
+            if (head_zone.valid && !LikenessPointInPartBox(head_zone, x, y))
+                continue;
+            float v = ((float)y - (float)tb.y1) / span_y;
+            if (v > 0.72f) continue;
+            int r, g, b, luma;
+            LikenessPaletteRgb(target_pal, target_original[off], &r, &g, &b, &luma);
+            if (luma < 78 || LikenessIsBlueRgb(r, g, b, luma) ||
+                LikenessIsLowerRgb(r, g, b, luma) ||
+                LikenessIsBadGreenRgb(r, g, b, luma))
+                continue;
+            bool near_head = false;
+            for (int dy = -1; dy <= 1 && !near_head; dy++) {
+                for (int dx = -1; dx <= 1 && !near_head; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx, ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    if (head_mask[(size_t)ny * stride + nx]) near_head = true;
+                }
+            }
+            if (near_head) {
+                dilated[off] = 1;
+                skin_mask[off] = 1;
+            }
+        }
+    }
+    head_mask.swap(dilated);
+
+    int hc = 0, sc = 0;
+    for (size_t i = 0; i < bytes; i++) {
+        if (head_mask[i]) hc++;
+        if (skin_mask[i]) sc++;
+    }
+    if (head_pixels) *head_pixels = hc;
+    if (skin_pixels) *skin_pixels = sc;
+}
+
+static LikenessMaterial LikenessTargetMaterial(const unsigned char *target_original,
+                                               int w, int h, int stride,
+                                               PAL *target_pal,
+                                               int x, int y,
+                                               const std::vector<unsigned char> &head_mask,
+                                               const std::vector<unsigned char> &skin_mask,
+                                               float v)
+{
+    size_t off = (size_t)y * stride + x;
+    if (!target_original || target_original[off] == 0 || !target_pal)
+        return LK_MATERIAL_ANY;
+    if (off < head_mask.size() && head_mask[off])
+        return LK_MATERIAL_HEAD;
+    if (off < skin_mask.size() && skin_mask[off])
+        return LK_MATERIAL_SKIN;
+
+    unsigned char ci = target_original[off];
+    int r, g, b, luma;
+    LikenessPaletteRgb(target_pal, ci, &r, &g, &b, &luma);
+    int edge = LikenessTransparentNeighborCount(target_original, w, h, stride, x, y);
+    if (edge >= 4 && LikenessIsBlackRgb(r, g, b, luma))
+        return LK_MATERIAL_BLACK;
+    if (LikenessIsBlueRgb(r, g, b, luma))
+        return LK_MATERIAL_BLUE;
+    if (LikenessIsGoldPixel(target_pal, ci) ||
+        LikenessIsLowerRgb(r, g, b, luma))
+        return LK_MATERIAL_LOWER;
+    if (LikenessIsSkinRgb(r, g, b, luma) && v < 0.82f)
+        return LK_MATERIAL_SKIN;
+    if (v > 0.56f)
+        return LK_MATERIAL_LOWER;
+    if (luma < 48)
+        return LK_MATERIAL_BLUE;
+    return LK_MATERIAL_BLUE;
+}
+
+static void LikenessScaleRgbToLuma(float r, float g, float b, float target_luma,
+                                   int *out_r, int *out_g, int *out_b)
+{
+    float src_luma = (float)LikenessRgbLuma8((int)(r + 0.5f),
+                                            (int)(g + 0.5f),
+                                            (int)(b + 0.5f));
+    float scale = target_luma / (src_luma < 1.0f ? 1.0f : src_luma);
+    *out_r = LikenessClampByte((int)(r * scale + 0.5f));
+    *out_g = LikenessClampByte((int)(g * scale + 0.5f));
+    *out_b = LikenessClampByte((int)(b * scale + 0.5f));
+}
+
+static int LikenessApplyActorComposite(const unsigned char *source_pix,
+                                       int sw, int sh, int ss,
+                                       const unsigned char *target_original,
+                                       int tw, int th, int ts,
+                                       unsigned char *target_pix,
+                                       PAL *source_pal, PAL *target_pal,
+                                       const LikenessBBox &sb,
+                                       const LikenessBBox &tb,
+                                       const std::vector<LikenessSample> &samples,
+                                       const std::vector<std::vector<int>> &bins,
+                                       const bool used_slots[256],
+                                       const LikenessPartBox &source_head,
+                                       const std::vector<unsigned char> &head_mask,
+                                       const std::vector<unsigned char> &skin_mask,
+                                       bool mirror,
+                                       bool palette_changed,
+                                       int *opaque_out,
+                                       int *edge_darkened_out)
+{
+    if (opaque_out) *opaque_out = 0;
+    if (edge_darkened_out) *edge_darkened_out = 0;
+    if (!source_pix || !target_original || !target_pix ||
+        !source_pal || !target_pal)
+        return 0;
+
+    float span_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float span_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    int changed = 0;
+    int opaque = 0;
+    int edge_darkened = 0;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            size_t off = (size_t)y * ts + x;
+            unsigned char old_ci = target_original[off];
+            if (old_ci == 0) continue;
+            opaque++;
+
+            float u = ((float)x - (float)tb.x1) / span_x;
+            float v = ((float)y - (float)tb.y1) / span_y;
+            float su = u;
+            float sv = v;
+            if (sb.anchor_ok && tb.anchor_ok) {
+                float src_anchor_u = mirror ? (1.0f - sb.anchor_u) : sb.anchor_u;
+                float anchor_u = src_anchor_u + (u - tb.anchor_u);
+                float anchor_v = sb.anchor_v + (v - tb.anchor_v);
+                su = u * 0.82f + anchor_u * 0.18f;
+                sv = v * 0.84f + anchor_v * 0.16f;
+            }
+            if (su < 0.0f) su = 0.0f; if (su > 1.0f) su = 1.0f;
+            if (sv < 0.0f) sv = 0.0f; if (sv > 1.0f) sv = 1.0f;
+
+            int tr, tg, tbv, tluma;
+            LikenessPaletteRgb(target_pal, old_ci, &tr, &tg, &tbv, &tluma);
+            LikenessMaterial material = LikenessTargetMaterial(target_original,
+                                                              tw, th, ts,
+                                                              target_pal,
+                                                              x, y,
+                                                              head_mask,
+                                                              skin_mask,
+                                                              v);
+            LikenessColor src_col = {};
+            const LikenessSample *nearest = NULL;
+            if (!LikenessSampleMaterialSource(samples, bins, source_pal,
+                                              material, &source_head,
+                                              su, sv, &src_col, &nearest)) {
+                if (!LikenessSampleMaterialSource(samples, bins, source_pal,
+                                                  LK_MATERIAL_ANY, NULL,
+                                                  su, sv, &src_col, &nearest))
+                    continue;
+            }
+            if (!src_col.found || src_col.idx == 0) continue;
+
+            int local_mean = LikenessLocalSourceMeanLuma(source_pix, sw, sh, ss,
+                                                        source_pal, nearest,
+                                                        material, &source_head);
+            float hi = src_col.luma - (float)local_mean;
+            float source_pull = 0.13f;
+            float texture_strength = 0.28f;
+            float target_rgb_keep = 0.10f;
+            switch (material) {
+            case LK_MATERIAL_HEAD:
+                source_pull = 0.10f;
+                texture_strength = 0.15f;
+                target_rgb_keep = 0.24f;
+                break;
+            case LK_MATERIAL_SKIN:
+                source_pull = 0.14f;
+                texture_strength = 0.18f;
+                target_rgb_keep = 0.18f;
+                break;
+            case LK_MATERIAL_BLUE:
+                source_pull = 0.13f;
+                texture_strength = 0.30f;
+                target_rgb_keep = 0.08f;
+                break;
+            case LK_MATERIAL_LOWER:
+                source_pull = 0.12f;
+                texture_strength = 0.34f;
+                target_rgb_keep = 0.07f;
+                break;
+            case LK_MATERIAL_BLACK:
+                source_pull = 0.08f;
+                texture_strength = 0.18f;
+                target_rgb_keep = 0.16f;
+                break;
+            default:
+                break;
+            }
+
+            float desired_luma = (float)tluma * (1.0f - source_pull) +
+                                 src_col.luma * source_pull +
+                                 hi * texture_strength;
+            int edge = LikenessTransparentNeighborCount(target_original,
+                                                        tw, th, ts, x, y);
+            unsigned int h = (unsigned int)(x * 73856093u) ^
+                             (unsigned int)(y * 19349663u) ^
+                             (unsigned int)(src_col.idx * 83492791u);
+            if (edge > 0 &&
+                material != LK_MATERIAL_HEAD &&
+                material != LK_MATERIAL_SKIN &&
+                (edge >= 5 || (edge >= 3 && (h & 15u) < 3u))) {
+                desired_luma *= edge >= 5 ? 0.72f : 0.84f;
+                edge_darkened++;
+            }
+            if (desired_luma < 6.0f) desired_luma = 6.0f;
+            if (desired_luma > 244.0f) desired_luma = 244.0f;
+
+            int rr, gg, bb;
+            LikenessScaleRgbToLuma(src_col.r, src_col.g, src_col.b,
+                                   desired_luma, &rr, &gg, &bb);
+            rr = (int)((float)rr * (1.0f - target_rgb_keep) +
+                       (float)tr * target_rgb_keep + 0.5f);
+            gg = (int)((float)gg * (1.0f - target_rgb_keep) +
+                       (float)tg * target_rgb_keep + 0.5f);
+            bb = (int)((float)bb * (1.0f - target_rgb_keep) +
+                       (float)tbv * target_rgb_keep + 0.5f);
+
+            int new_ci = LikenessNearestMaterialSlot(source_pal, used_slots,
+                                                     material, rr, gg, bb,
+                                                     (int)src_col.r,
+                                                     (int)src_col.g,
+                                                     (int)src_col.b);
+            if (new_ci <= 0) continue;
+            if (target_pix[off] != (unsigned char)new_ci || palette_changed) {
+                target_pix[off] = (unsigned char)new_ci;
+                changed++;
+            }
+        }
+    }
+    if (opaque_out) *opaque_out = opaque;
+    if (edge_darkened_out) *edge_darkened_out = edge_darkened;
+    return changed;
+}
+
+static int LikenessApplyActorAccents(const unsigned char *source_pix,
+                                     int sw, int sh, int ss,
+                                     const unsigned char *target_original,
+                                     int tw, int th, int ts,
+                                     unsigned char *target_pix,
+                                     PAL *source_pal, PAL *target_pal,
+                                     const LikenessBBox &sb,
+                                     const LikenessBBox &tb,
+                                     bool mirror,
+                                     const bool used_slots[256],
+                                     const LikenessPartBox &source_head,
+                                     const std::vector<unsigned char> &head_mask,
+                                     const std::vector<unsigned char> &skin_mask,
+                                     std::vector<unsigned char> &accent_mask)
+{
+    if (!source_pix || !target_original || !target_pix ||
+        !source_pal || !target_pal)
+        return 0;
+
+    size_t bytes = (size_t)ts * th;
+    accent_mask.assign(bytes, 0);
+    std::vector<int> best_score(bytes, 0x7FFFFFFF);
+    float tspan_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float tspan_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    int changed = 0;
+
+    for (int sy = sb.y1; sy <= sb.y2; sy++) {
+        for (int sx = sb.x1; sx <= sb.x2; sx++) {
+            unsigned char sci = source_pix[(size_t)sy * ss + sx];
+            if (sci == 0 || LikenessIsBadGreenPixel(source_pal, sci))
+                continue;
+
+            float raw_u = ((float)sx - (float)sb.x1) /
+                          ((sb.w > 1) ? (float)(sb.w - 1) : 1.0f);
+            float raw_v = ((float)sy - (float)sb.y1) /
+                          ((sb.h > 1) ? (float)(sb.h - 1) : 1.0f);
+            LikenessMaterial sm = LikenessClassifyPaletteSlot(source_pal, sci);
+            bool contrast = LikenessHasLocalContrast(source_pix, sw, sh, ss,
+                                                     sx, sy, source_pal);
+            bool edge = LikenessTransparentNeighborCount(source_pix, sw, sh, ss,
+                                                         sx, sy) > 0;
+            bool in_source_head = LikenessPointInPartBox(source_head, sx, sy);
+            bool gold_accent = sm == LK_MATERIAL_LOWER &&
+                               raw_v < 0.82f &&
+                               (contrast || edge ||
+                                LikenessIsGoldPixel(source_pal, sci));
+            bool skin_accent = (sm == LK_MATERIAL_SKIN ||
+                                sm == LK_MATERIAL_HEAD) &&
+                               raw_v < 0.58f &&
+                               contrast && !in_source_head;
+            if (!gold_accent && !skin_accent)
+                continue;
+
+            float tu, tv;
+            if (!LikenessProjectSourceToTarget(raw_u, raw_v, sb, tb, mirror,
+                                               &tu, &tv))
+                continue;
+            int tx0 = LikenessClampInt((int)(tb.x1 + tu * tspan_x + 0.5f),
+                                       0, tw - 1);
+            int ty0 = LikenessClampInt((int)(tb.y1 + tv * tspan_y + 0.5f),
+                                       0, th - 1);
+            int search_radius = contrast ? 2 : 1;
+            if (gold_accent && raw_v > 0.46f) search_radius = 3;
+
+            int best_off = -1;
+            int best = 0x7FFFFFFF;
+            LikenessMaterial best_tm = LK_MATERIAL_ANY;
+            float best_v = 0.0f;
+            for (int dy = -search_radius; dy <= search_radius; dy++) {
+                for (int dx = -search_radius; dx <= search_radius; dx++) {
+                    int tx = tx0 + dx;
+                    int ty = ty0 + dy;
+                    if (tx < 0 || ty < 0 || tx >= tw || ty >= th) continue;
+                    size_t off = (size_t)ty * ts + tx;
+                    if (target_original[off] == 0 || accent_mask[off])
+                        continue;
+                    float tvn = ((float)ty - (float)tb.y1) / tspan_y;
+                    LikenessMaterial tm = LikenessTargetMaterial(target_original,
+                                                                 tw, th, ts,
+                                                                 target_pal,
+                                                                 tx, ty,
+                                                                 head_mask,
+                                                                 skin_mask,
+                                                                 tvn);
+                    bool allowed = false;
+                    if (gold_accent) {
+                        allowed = tm == LK_MATERIAL_BLUE ||
+                                  tm == LK_MATERIAL_LOWER ||
+                                  tm == LK_MATERIAL_BLACK;
+                    } else if (skin_accent) {
+                        allowed = tm == LK_MATERIAL_SKIN ||
+                                  tm == LK_MATERIAL_HEAD;
+                    }
+                    if (!allowed) continue;
+
+                    int dist2 = dx * dx + dy * dy;
+                    int mismatch = LikenessMaskMismatch(source_pix, sw, sh, ss,
+                                                        sx, sy,
+                                                        target_original,
+                                                        tw, th, ts, tx, ty);
+                    int target_edge = LikenessTransparentNeighborCount(
+                        target_original, tw, th, ts, tx, ty);
+                    int score = dist2 * 10 + mismatch * 8;
+                    if (gold_accent && tm == LK_MATERIAL_BLUE) score -= 7;
+                    if (gold_accent && tm == LK_MATERIAL_LOWER) score -= 5;
+                    if (skin_accent && tm == LK_MATERIAL_SKIN) score -= 6;
+                    if (target_edge > 0) score -= 2;
+                    if (score < best) {
+                        best = score;
+                        best_off = (int)off;
+                        best_tm = tm;
+                        best_v = tvn;
+                    }
+                }
+            }
+
+            int threshold = gold_accent ? 58 : 44;
+            if (best_off < 0 || best > threshold ||
+                best >= best_score[(size_t)best_off])
+                continue;
+            best_score[(size_t)best_off] = best;
+
+            unsigned char old_tci = target_original[(size_t)best_off];
+            int tr, tg, tbv, tluma;
+            LikenessPaletteRgb(target_pal, old_tci, &tr, &tg, &tbv, &tluma);
+            int sr, sg, sbc, sluma;
+            LikenessPaletteRgb(source_pal, sci, &sr, &sg, &sbc, &sluma);
+            float pull = gold_accent ? 0.38f : 0.28f;
+            if (best_tm == LK_MATERIAL_LOWER && best_v > 0.58f)
+                pull = 0.30f;
+            float want_luma = (float)tluma * (1.0f - pull) +
+                              (float)sluma * pull;
+            int rr, gg, bb;
+            LikenessScaleRgbToLuma((float)sr, (float)sg, (float)sbc,
+                                   want_luma, &rr, &gg, &bb);
+            int new_ci = LikenessNearestMaterialSlot(source_pal, used_slots,
+                                                     sm, rr, gg, bb,
+                                                     sr, sg, sbc);
+            if (new_ci <= 0 || target_pix[(size_t)best_off] == (unsigned char)new_ci)
+                continue;
+            target_pix[(size_t)best_off] = (unsigned char)new_ci;
+            accent_mask[(size_t)best_off] = 1;
+            changed++;
+        }
+    }
+    return changed;
+}
+
+static int LikenessCleanActorPaletteOutliers(unsigned char *target_pix,
+                                             const unsigned char *target_original,
+                                             int w, int h, int stride,
+                                             PAL *source_pal, PAL *target_pal,
+                                             const bool used_slots[256],
+                                             const LikenessBBox &tb,
+                                             const std::vector<unsigned char> &head_mask,
+                                             const std::vector<unsigned char> &skin_mask)
+{
+    if (!target_pix || !target_original || !source_pal || !target_pal)
+        return 0;
+
+    float span_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    int changed = 0;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            size_t off = (size_t)y * stride + x;
+            unsigned char ci = target_pix[off];
+            if (target_original[off] == 0 || ci == 0 ||
+                !LikenessIsBadGreenPixel(source_pal, ci))
+                continue;
+            float v = ((float)y - (float)tb.y1) / span_y;
+            LikenessMaterial material = LikenessTargetMaterial(target_original,
+                                                              w, h, stride,
+                                                              target_pal,
+                                                              x, y,
+                                                              head_mask,
+                                                              skin_mask,
+                                                              v);
+            int tr, tg, tbv, tluma;
+            LikenessPaletteRgb(target_pal, target_original[off],
+                               &tr, &tg, &tbv, &tluma);
+            int new_ci = LikenessNearestMaterialSlot(source_pal, used_slots,
+                                                     material,
+                                                     tr, tg, tbv,
+                                                     -1, -1, -1,
+                                                     true);
+            if (new_ci <= 0 || new_ci == ci)
+                continue;
+            target_pix[off] = (unsigned char)new_ci;
+            changed++;
+        }
+    }
+    return changed;
+}
+
+static int ApplyMarkedLikenessToSelected(void)
+{
+    int target_idx = g_doc->ilselected;
+    IMG *target = (target_idx >= 0) ? get_img(target_idx) : NULL;
+    if (!target || !target->data_p || target->w == 0 || target->h == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Select a target sprite first.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    int source_idx = -1;
+    int marked_sources = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (!(img->flags & 1) || idx == target_idx) continue;
+        source_idx = idx;
+        marked_sources++;
+    }
+    if (marked_sources != 1) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark exactly one source sprite, then select a different target sprite.");
+        g_restore_msg_timer = 5.0f;
+        return 0;
+    }
+
+    IMG *source = get_img(source_idx);
+    PAL *source_pal = source ? get_pal((int)source->palnum) : NULL;
+    PAL *target_pal = get_pal((int)target->palnum);
+    if (!source || !source->data_p || source->w == 0 || source->h == 0 ||
+        !source_pal || !source_pal->data_p || !target_pal || !target_pal->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Source and target sprites need valid palettes.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    LikenessBBox sb = {}, tb = {};
+    if (!LikenessOpaqueBBox(source, &sb) || !LikenessOpaqueBBox(target, &tb)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Source and target need non-transparent pixels.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    std::vector<LikenessSample> samples;
+    bool used_slots[256];
+    LikenessBuildSamples(source, source_pal, sb, samples, used_slots, NULL);
+    if (samples.empty()) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Marked source has no visible pixels to transfer.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    float normal_score = LikenessMaskScore(target, tb, samples, false);
+    float mirror_score = LikenessMaskScore(target, tb, samples, true);
+    bool mirror = mirror_score > normal_score * 1.08f;
+
+    const int G = 32;
+    std::vector<std::vector<int>> bins((size_t)G * G);
+    for (int i = 0; i < (int)samples.size(); i++) {
+        if (mirror) samples[i].u = 1.0f - samples[i].u;
+        int bx = (int)(samples[i].u * G);
+        int by = (int)(samples[i].v * G);
+        if (bx < 0) bx = 0; if (bx >= G) bx = G - 1;
+        if (by < 0) by = 0; if (by >= G) by = G - 1;
+        bins[by * G + bx].push_back(i);
+    }
+
+    if (!doc_undo_push()) return 0;
+    target = get_img(target_idx);
+    source = get_img(source_idx);
+    source_pal = source ? get_pal((int)source->palnum) : NULL;
+    target_pal = target ? get_pal((int)target->palnum) : NULL;
+    if (!target || !target->data_p || !source || !source_pal || !target_pal)
+        return 0;
+
+    int target_stride = (target->w + 3) & ~3;
+    unsigned char *target_pix = (unsigned char *)target->data_p;
+    size_t target_bytes = (size_t)target_stride * target->h;
+    std::vector<unsigned char> target_original(target_bytes);
+    memcpy(target_original.data(), target_pix, target_bytes);
+    int source_stride = (source->w + 3) & ~3;
+    const unsigned char *source_pix = (const unsigned char *)source->data_p;
+    bool palette_changed = target->palnum != source->palnum;
+    LikenessPartBox source_head = {};
+    LikenessFindHeadPart(source_pix, source->w, source->h, source_stride,
+                         source_pal, sb, true, &source_head);
+    if (source_head.valid)
+        LikenessExpandPartBox(&source_head, source->w, source->h, 1, 1);
+
+    LikenessActorStats stats = {};
+    std::vector<unsigned char> head_mask;
+    std::vector<unsigned char> skin_mask;
+    LikenessBuildActorMasks(target_original.data(),
+                            target->w, target->h, target_stride,
+                            target_pal, tb,
+                            head_mask, skin_mask,
+                            &stats.head_pixels, &stats.skin_pixels);
+
+    stats.remapped = LikenessApplyActorComposite(source_pix,
+                                                 source->w, source->h, source_stride,
+                                                 target_original.data(),
+                                                 target->w, target->h, target_stride,
+                                                 target_pix,
+                                                 source_pal, target_pal,
+                                                 sb, tb,
+                                                 samples, bins, used_slots,
+                                                 source_head,
+                                                 head_mask, skin_mask,
+                                                 mirror, palette_changed,
+                                                 &stats.opaque,
+                                                 &stats.edge_darkened);
+
+    std::vector<unsigned char> accent_mask;
+    stats.accents = LikenessApplyActorAccents(source_pix,
+                                              source->w, source->h, source_stride,
+                                              target_original.data(),
+                                              target->w, target->h, target_stride,
+                                              target_pix,
+                                              source_pal, target_pal,
+                                              sb, tb, mirror,
+                                              used_slots,
+                                              source_head,
+                                              head_mask, skin_mask,
+                                              accent_mask);
+    stats.cleaned = LikenessCleanActorPaletteOutliers(target_pix,
+                                                      target_original.data(),
+                                                      target->w, target->h,
+                                                      target_stride,
+                                                      source_pal, target_pal,
+                                                      used_slots, tb,
+                                                      head_mask, skin_mask);
+    int total_changed = stats.remapped + stats.accents + stats.cleaned;
+
+    target->palnum = source->palnum;
+    g_doc->plselected = source->palnum;
+    ApplyPalette(source->palnum);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    g_img_tex_idx = -2;
+    InvalidateThumb(target_idx);
+    mark_dirty();
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Applied %s likeness to %s: %d/%d remapped, %d accents, %d cleaned, %d head px%s.",
+             source->n_s, target->n_s,
+             stats.remapped, stats.opaque, stats.accents, stats.cleaned,
+             stats.head_pixels,
+             mirror ? " (mirrored source fit)" : "");
+    g_restore_msg_timer = 6.0f;
+    return total_changed;
+}
+
 static void unlink_and_free_img(IMG *victim)
 {
     if (!victim) return;
@@ -7138,6 +9158,139 @@ static int StrokeWordLuma8(unsigned short w)
     return (r * 54 + g * 183 + b * 19) >> 8;
 }
 
+static bool EdgeBufferTransparent(const unsigned char *buf, int w, int h,
+                                  int stride, int x, int y)
+{
+    if (x < 0 || x >= w || y < 0 || y >= h) return true;
+    return buf[(size_t)y * stride + x] == 0;
+}
+
+static int EdgeBufferTransparentNeighbors(const unsigned char *buf, int w, int h,
+                                          int stride, int x, int y)
+{
+    int n = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            if (EdgeBufferTransparent(buf, w, h, stride, x + dx, y + dy)) n++;
+        }
+    }
+    return n;
+}
+
+static bool EdgeColorStrongVariant(PAL *pal, unsigned char edge_ci,
+                                   unsigned char cand_ci)
+{
+    if (!pal || edge_ci == 0 || cand_ci == 0 || edge_ci == cand_ci) return false;
+    unsigned short ew = pal_word_or_black(pal, edge_ci);
+    unsigned short cw = pal_word_or_black(pal, cand_ci);
+    int dist = PaletteColorDistance5(ew, cw);
+    int dl = StrokeWordLuma8(ew) - StrokeWordLuma8(cw);
+    if (dl < 0) dl = -dl;
+    return dist >= 10 || dl >= 22;
+}
+
+static bool FindInwardEdgeReplacement(const unsigned char *src,
+                                      int w, int h, int stride,
+                                      int x, int y, PAL *pal,
+                                      unsigned char edge_ci,
+                                      int max_depth,
+                                      unsigned char *out_ci)
+{
+    if (out_ci) *out_ci = 0;
+    if (!src || !pal || !pal->data_p || edge_ci == 0) return false;
+    if (max_depth < 1) max_depth = 1;
+    if (max_depth > 2) max_depth = 2;
+
+    int inward_x = 0;
+    int inward_y = 0;
+    int edge_trans = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            if (EdgeBufferTransparent(src, w, h, stride, x + dx, y + dy)) {
+                inward_x -= dx;
+                inward_y -= dy;
+                edge_trans++;
+            }
+        }
+    }
+    if (edge_trans <= 0) return false;
+
+    auto sign = [](int v) -> int { return (v > 0) ? 1 : (v < 0 ? -1 : 0); };
+    int step_x = sign(inward_x);
+    int step_y = sign(inward_y);
+    if (step_x == 0 && step_y == 0) {
+        step_x = 0;
+        step_y = 1;
+    }
+
+    struct Cand {
+        unsigned char ci;
+        int score;
+        bool strong;
+    };
+    Cand best = {0, 0x7FFFFFFF, false};
+
+    auto consider = [&](int cx, int cy, int depth, int lateral) {
+        if (cx < 0 || cx >= w || cy < 0 || cy >= h) return;
+        unsigned char ci = src[(size_t)cy * stride + cx];
+        if (ci == 0 || ci == edge_ci) return;
+
+        int cand_trans = EdgeBufferTransparentNeighbors(src, w, h, stride, cx, cy);
+        if (cand_trans > edge_trans && depth > 1) return;
+
+        bool strong = EdgeColorStrongVariant(pal, edge_ci, ci);
+        int dist = PaletteColorDistance5(pal_word_or_black(pal, edge_ci),
+                                         pal_word_or_black(pal, ci));
+        int score = depth * 100 + lateral * 18 - (strong ? 35 : 0);
+        if (!strong) score += 40;
+        if (cand_trans > 0) score += cand_trans * 6;
+        score -= (dist > 40) ? 12 : dist / 4;
+
+        if ((strong && !best.strong) ||
+            (strong == best.strong && score < best.score)) {
+            best.ci = ci;
+            best.score = score;
+            best.strong = strong;
+        }
+    };
+
+    for (int depth = 1; depth <= max_depth; depth++) {
+        int bx = x + step_x * depth;
+        int by = y + step_y * depth;
+        consider(bx, by, depth, 0);
+        if (step_x == 0) {
+            consider(bx - 1, by, depth, 1);
+            consider(bx + 1, by, depth, 1);
+        } else if (step_y == 0) {
+            consider(bx, by - 1, depth, 1);
+            consider(bx, by + 1, depth, 1);
+        } else {
+            consider(x + step_x * depth, y, depth, 1);
+            consider(x, y + step_y * depth, depth, 1);
+        }
+        if (best.ci != 0 && best.strong && depth >= 1) break;
+    }
+
+    if (best.ci == 0) {
+        for (int radius = 1; radius <= max_depth; radius++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    if (dx * inward_x + dy * inward_y <= 0) continue;
+                    consider(x + dx, y + dy, radius + 2, abs(dx) + abs(dy));
+                }
+            }
+            if (best.ci != 0) break;
+        }
+    }
+
+    if (best.ci == 0) return false;
+    if (out_ci) *out_ci = best.ci;
+    return true;
+}
+
 static int RemoveHardStrokeFromImage(IMG *img, PAL *pal, int max_width, bool apply)
 {
     if (!img || !img->data_p || !pal || !pal->data_p ||
@@ -7153,92 +9306,74 @@ static int RemoveHardStrokeFromImage(IMG *img, PAL *pal, int max_width, bool app
     size_t bytes = (size_t)stride * h;
     std::vector<unsigned char> work(bytes);
     memcpy(work.data(), pixels, bytes);
-    int removed = 0;
+    int changed = 0;
+    std::vector<std::pair<int, unsigned char>> writes;
 
-    auto is_transparent = [&](int x, int y) -> bool {
-        if (x < 0 || y < 0 || x >= w || y >= h) return true;
-        return work[(size_t)y * stride + x] == 0;
-    };
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = work[(size_t)y * stride + x];
+            if (ci == 0) continue;
 
-    auto transparent_neighbors = [&](int x, int y) -> int {
-        int n = 0;
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                if (dx == 0 && dy == 0) continue;
-                if (is_transparent(x + dx, y + dy)) n++;
-            }
-        }
-        return n;
-    };
+            int trans = EdgeBufferTransparentNeighbors(work.data(), w, h, stride, x, y);
+            if (trans <= 0) continue;
 
-    for (int pass = 0; pass < max_width; pass++) {
-        std::vector<unsigned char> kill((size_t)w * h, 0);
-        int pass_kill = 0;
+            unsigned short edge_word = pal_word_or_black(pal, ci);
+            int edge_luma = StrokeWordLuma8(edge_word);
+            int same_edge_neighbors = 0;
+            int interior_count = 0;
+            int interior_luma_sum = 0;
+            int min_dist = 0x7FFFFFFF;
+            unsigned char inward_ci = 0;
+            bool have_inward = FindInwardEdgeReplacement(work.data(), w, h, stride,
+                                                         x, y, pal, ci, max_width,
+                                                         &inward_ci);
 
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                unsigned char ci = work[(size_t)y * stride + x];
-                if (ci == 0) continue;
+            for (int dy = -2; dy <= 2; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    unsigned char ni = work[(size_t)ny * stride + nx];
+                    if (ni == 0) continue;
+                    unsigned short nw = pal_word_or_black(pal, ni);
+                    int dist = PaletteColorDistance5(edge_word, nw);
+                    if (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1 &&
+                        dist <= 6)
+                        same_edge_neighbors++;
 
-                int trans = transparent_neighbors(x, y);
-                if (trans <= 0) continue;
-
-                unsigned short edge_word = pal_word_or_black(pal, ci);
-                int edge_luma = StrokeWordLuma8(edge_word);
-                int same_edge_neighbors = 0;
-                int interior_count = 0;
-                int interior_luma_sum = 0;
-                int min_dist = 0x7FFFFFFF;
-
-                for (int dy = -3; dy <= 3; dy++) {
-                    for (int dx = -3; dx <= 3; dx++) {
-                        if (dx == 0 && dy == 0) continue;
-                        int nx = x + dx;
-                        int ny = y + dy;
-                        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-                        unsigned char ni = work[(size_t)ny * stride + nx];
-                        if (ni == 0) continue;
-                        unsigned short nw = pal_word_or_black(pal, ni);
-                        int dist = PaletteColorDistance5(edge_word, nw);
-                        if (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1 &&
-                            dist <= 6)
-                            same_edge_neighbors++;
-
-                        if (dist <= 6) continue; /* likely same outline run */
-                        interior_count++;
-                        interior_luma_sum += StrokeWordLuma8(nw);
-                        if (dist < min_dist) min_dist = dist;
-                    }
-                }
-
-                if (interior_count <= 0) continue;
-                int avg_luma = interior_luma_sum / interior_count;
-                int luma_delta = avg_luma - edge_luma;
-                if (luma_delta < 0) luma_delta = -luma_delta;
-
-                bool hard_color_step = min_dist >= 36 || luma_delta >= 42;
-                bool dark_outline = edge_luma + 24 < avg_luma && min_dist >= 16;
-                bool stroke_supported = same_edge_neighbors >= 1 || trans >= 3;
-                if (stroke_supported && (hard_color_step || dark_outline)) {
-                    kill[(size_t)y * w + x] = 1;
-                    pass_kill++;
+                    if (dist <= 6) continue;
+                    interior_count++;
+                    interior_luma_sum += StrokeWordLuma8(nw);
+                    if (dist < min_dist) min_dist = dist;
                 }
             }
-        }
 
-        if (pass_kill == 0) break;
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                if (kill[(size_t)y * w + x])
-                    work[(size_t)y * stride + x] = 0;
+            if (interior_count <= 0 || !have_inward) continue;
+            int avg_luma = interior_luma_sum / interior_count;
+            int luma_delta = avg_luma - edge_luma;
+            if (luma_delta < 0) luma_delta = -luma_delta;
+
+            bool hard_color_step = min_dist >= 28 || luma_delta >= 34;
+            bool dark_outline = edge_luma + 20 < avg_luma && min_dist >= 12;
+            bool strong_inward = EdgeColorStrongVariant(pal, ci, inward_ci);
+            bool stroke_supported = same_edge_neighbors >= 1 || trans >= 3;
+            if (stroke_supported && strong_inward && (hard_color_step || dark_outline)) {
+                writes.push_back({(int)((size_t)y * stride + x), inward_ci});
             }
         }
-        removed += pass_kill;
     }
 
-    if (apply && removed > 0)
+    for (const auto &wr : writes) {
+        if (work[(size_t)wr.first] != wr.second) {
+            work[(size_t)wr.first] = wr.second;
+            changed++;
+        }
+    }
+
+    if (apply && changed > 0)
         memcpy(pixels, work.data(), bytes);
-    return removed;
+    return changed;
 }
 
 static int RemoveHardStrokeFromTargets(int max_width)
@@ -7309,31 +9444,45 @@ static int RemoveHardStrokeFromTargets(int max_width)
 /* ---- Strip Edge (DMA Compression Prep) ---- */
 static void StripMarkedImages(int max_transparent_neighbors, int specific_color = -1)
 {
-    mark_dirty();
+    if (max_transparent_neighbors < 1) max_transparent_neighbors = 1;
+    if (max_transparent_neighbors > 8) max_transparent_neighbors = 8;
+
+    bool undo_pushed = false;
+    int changed_images = 0;
+    int changed_pixels = 0;
+    int scanned = 0;
+    int idx = 0;
     IMG *img = (IMG *)g_doc->img_p;
     while (img) {
         if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
+            scanned++;
             int w = img->w;
             int h = img->h;
             int stride = (w + 3) & ~3;
             unsigned char *pixels = (unsigned char *)img->data_p;
+            size_t bytes = (size_t)stride * h;
 
-            unsigned char *flags = (unsigned char *)calloc(1, stride * h);
-            if (!flags) {
+            std::vector<unsigned char> original(bytes);
+            std::vector<unsigned char> flags(bytes, 0);
+            if (original.empty() || flags.empty()) {
                 img = (IMG *)img->nxt_p;
+                idx++;
                 continue;
             }
+            memcpy(original.data(), pixels, bytes);
 
             /* Bounds checking counts out-of-bounds as transparent (matches ASM logic) */
             auto is_transparent = [&](int x, int y) -> bool {
                 if (x < 0 || x >= w || y < 0 || y >= h) return true;
-                return pixels[y * stride + x] == 0;
+                return original[(size_t)y * stride + x] == 0;
             };
 
-            /* Pass 1: Flag edge pixels */
+            /* Pass 1: flag the original outer ring, then repaint only those
+               saved edge pixels from a nearby inward color. This keeps the
+               operation from chasing its own freshly edited pixels inward. */
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) {
-                    unsigned char c = pixels[y * stride + x];
+                    unsigned char c = original[(size_t)y * stride + x];
                     if (c == 0) continue;
                     if (specific_color >= 0 && c != specific_color) continue;
 
@@ -7346,19 +9495,49 @@ static void StripMarkedImages(int max_transparent_neighbors, int specific_color 
                     }
 
                     if (trans_count >= 2 && trans_count <= max_transparent_neighbors) {
-                        flags[y * stride + x] = 1;
+                        flags[(size_t)y * stride + x] = 1;
                     }
                 }
             }
 
-            /* Pass 1: Delete flagged pixels */
-            for (int i = 0; i < stride * h; i++) if (flags[i]) pixels[i] = 0;
-            memset(flags, 0, stride * h);
+            PAL *pal = get_pal((int)img->palnum);
+            std::vector<std::pair<int, unsigned char>> edge_writes;
+            if (pal && pal->data_p) {
+                for (int y = 0; y < h; y++) {
+                    for (int x = 0; x < w; x++) {
+                        int off = y * stride + x;
+                        if (!flags[(size_t)off]) continue;
+                        unsigned char edge_ci = original[(size_t)off];
+                        unsigned char repl = 0;
+                        if (FindInwardEdgeReplacement(original.data(), w, h, stride,
+                                                      x, y, pal, edge_ci, 2, &repl) &&
+                            EdgeColorStrongVariant(pal, edge_ci, repl) &&
+                            repl != edge_ci) {
+                            edge_writes.push_back({off, repl});
+                        }
+                    }
+                }
+            }
+
+            if (!edge_writes.empty() && !undo_pushed) {
+                if (!doc_undo_push()) return;
+                undo_pushed = true;
+            }
+
+            int image_changes = 0;
+            for (const auto &wr : edge_writes) {
+                if (pixels[wr.first] != wr.second) {
+                    pixels[wr.first] = wr.second;
+                    image_changes++;
+                }
+            }
+
+            memset(flags.data(), 0, bytes);
 
             /* Pass 2: Flag lonely pixels (stray dust specs) */
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) {
-                    unsigned char c = pixels[y * stride + x];
+                    unsigned char c = pixels[(size_t)y * stride + x];
                     if (c == 0) continue;
                     if (specific_color >= 0 && c != specific_color) continue;
 
@@ -7366,20 +9545,63 @@ static void StripMarkedImages(int max_transparent_neighbors, int specific_color 
                     for (int dy = -1; dy <= 1; dy++) {
                         for (int dx = -1; dx <= 1; dx++) {
                             if (dx == 0 && dy == 0) continue;
-                            if (is_transparent(x + dx, y + dy)) trans_count++;
+                            if (x + dx < 0 || x + dx >= w ||
+                                y + dy < 0 || y + dy >= h ||
+                                pixels[(size_t)(y + dy) * stride + (x + dx)] == 0)
+                                trans_count++;
                         }
                     }
-                    if (trans_count == 8) flags[y * stride + x] = 1;
+                    if (trans_count == 8) flags[(size_t)y * stride + x] = 1;
                 }
             }
 
             /* Pass 2: Delete flagged lonely pixels */
-            for (int i = 0; i < stride * h; i++) if (flags[i]) pixels[i] = 0;
-            free(flags);
+            bool has_lonely = false;
+            for (size_t i = 0; i < bytes; i++) {
+                if (flags[i]) { has_lonely = true; break; }
+            }
+            if (has_lonely && !undo_pushed) {
+                if (!doc_undo_push()) return;
+                undo_pushed = true;
+            }
+            for (size_t i = 0; i < bytes; i++) {
+                if (flags[i] && pixels[i] != 0) {
+                    pixels[i] = 0;
+                    image_changes++;
+                }
+            }
+
+            if (image_changes > 0) {
+                changed_images++;
+                changed_pixels += image_changes;
+                InvalidateThumb(idx);
+            }
         }
         img = (IMG *)img->nxt_p;
+        idx++;
     }
-    g_img_tex_idx = -2; /* Force texture rebuild */
+    if (changed_pixels > 0) {
+        mark_dirty();
+        g_img_tex_idx = -2; /* Force texture rebuild */
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Repainted %d edge pixel%s in %d/%d marked sprite%s.",
+                 changed_pixels,
+                 changed_pixels == 1 ? "" : "s",
+                 changed_images,
+                 scanned,
+                 scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    } else if (scanned == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark one or more sprites before stripping edges.");
+        g_restore_msg_timer = 4.0f;
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No replaceable edge stroke found in %d marked sprite%s.",
+                 scanned,
+                 scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    }
 }
 
 /* ---- Dither Replace ---- */
@@ -7464,7 +9686,7 @@ static void LeastSquaresReduceMarked()
 }
 
 /* ---- ImGui Native File Dialog ---- */
-enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch, ImportGif, ExportPng, ExportPalette, ImportPalette, WriteAniLst, WriteTbl, WriteIrw };
+enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch, ImportSpriteSheetMatch, ImportGif, ExportPng, ExportPalette, ImportPalette, WriteAniLst, WriteTbl, WriteIrw };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
@@ -7487,11 +9709,17 @@ static int  g_gif_blend_mode      = GifBlend_Normal;
 static int  g_gif_opacity_percent = 100;
 static bool g_gif_import_all      = true;
 static bool g_palette_export_act  = false;
+static int  g_sheet_bg_threshold  = 245;
+static int  g_sheet_min_pixels    = 160;
+static int  g_sheet_padding       = 2;
+static bool g_sheet_crop          = true;
+static char g_sheet_prefix[12]    = "FRAME";
 
 static bool FileDialogSupportsMultiSelect(FileDialogMode mode)
 {
     return mode == FileDialogMode::ImportPng ||
            mode == FileDialogMode::ImportPngMatch ||
+           mode == FileDialogMode::ImportSpriteSheetMatch ||
            mode == FileDialogMode::ImportGif;
 }
 
@@ -7510,6 +9738,7 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::WriteIrw:        return "img";
         case FileDialogMode::ImportPng:
         case FileDialogMode::ImportPngMatch:
+        case FileDialogMode::ImportSpriteSheetMatch:
         case FileDialogMode::ExportPng:       return "png";
         case FileDialogMode::ImportGif:       return "gif";
         case FileDialogMode::ExportPalette:
@@ -7863,6 +10092,7 @@ static void file_preview_refresh(const std::string &path)
     }
     SDL_Texture *tex = NULL;
     if (ext == "png")       tex = load_preview_png(path.c_str(), 192);
+    else if (ext == "jpg" || ext == "jpeg") tex = load_preview_png(path.c_str(), 192);
     else if (ext == "gif")  tex = load_preview_png(path.c_str(), 192);
     else if (ext == "tga")  tex = load_preview_tga(path.c_str(), 192);
     /* IMG / LBM previews would require refactoring those loaders to write
@@ -8154,6 +10384,7 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::ImportPng:
         case FileDialogMode::ImportPngMatch:
         case FileDialogMode::ExportPng: return "PNG";
+        case FileDialogMode::ImportSpriteSheetMatch: return "";
         case FileDialogMode::ImportGif: return "GIF";
         case FileDialogMode::ExportPalette: return g_palette_export_act ? "ACT" : "PAL";
         case FileDialogMode::ImportPalette: return "PAL";
@@ -8320,6 +10551,7 @@ static void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::SaveTga) title = "Save TGA File";
     else if (g_file_dialog_mode == FileDialogMode::ImportPng) title = "Import PNG File";
     else if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) title = "Import PNG (Match Palette)";
+    else if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) title = "Import Sprite Sheet (Match Palette)";
     else if (g_file_dialog_mode == FileDialogMode::ImportGif) title = "Import GIF File";
     else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
     else if (g_file_dialog_mode == FileDialogMode::ExportPalette) title = "Export Palette";
@@ -8395,6 +10627,7 @@ static void DrawFileDialog() {
            handler below by OR-ing this flag with its click. */
         bool dbl_click_commit = false;
         const bool multi_select = FileDialogSupportsMultiSelect(g_file_dialog_mode);
+        std::string hover_preview_path;
         for (int entry_idx = 0; entry_idx < (int)entries.size(); entry_idx++) {
             const auto& entry = entries[entry_idx];
             std::string label = (entry.is_dir ? "[Dir] " : "      ") + entry.name;
@@ -8424,6 +10657,8 @@ static void DrawFileDialog() {
                     if (ImGui::IsMouseDoubleClicked(0)) dbl_click_commit = true;
                 }
             }
+            if (!entry.is_dir && ImGui::IsItemHovered())
+                hover_preview_path = PathCombine(current_dir, entry.name);
         }
         ImGui::EndChild();
 
@@ -8432,18 +10667,22 @@ static void DrawFileDialog() {
            re-decode the same file. */
         ImGui::SameLine();
         ImGui::BeginChild("##file_preview", ImVec2(PREVIEW_PANE_W - 8, content_h), true);
-        if (g_file_dialog_file[0]) {
-            std::string sel_full = PathCombine(g_file_dialog_dir, g_file_dialog_file);
-            file_preview_refresh(sel_full);
-            if (g_file_preview.tex) {
-                ImGui::TextUnformatted("Preview");
-                ImGui::Image((ImTextureID)(intptr_t)g_file_preview.tex,
-                             ImVec2((float)g_file_preview.w, (float)g_file_preview.h));
+        {
+            std::string preview_path = hover_preview_path;
+            if (preview_path.empty() && g_file_dialog_file[0])
+                preview_path = PathCombine(g_file_dialog_dir, g_file_dialog_file);
+            if (!preview_path.empty()) {
+                file_preview_refresh(preview_path);
+                if (g_file_preview.tex) {
+                    ImGui::TextUnformatted("Preview");
+                    ImGui::Image((ImTextureID)(intptr_t)g_file_preview.tex,
+                                 ImVec2((float)g_file_preview.w, (float)g_file_preview.h));
+                } else {
+                    ImGui::TextDisabled("No preview\n(IMG / LBM previews\ncoming soon)");
+                }
             } else {
-                ImGui::TextDisabled("No preview\n(IMG / LBM previews\ncoming soon)");
+                ImGui::TextDisabled("Select a file");
             }
-        } else {
-            ImGui::TextDisabled("Select a file");
         }
         ImGui::EndChild();
         
@@ -8493,6 +10732,17 @@ static void DrawFileDialog() {
             ImGui::Checkbox("Import All Frames", &g_gif_import_all);
         }
 
+        if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) {
+            ImGui::InputText("Name Prefix", g_sheet_prefix, sizeof(g_sheet_prefix));
+            ImGui::SliderInt("Background", &g_sheet_bg_threshold, 180, 255);
+            ImGui::InputInt("Min Pixels", &g_sheet_min_pixels);
+            if (g_sheet_min_pixels < 1) g_sheet_min_pixels = 1;
+            ImGui::InputInt("Padding", &g_sheet_padding);
+            if (g_sheet_padding < 0) g_sheet_padding = 0;
+            if (g_sheet_padding > 64) g_sheet_padding = 64;
+            ImGui::Checkbox("Crop to Sprite Bounds", &g_sheet_crop);
+        }
+
         if (g_file_dialog_mode == FileDialogMode::ExportPalette) {
             ImGui::Checkbox("Adobe ACT (RGB)", &g_palette_export_act);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off writes raw Midway 15-bit palette words.");
@@ -8509,6 +10759,7 @@ static void DrawFileDialog() {
         
         const char* btn_text = (g_file_dialog_mode == FileDialogMode::ImportPng ||
                                 g_file_dialog_mode == FileDialogMode::ImportPngMatch ||
+                                g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch ||
                                 g_file_dialog_mode == FileDialogMode::ImportGif ||
                                 g_file_dialog_mode == FileDialogMode::ExportPng) ? "OK" :
                                (g_file_dialog_mode == FileDialogMode::OpenImg ||
@@ -8568,6 +10819,27 @@ static void DrawFileDialog() {
                     g_restore_msg_timer = 4.0f;
                 }
                 mark_dirty();
+            } else if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) {
+                unsigned int before_count = g_doc->imgcnt;
+                SpriteSheetImportOptions opts = {};
+                opts.detect_mode = SpriteSheetDetect_Auto;
+                opts.background_threshold = g_sheet_bg_threshold;
+                opts.min_pixels = g_sheet_min_pixels;
+                opts.padding = g_sheet_padding;
+                opts.crop = g_sheet_crop;
+                snprintf(opts.name_prefix, sizeof(opts.name_prefix), "%s", g_sheet_prefix);
+                for (const std::string &file : selected_files) {
+                    std::string path = PathCombine(g_file_dialog_dir, file);
+                    ImportSpriteSheetMatch(path.c_str(), &opts);
+                }
+                unsigned int added = g_doc->imgcnt - before_count;
+                if (selected_files.size() > 1) {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             added ? "Imported %u frame(s) from %d sprite sheet(s)." : "No sprite sheet frames imported.",
+                             added, (int)selected_files.size());
+                    g_restore_msg_timer = 4.0f;
+                }
+                if (added > 0) mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportGif) {
                 unsigned int before_count = g_doc->imgcnt;
                 for (const std::string &file : selected_files) {
@@ -8796,8 +11068,9 @@ Step 3 -- Browse: Up/Down moves one sprite. PgUp/PgDn jumps a page.
 Step 4 -- Mark sprites: Space toggles mark. M marks all, m clears all.
   Marking is how you select sprites for batch operations.
 
-Step 5 -- Zoom: mouse wheel zooms. Middle-mouse drag pans. Space + left
-  drag also pans (Photoshop hand-tool style).
+Step 5 -- Zoom: mouse wheel, toolbar Z+/Z-, or Ctrl+= / Ctrl+- zooms.
+  Ctrl+0 fits the sprite. Middle-mouse drag pans. Space + left drag also
+  pans (Photoshop hand-tool style).
 
 Step 6 -- Palettes: click a palette in the Palette list to set it on the
   active sprite. [ sets palette for marked sprites, ] for the current one
@@ -8832,7 +11105,7 @@ Edit:
   Ctrl+Shift+I         Invert selection
   Ctrl+J               Duplicate image (or duplicate floating paste)
   Ctrl+E               Merge Down: commit floating paste in place
-  Ctrl+T               Free Transform floating paste (scale with handles)
+  Ctrl+T               Free Transform floating paste (scale / rotate)
 
 Image list:
   Space                Mark / Unmark current image
@@ -8851,7 +11124,7 @@ Tools (toolbar shortcuts):
   G                    Paint Bucket - fill contiguous area
   V                    Variant Paint - target-palette-only color over opaque pixels
   R                    Marquee  - rectangular selection
-  W                    Magic Wand
+  W                    Magic Wand (Ctrl-click adds)
   L                    Lasso
   I                    Eyedropper - pick color from canvas
   (no shortcut)        Smart Eraser, Clone Stamp, Smart Remap (toolbar buttons)
@@ -8880,6 +11153,8 @@ Timeline / Anim:
   World Left / Right   Pause and scrub all marked-tab sequences together
 
 View / Help:
+  Ctrl+= / Ctrl+-      Zoom in / out
+  Ctrl+0               Fit sprite to canvas
   H                    Show this help
   F9                   Debug info popup
 
@@ -8888,6 +11163,7 @@ Mouse on canvas:
   Middle drag          Pan
   Space + left drag    Pan (Photoshop hand-tool style)
   Right-click          Eyedrop (any tool mode)
+  Blank left-drag      Starts marquee selection from transparent pixels
   Shift + left-click   Flood fill (when no select tool active)
 
 
@@ -9514,6 +11790,19 @@ static void copy_image(bool cut)
     g_clipboard.aniy2 = img->aniy2;
     g_clipboard.aniz2 = img->aniz2;
     g_clipboard.opals = img->opals;
+    g_clipboard.has_palette = false;
+    g_clipboard.palette_numc = 0;
+    memset(g_clipboard.palette_data, 0, sizeof(g_clipboard.palette_data));
+    {
+        PAL *clip_pal = get_pal(img->palnum);
+        if (clip_pal && clip_pal->data_p && clip_pal->numc > 0) {
+            int n = clip_pal->numc;
+            if (n > 256) n = 256;
+            memcpy(g_clipboard.palette_data, clip_pal->data_p, (size_t)n * 2u);
+            g_clipboard.palette_numc = (unsigned short)n;
+            g_clipboard.has_palette = true;
+        }
+    }
     strncpy(g_clipboard.source_name, img->n_s, 15);
     g_clipboard.source_name[15] = '\0';
     strncpy(g_clipboard.src_filename, img->src_filename, sizeof(g_clipboard.src_filename) - 1);
@@ -9661,6 +11950,9 @@ static void apply_pasted_region(void)
     unsigned short clip_stride = g_clipboard.stride;
     int px = g_pasted.paste_x, py = g_pasted.paste_y;
     int pw = g_clipboard.w, ph = g_clipboard.h;
+    unsigned char pal_map[256];
+    PAL *target_pal = get_pal(img->palnum);
+    bool remap_palette = BuildClipboardPaletteMap(target_pal, pal_map);
 
     /* Adobe-like clipping: allow pasting partially off-canvas */
     int start_x = (px < 0) ? -px : 0;
@@ -9674,11 +11966,11 @@ static void apply_pasted_region(void)
     /* Copy clipboard data to target location with clipping and transparency support */
     for (int y = start_y; y < end_y; y++) {
         unsigned char *src = (unsigned char *)g_clipboard.data_p + y * clip_stride;
-        unsigned char *dst = (unsigned char *)img->data_p + (py + y) * stride + px;
+        unsigned char *dst = (unsigned char *)img->data_p + (py + y) * stride + px + start_x;
         for (int x = start_x; x < end_x; x++) {
             /* 0 is transparent in these indexed images, don't overwrite with transparent pixels */
             if (src[x] != 0) {
-                dst[x] = src[x];
+                dst[x - start_x] = remap_palette ? pal_map[src[x]] : src[x];
             }
         }
     }
@@ -9727,6 +12019,75 @@ static void scale_clipboard_to(int nw, int nh)
     g_clipboard.stride = dst_stride;
 }
 
+static void transform_clipboard_to(int scaled_w, int scaled_h, float angle_deg,
+                                   int *out_w, int *out_h)
+{
+    if (out_w) *out_w = g_clipboard.w;
+    if (out_h) *out_h = g_clipboard.h;
+    if (!g_clipboard.valid || !g_clipboard.data_p) return;
+
+    int sw = g_clipboard.w;
+    int sh = g_clipboard.h;
+    if (scaled_w < 1) scaled_w = 1;
+    if (scaled_h < 1) scaled_h = 1;
+
+    while (angle_deg <= -180.0f) angle_deg += 360.0f;
+    while (angle_deg >   180.0f) angle_deg -= 360.0f;
+    const float PI_F = 3.14159265358979323846f;
+    float rad = angle_deg * PI_F / 180.0f;
+    float c = cosf(rad);
+    float s = sinf(rad);
+
+    int dw = scaled_w;
+    int dh = scaled_h;
+    if (fabsf(angle_deg) > 0.001f) {
+        dw = (int)ceilf(fabsf((float)scaled_w * c) + fabsf((float)scaled_h * s));
+        dh = (int)ceilf(fabsf((float)scaled_w * s) + fabsf((float)scaled_h * c));
+        if (dw < 1) dw = 1;
+        if (dh < 1) dh = 1;
+    }
+
+    unsigned short src_stride = g_clipboard.stride;
+    unsigned short dst_stride = (unsigned short)((dw + 3) & ~3);
+    unsigned char *src = (unsigned char *)g_clipboard.data_p;
+    unsigned char *dst = (unsigned char *)malloc((size_t)dst_stride * dh);
+    if (!dst) return;
+    memset(dst, 0, (size_t)dst_stride * dh);
+
+    float dst_cx = (float)dw * 0.5f;
+    float dst_cy = (float)dh * 0.5f;
+    float scaled_cx = (float)scaled_w * 0.5f;
+    float scaled_cy = (float)scaled_h * 0.5f;
+
+    for (int y = 0; y < dh; y++) {
+        unsigned char *drow = dst + y * dst_stride;
+        for (int x = 0; x < dw; x++) {
+            float dx = ((float)x + 0.5f) - dst_cx;
+            float dy = ((float)y + 0.5f) - dst_cy;
+            float ux =  c * dx + s * dy + scaled_cx;
+            float uy = -s * dx + c * dy + scaled_cy;
+            if (ux < 0.0f || uy < 0.0f || ux >= (float)scaled_w || uy >= (float)scaled_h)
+                continue;
+
+            int sx_idx = (int)(ux * (float)sw / (float)scaled_w);
+            int sy_idx = (int)(uy * (float)sh / (float)scaled_h);
+            if (sx_idx < 0) sx_idx = 0;
+            if (sy_idx < 0) sy_idx = 0;
+            if (sx_idx >= sw) sx_idx = sw - 1;
+            if (sy_idx >= sh) sy_idx = sh - 1;
+            drow[x] = src[sy_idx * src_stride + sx_idx];
+        }
+    }
+
+    free(g_clipboard.data_p);
+    g_clipboard.data_p = dst;
+    g_clipboard.w      = (unsigned short)dw;
+    g_clipboard.h      = (unsigned short)dh;
+    g_clipboard.stride = dst_stride;
+    if (out_w) *out_w = dw;
+    if (out_h) *out_h = dh;
+}
+
 /* Downscale-only convenience wrapper used by paste-to-fit: shrink while
    preserving aspect ratio, no-op if the clipboard already fits. */
 static void scale_clipboard_to_fit(int max_w, int max_h)
@@ -9772,6 +12133,9 @@ static void deselect_all(void)
     g_grid_sel.is_mask  = false;
     g_grid_sel.pixel_mask.clear();
     g_lasso_points.clear();
+    g_selection_add_drag = false;
+    g_selection_add_mask.clear();
+    g_selection_add_mask_w = g_selection_add_mask_h = 0;
 }
 
 /* Invert the current selection. Adobe's Shift+Ctrl+I. Promotes a rect
@@ -9818,6 +12182,114 @@ static void invert_selection(void)
     g_grid_sel.pixel_mask = std::move(new_mask);
     g_grid_sel.x1 = 0; g_grid_sel.y1 = 0;
     g_grid_sel.x2 = sw - 1; g_grid_sel.y2 = sh - 1;
+}
+
+static bool selection_bbox_from_mask(const std::vector<bool> &mask, int sw, int sh,
+                                     int *x1, int *y1, int *x2, int *y2)
+{
+    int min_x = sw, min_y = sh, max_x = -1, max_y = -1;
+    for (int y = 0; y < sh; y++) {
+        for (int x = 0; x < sw; x++) {
+            if (!mask[(size_t)y * sw + x]) continue;
+            if (x < min_x) min_x = x;
+            if (x > max_x) max_x = x;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
+    }
+    if (max_x < min_x || max_y < min_y) return false;
+    if (x1) *x1 = min_x; if (y1) *y1 = min_y;
+    if (x2) *x2 = max_x; if (y2) *y2 = max_y;
+    return true;
+}
+
+static bool selection_current_to_mask(int sw, int sh, std::vector<bool> *out)
+{
+    if (!out) return false;
+    out->assign((size_t)sw * sh, false);
+    if (!g_grid_sel.active) return false;
+
+    if (g_grid_sel.is_mask &&
+        g_grid_sel.mask_w == sw && g_grid_sel.mask_h == sh &&
+        g_grid_sel.pixel_mask.size() == (size_t)sw * sh) {
+        *out = g_grid_sel.pixel_mask;
+    } else {
+        int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
+        int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
+        if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+        if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+        if (x1 < 0) x1 = 0; if (x2 >= sw) x2 = sw - 1;
+        if (y1 < 0) y1 = 0; if (y2 >= sh) y2 = sh - 1;
+        if (x1 > x2 || y1 > y2) return false;
+        for (int y = y1; y <= y2; y++)
+            for (int x = x1; x <= x2; x++)
+                (*out)[(size_t)y * sw + x] = true;
+    }
+
+    int bx1, by1, bx2, by2;
+    return selection_bbox_from_mask(*out, sw, sh, &bx1, &by1, &bx2, &by2);
+}
+
+static void selection_commit_mask(int sw, int sh, const std::vector<bool> &mask)
+{
+    int x1, y1, x2, y2;
+    if (!selection_bbox_from_mask(mask, sw, sh, &x1, &y1, &x2, &y2)) {
+        deselect_all();
+        return;
+    }
+    g_grid_sel.active = true;
+    g_grid_sel.dragging = false;
+    g_grid_sel.is_mask = true;
+    g_grid_sel.mask_w = sw;
+    g_grid_sel.mask_h = sh;
+    g_grid_sel.pixel_mask = mask;
+    g_grid_sel.x1 = x1; g_grid_sel.y1 = y1;
+    g_grid_sel.x2 = x2; g_grid_sel.y2 = y2;
+}
+
+static void selection_apply_mask(int sw, int sh, std::vector<bool> mask, bool add)
+{
+    if (add) {
+        std::vector<bool> base;
+        if (selection_current_to_mask(sw, sh, &base)) {
+            for (size_t i = 0; i < mask.size() && i < base.size(); i++)
+                mask[i] = mask[i] || base[i];
+        }
+    }
+    selection_commit_mask(sw, sh, mask);
+}
+
+static void selection_begin_add_drag(int sw, int sh, bool add)
+{
+    g_selection_add_drag = false;
+    g_selection_add_mask.clear();
+    g_selection_add_mask_w = g_selection_add_mask_h = 0;
+    if (!add) return;
+    if (selection_current_to_mask(sw, sh, &g_selection_add_mask)) {
+        g_selection_add_drag = true;
+        g_selection_add_mask_w = sw;
+        g_selection_add_mask_h = sh;
+    }
+}
+
+static void selection_finish_add_drag(int sw, int sh)
+{
+    if (!g_selection_add_drag ||
+        g_selection_add_mask_w != sw || g_selection_add_mask_h != sh ||
+        g_selection_add_mask.size() != (size_t)sw * sh) {
+        g_selection_add_drag = false;
+        g_selection_add_mask.clear();
+        return;
+    }
+
+    std::vector<bool> current;
+    if (selection_current_to_mask(sw, sh, &current)) {
+        for (size_t i = 0; i < current.size(); i++)
+            current[i] = current[i] || g_selection_add_mask[i];
+        selection_commit_mask(sw, sh, current);
+    }
+    g_selection_add_drag = false;
+    g_selection_add_mask.clear();
 }
 
 static void paste_image(void)
@@ -9875,6 +12347,8 @@ static void xform_begin(void)
     g_xform.start_y  = g_xform.ry;
     g_xform.start_w  = g_xform.rw;
     g_xform.start_h  = g_xform.rh;
+    g_xform.angle_deg = 0.0f;
+    g_xform.start_angle_deg = 0.0f;
     g_xform.handle   = TransformHandle::None;
     g_xform.ref_aspect = (g_xform.rh > 0) ? (float)g_xform.rw / (float)g_xform.rh : 1.0f;
 }
@@ -9886,6 +12360,7 @@ static void xform_cancel(void)
     if (!g_xform.active) return;
     g_pasted.paste_x = g_xform.start_x;
     g_pasted.paste_y = g_xform.start_y;
+    g_xform.angle_deg = g_xform.start_angle_deg;
     g_xform.active   = false;
     g_xform.handle   = TransformHandle::None;
 }
@@ -9900,11 +12375,16 @@ static void xform_commit(void)
     int nw = g_xform.rw, nh = g_xform.rh;
     if (nw < 1) nw = 1;
     if (nh < 1) nh = 1;
-    if (nw != (int)g_clipboard.w || nh != (int)g_clipboard.h) {
-        scale_clipboard_to(nw, nh);
+    int out_w = nw;
+    int out_h = nh;
+    if (nw != (int)g_clipboard.w || nh != (int)g_clipboard.h ||
+        fabsf(g_xform.angle_deg) > 0.001f) {
+        transform_clipboard_to(nw, nh, g_xform.angle_deg, &out_w, &out_h);
     }
-    g_pasted.paste_x = g_xform.rx;
-    g_pasted.paste_y = g_xform.ry;
+    float cx = (float)g_xform.rx + (float)nw * 0.5f;
+    float cy = (float)g_xform.ry + (float)nh * 0.5f;
+    g_pasted.paste_x = (int)floorf(cx - (float)out_w * 0.5f + 0.5f);
+    g_pasted.paste_y = (int)floorf(cy - (float)out_h * 0.5f + 0.5f);
     g_xform.active   = false;
     g_xform.handle   = TransformHandle::None;
 }
@@ -10577,16 +13057,39 @@ static bool point_in_rect(ImVec2 p, ImVec2 mn, ImVec2 mx)
 }
 
 static void canvas_rotate_button_rects(ImVec2 img_pos, ImVec2 img_sz,
+                                       ImVec2 canvas_pos, ImVec2 canvas_sz,
                                        ImVec2 mins[2], ImVec2 maxs[2])
 {
     const float size = 24.0f;
     const float gap = 4.0f;
-    const float inset = 4.0f;
+    const float margin = 6.0f;
     const float group_w = size * 2.0f + gap;
-    float x0 = img_pos.x + img_sz.x - group_w - inset;
-    float min_x = img_pos.x + inset;
-    if (x0 < min_x) x0 = min_x;
-    float y0 = img_pos.y + inset;
+    float left = canvas_pos.x;
+    float top = canvas_pos.y;
+    float right = canvas_pos.x + canvas_sz.x;
+    float bottom = canvas_pos.y + canvas_sz.y;
+
+    float x0 = img_pos.x + img_sz.x - group_w;
+    float y0 = img_pos.y - size - margin;
+    if (x0 < left) x0 = left;
+    if (x0 + group_w > right) x0 = right - group_w;
+
+    if (y0 < top) {
+        x0 = img_pos.x + img_sz.x + margin;
+        y0 = img_pos.y;
+        if (x0 + group_w > right) {
+            x0 = img_pos.x + img_sz.x - group_w;
+            y0 = img_pos.y + img_sz.y + margin;
+            if (x0 < left) x0 = left;
+            if (x0 + group_w > right) x0 = right - group_w;
+            if (y0 + size > bottom) {
+                x0 = right - group_w - margin;
+                y0 = top + margin;
+            }
+        }
+    }
+    if (x0 < left) x0 = left;
+    if (y0 < top) y0 = top;
 
     mins[0] = ImVec2(x0, y0);
     maxs[0] = ImVec2(x0 + size, y0 + size);
@@ -14000,6 +16503,18 @@ void imgui_overlay_render(void)
     /* View / Debug */
     if (ImGui::Shortcut(ImGuiKey_H,  route)) g_show_help = true;
     if (ImGui::Shortcut(ImGuiKey_F9, route)) g_show_debug = !g_show_debug;
+    if (!popup_using_keyboard && !io.WantTextInput) {
+        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Equal, route) ||
+            ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Equal, route) ||
+            ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_KeypadAdd, route))
+            QueueZoomStep(1);
+        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Minus, route) ||
+            ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_KeypadSubtract, route))
+            QueueZoomStep(-1);
+        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_0, route) ||
+            ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Keypad0, route))
+            QueueZoomFit();
+    }
     if (ImGui::Shortcut(ImGuiKey_R,  route)) {
         if (g_active_tool == ActiveTool::Marquee) g_active_tool = ActiveTool::None;
         else g_active_tool = ActiveTool::Marquee;
@@ -14184,6 +16699,7 @@ void imgui_overlay_render(void)
             if (ImGui::BeginMenu("Import")) {
                 if (ImGui::MenuItem("PNG File..."))                 OpenFileDialog(FileDialogMode::ImportPng);
                 if (ImGui::MenuItem("PNG (Match to Active Palette)...")) OpenFileDialog(FileDialogMode::ImportPngMatch);
+                if (ImGui::MenuItem("Sprite Sheet (Match Palette)...")) OpenFileDialog(FileDialogMode::ImportSpriteSheetMatch);
                 if (ImGui::MenuItem("GIF File..."))                 OpenFileDialog(FileDialogMode::ImportGif);
                 if (ImGui::MenuItem("Palette..."))                  OpenFileDialog(FileDialogMode::ImportPalette);
                 ImGui::Separator();
@@ -14338,6 +16854,15 @@ void imgui_overlay_render(void)
                 "Detects a thin high-contrast outline/matte ring around\n"
                 "transparent sprite edges and removes it. Uses marked sprites,\n"
                 "or the selected sprite if none are marked.");
+            if (ImGui::MenuItem("Apply Marked Likeness to Selected", NULL, false,
+                                g_doc->ilselected >= 0)) {
+                ApplyMarkedLikenessToSelected();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Mark one source sprite, then select the target sprite.\n"
+                "Uses the source palette/materials while preserving the\n"
+                "target pose and actor shading. Best with a marked source\n"
+                "frame that has similar costume, lighting, and scale.");
             if (ImGui::MenuItem("Align Marked Anipoints to Selected")) {
                 int n = AlignAnipointsToMarked(g_doc->ilselected);
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -14358,9 +16883,47 @@ void imgui_overlay_render(void)
             if (ImGui::MenuItem("Least-Squares Reduce", ";"))               LeastSquaresReduceMarked();
             ImGui::Separator();
             if (ImGui::MenuItem("Strip Edge"))                               StripMarkedImages(5);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Repaints the original outer edge from nearby inward colors.\n"
+                "Keeps the edit on the edge instead of walking into the sprite.");
             if (ImGui::MenuItem("Strip Edge Low"))                           StripMarkedImages(3);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Conservative edge repaint using the same original-edge logic.");
             if (ImGui::MenuItem("Strip Edge (Selected Color)"))              StripMarkedImages(5, g_sel_color);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Only strips the selected palette index, then softens the edge.");
             if (ImGui::MenuItem("Dither Replace"))                           DitherReplaceMarkedImages(g_sel_color);
+            if (ImGui::MenuItem("Match All Sprites to Marked Source Colors")) {
+                int source_idx = -1;
+                int marked = 0;
+                int idx = 0;
+                for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p, idx++) {
+                    if (p->flags & 1) {
+                        source_idx = idx;
+                        marked++;
+                    }
+                }
+                if (marked != 1) {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Mark exactly one source sprite first.");
+                    g_restore_msg_timer = 4.0f;
+                } else {
+                    int pixels = 0;
+                    int n = PreviewMatchAllSpritesToSourceColors(source_idx, &pixels);
+                    if (n > 0 && doc_undo_push()) {
+                        n = MatchAllSpritesToSourceColors(source_idx, &pixels);
+                    }
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             n > 0 ? "Matched %d sprite(s) to source colors (%d px changed)."
+                                   : "No sprites changed; colors already match or palettes are missing.",
+                             n, pixels);
+                    g_restore_msg_timer = 5.0f;
+                }
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Mark exactly one source sprite. Every other sprite is\n"
+                "remapped to the nearest non-transparent colors used by\n"
+                "that source and assigned to the source palette. Shapes stay unchanged.");
             ImGui::Separator();
             if (ImGui::MenuItem("Apply Variant Paint to Selection"))          ApplyVariantToSelection();
             if (ImGui::MenuItem("Remap Similar Regions to Current Swatch"))   ApplySelectionRemapToMatchingSprites();
@@ -14455,6 +17018,12 @@ void imgui_overlay_render(void)
         if (ImGui::BeginMenu("View")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             ImGui::MenuItem("Verbose Logging", NULL, &g_verbose);
+            ImGui::Separator();
+            ImGui::BeginDisabled(g_doc->ilselected < 0);
+            if (ImGui::MenuItem("Zoom In", "Ctrl+=")) QueueZoomStep(1);
+            if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) QueueZoomStep(-1);
+            if (ImGui::MenuItem("Fit Sprite", "Ctrl+0")) QueueZoomFit();
+            ImGui::EndDisabled();
             ImGui::Separator();
             ImGui::MenuItem("Anim Points",     NULL, &g_show_points);
             ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
@@ -14653,6 +17222,14 @@ void imgui_overlay_render(void)
         if (ImGui::Button(TB_LABEL(ICON_RESIZE, ICON_RESIZE_TXT), btn)) OpenResizeSpriteDialog();
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Resize Sprite");
+        ImGui::BeginDisabled(g_doc->ilselected < 0);
+        if (ImGui::Button(TB_LABEL(ICON_ZOOM_IN, ICON_ZOOM_IN_TXT), btn)) QueueZoomStep(1);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom In (Ctrl+=)");
+        ImGui::BeginDisabled(g_doc->ilselected < 0);
+        if (ImGui::Button(TB_LABEL(ICON_ZOOM_OUT, ICON_ZOOM_OUT_TXT), btn)) QueueZoomStep(-1);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom Out (Ctrl+-)");
         /* Pencil tool — single-pixel paint at the current palette index.
            Same paint behavior as the "no active tool" state, but exposed
            as an explicit mode so it's discoverable and pairs with the
@@ -14706,7 +17283,7 @@ void imgui_overlay_render(void)
             if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
         }
         ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Magic Wand Tool (W)");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Magic Wand Tool (W)\nCtrl-click adds to the current selection");
 
         /* Background Eraser tool */
         ImGui::PushStyleColor(ImGuiCol_Button, g_active_tool == ActiveTool::BackgroundEraser ?
@@ -14796,11 +17373,11 @@ void imgui_overlay_render(void)
             ImGui::TextDisabled("|");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(80);
-            ImGui::SliderInt("Tol##wand", &g_wand_tolerance, 0, 16);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Wand tolerance (palette-index distance)");
+            ImGui::SliderInt("Strength##wand", &g_wand_tolerance, 0, 64);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Magic Wand strength (palette-index distance)");
             ImGui::SameLine();
             ImGui::Checkbox("Contig##wand", &g_wand_contiguous);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("If off: select all matching pixels globally");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("If off: select all matching pixels globally. Ctrl-click still adds.");
         } else if (g_active_tool == ActiveTool::CloneStamp) {
             ImGui::SameLine();
             ImGui::TextDisabled("|");
@@ -15799,6 +18376,7 @@ void imgui_overlay_render(void)
     {
         ImVec2 avail   = ImGui::GetContentRegionAvail();
         ImVec2 img_pos = ImGui::GetCursorScreenPos();
+        ImVec2 canvas_origin = img_pos;
         ImVec2 img_sz(0, 0);
         float sx = 1.0f, sy = 1.0f;
         bool timeline_composite_preview_active = false;
@@ -15960,49 +18538,59 @@ void imgui_overlay_render(void)
                timeline frames in shared anipoint space, not one editable IMG. */
         }
         else if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+            if (g_zoom_reset) ResetZoomToFit();
+
+            auto apply_canvas_zoom_step = [&](int dir, ImVec2 anchor) {
+                ImVec2 old_pos, old_size;
+                float old_scale = 1.0f;
+                ZoomImageRectForAvailable(avail, canvas_origin,
+                                          &old_pos, &old_size, &old_scale);
+                float new_scale = ZoomNextLevel(old_scale, dir);
+                if (fabsf(new_scale - old_scale) < 0.001f) return;
+                ApplyZoomScale(old_scale, new_scale, anchor, old_pos, old_size);
+            };
+
+            if (g_zoom_pending_fit) {
+                ResetZoomToFit();
+                g_zoom_pending_fit = false;
+            }
+
             /* ---- Zoom: mouse wheel ---- */
             if (ImGui::IsWindowHovered()) {
-                float wh = io.MouseWheel;
-                if (wh != 0.0f) {
-                    float old_z = g_zoom;
-                    g_zoom += wh * 0.25f;
-                    if (g_zoom < 1.0f) g_zoom = 1.0f;
-                    if (g_zoom > 32.0f) g_zoom = 32.0f;
-                    if (g_zoom <= 4.0f) g_zoom = roundf(g_zoom);
-                    ImVec2 m = io.MousePos;
-                    float cx = img_pos.x + img_sz.x * 0.5f;
-                    float cy = img_pos.y + img_sz.y * 0.5f;
-                    g_pan_x = (g_pan_x + cx - m.x) * (g_zoom / old_z) - (cx - m.x);
-                    g_pan_y = (g_pan_y + cy - m.y) * (g_zoom / old_z) - (cy - m.y);
-                    g_zoom_reset = false;
+                g_zoom_wheel_accum += io.MouseWheel;
+                while (g_zoom_wheel_accum >= 1.0f) {
+                    apply_canvas_zoom_step(1, io.MousePos);
+                    g_zoom_wheel_accum -= 1.0f;
+                }
+                while (g_zoom_wheel_accum <= -1.0f) {
+                    apply_canvas_zoom_step(-1, io.MousePos);
+                    g_zoom_wheel_accum += 1.0f;
                 }
             }
 
-            if (g_zoom_reset) { g_zoom = 1.0f; g_pan_x = 0; g_pan_y = 0; g_zoom_reset = false; }
-            else if (g_doc->ilselected != g_img_tex_idx) g_zoom_reset = true;
-
-            float scale = g_zoom;
-            if (g_zoom == 1.0f) {
-                float fitscale = (float)(int)(avail.x / (float)g_img_tex_w);
-                if (fitscale < 1.0f) fitscale = 1.0f;
-                float fith = (float)g_img_tex_h * fitscale;
-                if (fith > avail.y) fitscale = (float)(int)(avail.y / (float)g_img_tex_h);
-                if (fitscale < 1.0f) fitscale = 1.0f;
-                scale = fitscale;
+            ImVec2 canvas_center(canvas_origin.x + avail.x * 0.5f,
+                                 canvas_origin.y + avail.y * 0.5f);
+            while (g_zoom_pending_steps > 0) {
+                apply_canvas_zoom_step(1, canvas_center);
+                g_zoom_pending_steps--;
             }
-            float tw = (float)g_img_tex_w * scale;
-            float th = (float)g_img_tex_h * scale;
-            float off_x = (avail.x - tw) * 0.5f + g_pan_x;
-            float off_y = (avail.y - th) * 0.5f + g_pan_y;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + off_x);
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + off_y);
+            while (g_zoom_pending_steps < 0) {
+                apply_canvas_zoom_step(-1, canvas_center);
+                g_zoom_pending_steps++;
+            }
 
-            img_pos = ImGui::GetCursorScreenPos();
+            float scale = 1.0f;
+            ZoomImageRectForAvailable(avail, canvas_origin, &img_pos, &img_sz, &scale);
+            ImGui::SetCursorScreenPos(img_pos);
+
+            float tw = img_sz.x;
+            float th = img_sz.y;
             img_sz  = ImVec2(tw, th);
             sx = tw / (float)g_img_tex_w;
             sy = th / (float)g_img_tex_h;
             rotate_buttons_visible = true;
-            canvas_rotate_button_rects(img_pos, img_sz, rotate_button_min, rotate_button_max);
+            canvas_rotate_button_rects(img_pos, img_sz, canvas_origin, avail,
+                                       rotate_button_min, rotate_button_max);
 
             /* Checkerboard background for transparency */
             ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -16176,13 +18764,15 @@ void imgui_overlay_render(void)
             }
 
             /* Zoom indicator */
-            if (g_zoom > 1.001f) {
+            if (!g_zoom_fit) {
                 char zbuf[32];
                 snprintf(zbuf, sizeof(zbuf), "%.0f%%", g_zoom * 100.0f);
                 ImGui::SetCursorPos(ImVec2(8, 4));
                 ImGui::TextDisabled("%s", zbuf);
             }
         } else {
+            g_zoom_pending_steps = 0;
+            g_zoom_pending_fit = false;
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + avail.y * 0.45f);
             float tw = ImGui::CalcTextSize("No image selected").x;
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail.x - tw) * 0.5f);
@@ -16202,6 +18792,7 @@ void imgui_overlay_render(void)
         /* Set when an overlay widget (anim point, hitbox corner) eats this frame's
            click, so the grid-selection block below doesn't also start a selection. */
         bool widget_consumed_click = false;
+        bool blank_marquee_click = false;
 
         if (rotate_buttons_visible && !canvas_input_blocked && !timeline_composite_preview_active) {
             for (int i = 0; i < 2; i++) {
@@ -16227,7 +18818,7 @@ void imgui_overlay_render(void)
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                         mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y &&
                         !rotate_button_hovered;
-            if (over && img_sz.x > 0 && g_zoom >= 4.0f) {
+            if (over && img_sz.x > 0 && ((sx + sy) * 0.5f) >= 4.0f) {
                 int hx = (int)((mouse.x - img_pos.x) / sx);
                 int hy = (int)((mouse.y - img_pos.y) / sy);
                 ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -16300,7 +18891,14 @@ void imgui_overlay_render(void)
                             if (da2.x*da2.x + da2.y*da2.y < 10*10) over_anipoint = true;
                         }
                     }
-                    if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
+                    if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 &&
+                        g_hitbox_drag_corner < 0 && g_active_tool == ActiveTool::None &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && *pix == 0 &&
+                        !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
+                        blank_marquee_click = true;
+                        g_active_tool = ActiveTool::Marquee;
+                    }
+                    if (!blank_marquee_click && !g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
                         && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::PaintBucket || g_active_tool == ActiveTool::VariantPaint || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
                         /* Stroke begin: capture a pre-stroke snapshot of the
                            image's pixel buffer on the first frame of left-mouse
@@ -16793,6 +19391,7 @@ void imgui_overlay_render(void)
                             unsigned char* pdata = (unsigned char*)simg->data_p;
                             int target_color = pdata[my * stride + mx];
                             int tol = g_wand_tolerance;
+                            selection_begin_add_drag(sw, sh, ImGui::GetIO().KeyCtrl);
 
                             g_grid_sel.active = true;
                             g_grid_sel.is_mask = true;
@@ -16861,8 +19460,10 @@ void imgui_overlay_render(void)
                             g_grid_sel.x2 = max_x;
                             g_grid_sel.y2 = max_y;
                             g_grid_sel.dragging = false;
+                            selection_finish_add_drag(sw, sh);
                         }
                     } else if (g_active_tool == ActiveTool::Lasso) {
+                        selection_begin_add_drag(g_img_tex_w, g_img_tex_h, ImGui::GetIO().KeyCtrl);
                         g_lasso_points.clear();
                         g_lasso_points.push_back({mx, my});
                         g_grid_sel.active = true;
@@ -16871,6 +19472,7 @@ void imgui_overlay_render(void)
                         g_grid_sel.x1 = g_grid_sel.x2 = mx;
                         g_grid_sel.y1 = g_grid_sel.y2 = my;
                     } else {
+                        selection_begin_add_drag(g_img_tex_w, g_img_tex_h, ImGui::GetIO().KeyCtrl);
                         g_grid_sel.active = true;
                         g_grid_sel.dragging = true;
                         g_grid_sel.is_mask = false;
@@ -16989,6 +19591,10 @@ void imgui_overlay_render(void)
                             }
                         }
                     }
+                    if (g_selection_add_drag && g_doc->ilselected >= 0) {
+                        IMG *simg = get_img(g_doc->ilselected);
+                        if (simg) selection_finish_add_drag(simg->w, simg->h);
+                    }
                 }
             }
 
@@ -17069,47 +19675,80 @@ void imgui_overlay_render(void)
 
                 ImVec2 p1(img_pos.x + px * sx, img_pos.y + py * sy);
                 ImVec2 p2(img_pos.x + (px + pw) * sx, img_pos.y + (py + ph) * sy);
-                bool hovering = mouse.x >= p1.x && mouse.x < p2.x && mouse.y >= p1.y && mouse.y < p2.y;
+                float angle_deg = g_xform.active ? g_xform.angle_deg : 0.0f;
+                const float PI_F = 3.14159265358979323846f;
+                float angle_rad = angle_deg * PI_F / 180.0f;
+                float ca = cosf(angle_rad);
+                float sa = sinf(angle_rad);
+                float cx_img = (float)px + (float)pw * 0.5f;
+                float cy_img = (float)py + (float)ph * 0.5f;
+                auto xform_point_screen = [&](float ix, float iy) -> ImVec2 {
+                    float dxp = ix - cx_img;
+                    float dyp = iy - cy_img;
+                    float rxp = cx_img + dxp * ca - dyp * sa;
+                    float ryp = cy_img + dxp * sa + dyp * ca;
+                    return ImVec2(img_pos.x + rxp * sx, img_pos.y + ryp * sy);
+                };
+                ImVec2 rc[4] = {
+                    xform_point_screen((float)px,      (float)py),
+                    xform_point_screen((float)px + pw, (float)py),
+                    xform_point_screen((float)px + pw, (float)py + ph),
+                    xform_point_screen((float)px,      (float)py + ph),
+                };
+                ImVec2 rb_min = rc[0], rb_max = rc[0];
+                for (int i = 1; i < 4; i++) {
+                    if (rc[i].x < rb_min.x) rb_min.x = rc[i].x;
+                    if (rc[i].y < rb_min.y) rb_min.y = rc[i].y;
+                    if (rc[i].x > rb_max.x) rb_max.x = rc[i].x;
+                    if (rc[i].y > rb_max.y) rb_max.y = rc[i].y;
+                }
+                bool hovering = mouse.x >= rb_min.x && mouse.x < rb_max.x && mouse.y >= rb_min.y && mouse.y < rb_max.y;
                 bool over_sprite = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                                    mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
 
-                /* Render clipboard pixel preview with alpha (move mode only). */
-                if (!g_xform.active) {
-                    IMG *simg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-                    PAL *spal = simg ? get_pal(simg->palnum) : NULL;
-                    const unsigned char *pald = spal ? (const unsigned char *)spal->data_p : NULL;
-                    const unsigned char *src = (const unsigned char *)g_clipboard.data_p;
-                    for (int y = 0; y < ph; y++) {
-                        for (int x = 0; x < pw; x++) {
-                            unsigned char ci = src[y * cs + x];
-                            if (ci == 0) continue;
-                            ImU32 col;
-                            if (pald) {
-                                unsigned short w15 = (unsigned short)(pald[ci*2] | (pald[ci*2+1] << 8));
-                                col = IM_COL32(
-                                    (unsigned char)(((w15 >> 10) & 0x1F) << 3),
-                                    (unsigned char)(((w15 >>  5) & 0x1F) << 3),
-                                    (unsigned char)(( w15        & 0x1F) << 3),
-                                    160);
-                            } else {
-                                col = IM_COL32(255, 255, 255, 160);
-                            }
-                            ImVec2 pp1(img_pos.x + (px + x) * sx, img_pos.y + (py + y) * sy);
-                            ImVec2 pp2(img_pos.x + (px + x + 1) * sx, img_pos.y + (py + y + 1) * sy);
-                            dl->AddRectFilled(pp1, pp2, col);
+                /* Render clipboard pixel preview with alpha, including live
+                   scale/rotation while Free Transform is active. */
+                IMG *simg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+                PAL *spal = simg ? get_pal(simg->palnum) : NULL;
+                const unsigned char *pald = spal ? (const unsigned char *)spal->data_p : NULL;
+                const unsigned char *src = (const unsigned char *)g_clipboard.data_p;
+                unsigned char paste_pal_map[256];
+                bool paste_remap = BuildClipboardPaletteMap(spal, paste_pal_map);
+                int cw = g_clipboard.w;
+                int ch = g_clipboard.h;
+                for (int y = 0; y < ch; y++) {
+                    for (int x = 0; x < cw; x++) {
+                        unsigned char ci = src[y * cs + x];
+                        if (ci == 0) continue;
+                        unsigned char draw_ci = paste_remap ? paste_pal_map[ci] : ci;
+                        ImU32 col;
+                        if (pald && draw_ci < spal->numc) {
+                            unsigned short w15 = (unsigned short)(pald[draw_ci*2] | (pald[draw_ci*2+1] << 8));
+                            col = IM_COL32(
+                                (unsigned char)(((w15 >> 10) & 0x1F) << 3),
+                                (unsigned char)(((w15 >>  5) & 0x1F) << 3),
+                                (unsigned char)(( w15        & 0x1F) << 3),
+                                150);
+                        } else {
+                            col = IM_COL32(255, 255, 255, 150);
                         }
+                        float ix0 = (float)px + ((float)x * (float)pw / (float)cw);
+                        float iy0 = (float)py + ((float)y * (float)ph / (float)ch);
+                        float ix1 = (float)px + ((float)(x + 1) * (float)pw / (float)cw);
+                        float iy1 = (float)py + ((float)(y + 1) * (float)ph / (float)ch);
+                        ImVec2 q0 = xform_point_screen(ix0, iy0);
+                        ImVec2 q1 = xform_point_screen(ix1, iy0);
+                        ImVec2 q2 = xform_point_screen(ix1, iy1);
+                        ImVec2 q3 = xform_point_screen(ix0, iy1);
+                        dl->AddQuadFilled(q0, q1, q2, q3, col);
                     }
-                } else {
-                    /* Light fill inside the transform rect so it's not
-                       invisible when the underlying sprite has dark pixels. */
-                    dl->AddRectFilled(p1, p2, IM_COL32(80, 130, 200, 40));
                 }
 
                 /* Border — cyan when transforming, gold when hovering, yellow otherwise */
                 ImU32 border_col = g_xform.active ? IM_COL32(0, 220, 255, 255)
                                                   : (hovering ? IM_COL32(255, 200, 0, 255)
                                                               : IM_COL32(255, 255, 0, 255));
-                dl->AddRect(p1, p2, border_col, 0.0f, 0, 2.0f);
+                dl->AddPolyline(rc, 4, border_col, ImDrawFlags_Closed, 2.0f);
 
                 /* Snap guides — drawn while a snap is active this frame so
                    the user sees exactly which edge their paste locked onto. */
@@ -17129,8 +19768,8 @@ void imgui_overlay_render(void)
                 /* Instruction text */
                 if (g_xform.active) {
                     const char *hint = (g_xform.handle != TransformHandle::None)
-                        ? "Scaling..."
-                        : "Drag handles to scale | Enter/Ctrl+T commit | Esc revert | Shift inverts aspect lock";
+                        ? (g_xform.handle == TransformHandle::Rotate ? "Rotating..." : "Scaling...")
+                        : "Drag handles to scale | drag top dot to rotate | Enter/Ctrl+T commit | Esc revert";
                     dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(0, 220, 255, 255), hint);
                 } else if (g_pasted.dragging)
                     dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 200, 0, 255), "Moving...");
@@ -17144,17 +19783,15 @@ void imgui_overlay_render(void)
                        drawn outside the rect so the rect stroke stays clean. */
                     const float HSZ = 5.0f; /* half-size in screen pixels */
                     struct HandleSpec { TransformHandle h; float cx, cy; };
-                    float midx = (p1.x + p2.x) * 0.5f;
-                    float midy = (p1.y + p2.y) * 0.5f;
                     HandleSpec specs[8] = {
-                        { TransformHandle::TL, p1.x, p1.y },
-                        { TransformHandle::T,  midx, p1.y },
-                        { TransformHandle::TR, p2.x, p1.y },
-                        { TransformHandle::L,  p1.x, midy },
-                        { TransformHandle::R,  p2.x, midy },
-                        { TransformHandle::BL, p1.x, p2.y },
-                        { TransformHandle::B,  midx, p2.y },
-                        { TransformHandle::BR, p2.x, p2.y },
+                        { TransformHandle::TL, rc[0].x, rc[0].y },
+                        { TransformHandle::T,  (rc[0].x + rc[1].x) * 0.5f, (rc[0].y + rc[1].y) * 0.5f },
+                        { TransformHandle::TR, rc[1].x, rc[1].y },
+                        { TransformHandle::L,  (rc[0].x + rc[3].x) * 0.5f, (rc[0].y + rc[3].y) * 0.5f },
+                        { TransformHandle::R,  (rc[1].x + rc[2].x) * 0.5f, (rc[1].y + rc[2].y) * 0.5f },
+                        { TransformHandle::BL, rc[3].x, rc[3].y },
+                        { TransformHandle::B,  (rc[3].x + rc[2].x) * 0.5f, (rc[3].y + rc[2].y) * 0.5f },
+                        { TransformHandle::BR, rc[2].x, rc[2].y },
                     };
 
                     TransformHandle hover_h = TransformHandle::None;
@@ -17173,12 +19810,35 @@ void imgui_overlay_render(void)
                                     IM_COL32(0, 0, 0, 255), 0.0f, 0, 1.0f);
                     }
 
+                    float center_sx = (rc[0].x + rc[2].x) * 0.5f;
+                    float center_sy = (rc[0].y + rc[2].y) * 0.5f;
+                    float top_mid_x = (rc[0].x + rc[1].x) * 0.5f;
+                    float top_mid_y = (rc[0].y + rc[1].y) * 0.5f;
+                    float vx = top_mid_x - center_sx;
+                    float vy = top_mid_y - center_sy;
+                    float vlen = sqrtf(vx * vx + vy * vy);
+                    if (vlen < 0.001f) { vx = 0.0f; vy = -1.0f; vlen = 1.0f; }
+                    vx /= vlen; vy /= vlen;
+                    ImVec2 rot_handle(top_mid_x + vx * 26.0f, top_mid_y + vy * 26.0f);
+                    dl->AddLine(ImVec2(top_mid_x, top_mid_y), rot_handle, IM_COL32(0, 220, 255, 190), 1.5f);
+                    float rdist = (mouse.x - rot_handle.x) * (mouse.x - rot_handle.x) +
+                                  (mouse.y - rot_handle.y) * (mouse.y - rot_handle.y);
+                    bool rot_hov = rdist <= 9.0f * 9.0f;
+                    if (rot_hov && g_xform.handle == TransformHandle::None) hover_h = TransformHandle::Rotate;
+                    dl->AddCircleFilled(rot_handle, 7.0f,
+                                        (rot_hov || g_xform.handle == TransformHandle::Rotate)
+                                            ? IM_COL32(255, 255, 255, 255)
+                                            : IM_COL32(0, 220, 255, 255));
+                    dl->AddCircle(rot_handle, 7.0f, IM_COL32(0, 0, 0, 255), 0, 1.0f);
+                    if (rot_hov)
+                        ImGui::SetTooltip("Rotate paste");
+
                     /* Chain icon at the top-right corner of the rect, offset
                        upward so it doesn't collide with the TR handle. Click
                        toggles g_xform.aspect_locked (persistent). Drawn as
                        two interlocked squares — minimal but recognizable. */
-                    float chain_cx = p2.x + 14;
-                    float chain_cy = p1.y - 14;
+                    float chain_cx = rc[1].x + 14;
+                    float chain_cy = rc[1].y - 14;
                     float chain_hs = 8;
                     ImVec2 ch1(chain_cx - chain_hs, chain_cy - chain_hs);
                     ImVec2 ch2(chain_cx + chain_hs, chain_cy + chain_hs);
@@ -17218,11 +19878,26 @@ void imgui_overlay_render(void)
                         g_xform.drag_ry = g_xform.ry;
                         g_xform.drag_rw = g_xform.rw;
                         g_xform.drag_rh = g_xform.rh;
+                        g_xform.drag_angle_deg = g_xform.angle_deg;
                         g_xform.ref_aspect = (g_xform.rh > 0)
                             ? (float)g_xform.rw / (float)g_xform.rh
                             : 1.0f;
                     }
                     if (g_xform.handle != TransformHandle::None && mbdn) {
+                        if (g_xform.handle == TransformHandle::Rotate) {
+                            float a0 = atan2f(g_xform.drag_my - center_sy,
+                                              g_xform.drag_mx - center_sx);
+                            float a1 = atan2f(mouse.y - center_sy,
+                                              mouse.x - center_sx);
+                            float new_angle = g_xform.drag_angle_deg +
+                                (a1 - a0) * 180.0f / PI_F;
+                            while (new_angle <= -180.0f) new_angle += 360.0f;
+                            while (new_angle >   180.0f) new_angle -= 360.0f;
+                            if (ImGui::GetIO().KeyShift) {
+                                new_angle = roundf(new_angle / 15.0f) * 15.0f;
+                            }
+                            g_xform.angle_deg = new_angle;
+                        } else {
                         /* Convert mouse delta from screen pixels back into
                            image pixels via the sx/sy zoom factors. */
                         int dx = (int)((mouse.x - g_xform.drag_mx) / sx);
@@ -17292,6 +19967,7 @@ void imgui_overlay_render(void)
                         if (rh < 1) rh = 1;
                         g_xform.rx = rx; g_xform.ry = ry;
                         g_xform.rw = rw; g_xform.rh = rh;
+                        }
                     }
                     if (g_xform.handle != TransformHandle::None && !mbdn) {
                         g_xform.handle = TransformHandle::None;
