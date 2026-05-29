@@ -147,6 +147,7 @@ static bool  g_zoom_reset = true;
 static float g_zoom_wheel_accum = 0.0f;
 static int   g_zoom_pending_steps = 0;
 static bool  g_zoom_pending_fit = false;
+static const float ZOOM_MAX = 128.0f;
 static unsigned char *g_pixel_undo = NULL;
 static int            g_pixel_undo_img = -1;  /* -2 = never built */
 
@@ -165,8 +166,42 @@ static float ZoomDisplayScaleForAvailable(const ImVec2 &avail)
 {
     if (g_zoom_fit) return ZoomFitScaleForAvailable(avail);
     if (g_zoom < 1.0f) return 1.0f;
-    if (g_zoom > 32.0f) return 32.0f;
+    if (g_zoom > ZOOM_MAX) return ZOOM_MAX;
     return g_zoom;
+}
+
+static void ZoomClampPanForScale(const ImVec2 &avail, float scale)
+{
+    if (g_img_tex_w <= 0 || g_img_tex_h <= 0 || avail.x <= 0.0f || avail.y <= 0.0f) {
+        g_pan_x = 0.0f;
+        g_pan_y = 0.0f;
+        return;
+    }
+
+    float tw = (float)g_img_tex_w * scale;
+    float th = (float)g_img_tex_h * scale;
+    float max_x = (tw - avail.x) * 0.5f;
+    float max_y = (th - avail.y) * 0.5f;
+
+    if (max_x <= 0.0f) g_pan_x = 0.0f;
+    else if (g_pan_x < -max_x) g_pan_x = -max_x;
+    else if (g_pan_x > max_x) g_pan_x = max_x;
+
+    if (max_y <= 0.0f) g_pan_y = 0.0f;
+    else if (g_pan_y < -max_y) g_pan_y = -max_y;
+    else if (g_pan_y > max_y) g_pan_y = max_y;
+}
+
+static void ZoomClampPanForAvailable(const ImVec2 &avail)
+{
+    ZoomClampPanForScale(avail, ZoomDisplayScaleForAvailable(avail));
+}
+
+static void ZoomPanBy(const ImVec2 &avail, float dx, float dy)
+{
+    g_pan_x += dx;
+    g_pan_y += dy;
+    ZoomClampPanForAvailable(avail);
 }
 
 static void ZoomImageRectForAvailable(const ImVec2 &avail, const ImVec2 &origin,
@@ -187,17 +222,18 @@ static float ZoomNextLevel(float current, int dir)
 {
     static const float levels[] = {
         1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f, 10.0f,
-        12.0f, 16.0f, 24.0f, 32.0f
+        12.0f, 16.0f, 24.0f, 32.0f, 48.0f, 64.0f, 96.0f,
+        128.0f
     };
     if (dir > 0) {
-        if (current >= 32.0f) return current;
+        if (current >= ZOOM_MAX) return current;
         if (current < 1.0f) current = 1.0f;
         for (float level : levels)
             if (level > current + 0.001f) return level;
-        return 32.0f;
+        return ZOOM_MAX;
     }
     if (dir < 0) {
-        if (current > 32.0f) return 32.0f;
+        if (current > ZOOM_MAX) return ZOOM_MAX;
         if (current < 1.0f) current = 1.0f;
         for (int i = (int)(sizeof(levels) / sizeof(levels[0])) - 1; i >= 0; i--)
             if (levels[i] < current - 0.001f) return levels[i];
@@ -230,21 +266,24 @@ static void QueueZoomFit(void)
 
 static bool ApplyZoomScale(float old_scale, float new_scale,
                            const ImVec2 &anchor, const ImVec2 &old_pos,
-                           const ImVec2 &old_size)
+                           const ImVec2 &old_size, const ImVec2 &avail)
 {
     if (old_scale <= 0.0f) old_scale = 1.0f;
     if (new_scale < 1.0f) new_scale = 1.0f;
-    if (new_scale > 32.0f) new_scale = 32.0f;
+    if (new_scale > ZOOM_MAX) new_scale = ZOOM_MAX;
     if (fabsf(new_scale - old_scale) < 0.001f) return false;
 
-    float cx = old_pos.x + old_size.x * 0.5f;
-    float cy = old_pos.y + old_size.y * 0.5f;
+    float old_cx = old_pos.x + old_size.x * 0.5f;
+    float old_cy = old_pos.y + old_size.y * 0.5f;
+    float view_cx = old_cx - g_pan_x;
+    float view_cy = old_cy - g_pan_y;
     float ratio = new_scale / old_scale;
-    g_pan_x = (g_pan_x + cx - anchor.x) * ratio - (cx - anchor.x);
-    g_pan_y = (g_pan_y + cy - anchor.y) * ratio - (cy - anchor.y);
+    g_pan_x = (anchor.x + (old_cx - anchor.x) * ratio) - view_cx;
+    g_pan_y = (anchor.y + (old_cy - anchor.y) * ratio) - view_cy;
     g_zoom = new_scale;
     g_zoom_fit = false;
     g_zoom_reset = false;
+    ZoomClampPanForScale(avail, new_scale);
     return true;
 }
 
@@ -348,7 +387,7 @@ static void pixel_hist_push_stroke(void) {
 }
 
 /* ---- Layout constants ---- */
-static const float TOOLBAR_W   = 40.0f;
+static const float TOOLBAR_W   = 76.0f;
 static const float PANEL_W     = 280.0f;
 static const float PALETTE_H   = 112.0f;
 static const float TIMELINE_H  = 96.0f;
@@ -1054,6 +1093,25 @@ struct PastedImage {
 };
 static PastedImage g_pasted = {false};
 
+enum class PasteBlendMode {
+    Normal = 0,
+    Dissolve,
+    Darken,
+    Multiply,
+    ColorBurn,
+    LinearBurn,
+    Lighten,
+    Screen,
+    ColorDodge,
+    Overlay,
+    SoftLight,
+    HardLight,
+    Difference,
+    Exclusion
+};
+static PasteBlendMode g_paste_blend_mode = PasteBlendMode::Normal;
+static int            g_paste_opacity = 100;
+
 /* Free Transform (Ctrl+T) state. Engaged only while a paste is floating.
    The eight handles re-scale the floating clipboard; the user confirms with
    Enter/Ctrl+T/click-outside, or cancels with Esc (reverts to pre-transform
@@ -1061,6 +1119,7 @@ static PastedImage g_pasted = {false};
    for the rest of the session, Shift inverts it temporarily for one drag. */
 enum class TransformHandle {
     None,
+    Move,
     Rotate,
     TL, T, TR,
     L,      R,
@@ -2308,7 +2367,7 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
     float scale = fit_x < fit_y ? fit_x : fit_y;
     if (scale > 1.0f) scale = floorf(scale);
     if (scale < 0.25f) scale = 0.25f;
-    if (scale > 32.0f) scale = 32.0f;
+    if (scale > ZOOM_MAX) scale = ZOOM_MAX;
 
     float cw = union_w * scale;
     float ch = union_h * scale;
@@ -11068,9 +11127,9 @@ Step 3 -- Browse: Up/Down moves one sprite. PgUp/PgDn jumps a page.
 Step 4 -- Mark sprites: Space toggles mark. M marks all, m clears all.
   Marking is how you select sprites for batch operations.
 
-Step 5 -- Zoom: mouse wheel, toolbar Z+/Z-, or Ctrl+= / Ctrl+- zooms.
-  Ctrl+0 fits the sprite. Middle-mouse drag pans. Space + left drag also
-  pans (Photoshop hand-tool style).
+Step 5 -- Zoom: toolbar Z+/Z-, Ctrl+= / Ctrl+-, or Ctrl+mouse wheel zooms.
+  Ctrl+0 fits the sprite. Mouse wheel scrolls vertically. Middle-mouse drag
+  pans. Space + left drag also pans (Photoshop hand-tool style).
 
 Step 6 -- Palettes: click a palette in the Palette list to set it on the
   active sprite. [ sets palette for marked sprites, ] for the current one
@@ -11159,7 +11218,8 @@ View / Help:
   F9                   Debug info popup
 
 Mouse on canvas:
-  Mouse wheel          Zoom
+  Mouse wheel          Scroll vertically
+  Ctrl + mouse wheel   Zoom in / out from canvas center
   Middle drag          Pan
   Space + left drag    Pan (Photoshop hand-tool style)
   Right-click          Eyedrop (any tool mode)
@@ -11940,6 +12000,257 @@ static void CopySelectionToNewImage(void)
     if (g_clipboard.valid) PasteClipboardAsNewImage();
 }
 
+static const PasteBlendMode k_paste_blend_modes[] = {
+    PasteBlendMode::Normal,
+    PasteBlendMode::Dissolve,
+    PasteBlendMode::Darken,
+    PasteBlendMode::Multiply,
+    PasteBlendMode::ColorBurn,
+    PasteBlendMode::LinearBurn,
+    PasteBlendMode::Lighten,
+    PasteBlendMode::Screen,
+    PasteBlendMode::ColorDodge,
+    PasteBlendMode::Overlay,
+    PasteBlendMode::SoftLight,
+    PasteBlendMode::HardLight,
+    PasteBlendMode::Difference,
+    PasteBlendMode::Exclusion
+};
+
+static const char *PasteBlendModeName(PasteBlendMode mode)
+{
+    switch (mode) {
+    case PasteBlendMode::Normal:     return "Normal";
+    case PasteBlendMode::Dissolve:   return "Dissolve";
+    case PasteBlendMode::Darken:     return "Darken";
+    case PasteBlendMode::Multiply:   return "Multiply";
+    case PasteBlendMode::ColorBurn:  return "Color Burn";
+    case PasteBlendMode::LinearBurn: return "Linear Burn";
+    case PasteBlendMode::Lighten:    return "Lighten";
+    case PasteBlendMode::Screen:     return "Screen";
+    case PasteBlendMode::ColorDodge: return "Color Dodge";
+    case PasteBlendMode::Overlay:    return "Overlay";
+    case PasteBlendMode::SoftLight:  return "Soft Light";
+    case PasteBlendMode::HardLight:  return "Hard Light";
+    case PasteBlendMode::Difference: return "Difference";
+    case PasteBlendMode::Exclusion:  return "Exclusion";
+    }
+    return "Normal";
+}
+
+struct PasteRGB {
+    int r, g, b;
+};
+
+static int paste_clamp_byte(int v)
+{
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return v;
+}
+
+static PasteRGB paste_rgb_from_target_index(const PAL *pal, unsigned char ci)
+{
+    if (pal && pal->data_p && ci < pal->numc && ci < 256) {
+        const unsigned char *pd = (const unsigned char *)pal->data_p;
+        unsigned char r = 0, g = 0, b = 0;
+        pal_word_to_rgb8(pd + ci * 2, &r, &g, &b);
+        return {(int)r, (int)g, (int)b};
+    }
+    SDL_Color c = g_palette[ci];
+    return {(int)c.r, (int)c.g, (int)c.b};
+}
+
+static PasteRGB paste_rgb_from_clipboard_index(unsigned char ci, const PAL *target_pal,
+                                               const unsigned char pal_map[256],
+                                               bool remap_palette)
+{
+    if (g_clipboard.has_palette && ci < g_clipboard.palette_numc && ci < 256) {
+        unsigned char r = 0, g = 0, b = 0;
+        pal_word_to_rgb8(g_clipboard.palette_data + ci * 2, &r, &g, &b);
+        return {(int)r, (int)g, (int)b};
+    }
+    unsigned char draw_ci = remap_palette ? pal_map[ci] : ci;
+    return paste_rgb_from_target_index(target_pal, draw_ci);
+}
+
+static PasteRGB paste_quantize_rgb_to_target(const PAL *target_pal, PasteRGB rgb)
+{
+    if (!target_pal || !target_pal->data_p || target_pal->numc <= 1) return rgb;
+    unsigned short word = rgb_to_word15((unsigned char)paste_clamp_byte(rgb.r),
+                                        (unsigned char)paste_clamp_byte(rgb.g),
+                                        (unsigned char)paste_clamp_byte(rgb.b));
+    int idx = FindNearestPaletteSlot(target_pal, word);
+    return paste_rgb_from_target_index(target_pal, (unsigned char)idx);
+}
+
+static unsigned int paste_dissolve_hash(int x, int y, unsigned char src_ci)
+{
+    unsigned int h = (unsigned int)x * 73856093u
+                   ^ (unsigned int)y * 19349663u
+                   ^ (unsigned int)src_ci * 83492791u;
+    h ^= h >> 13;
+    h *= 1274126177u;
+    h ^= h >> 16;
+    return h;
+}
+
+static bool paste_dissolve_keeps(int x, int y, unsigned char src_ci, int opacity)
+{
+    if (opacity >= 100) return true;
+    if (opacity <= 0) return false;
+    return (int)(paste_dissolve_hash(x, y, src_ci) % 100u) < opacity;
+}
+
+static int paste_blend_channel(PasteBlendMode mode, int s, int d)
+{
+    s = paste_clamp_byte(s);
+    d = paste_clamp_byte(d);
+    switch (mode) {
+    case PasteBlendMode::Darken:
+        return (s < d) ? s : d;
+    case PasteBlendMode::Multiply:
+        return (s * d + 127) / 255;
+    case PasteBlendMode::ColorBurn:
+        return (s == 0) ? 0 : paste_clamp_byte(255 - ((255 - d) * 255 + s / 2) / s);
+    case PasteBlendMode::LinearBurn:
+        return paste_clamp_byte(s + d - 255);
+    case PasteBlendMode::Lighten:
+        return (s > d) ? s : d;
+    case PasteBlendMode::Screen:
+        return 255 - ((255 - s) * (255 - d) + 127) / 255;
+    case PasteBlendMode::ColorDodge:
+        return (s >= 255) ? 255 : paste_clamp_byte((d * 255 + (255 - s) / 2) / (255 - s));
+    case PasteBlendMode::Overlay:
+        return (d < 128)
+            ? paste_clamp_byte((2 * s * d + 127) / 255)
+            : paste_clamp_byte(255 - (2 * (255 - s) * (255 - d) + 127) / 255);
+    case PasteBlendMode::SoftLight: {
+        float sf = (float)s / 255.0f;
+        float df = (float)d / 255.0f;
+        float out = (sf < 0.5f)
+            ? (df - (1.0f - 2.0f * sf) * df * (1.0f - df))
+            : (df + (2.0f * sf - 1.0f) * (sqrtf(df) - df));
+        return paste_clamp_byte((int)(out * 255.0f + 0.5f));
+    }
+    case PasteBlendMode::HardLight:
+        return (s < 128)
+            ? paste_clamp_byte((2 * s * d + 127) / 255)
+            : paste_clamp_byte(255 - (2 * (255 - s) * (255 - d) + 127) / 255);
+    case PasteBlendMode::Difference:
+        return (s > d) ? (s - d) : (d - s);
+    case PasteBlendMode::Exclusion:
+        return paste_clamp_byte(s + d - (2 * s * d + 127) / 255);
+    case PasteBlendMode::Normal:
+    case PasteBlendMode::Dissolve:
+    default:
+        return s;
+    }
+}
+
+static bool paste_composite_rgb(PasteBlendMode mode, PasteRGB src, PasteRGB dst,
+                                int opacity, int x, int y, unsigned char src_ci,
+                                PasteRGB *out)
+{
+    if (!out) return false;
+    if (opacity <= 0) return false;
+    if (opacity > 100) opacity = 100;
+
+    if (mode == PasteBlendMode::Dissolve) {
+        if (!paste_dissolve_keeps(x, y, src_ci, opacity)) return false;
+        *out = src;
+        return true;
+    }
+
+    PasteRGB blended = src;
+    if (mode != PasteBlendMode::Normal) {
+        blended.r = paste_blend_channel(mode, src.r, dst.r);
+        blended.g = paste_blend_channel(mode, src.g, dst.g);
+        blended.b = paste_blend_channel(mode, src.b, dst.b);
+    }
+
+    out->r = paste_clamp_byte((dst.r * (100 - opacity) + blended.r * opacity + 50) / 100);
+    out->g = paste_clamp_byte((dst.g * (100 - opacity) + blended.g * opacity + 50) / 100);
+    out->b = paste_clamp_byte((dst.b * (100 - opacity) + blended.b * opacity + 50) / 100);
+    return true;
+}
+
+static unsigned char paste_composite_index(unsigned char src_ci, unsigned char dst_ci,
+                                           const PAL *target_pal,
+                                           const unsigned char pal_map[256],
+                                           bool remap_palette, int x, int y)
+{
+    if (src_ci == 0) return dst_ci;
+    int opacity = g_paste_opacity;
+    if (opacity <= 0) return dst_ci;
+    if (opacity > 100) opacity = 100;
+
+    unsigned char mapped = remap_palette ? pal_map[src_ci] : src_ci;
+    if (g_paste_blend_mode == PasteBlendMode::Normal && opacity >= 100)
+        return mapped;
+
+    if (g_paste_blend_mode == PasteBlendMode::Dissolve)
+        return paste_dissolve_keeps(x, y, src_ci, opacity) ? mapped : dst_ci;
+
+    if (dst_ci == 0 || !target_pal || !target_pal->data_p || target_pal->numc <= 1)
+        return mapped;
+
+    PasteRGB src = paste_rgb_from_clipboard_index(src_ci, target_pal, pal_map, remap_palette);
+    PasteRGB dst = paste_rgb_from_target_index(target_pal, dst_ci);
+    PasteRGB out;
+    if (!paste_composite_rgb(g_paste_blend_mode, src, dst, opacity, x, y, src_ci, &out))
+        return dst_ci;
+
+    unsigned short word = rgb_to_word15((unsigned char)out.r,
+                                        (unsigned char)out.g,
+                                        (unsigned char)out.b);
+    return (unsigned char)FindNearestPaletteSlot(target_pal, word);
+}
+
+static bool paste_preview_rgba(unsigned char src_ci, unsigned char dst_ci,
+                               const PAL *target_pal,
+                               const unsigned char pal_map[256],
+                               bool remap_palette, int x, int y,
+                               int *r, int *g, int *b, int *a)
+{
+    if (src_ci == 0 || !r || !g || !b || !a) return false;
+    int opacity = g_paste_opacity;
+    if (opacity <= 0) return false;
+    if (opacity > 100) opacity = 100;
+
+    unsigned char mapped = remap_palette ? pal_map[src_ci] : src_ci;
+    PasteRGB src = (g_paste_blend_mode == PasteBlendMode::Normal)
+        ? paste_rgb_from_target_index(target_pal, mapped)
+        : paste_rgb_from_clipboard_index(src_ci, target_pal, pal_map, remap_palette);
+
+    if (g_paste_blend_mode == PasteBlendMode::Normal && opacity >= 100) {
+        *r = src.r; *g = src.g; *b = src.b; *a = 255;
+        return true;
+    }
+
+    if (g_paste_blend_mode == PasteBlendMode::Dissolve) {
+        if (!paste_dissolve_keeps(x, y, src_ci, opacity)) return false;
+        *r = src.r; *g = src.g; *b = src.b; *a = 255;
+        return true;
+    }
+
+    if (dst_ci == 0) {
+        *r = src.r; *g = src.g; *b = src.b;
+        *a = (g_paste_blend_mode == PasteBlendMode::Normal)
+            ? paste_clamp_byte((opacity * 255 + 50) / 100)
+            : 255;
+        return true;
+    }
+
+    PasteRGB dst = paste_rgb_from_target_index(target_pal, dst_ci);
+    PasteRGB out;
+    if (!paste_composite_rgb(g_paste_blend_mode, src, dst, opacity, x, y, src_ci, &out))
+        return false;
+    out = paste_quantize_rgb_to_target(target_pal, out);
+    *r = out.r; *g = out.g; *b = out.b; *a = 255;
+    return true;
+}
+
 static void apply_pasted_region(void)
 {
     mark_dirty();
@@ -11963,15 +12274,19 @@ static void apply_pasted_region(void)
     if (px + pw > (int)img->w) end_x = img->w - px;
     if (py + ph > (int)img->h) end_y = img->h - py;
 
-    /* Copy clipboard data to target location with clipping and transparency support */
+    /* Copy clipboard data to target location with clipping and transparency support. */
     for (int y = start_y; y < end_y; y++) {
         unsigned char *src = (unsigned char *)g_clipboard.data_p + y * clip_stride;
         unsigned char *dst = (unsigned char *)img->data_p + (py + y) * stride + px + start_x;
         for (int x = start_x; x < end_x; x++) {
-            /* 0 is transparent in these indexed images, don't overwrite with transparent pixels */
-            if (src[x] != 0) {
-                dst[x - start_x] = remap_palette ? pal_map[src[x]] : src[x];
-            }
+            /* 0 remains transparent. Opaque pixels overwrite by default;
+               blend/opacity modes composite in RGB and quantize back to the
+               target indexed palette. */
+            if (src[x] != 0)
+                dst[x - start_x] = paste_composite_index(src[x], dst[x - start_x],
+                                                         target_pal, pal_map,
+                                                         remap_palette,
+                                                         px + x, py + y);
         }
     }
     g_img_tex_idx = -2;
@@ -12314,10 +12629,13 @@ static void paste_image(void)
         }
     }
 
-    /* Show paste boundary and let user position it */
+    /* Show paste boundary centered on the target so the floating sprite is
+       immediately visible and ready to resize/move. */
     g_pasted.active = true;
-    g_pasted.paste_x = 0;
-    g_pasted.paste_y = 0;
+    g_pasted.paste_x = ((int)img->w - (int)g_clipboard.w) / 2;
+    g_pasted.paste_y = ((int)img->h - (int)g_clipboard.h) / 2;
+    if (g_pasted.paste_x < 0) g_pasted.paste_x = 0;
+    if (g_pasted.paste_y < 0) g_pasted.paste_y = 0;
     g_pasted.dragging = false;
 
     /* Clear grid selection since paste is now active */
@@ -13069,26 +13387,12 @@ static void canvas_rotate_button_rects(ImVec2 img_pos, ImVec2 img_sz,
     float right = canvas_pos.x + canvas_sz.x;
     float bottom = canvas_pos.y + canvas_sz.y;
 
-    float x0 = img_pos.x + img_sz.x - group_w;
-    float y0 = img_pos.y - size - margin;
+    float x0 = img_pos.x + img_sz.x + margin;
+    float y0 = img_pos.y + (img_sz.y - size) * 0.5f;
+    if (x0 + group_w > right) x0 = right - group_w - margin;
     if (x0 < left) x0 = left;
-    if (x0 + group_w > right) x0 = right - group_w;
-
-    if (y0 < top) {
-        x0 = img_pos.x + img_sz.x + margin;
-        y0 = img_pos.y;
-        if (x0 + group_w > right) {
-            x0 = img_pos.x + img_sz.x - group_w;
-            y0 = img_pos.y + img_sz.y + margin;
-            if (x0 < left) x0 = left;
-            if (x0 + group_w > right) x0 = right - group_w;
-            if (y0 + size > bottom) {
-                x0 = right - group_w - margin;
-                y0 = top + margin;
-            }
-        }
-    }
-    if (x0 < left) x0 = left;
+    if (y0 < top) y0 = top;
+    if (y0 + size > bottom) y0 = bottom - size;
     if (y0 < top) y0 = top;
 
     mins[0] = ImVec2(x0, y0);
@@ -17201,6 +17505,164 @@ void imgui_overlay_render(void)
         ImVec2 btn(TOOLBAR_W - 12, TOOLBAR_W - 12);
         #define TB_LABEL(icon, txt) (g_icon_font_loaded ? (icon) : (txt))
 
+#define TOOL_ACTIVE_COL(r,g,b) ImVec4((r), (g), (b), 1.0f)
+        btn = ImVec2(28.0f, 28.0f);
+        float left_x = ImGui::GetCursorPosX();
+        float right_x = left_x + btn.x + 4.0f;
+        float tool_y = ImGui::GetCursorPosY();
+        float action_y = tool_y;
+        ImVec4 tool_idle(0.25f, 0.25f, 0.25f, 1.0f);
+        ImVec4 action_idle(0.10f, 0.24f, 0.48f, 1.0f);
+        ImVec4 action_active(0.12f, 0.42f, 0.78f, 1.0f);
+
+        auto place_tool = [&]() {
+            ImGui::SetCursorPos(ImVec2(left_x, tool_y));
+            tool_y += btn.y + 4.0f;
+        };
+        auto place_action = [&]() {
+            ImGui::SetCursorPos(ImVec2(right_x, action_y));
+            action_y += btn.y + 4.0f;
+        };
+        auto toggle_tool = [&](ActiveTool tool) {
+            if (g_active_tool == tool) g_active_tool = ActiveTool::None;
+            else g_active_tool = tool;
+            if (tool == ActiveTool::Lasso) g_lasso_points.clear();
+            if (g_active_tool == ActiveTool::None &&
+                (tool == ActiveTool::Marquee || tool == ActiveTool::MagicWand ||
+                 tool == ActiveTool::Lasso || tool == ActiveTool::BackgroundEraser ||
+                 tool == ActiveTool::CloneStamp || tool == ActiveTool::SmartRemap ||
+                 tool == ActiveTool::Eyedropper))
+                g_grid_sel.active = false;
+        };
+        auto tool_button = [&](ActiveTool tool, const char *icon, const char *txt,
+                               ImVec4 active_col, const char *tip) {
+            place_tool();
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                g_active_tool == tool ? active_col : tool_idle);
+            if (ImGui::Button(TB_LABEL(icon, txt), btn)) toggle_tool(tool);
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+        };
+        auto action_button = [&](const char *icon, const char *txt,
+                                 const char *tip, bool disabled,
+                                 bool active, auto on_click) {
+            place_action();
+            ImGui::PushStyleColor(ImGuiCol_Button, active ? action_active : action_idle);
+            if (disabled) ImGui::BeginDisabled();
+            if (ImGui::Button(TB_LABEL(icon, txt), btn)) on_click();
+            if (disabled) ImGui::EndDisabled();
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+        };
+
+        tool_button(ActiveTool::Marquee, ICON_MARQUEE, ICON_MARQUEE_TXT,
+                    TOOL_ACTIVE_COL(0.2f,0.4f,0.7f), "Marquee Select Tool (R)");
+        tool_button(ActiveTool::MagicWand, "\xEF\x8C\x9F", "Wd",
+                    TOOL_ACTIVE_COL(0.5f,0.2f,0.7f), "Magic Wand Tool (W)\nCtrl-click adds to the current selection");
+        tool_button(ActiveTool::Pencil, "\xEE\x8F\x89", "Pn",
+                    TOOL_ACTIVE_COL(0.7f,0.6f,0.2f), "Pencil (P)\n[ / ] to shrink / grow brush");
+        tool_button(ActiveTool::PaintBucket, "\xEE\x8E\xAE", "Bk",
+                    TOOL_ACTIVE_COL(0.7f,0.45f,0.15f), "Paint Bucket (G)");
+        tool_button(ActiveTool::VariantPaint, "\xEE\x90\x8A", "Vt",
+                    TOOL_ACTIVE_COL(0.2f,0.6f,0.7f), "Variant Paint (V)");
+        tool_button(ActiveTool::BackgroundEraser, "\xEE\x9B\x90", "Er",
+                    TOOL_ACTIVE_COL(0.7f,0.2f,0.2f), "Smart Eraser");
+        tool_button(ActiveTool::CloneStamp, "\xEE\x8E\xBB", "Cl",
+                    TOOL_ACTIVE_COL(0.2f,0.6f,0.3f), "Clone Stamp");
+        tool_button(ActiveTool::SmartRemap, "\xEE\x90\x8A", "Rm",
+                    TOOL_ACTIVE_COL(0.8f,0.4f,0.1f), "Smart Palette Remapper");
+        tool_button(ActiveTool::Lasso, "\xEE\xAC\x83", "Ls",
+                    TOOL_ACTIVE_COL(0.3f,0.5f,0.8f), "Lasso Selection Tool (L)");
+        tool_button(ActiveTool::Eyedropper, "\xEF\x8D\x91", "Ey",
+                    TOOL_ACTIVE_COL(0.6f,0.7f,0.2f), "Eyedropper Tool (I)");
+
+        action_button(ICON_MARK, ICON_MARK_TXT, "Mark/Unmark (Space)", false, false, [&]() {
+            IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1;
+        });
+        action_button(ICON_MARK_ALL, ICON_MARK_ALL_TXT, "Set All Marks (M)", false, false, [&]() {
+            IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;}
+        });
+        action_button(ICON_CLEAR, ICON_CLEAR_TXT, "Clear All Marks (m)", false, false, [&]() {
+            IMG *p=(IMG*)g_doc->img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;}
+        });
+        action_button(ICON_POINTS, ICON_POINTS_TXT, "Toggle Anim Points", false, g_show_points, [&]() {
+            g_show_points = !g_show_points;
+        });
+        action_button(ICON_HITBOX, ICON_HITBOX_TXT, "Toggle Hitbox", false, g_show_hitbox, [&]() {
+            g_show_hitbox = !g_show_hitbox;
+        });
+        action_button(ICON_RESIZE, ICON_RESIZE_TXT, "Resize Sprite", g_doc->ilselected < 0, false, [&]() {
+            OpenResizeSpriteDialog();
+        });
+        action_button(ICON_ZOOM_IN, ICON_ZOOM_IN_TXT, "Zoom In (Ctrl+=)", g_doc->ilselected < 0, false, [&]() {
+            QueueZoomStep(1);
+        });
+        action_button(ICON_ZOOM_OUT, ICON_ZOOM_OUT_TXT, "Zoom Out (Ctrl+-)", g_doc->ilselected < 0, false, [&]() {
+            QueueZoomStep(-1);
+        });
+        action_button(ICON_UNDO, ICON_UNDO_TXT, "Undo (Ctrl+Z)", !CanUndo(), false, [&]() {
+            DoUndo();
+        });
+        action_button(ICON_REDO, ICON_REDO_TXT, "Redo (Ctrl+Y)", !CanRedo(), false, [&]() {
+            DoRedo();
+        });
+
+        ImGui::SetCursorPosY((tool_y > action_y ? tool_y : action_y) + 2.0f);
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(TOOLBAR_W - 16.0f);
+        if (g_active_tool == ActiveTool::Pencil) {
+            ImGui::SliderInt("##pencil_brush", &g_pencil_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pencil brush radius");
+        } else if (g_active_tool == ActiveTool::VariantPaint) {
+            ImGui::SliderInt("##variant_brush", &g_variant_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Variant brush radius");
+        } else if (g_active_tool == ActiveTool::PaintBucket) {
+            ImGui::SliderInt("##bucket_tol", &g_bucket_tolerance, 0, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Paint bucket tolerance");
+            ImGui::Checkbox("C##bucket", &g_bucket_contiguous);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Contiguous fill");
+        } else if (g_active_tool == ActiveTool::MagicWand) {
+            ImGui::SliderInt("##wand_tol", &g_wand_tolerance, 0, 64);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Magic Wand strength");
+            ImGui::Checkbox("C##wand", &g_wand_contiguous);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Contiguous selection");
+        } else if (g_active_tool == ActiveTool::CloneStamp) {
+            ImGui::SliderInt("##clone_brush", &g_clone_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clone brush radius");
+        } else if (g_active_tool == ActiveTool::BackgroundEraser) {
+            ImGui::SliderInt("##eraser_tol", &g_eraser_tolerance, 0, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart eraser tolerance");
+            ImGui::Checkbox("C##eraser", &g_eraser_contiguous);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Contiguous erase");
+            ImGui::Checkbox("D##eraser", &g_eraser_defringe);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Defringe edge pixels");
+        } else if (g_active_tool == ActiveTool::SmartRemap) {
+            ImGui::SliderInt("##remap_tol", &g_remap_tolerance, 0, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart remap tolerance");
+        }
+
+        ImGui::Spacing();
+        {
+            SDL_Color &c = g_palette[g_sel_color];
+            ImU32 col = IM_COL32(c.r, c.g, c.b, 255);
+            ImVec2 cp = ImGui::GetCursorScreenPos();
+            float sw_sz = ImGui::GetContentRegionAvail().x;
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(cp, ImVec2(cp.x + sw_sz, cp.y + 24), col);
+            dl->AddRect(cp, ImVec2(cp.x + sw_sz, cp.y + 24), IM_COL32(255,255,255,80));
+            ImGui::Dummy(ImVec2(sw_sz, 24));
+        }
+        char col_label[8];
+        snprintf(col_label, sizeof(col_label), "#%d", g_sel_color);
+        if (ImGui::SmallButton(col_label)) {
+            static int last_col = 1;
+            if (g_sel_color == 0) g_sel_color = last_col;
+            else { last_col = g_sel_color; g_sel_color = 0; }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Active color index (right-click sprite to pick)");
+#undef TOOL_ACTIVE_COL
+
+#if 0
         if (ImGui::Button(TB_LABEL(ICON_MARK, ICON_MARK_TXT), btn))  { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark/Unmark (Space)");
         if (ImGui::Button(TB_LABEL(ICON_MARK_ALL, ICON_MARK_ALL_TXT), btn))  { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
@@ -17461,6 +17923,8 @@ void imgui_overlay_render(void)
             else { last_col = g_sel_color; g_sel_color = 0; }
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Active color index (right-click sprite to pick)");
+#endif
+        #undef TB_LABEL
     }
     ImGui::End();
 
@@ -18028,6 +18492,86 @@ void imgui_overlay_render(void)
             ImGui::PopID();
         }
 
+        /* --- Color: kept directly under Palettes for palette-first editing. --- */
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+        if (ImGui::CollapsingHeader("Color##quick", ImGuiTreeNodeFlags_DefaultOpen)) {
+            auto begin_palette_drag_undo = []() {
+                if (!g_palette_drag_undo_active) {
+                    doc_undo_push();
+                    g_palette_drag_undo_active = true;
+                }
+            };
+            SDL_Color &col = g_palette[g_sel_color];
+            int r = col.r, g = col.g, b = col.b;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("R##quick_cr", &r, 0, 255)) {
+                begin_palette_drag_undo();
+                col.r = (unsigned char)r;
+                palette_writeback(g_sel_color);
+                commit_palette_adjustments();
+            }
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("G##quick_cg", &g, 0, 255)) {
+                begin_palette_drag_undo();
+                col.g = (unsigned char)g;
+                palette_writeback(g_sel_color);
+                commit_palette_adjustments();
+            }
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("B##quick_cb", &b, 0, 255)) {
+                begin_palette_drag_undo();
+                col.b = (unsigned char)b;
+                palette_writeback(g_sel_color);
+                commit_palette_adjustments();
+            }
+            if (g_palette_drag_undo_active && !ImGui::IsAnyItemActive())
+                g_palette_drag_undo_active = false;
+        }
+
+        /* --- Anipts: close to palette/color controls for sprite alignment. --- */
+        if (ImGui::CollapsingHeader("Anipts##quick")) {
+            IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+            if (img) {
+                int ax = (short)img->anix, ay = (short)img->aniy;
+                int ax2 = (short)img->anix2, ay2 = (short)img->aniy2, az2 = (short)img->aniz2;
+                if (AnimPointSliderInt("X1##quick_ptx",  &ax,  -1024, 1024)) { undo_push(); img->anix  = (unsigned short)(short)ax;  }
+                if (AnimPointSliderInt("Y1##quick_pty",  &ay,  -1024, 1024)) { undo_push(); img->aniy  = (unsigned short)(short)ay;  }
+                if (AnimPointSliderInt("X2##quick_ptx2", &ax2, -1024, 1024)) {
+                    undo_push();
+                    activate_secondary_anipoint(img);
+                    img->anix2 = (unsigned short)(short)ax2;
+                }
+                if (AnimPointSliderInt("Y2##quick_pty2", &ay2, -1024, 1024)) {
+                    undo_push();
+                    activate_secondary_anipoint(img);
+                    img->aniy2 = (unsigned short)(short)ay2;
+                }
+                if (AnimPointSliderInt("AZ2##quick_ptz2", &az2, -1024, 1024)) {
+                    undo_push();
+                    if (az2 == -1) clear_secondary_anipoint(img);
+                    else {
+                        activate_secondary_anipoint(img);
+                        img->aniz2 = (unsigned short)(short)az2;
+                    }
+                }
+                if (ImGui::SmallButton("Default Center##quick_anipts")) {
+                    undo_push();
+                    default_anipoints_to_center(img);
+                    g_img_tex_idx = -2;
+                }
+                ImGui::SameLine();
+                bool had_second_point = secondary_anipoint_in_use(img);
+                if (!had_second_point) ImGui::BeginDisabled();
+                if (ImGui::SmallButton("Clear 2nd##quick_anipts")) {
+                    undo_push();
+                    clear_secondary_anipoint(img);
+                }
+                if (!had_second_point) ImGui::EndDisabled();
+            } else {
+                ImGui::TextDisabled("No image selected");
+            }
+        }
+
         /* --- Properties --- */
         if (ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -18082,7 +18626,7 @@ void imgui_overlay_render(void)
         }
 
         /* --- Anim Point Editor --- */
-        if (ImGui::CollapsingHeader("Anim Points")) {
+        if (ImGui::CollapsingHeader("Anipts Tools")) {
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img) {
                 int ax = (short)img->anix, ay = (short)img->aniy;
@@ -18192,7 +18736,7 @@ void imgui_overlay_render(void)
         }
 
         /* --- Color --- */
-        if (ImGui::CollapsingHeader("Color")) {
+        if (ImGui::CollapsingHeader("Color Tools")) {
             auto begin_palette_drag_undo = []() {
                 if (!g_palette_drag_undo_active) {
                     doc_undo_push();
@@ -18547,7 +19091,7 @@ void imgui_overlay_render(void)
                                           &old_pos, &old_size, &old_scale);
                 float new_scale = ZoomNextLevel(old_scale, dir);
                 if (fabsf(new_scale - old_scale) < 0.001f) return;
-                ApplyZoomScale(old_scale, new_scale, anchor, old_pos, old_size);
+                ApplyZoomScale(old_scale, new_scale, anchor, old_pos, old_size, avail);
             };
 
             if (g_zoom_pending_fit) {
@@ -18555,21 +19099,36 @@ void imgui_overlay_render(void)
                 g_zoom_pending_fit = false;
             }
 
-            /* ---- Zoom: mouse wheel ---- */
+            ImVec2 canvas_center(canvas_origin.x + avail.x * 0.5f,
+                                 canvas_origin.y + avail.y * 0.5f);
+
+            /* ---- Mouse wheel: scroll normally, Ctrl+wheel zooms from center ---- */
             if (ImGui::IsWindowHovered()) {
-                g_zoom_wheel_accum += io.MouseWheel;
-                while (g_zoom_wheel_accum >= 1.0f) {
-                    apply_canvas_zoom_step(1, io.MousePos);
-                    g_zoom_wheel_accum -= 1.0f;
-                }
-                while (g_zoom_wheel_accum <= -1.0f) {
-                    apply_canvas_zoom_step(-1, io.MousePos);
-                    g_zoom_wheel_accum += 1.0f;
+                if (io.KeyCtrl) {
+                    g_zoom_wheel_accum += io.MouseWheel;
+                    while (g_zoom_wheel_accum >= 1.0f) {
+                        apply_canvas_zoom_step(1, canvas_center);
+                        g_zoom_wheel_accum -= 1.0f;
+                    }
+                    while (g_zoom_wheel_accum <= -1.0f) {
+                        apply_canvas_zoom_step(-1, canvas_center);
+                        g_zoom_wheel_accum += 1.0f;
+                    }
+                } else {
+                    if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f) {
+                        const float wheel_pan_step = 80.0f;
+                        float dx = io.MouseWheelH * wheel_pan_step;
+                        float dy = io.MouseWheel * wheel_pan_step;
+                        if (io.KeyShift && io.MouseWheel != 0.0f && io.MouseWheelH == 0.0f) {
+                            dx = io.MouseWheel * wheel_pan_step;
+                            dy = 0.0f;
+                        }
+                        ZoomPanBy(avail, dx, dy);
+                    }
+                    g_zoom_wheel_accum = 0.0f;
                 }
             }
 
-            ImVec2 canvas_center(canvas_origin.x + avail.x * 0.5f,
-                                 canvas_origin.y + avail.y * 0.5f);
             while (g_zoom_pending_steps > 0) {
                 apply_canvas_zoom_step(1, canvas_center);
                 g_zoom_pending_steps--;
@@ -18578,6 +19137,7 @@ void imgui_overlay_render(void)
                 apply_canvas_zoom_step(-1, canvas_center);
                 g_zoom_pending_steps++;
             }
+            ZoomClampPanForAvailable(avail);
 
             float scale = 1.0f;
             ZoomImageRectForAvailable(avail, canvas_origin, &img_pos, &img_sz, &scale);
@@ -18838,20 +19398,20 @@ void imgui_overlay_render(void)
             /* Pan: middle-mouse drag or spacebar+drag or right-drag at zoom */
             if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
                 ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Middle, 0.0f);
-                g_pan_x += d.x; g_pan_y += d.y;
+                ZoomPanBy(avail, d.x, d.y);
                 ImGui::ResetMouseDragDelta(ImGuiMouseButton_Middle);
                 widget_consumed_click = true;
             }
             if (ImGui::IsKeyDown(ImGuiKey_Space) && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
                 ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
-                g_pan_x += d.x; g_pan_y += d.y;
+                ZoomPanBy(avail, d.x, d.y);
                 ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
                 widget_consumed_click = true;
             }
             if (g_active_tool == ActiveTool::None && g_zoom > 1.0f &&
                 ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0f) && over) {
                 ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right, 0.0f);
-                g_pan_x += d.x; g_pan_y += d.y;
+                ZoomPanBy(avail, d.x, d.y);
                 ImGui::ResetMouseDragDelta(ImGuiMouseButton_Right);
                 widget_consumed_click = true;
             }
@@ -19689,6 +20249,18 @@ void imgui_overlay_render(void)
                     float ryp = cy_img + dxp * sa + dyp * ca;
                     return ImVec2(img_pos.x + rxp * sx, img_pos.y + ryp * sy);
                 };
+                auto xform_point_image = [&](float ix, float iy) -> ImVec2 {
+                    float dxp = ix - cx_img;
+                    float dyp = iy - cy_img;
+                    return ImVec2(cx_img + dxp * ca - dyp * sa,
+                                  cy_img + dxp * sa + dyp * ca);
+                };
+                ImVec2 paste_controls_min(canvas_origin.x + 10.0f, canvas_origin.y + 10.0f);
+                ImVec2 paste_controls_max(paste_controls_min.x + 252.0f,
+                                           paste_controls_min.y + 62.0f);
+                bool paste_controls_block =
+                    mouse.x >= paste_controls_min.x && mouse.x < paste_controls_max.x &&
+                    mouse.y >= paste_controls_min.y && mouse.y < paste_controls_max.y;
                 ImVec2 rc[4] = {
                     xform_point_screen((float)px,      (float)py),
                     xform_point_screen((float)px + pw, (float)py),
@@ -19706,11 +20278,14 @@ void imgui_overlay_render(void)
                 bool over_sprite = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                                    mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
 
-                /* Render clipboard pixel preview with alpha, including live
-                   scale/rotation while Free Transform is active. */
+                /* Render clipboard pixel preview, including live scale/rotation
+                   while Free Transform is active. At Normal/100 this is fully
+                   opaque so the pasted sprite is visible; opacity/blend choices
+                   preview the same RGB composite used by final commit. */
                 IMG *simg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
                 PAL *spal = simg ? get_pal(simg->palnum) : NULL;
-                const unsigned char *pald = spal ? (const unsigned char *)spal->data_p : NULL;
+                const unsigned char *dst_pixels = simg ? (const unsigned char *)simg->data_p : NULL;
+                int dst_stride = simg ? ((int)simg->w + 3) & ~3 : 0;
                 const unsigned char *src = (const unsigned char *)g_clipboard.data_p;
                 unsigned char paste_pal_map[256];
                 bool paste_remap = BuildClipboardPaletteMap(spal, paste_pal_map);
@@ -19720,22 +20295,27 @@ void imgui_overlay_render(void)
                     for (int x = 0; x < cw; x++) {
                         unsigned char ci = src[y * cs + x];
                         if (ci == 0) continue;
-                        unsigned char draw_ci = paste_remap ? paste_pal_map[ci] : ci;
-                        ImU32 col;
-                        if (pald && draw_ci < spal->numc) {
-                            unsigned short w15 = (unsigned short)(pald[draw_ci*2] | (pald[draw_ci*2+1] << 8));
-                            col = IM_COL32(
-                                (unsigned char)(((w15 >> 10) & 0x1F) << 3),
-                                (unsigned char)(((w15 >>  5) & 0x1F) << 3),
-                                (unsigned char)(( w15        & 0x1F) << 3),
-                                150);
-                        } else {
-                            col = IM_COL32(255, 255, 255, 150);
-                        }
                         float ix0 = (float)px + ((float)x * (float)pw / (float)cw);
                         float iy0 = (float)py + ((float)y * (float)ph / (float)ch);
                         float ix1 = (float)px + ((float)(x + 1) * (float)pw / (float)cw);
                         float iy1 = (float)py + ((float)(y + 1) * (float)ph / (float)ch);
+                        ImVec2 mid = xform_point_image((ix0 + ix1) * 0.5f,
+                                                       (iy0 + iy1) * 0.5f);
+                        int dxp = (int)floorf(mid.x);
+                        int dyp = (int)floorf(mid.y);
+                        unsigned char dst_ci = 0;
+                        if (dst_pixels && simg && dxp >= 0 && dyp >= 0 &&
+                            dxp < (int)simg->w && dyp < (int)simg->h)
+                            dst_ci = dst_pixels[dyp * dst_stride + dxp];
+                        int rr = 255, gg = 255, bb = 255, aa = 255;
+                        if (!paste_preview_rgba(ci, dst_ci, spal, paste_pal_map,
+                                                paste_remap, dxp, dyp,
+                                                &rr, &gg, &bb, &aa))
+                            continue;
+                        ImU32 col = IM_COL32((unsigned char)rr,
+                                             (unsigned char)gg,
+                                             (unsigned char)bb,
+                                             (unsigned char)aa);
                         ImVec2 q0 = xform_point_screen(ix0, iy0);
                         ImVec2 q1 = xform_point_screen(ix1, iy0);
                         ImVec2 q2 = xform_point_screen(ix1, iy1);
@@ -19768,13 +20348,41 @@ void imgui_overlay_render(void)
                 /* Instruction text */
                 if (g_xform.active) {
                     const char *hint = (g_xform.handle != TransformHandle::None)
-                        ? (g_xform.handle == TransformHandle::Rotate ? "Rotating..." : "Scaling...")
-                        : "Drag handles to scale | drag top dot to rotate | Enter/Ctrl+T commit | Esc revert";
+                        ? (g_xform.handle == TransformHandle::Rotate ? "Rotating..."
+                           : (g_xform.handle == TransformHandle::Move ? "Moving..." : "Scaling..."))
+                        : "Drag inside to move | handles scale | top dot rotates | Enter commits";
                     dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(0, 220, 255, 255), hint);
                 } else if (g_pasted.dragging)
                     dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 200, 0, 255), "Moving...");
                 else
                     dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 255, 0, 255), "Drag to move | Ctrl+T transform | Click outside to place | Esc cancel");
+
+                dl->AddRectFilled(paste_controls_min, paste_controls_max,
+                                  IM_COL32(18, 20, 24, 230), 4.0f);
+                dl->AddRect(paste_controls_min, paste_controls_max,
+                            IM_COL32(90, 130, 180, 210), 4.0f, 0, 1.0f);
+                ImGui::PushID("paste_controls");
+                ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 8.0f,
+                                                  paste_controls_min.y + 7.0f));
+                ImGui::TextUnformatted("Blend");
+                ImGui::SameLine(64.0f);
+                ImGui::SetNextItemWidth(170.0f);
+                if (ImGui::BeginCombo("##blend", PasteBlendModeName(g_paste_blend_mode))) {
+                    for (PasteBlendMode mode : k_paste_blend_modes) {
+                        bool selected = (g_paste_blend_mode == mode);
+                        if (ImGui::Selectable(PasteBlendModeName(mode), selected))
+                            g_paste_blend_mode = mode;
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 8.0f,
+                                                  paste_controls_min.y + 34.0f));
+                ImGui::TextUnformatted("Opacity");
+                ImGui::SameLine(64.0f);
+                ImGui::SetNextItemWidth(170.0f);
+                ImGui::SliderInt("##opacity", &g_paste_opacity, 0, 100, "%d%%");
+                ImGui::PopID();
 
                 /* ----- Free Transform handles + interaction ----- */
                 if (g_xform.active && !canvas_input_blocked) {
@@ -19869,7 +20477,8 @@ void imgui_overlay_render(void)
                     }
 
                     /* Handle drag: pick on click, scale on drag, release commits. */
-                    if (g_xform.handle == TransformHandle::None && hover_h != TransformHandle::None &&
+                    if (!paste_controls_block &&
+                        g_xform.handle == TransformHandle::None && hover_h != TransformHandle::None &&
                         ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         g_xform.handle  = hover_h;
                         g_xform.drag_mx = mouse.x;
@@ -19883,8 +20492,25 @@ void imgui_overlay_render(void)
                             ? (float)g_xform.rw / (float)g_xform.rh
                             : 1.0f;
                     }
+                    if (!paste_controls_block &&
+                        g_xform.handle == TransformHandle::None && hover_h == TransformHandle::None &&
+                        hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        g_xform.handle  = TransformHandle::Move;
+                        g_xform.drag_mx = mouse.x;
+                        g_xform.drag_my = mouse.y;
+                        g_xform.drag_rx = g_xform.rx;
+                        g_xform.drag_ry = g_xform.ry;
+                        g_xform.drag_rw = g_xform.rw;
+                        g_xform.drag_rh = g_xform.rh;
+                        g_xform.drag_angle_deg = g_xform.angle_deg;
+                    }
                     if (g_xform.handle != TransformHandle::None && mbdn) {
-                        if (g_xform.handle == TransformHandle::Rotate) {
+                        if (g_xform.handle == TransformHandle::Move) {
+                            int dx = (int)((mouse.x - g_xform.drag_mx) / sx);
+                            int dy = (int)((mouse.y - g_xform.drag_my) / sy);
+                            g_xform.rx = g_xform.drag_rx + dx;
+                            g_xform.ry = g_xform.drag_ry + dy;
+                        } else if (g_xform.handle == TransformHandle::Rotate) {
                             float a0 = atan2f(g_xform.drag_my - center_sy,
                                               g_xform.drag_mx - center_sx);
                             float a1 = atan2f(mouse.y - center_sy,
@@ -19980,7 +20606,8 @@ void imgui_overlay_render(void)
                        Without this, every paste would require an extra
                        Enter / Ctrl+T keystroke before the user could click
                        to drop it, because paste auto-enters transform now. */
-                    if (g_xform.handle == TransformHandle::None && !hovering &&
+                    if (!paste_controls_block &&
+                        g_xform.handle == TransformHandle::None && !hovering &&
                         over_sprite && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                     {
                         /* Skip if the click landed on the chain icon — that
@@ -19998,7 +20625,7 @@ void imgui_overlay_render(void)
 
                 if (!canvas_input_blocked && !g_xform.active) {
                     /* Start drag: click inside paste rect */
-                    if (hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    if (!paste_controls_block && hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         g_pasted.dragging = true;
                         g_pasted.drag_start_mx = mouse.x;
                         g_pasted.drag_start_my = mouse.y;
@@ -20124,7 +20751,7 @@ void imgui_overlay_render(void)
                         g_pasted.dragging = false;
 
                     /* Click outside paste rect (but on sprite) to confirm */
-                    if (!hovering && over_sprite && !g_pasted.dragging &&
+                    if (!paste_controls_block && !hovering && over_sprite && !g_pasted.dragging &&
                         ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                     {
                         apply_pasted_region();

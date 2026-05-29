@@ -8,6 +8,42 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.8.0] — Canvas zoom, paste compositing, and UI cleanup
+
+Feature release for a cleaner editing workspace, more predictable canvas
+navigation, and Photoshop-style paste placement controls.
+
+### Canvas And Zoom
+- **Centered zoom behavior** — zoom in/out now stays centered on the canvas
+  instead of drifting toward the cursor or stale pan offsets.
+- **Higher zoom ceiling** — sprite zoom now reaches 128x for close pixel
+  cleanup work.
+- **Mouse-wheel canvas scroll** — the wheel pans vertically by default, while
+  `Ctrl+wheel` still zooms from the canvas center.
+- **Pan clamping** — when a sprite fits on an axis, that axis recenters instead
+  of leaving the art stranded off-center.
+
+### Paste And Transform
+- **Visible floating paste preview** — pasted sprites start centered on the
+  target and render at full opacity by default so resize/placement work is
+  visible before commit.
+- **Moveable transform box** — while Free Transform is active, dragging inside
+  the box moves the floating paste; handles still scale and the top dot rotates.
+- **Paste blend controls** — floating paste now exposes opacity plus Normal,
+  Dissolve, Darken, Multiply, Color Burn, Linear Burn, Lighten, Screen, Color
+  Dodge, Overlay, Soft Light, Hard Light, Difference, and Exclusion modes.
+- **Overwrite-by-default commit** — Normal 100% paste overwrites opaque source
+  pixels exactly; palette index 0 remains transparent.
+
+### UI Layout
+- **Two-column toolbar** — grey editing tools now sit in the left toolbar column,
+  while blue IMGTOOL actions (mark, points, hitbox, resize, zoom, undo/redo)
+  sit in the right column.
+- **Right-panel ordering** — `Color` is now always open directly beneath
+  `Palettes`, followed by `Anipts` for quick alignment edits.
+- **External rotate buttons** — sprite rotate buttons sit beside the sprite in
+  their original side-by-side layout instead of covering the artwork.
+
 ## [v3.7.0] — Sprite sheet imports and actor likeness tools
 
 Feature release for faster sprite cleanup, palette-safe paste/import workflows,
