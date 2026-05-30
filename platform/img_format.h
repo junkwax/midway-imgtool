@@ -55,6 +55,11 @@ struct IMG {
     unsigned short baseline_h;
     /* Source filename for UI hierarchy grouping */
     char           src_filename[16];
+    /* Runtime-only, non-destructive overlay layer (a single SpriteLayer block,
+     * header + pixels in one allocation). NULL when the sprite has no layer.
+     * Never written to disk — flattened onto data_p only for the save, then
+     * restored. Travels with the image through undo cloning and FreeImg. */
+    void          *layer_p;
 };
 
 struct PAL {
@@ -188,6 +193,7 @@ static inline void FreeImg(IMG *img)
     free(img->data_p);
     free(img->pttbl_p);
     free(img->baseline_p);
+    free(img->layer_p);   /* single allocation: header + pixels */
     free(img);
 }
 
@@ -238,6 +244,58 @@ static inline void AddPointTable(int img_idx)
     IMG *img = (img_idx >= 0) ? get_img(img_idx) : NULL;
     if (!img || img->pttbl_p) return;
     img->pttbl_p = calloc(1, 40);
+}
+
+/* ---- Per-sprite non-destructive overlay layer ----
+   A single optional layer attached to an IMG via img->layer_p. The header and
+   its pixel bytes live in one malloc block so FreeImg/clone touch one pointer.
+   Pixels are stored already remapped to the HOST sprite's palette, so render
+   and flatten are plain index copies (0 = transparent). Helpers are shared by
+   the editor (imgui_overlay.cpp) and the save path (img_io.cpp). */
+struct SpriteLayer {
+    int  w, h, stride;   /* layer pixel dims; stride = (w+3)&~3 */
+    int  x, y;           /* top-left offset on the host image (may be off-canvas) */
+    int  visible;        /* shown + flattened on save when nonzero */
+    /* stride*h palette indices follow immediately after this struct */
+};
+static inline unsigned char *layer_pixels(SpriteLayer *L)
+{
+    return (unsigned char *)(L + 1);
+}
+static inline size_t layer_total_bytes(int w, int h)
+{
+    int stride = (w + 3) & ~3;
+    return sizeof(SpriteLayer) + (size_t)stride * (size_t)h;
+}
+static inline size_t LayerBlockBytesFromHeader(const void *layer_p)
+{
+    if (!layer_p) return 0;
+    const SpriteLayer *L = (const SpriteLayer *)layer_p;
+    return layer_total_bytes(L->w, L->h);
+}
+static inline SpriteLayer *img_layer(IMG *img)
+{
+    return img ? (SpriteLayer *)img->layer_p : NULL;
+}
+/* Composite a layer's nonzero pixels onto a host pixel buffer (host palette
+   indices, host stride). Used by both the canvas renderer and the save flatten. */
+static inline void composite_layer_onto(const SpriteLayer *L, unsigned char *dst,
+                                        int dst_w, int dst_h, int dst_stride)
+{
+    if (!L) return;
+    const unsigned char *src = layer_pixels((SpriteLayer *)L);
+    for (int ly = 0; ly < L->h; ly++) {
+        int dy = L->y + ly;
+        if (dy < 0 || dy >= dst_h) continue;
+        const unsigned char *srow = src + (size_t)ly * L->stride;
+        unsigned char *drow = dst + (size_t)dy * dst_stride;
+        for (int lx = 0; lx < L->w; lx++) {
+            int dx = L->x + lx;
+            if (dx < 0 || dx >= dst_w) continue;
+            unsigned char ci = srow[lx];
+            if (ci != 0) drow[dx] = ci;
+        }
+    }
 }
 
 #endif /* IMG_FORMAT_H */

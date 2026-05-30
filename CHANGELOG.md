@@ -8,6 +8,63 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.9.0] — World View ASM animations, fatalities, and undo hardening
+
+Feature release adding a MK2 ASM animation pipeline to World View, per-sprite
+non-destructive layers, smarter palette merging, and a sweep of undo fixes.
+
+### Palette Merge
+- **Merge options dialog** — merging marked palettes now always opens a choice
+  + live-preview dialog with two toggles: **Grow target** (append the source
+  colors sprites actually use into the target's free slots for a lossless
+  merge) and **Perceptual match** (luma-weighted nearest-color selection).
+- **Swatch mapping preview** — shows each source color over its mapped target
+  color; green border marks colors added losslessly, amber/red mark drift, and
+  a readout reports `target grows N -> M (+K)` plus any overflow.
+
+### Paste And Layers
+- **Flip floating paste** — `H` / `V` mirror a floating paste in place before
+  committing it with Enter.
+- **Per-sprite overlay layer** — drop a floating paste onto a sprite as a
+  non-destructive layer (`L` or Edit -> Drop Paste to Layer). A Sprite Layer
+  panel offers visibility, offset, flip, flatten, and delete. Layers travel
+  with their sprite through undo and flatten onto the pixels only on save.
+
+### World View
+- **Reorder and duplicate frames** — the marked-tab sequence editor gained
+  `<` / `>` to move a frame earlier/later, alongside duplicate / delete / reset.
+- **Top-anchored origin** — the World View Y origin now defaults to 20.
+- **Per-frame flip** — lanes honor a per-frame mirror (used by ASM `ani_flip`).
+- **Dummy faces the player** — the decap dummy body now defaults to facing the
+  attacker; anipoints stay pinned to the shared origin regardless of facing.
+
+### ASM Animation Viewer
+- **Load character ASM** — parse a MK2 per-character ASM (e.g. `MKRD.ASM`),
+  list its animations in a dropdown, and play any of them against the loaded
+  IMG with play/fps/scrub controls and a missing-symbol / opcode report.
+- **Opcode-aware parsing** — frame timing (repeated frames), `ani_adjustx`/`xy`
+  local anipoints, `ani_flip`, and `ani_jump` loops are interpreted.
+- **Auto-find the IMG** — on load, the matching IMG is located by scanning the
+  ASM folder, sibling `data/` dirs, open tabs, and `IMGDIR`; if none match it
+  prompts you to locate the IMG, then re-resolves.
+- **Play in World View lane** — render the parsed animation as its own World
+  View lane with correct anipoint placement, ticks, local anipoints, and loop.
+- **Save / Load ASM** — save the generated animation tables to a `.ASM` file
+  and reload them later (including round-tripped local-anipoint tables).
+
+### Fatalities
+- **Opponent lane** — load a second character ASM (one-click Johnny Cage, or
+  any opponent ASM) plus its IMG into a dedicated lane that defaults to facing
+  the player, for staging fatality interactions.
+
+### Undo
+- **Cut / paste are undoable** — cut, paste-commit, and paste-as-new-image now
+  record proper pixel/document history.
+- **Geometry and structural ops fixed** — crop/trim, duplicate, add, delete
+  unused, reorder, rename, toggle point table, clear extra data, and set
+  palette of marked now take full-document snapshots (crop previously used a
+  metadata-only snapshot that could read out of bounds on undo).
+
 ## [v3.8.0] — Canvas zoom, paste compositing, and UI cleanup
 
 Feature release for a cleaner editing workspace, more predictable canvas

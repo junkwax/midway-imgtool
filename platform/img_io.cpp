@@ -368,6 +368,66 @@ void LoadImgFile(void)
 int g_load2_ppp = 6;
 bool g_load2_limit_scales_to_3 = false;
 
+/* ---- Per-sprite overlay layer save hooks ----
+   Flatten every visible layer onto its image just for the file write, then
+   restore the pre-flatten pixels so the layers stay editable in the session.
+   The SpriteLayer struct + composite_layer_onto live in img_format.h, shared
+   with the editor. */
+namespace {
+struct LayerSaveStash { IMG *img; unsigned char *pixels; size_t bytes; };
+std::vector<LayerSaveStash> g_layer_save_stash;
+}
+
+void FlattenLayersForSave(void)
+{
+    g_layer_save_stash.clear();
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        SpriteLayer *L = img_layer(img);
+        if (!L || !L->visible || !img->data_p || img->w == 0 || img->h == 0) continue;
+        int stride = (img->w + 3) & ~3;
+        size_t bytes = (size_t)stride * img->h;
+        unsigned char *saved = (unsigned char *)malloc(bytes);
+        if (!saved) continue;
+        memcpy(saved, img->data_p, bytes);
+        g_layer_save_stash.push_back({img, saved, bytes});
+        composite_layer_onto(L, (unsigned char *)img->data_p, img->w, img->h, stride);
+    }
+}
+
+void RestoreLayersAfterSave(void)
+{
+    for (auto &s : g_layer_save_stash) {
+        if (s.img && s.img->data_p && s.pixels)
+            memcpy(s.img->data_p, s.pixels, s.bytes);
+        free(s.pixels);
+    }
+    g_layer_save_stash.clear();
+    g_img_tex_idx = -2;
+}
+
+/* Lightweight probe: read just an IMG's frame names from its header records,
+   without loading pixel data. Used by the ASM viewer to auto-pick the matching
+   IMG for a character ASM. */
+void ProbeImgFrameNames(const char *path, std::vector<std::string> &out)
+{
+    out.clear();
+    if (!path || !path[0]) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    LIB_HDR hdr;
+    if (fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) { fclose(f); return; }
+    if (hdr.temp != 0xABCD || hdr.imgcnt == 0 || hdr.imgcnt > 4000) { fclose(f); return; }
+    for (int i = 0; i < (int)hdr.imgcnt; i++) {
+        long pos = (long)hdr.oset + (long)i * (long)sizeof(IMAGE_disk);
+        if (fseek(f, pos, SEEK_SET) != 0) break;
+        IMAGE_disk idisk;
+        if (fread(&idisk, 1, sizeof(idisk), f) != sizeof(idisk)) break;
+        char name[17]; memcpy(name, idisk.n_s, 16); name[16] = '\0';
+        out.push_back(name);
+    }
+    fclose(f);
+}
+
 void SaveImgFile(void)
 {
     /* Pre-save advisory: pop a toast if edits will misalign SAGs
@@ -378,6 +438,10 @@ void SaveImgFile(void)
     build_full_path(full, sizeof(full));
     FILE *f = fopen(full, "wb");
     if (!f) return;
+
+    /* Bake any non-destructive overlay layers into the image pixels for the
+       write; restored at the end so the layers remain editable in-session. */
+    FlattenLayersForSave();
 
     int num_imgs = (int)g_doc->imgcnt;
     int num_pals = (int)g_doc->palcnt;
@@ -566,6 +630,9 @@ void SaveImgFile(void)
 
     fclose(f);
     g_doc->fileversion = hdr.version;
+
+    /* Restore base pixels — the overlay layers live on past the save. */
+    RestoreLayersAfterSave();
 }
 
 /* ---- Restore Marked Images from Source ---- */
@@ -1364,7 +1431,8 @@ int CropSelectedImageToContent(void)
 
     if (!CropOneImageToContent(img, false)) return 0;
 
-    undo_push();
+    /* Undo is taken by the caller (doc_undo_push) — crop changes w/h + data_p,
+       which the metadata-only undo_push cannot restore. */
     int count = CropOneImageToContent(img, true);
     if (count > 0) g_img_tex_idx = -2;
     return count;
@@ -1385,8 +1453,7 @@ int CropMarkedImagesToContent(void)
     }
     if (!any_crop) return 0;
 
-    undo_push();
-
+    /* Undo is taken by the caller (doc_undo_push). */
     for (IMG *img : targets) {
         count += CropOneImageToContent(img, true);
     }

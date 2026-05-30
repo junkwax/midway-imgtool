@@ -42,6 +42,16 @@ void verbose_log(const char *fmt, ...);
 
 void LoadImgFile(void);
 void SaveImgFile(void);
+/* Flatten per-sprite overlay layers onto their images just for the file write,
+   then restore the pre-flatten pixels so layers stay editable. Implemented in
+   imgui_overlay.cpp; called by SaveImgFile around the pixel write. */
+void FlattenLayersForSave(void);
+void RestoreLayersAfterSave(void);
+/* Read an IMG's frame names from its header records only (no pixel load). */
+void ProbeImgFrameNames(const char *path, std::vector<std::string> &out);
+/* Full-document undo snapshot (captures all images' pixels/geometry/order).
+   Implemented in imgui_overlay.cpp; used by geometry-changing IO ops. */
+bool doc_undo_push(void);
 void WriteAnilstFromMarked(const char* filepath);
 void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal, bool pad_4bit, bool align_16bit, bool dual_bank, int bank);
 void WriteIrwFromMarked(const char* filepath, unsigned int base_address, int bpp, bool align_16bit);

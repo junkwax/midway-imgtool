@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <functional>
 #include <regex>
+#include <unordered_map>
 #include <cmath>
 #include "compat.h"
 #ifdef _WIN32
@@ -311,6 +312,7 @@ static std::vector<PixelHist> g_pixel_redo;   /* redo stack */
 static const size_t kPixelHistMax = 32;
 static unsigned int g_undo_seq = 0;
 static void ClearDocumentRedoStack(void);
+static bool push_pixel_history_entry(PixelHist *snap);
 /* Free the buffer inside a PixelHist (caller still owns the vector slot). */
 static inline void pixel_hist_free(PixelHist *e) {
     if (e->data) free(e->data);
@@ -390,7 +392,7 @@ static void pixel_hist_push_stroke(void) {
 static const float TOOLBAR_W   = 76.0f;
 static const float PANEL_W     = 280.0f;
 static const float PALETTE_H   = 112.0f;
-static const float TIMELINE_H  = 96.0f;
+static const float TIMELINE_H  = 108.0f;
 
 /* ---- Undo system ---- */
 #define UNDO_STACK_SIZE 32
@@ -1155,8 +1157,17 @@ static int  FindDirtyDocumentIndex(void);
 static bool HasDirtyDocuments(void);
 static void ClearTimelineThumbCache(void);
 static int  PaletteColorDistance5(unsigned short a, unsigned short b);
+static int  PaletteColorDistance5W(unsigned short a, unsigned short b, bool perceptual);
 static int  FindNearestPaletteSlot(const PAL *pal, unsigned short color_word);
+static int  FindNearestMergedSlot(const PAL *target, int base_count,
+                                   const unsigned short *added, int added_count,
+                                   unsigned short color_word, bool perceptual);
+static int  BuildMergeAdditions(int target_idx, int target_base_numc, bool grow,
+                                unsigned short added[256], int *overflow_out);
 static void MergeMarkedPalettes(bool force_quality_merge = false);
+static bool LoadAsmAnimations(const char *path);
+static bool LoadAsmOpponent(const char *path);
+static void AsmAnimSelect(int i);
 static bool secondary_anipoint_in_use(const IMG *img);
 static bool clipboard_secondary_anipoint_in_use(void);
 static void clear_secondary_anipoint(IMG *img);
@@ -1230,9 +1241,12 @@ static bool CloneImgChainForSnapshot(const IMG *src, void **out)
         dst->pttbl_p = NULL;
         dst->baseline_p = NULL;
         dst->temp = NULL;
+        dst->layer_p = NULL;
 
         if (!CloneBytes(src->data_p, ImgPixelBytes(src->w, src->h), &dst->data_p) ||
-            !CloneBytes(src->pttbl_p, 40, &dst->pttbl_p)) {
+            !CloneBytes(src->pttbl_p, 40, &dst->pttbl_p) ||
+            !CloneBytes(src->layer_p, LayerBlockBytesFromHeader(src->layer_p),
+                        &dst->layer_p)) {
             FreeImg(dst);
             FreeImgChainForSnapshot(head);
             return false;
@@ -1390,7 +1404,7 @@ static bool RestoreDocSnapshot(DocSnapshot *snap)
     return true;
 }
 
-static bool doc_undo_push(void)
+bool doc_undo_push(void)   /* non-static: also used by img_io.cpp crop ops */
 {
     DocSnapshot *snap = CaptureDocSnapshot(++g_undo_seq);
     mark_dirty();
@@ -1439,10 +1453,23 @@ struct PaletteMergeQuality {
     int max_dst_slot;
     char max_palette[16];
     char max_image[16];
+    /* Merge-mode options the quality was computed under, plus the resulting
+       grow plan (colors appended to the target's free slots).  Stored here so
+       the preview and the commit use the exact same plan the dialog showed. */
+    bool opt_grow;
+    bool opt_perceptual;
+    int target_base_numc;          /* target->numc before any growth */
+    int colors_added;              /* distinct used source colors appended */
+    int colors_overflow;           /* wanted to add but no free slots left */
+    unsigned short added_words[256];
 };
 static bool g_show_palette_merge_quality = false;
 static PaletteMergeQuality g_palette_merge_quality = {};
 static bool g_palette_merge_preview_only = false;
+/* Merge-mode toggles, persisted across invocations. Grow defaults on so the
+   merge is lossless whenever the target has free slots. */
+static bool g_merge_opt_grow = true;
+static bool g_merge_opt_perceptual = false;
 
 static void ClearPaletteReducePreviewTextures(void)
 {
@@ -1664,7 +1691,7 @@ static bool  g_world_view = false;
 static int   g_world_w = 400;       /* arcade playfield width */
 static int   g_world_h = 254;       /* arcade playfield height */
 static int   g_world_origin_x = 200;/* anchor target inside world */
-static int   g_world_origin_y = 200;
+static int   g_world_origin_y = 20; /* anchor target inside world (top-anchored) */
 static bool  g_world_onion = false; /* faintly draw prev frame underneath */
 static SDL_Texture *g_world_onion_tex = NULL;
 static int   g_world_onion_tex_w = 0, g_world_onion_tex_h = 0;
@@ -1676,19 +1703,22 @@ static int   g_world_dual_frame = 0;
 static bool  g_world_mirror_active = false;
 static bool  g_world_mirror_other = false;
 static const int kWorldMarkedSourceTabs = 4;
-static const int kWorldMarkedMaxTabs = 5; /* four marked tabs + optional dummy body */
-static const int kWorldDummyDecapSlot = kWorldMarkedMaxTabs - 1;
-static bool  g_world_mirror_extra[3] = {false, false, false};
-static bool  g_world_marked_hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true};
+static const int kWorldDummyDecapSlot = 4;       /* optional dummy body */
+static const int kWorldAsmSlot = 5;              /* ASM-driven player lane */
+static const int kWorldAsmOpponentSlot = 6;      /* ASM-driven opponent lane (fatalities) */
+static const int kWorldMarkedMaxTabs = 7;        /* 4 tabs + dummy + 2 ASM lanes */
+static bool  g_world_mirror_extra[5] = {false, false, false, false, false};
+static bool  g_world_marked_hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
 static bool  g_world_marked_paused = false;
 static std::vector<int> g_world_marked_frame_delays[kWorldMarkedMaxTabs];
 static std::vector<int> g_world_marked_local_dx[kWorldMarkedMaxTabs];
 static std::vector<int> g_world_marked_local_dy[kWorldMarkedMaxTabs];
 static std::vector<int> g_world_marked_visible_from[kWorldMarkedMaxTabs];
+static std::vector<int> g_world_marked_frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip (ASM ani_flip) */
 static std::vector<int> g_world_marked_sequence_frames[kWorldMarkedMaxTabs];
 static std::vector<int> g_world_marked_default_frames[kWorldMarkedMaxTabs];
-static Document *g_world_marked_sequence_doc[kWorldMarkedMaxTabs] = {NULL, NULL, NULL, NULL, NULL};
-static int   g_world_marked_sequence_doc_idx[kWorldMarkedMaxTabs] = {-1, -1, -1, -1, -1};
+static Document *g_world_marked_sequence_doc[kWorldMarkedMaxTabs] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+static int   g_world_marked_sequence_doc_idx[kWorldMarkedMaxTabs] = {-1, -1, -1, -1, -1, -1, -1};
 static int   g_world_marked_drag_slot = -1;
 static int   g_world_marked_drag_frame = -1;
 static ImVec2 g_world_marked_drag_mouse = ImVec2(0, 0);
@@ -1713,6 +1743,57 @@ static void ClearWorldTempTextures(void)
     }
     g_world_temp_textures.clear();
 }
+
+/* ---- ASM animation viewer ----
+   Parses a MK2 per-character ASM (e.g. MKRD.ASM) and lets the user inspect /
+   play the animations it defines against the currently loaded IMG. An anim
+   like a_rdstance is a list of frame-GROUP labels; each group lists sprite
+   piece symbols (RNSTANCE1A,...,0) that resolve to IMG frames by name. */
+struct AsmAnimFrame {
+    std::vector<std::string> piece_syms; /* sprite-piece symbols composing this frame */
+    std::vector<int>         piece_img;  /* resolved IMG index per piece, -1 if missing */
+    int  dx = 0, dy = 0;                 /* cumulative ani_adjustx/xy offset at this frame */
+    bool mirror = false;                 /* ani_flip state at this frame */
+};
+struct AsmAnim {
+    std::string              label;      /* e.g. a_rdstance */
+    std::string              name;       /* friendly name from the anitab comment, or label */
+    std::vector<AsmAnimFrame> frames;
+    std::vector<std::string> control;    /* control opcodes encountered (ani_jump, etc.) */
+    int                      missing;    /* unresolved piece count */
+};
+static std::vector<AsmAnim> g_asm_anims;
+static int          g_asm_anim_sel = -1;
+static std::string  g_asm_anim_file;
+static bool         g_show_asm_anim = false;
+static bool         g_asm_anim_play = true;
+static float        g_asm_anim_fps = 12.0f;
+static float        g_asm_anim_timer = 0.0f;
+static int          g_asm_anim_frame = 0;
+static SDL_Texture *g_asm_anim_tex = NULL;
+static int          g_asm_anim_tex_w = 0, g_asm_anim_tex_h = 0;
+static int          g_asm_anim_canvas_w = 0, g_asm_anim_canvas_h = 0;
+static int          g_asm_anim_minx = 0, g_asm_anim_miny = 0; /* anipoint-anchored bbox origin */
+static int          g_asm_anim_last_drawn = -1;
+static Document    *g_asm_anim_doc = NULL;      /* doc the anim's frames resolved against */
+static int          g_asm_anim_doc_idx = -1;
+static bool         g_asm_lane_enabled = false; /* show the selected anim as a World View lane */
+static bool         g_request_save_world_asm = false; /* deferred: open Save ASM dialog */
+static bool         g_request_load_asm = false;       /* deferred: open Load ASM dialog */
+/* Fatality opponent: a second ASM instance drawn in the opponent lane. */
+static std::vector<AsmAnim> g_asm_opp_anims;
+static int          g_asm_opp_sel = -1;
+static std::string  g_asm_opp_file;
+static Document    *g_asm_opp_doc = NULL;
+static int          g_asm_opp_doc_idx = -1;
+static bool         g_asm_opp_enabled = false;
+static bool         g_request_load_opp_asm = false;   /* deferred: open opponent ASM dialog */
+static bool         g_asm_dialog_opponent = false;    /* LoadAsmAnim dialog targets opponent */
+static bool         g_request_locate_img = false;     /* deferred: prompt for the ASM's IMG */
+static bool         g_openimg_for_asm = false;        /* next OpenImg re-resolves the ASM viewer */
+static bool         g_request_locate_opp_img = false; /* deferred: prompt for the opponent IMG */
+static bool         g_openimg_for_opp = false;        /* next OpenImg re-resolves the opponent */
+static void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc);
 
 static bool *WorldMarkedMirrorFlag(int slot)
 {
@@ -1785,6 +1866,12 @@ static void EnsureWorldMarkedFrameDelays(int slot, int frame_count)
         dy = ClampWorldMarkedAniptDelta(dy);
     for (int &show_tick : visible_from)
         show_tick = ClampWorldMarkedVisibleFrom(show_tick);
+
+    std::vector<int> &fmir = g_world_marked_frame_mirror[slot];
+    if ((int)fmir.size() < frame_count)
+        fmir.resize((size_t)frame_count, 0);
+    else if ((int)fmir.size() > frame_count)
+        fmir.resize((size_t)frame_count);
 }
 
 static int WorldMarkedTickForFrame(int slot, int frame_count, int frame_idx)
@@ -2008,6 +2095,7 @@ static void WorldMarkedClearSequenceState(int slot)
     g_world_marked_local_dx[slot].clear();
     g_world_marked_local_dy[slot].clear();
     g_world_marked_visible_from[slot].clear();
+    g_world_marked_frame_mirror[slot].clear();
 }
 
 static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx,
@@ -2019,9 +2107,10 @@ static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx
         return;
 
     const std::vector<int> defaults = frames;
+    bool doc_changed = g_world_marked_sequence_doc[slot] != doc ||
+                       g_world_marked_sequence_doc_idx[slot] != doc_idx;
     bool reset_sequence =
-        g_world_marked_sequence_doc[slot] != doc ||
-        g_world_marked_sequence_doc_idx[slot] != doc_idx ||
+        doc_changed ||
         g_world_marked_default_frames[slot] != defaults ||
         g_world_marked_sequence_frames[slot].empty();
 
@@ -2035,11 +2124,42 @@ static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx
     }
 
     if (reset_sequence) {
+        /* When only the marked SET changed within the same doc (e.g. the user
+           unmarked one sprite), preserve each surviving frame's per-entry local
+           anipoint / delay / show-at edits, keyed by frame index. Previously
+           any marked-set change wiped every local edit. */
+        struct SavedEdit { int delay, dx, dy, vis; };
+        std::unordered_map<int, SavedEdit> saved;
+        bool preserve = !doc_changed && !g_world_marked_sequence_frames[slot].empty();
+        if (preserve) {
+            EnsureWorldMarkedFrameDelays(slot,
+                (int)g_world_marked_sequence_frames[slot].size());
+            std::vector<int> &sf = g_world_marked_sequence_frames[slot];
+            for (size_t i = 0; i < sf.size(); i++)
+                saved[sf[i]] = { g_world_marked_frame_delays[slot][i],
+                                 g_world_marked_local_dx[slot][i],
+                                 g_world_marked_local_dy[slot][i],
+                                 g_world_marked_visible_from[slot][i] };
+        }
+
         g_world_marked_sequence_doc[slot] = doc;
         g_world_marked_sequence_doc_idx[slot] = doc_idx;
         g_world_marked_default_frames[slot] = defaults;
         g_world_marked_sequence_frames[slot] = defaults;
         WorldMarkedClearSequenceState(slot);
+        EnsureWorldMarkedFrameDelays(slot, (int)defaults.size());
+
+        if (preserve) {
+            std::vector<int> &sf = g_world_marked_sequence_frames[slot];
+            for (size_t i = 0; i < sf.size(); i++) {
+                auto it = saved.find(sf[i]);
+                if (it == saved.end()) continue;
+                g_world_marked_frame_delays[slot][i] = it->second.delay;
+                g_world_marked_local_dx[slot][i]     = it->second.dx;
+                g_world_marked_local_dy[slot][i]     = it->second.dy;
+                g_world_marked_visible_from[slot][i] = it->second.vis;
+            }
+        }
     }
 
     frames = g_world_marked_sequence_frames[slot];
@@ -2076,6 +2196,28 @@ static void WorldMarkedDuplicateSequenceEntry(int slot, int frame_idx)
     g_world_marked_paused = true;
     g_world_dual_timer = 0.0f;
     g_world_dual_frame = WorldMarkedTickForFrame(slot, (int)frames.size(), insert_at);
+}
+
+/* Reorder: swap a sequence entry with its neighbor (dir -1 = earlier, +1 =
+   later), carrying its per-entry delay/offset/visibility along. */
+static void WorldMarkedMoveSequenceEntry(int slot, int frame_idx, int dir)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    std::vector<int> &frames = g_world_marked_sequence_frames[slot];
+    int n = (int)frames.size();
+    int j = frame_idx + dir;
+    if (frame_idx < 0 || frame_idx >= n || j < 0 || j >= n) return;
+    EnsureWorldMarkedFrameDelays(slot, n);
+
+    std::swap(frames[frame_idx], frames[j]);
+    std::swap(g_world_marked_frame_delays[slot][frame_idx], g_world_marked_frame_delays[slot][j]);
+    std::swap(g_world_marked_local_dx[slot][frame_idx],     g_world_marked_local_dx[slot][j]);
+    std::swap(g_world_marked_local_dy[slot][frame_idx],     g_world_marked_local_dy[slot][j]);
+    std::swap(g_world_marked_visible_from[slot][frame_idx], g_world_marked_visible_from[slot][j]);
+
+    g_world_marked_paused = true;
+    g_world_dual_timer = 0.0f;
+    g_world_dual_frame = WorldMarkedTickForFrame(slot, n, j);
 }
 
 static void WorldMarkedDeleteSequenceEntry(int slot, int frame_idx)
@@ -2775,6 +2917,46 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             dummy_decap_missing = true;
     }
 
+    /* ASM-driven lane(s): play a parsed character animation through the same
+       render path (ticks via repeated frames, local anipt via dx/dy, anipoint
+       placement, loop). Script-driven, so its slot arrays are refilled here. */
+    bool asm_present = false;
+    auto add_asm_lane = [&](std::vector<AsmAnim> &anims, bool enabled, int sel,
+                            int slot_id, Document *doc, int doc_idx) {
+        if (!enabled || sel < 0 || sel >= (int)anims.size() || !doc) return;
+        AsmAnim &a = anims[sel];
+        if (a.frames.empty()) return;
+        MarkedLane lane = {};
+        lane.doc = doc;
+        lane.doc_idx = doc_idx;
+        lane.delay_slot = slot_id;
+        lane.frame_pos = 0;
+        lane.dummy_decap = false;
+        lane.label = a.name;
+        for (auto &fr : a.frames) {
+            std::vector<int> pcs;
+            for (int ri : fr.piece_img) if (ri >= 0) pcs.push_back(ri);
+            lane.frames.push_back(pcs.empty() ? -1 : pcs[0]);
+            lane.frame_pieces.push_back(pcs);
+            lane.frame_labels.push_back(a.name);
+        }
+        int n = (int)lane.frames.size();
+        EnsureWorldMarkedFrameDelays(slot_id, n);
+        for (int k = 0; k < n; k++) {
+            g_world_marked_frame_delays[slot_id][k] = 1;
+            g_world_marked_local_dx[slot_id][k] = a.frames[k].dx;
+            g_world_marked_local_dy[slot_id][k] = a.frames[k].dy;
+            g_world_marked_visible_from[slot_id][k] = 0;
+            g_world_marked_frame_mirror[slot_id][k] = a.frames[k].mirror ? 1 : 0;
+        }
+        lanes.push_back(lane);
+        asm_present = true;
+    };
+    add_asm_lane(g_asm_anims, g_asm_lane_enabled, g_asm_anim_sel,
+                 kWorldAsmSlot, g_asm_anim_doc, g_asm_anim_doc_idx);
+    add_asm_lane(g_asm_opp_anims, g_asm_opp_enabled, g_asm_opp_sel,
+                 kWorldAsmOpponentSlot, g_asm_opp_doc, g_asm_opp_doc_idx);
+
     auto assign_selected_dummy_decap = [&]() {
         IMG *sel = get_img(g_doc ? g_doc->ilselected : -1);
         std::string prefix;
@@ -2790,6 +2972,14 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         g_world_dummy_decap_prefix = prefix;
         g_world_dummy_decap_reset = true;
         g_world_marked_hold_end[kWorldDummyDecapSlot] = true;
+        /* Default the dummy to FACE the player: sprites are authored facing one
+           way, so the victim/opponent mirrors relative to the attacker (lane 0).
+           Anipoints still pin to the shared origin, so this only flips facing. */
+        {
+            bool *pf = WorldMarkedMirrorFlag(0);
+            bool *df = WorldMarkedMirrorFlag(kWorldDummyDecapSlot);
+            if (df) *df = pf ? !*pf : true;
+        }
         WorldMarkedRestart();
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Assigned dummy body to [%d] %sDECAP.",
@@ -2798,7 +2988,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     };
 
     if (lanes.empty()) return false;
-    if (lanes.size() < 2) return false;
+    if (lanes.size() < 2 && !asm_present) return false;
 
     if (g_world_dual_fps < 1.0f) g_world_dual_fps = 1.0f;
     if (g_world_dual_fps > 60.0f) g_world_dual_fps = 60.0f;
@@ -2844,15 +3034,17 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
                 IM_COL32(120, 120, 120, 255));
 
-    const unsigned char alpha_by_slot[kWorldMarkedMaxTabs] = {255, 185, 170, 155, 205};
+    const unsigned char alpha_by_slot[kWorldMarkedMaxTabs] = {255, 185, 170, 155, 205, 255, 235};
     const ImU32 outline_by_slot[kWorldMarkedMaxTabs] = {
         IM_COL32(120, 190, 255, 230),
         IM_COL32(255, 190, 90, 230),
         IM_COL32(120, 230, 150, 230),
         IM_COL32(230, 130, 230, 230),
-        IM_COL32(240, 80, 80, 230)
+        IM_COL32(240, 80, 80, 230),
+        IM_COL32(120, 190, 255, 230),   /* ASM player lane */
+        IM_COL32(240, 80, 80, 230)      /* ASM opponent lane */
     };
-    bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false};
+    bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
     ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
 
@@ -2867,6 +3059,11 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             return;
         bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
         bool mirror_x = mirror_flag ? *mirror_flag : false;
+        /* Per-frame flip (ASM ani_flip) toggles on top of the lane's facing. */
+        if (lane.frame_pos >= 0 &&
+            lane.frame_pos < (int)g_world_marked_frame_mirror[state_slot].size() &&
+            g_world_marked_frame_mirror[state_slot][lane.frame_pos])
+            mirror_x = !mirror_x;
         const std::vector<int> *pieces = NULL;
         if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frame_pieces.size())
             pieces = &lane.frame_pieces[lane.frame_pos];
@@ -3170,6 +3367,20 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Preview the generated animation-table source.");
         ImGui::SameLine();
+        if (ImGui::SmallButton("Save ASM##world_marked_save_asm")) {
+            g_world_marked_generated_asm = build_world_marked_asm();
+            g_request_save_world_asm = true;   /* dialog opened in main loop */
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save the generated animation tables to a .ASM file.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Load ASM##world_marked_load_asm")) {
+            g_show_asm_anim = true;
+            g_request_load_asm = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.");
+        ImGui::SameLine();
         if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body", &g_world_dummy_decap_body)) {
             g_world_dummy_decap_reset = true;
             g_world_marked_hold_end[kWorldDummyDecapSlot] = true;
@@ -3255,6 +3466,28 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("Entry %d/%d", edit_fi + 1, (int)lane.frames.size());
                 if (!lane.dummy_decap) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("Order");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("< > move this frame earlier/later, + duplicates it, - removes it.");
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(edit_fi <= 0);
+                    if (ImGui::SmallButton("<##world_seq_left")) {
+                        WorldMarkedMoveSequenceEntry(lane.delay_slot, edit_fi, -1);
+                        refresh_lane_after_sequence_edit();
+                    }
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Move this entry earlier in the animation order.");
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(edit_fi >= (int)lane.frames.size() - 1);
+                    if (ImGui::SmallButton(">##world_seq_right")) {
+                        WorldMarkedMoveSequenceEntry(lane.delay_slot, edit_fi, +1);
+                        refresh_lane_after_sequence_edit();
+                    }
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Move this entry later in the animation order.");
                     ImGui::SameLine();
                     if (ImGui::SmallButton("+##world_seq_dup")) {
                         WorldMarkedDuplicateSequenceEntry(lane.delay_slot, edit_fi);
@@ -4137,7 +4370,7 @@ static void swap_adjacent_img(IMG *before_a, IMG *a, IMG *b)
 static void MoveImageUp(void)
 {
     if (g_doc->ilselected <= 0) return;
-    undo_push();
+    doc_undo_push();   /* reorders the image list — structural */
 
     IMG *before_prev = NULL;
     IMG *prev = (IMG *)g_doc->img_p;
@@ -4154,7 +4387,7 @@ static void MoveImageUp(void)
 static void MoveImageDown(void)
 {
     if (g_doc->ilselected < 0) return;
-    undo_push();
+    doc_undo_push();   /* reorders the image list — structural */
 
     IMG *before_curr = NULL;
     IMG *curr = (IMG *)g_doc->img_p;
@@ -4285,7 +4518,7 @@ static void TogglePointTable(void)
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img) return;
-    undo_push();
+    doc_undo_push();   /* pttbl alloc/free not captured by metadata undo */
     if (img->pttbl_p) {
         free(img->pttbl_p);
         img->pttbl_p = NULL;
@@ -4300,7 +4533,7 @@ static void TogglePointTable(void)
 static void ClearExtraData(void)
 {
     if (!g_doc->img_p) return;
-    undo_push();
+    doc_undo_push();   /* clears anipoints + pttbl contents across all images */
     for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         clear_secondary_anipoint(p);
         if (p->pttbl_p) {
@@ -4647,7 +4880,7 @@ static void DuplicateImage(void)
     IMG *src = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!src) return;
 
-    undo_push();
+    doc_undo_push();   /* adds a new image — undo must remove it */
 
     IMG *dst = (IMG *)AllocImg();
     if (!dst) return;
@@ -4880,10 +5113,26 @@ static void PastePaletteFromClipboard(void)
     InvalidatePaletteSync();
 }
 
-static void BuildPaletteMergeRemap(const PAL *src, const PAL *dst, unsigned char remap[256])
+/* Word at a slot of the "merged" target: original target slots [0..base_count),
+   then the colors queued for appending [base_count..base_count+added_count). */
+static unsigned short MergedSlotWord(const unsigned char *target_colors, int base_count,
+                                     const unsigned short *added, int slot)
+{
+    if (slot < base_count)
+        return (unsigned short)(target_colors[slot * 2] |
+                                (target_colors[slot * 2 + 1] << 8));
+    return added ? added[slot - base_count] : 0;
+}
+
+/* Build src_index -> target_index remap against the target as it will look
+   after growth (original colors plus any queued additions).  When added_count
+   is 0 this is the plain nearest-existing-color remap. */
+static void BuildPaletteMergeRemap(const PAL *src, const PAL *target, int base_count,
+                                   const unsigned short *added, int added_count,
+                                   bool perceptual, unsigned char remap[256])
 {
     memset(remap, 0, 256);
-    if (!src || !dst || !src->data_p || !dst->data_p) return;
+    if (!src || !target || !src->data_p || !target->data_p) return;
 
     int src_count = (int)src->numc;
     if (src_count > 256) src_count = 256;
@@ -4891,7 +5140,9 @@ static void BuildPaletteMergeRemap(const PAL *src, const PAL *dst, unsigned char
     for (int si = 1; si < src_count; si++) {
         unsigned short sw = (unsigned short)(src_colors[si * 2] |
                                              (src_colors[si * 2 + 1] << 8));
-        remap[si] = (unsigned char)FindNearestPaletteSlot(dst, sw);
+        remap[si] = (unsigned char)FindNearestMergedSlot(target, base_count,
+                                                         added, added_count,
+                                                         sw, perceptual);
     }
 }
 
@@ -4903,19 +5154,90 @@ static bool PaletteMergeQualityHasDrift(const PaletteMergeQuality &q)
            q.ppp_warning_images > 0;
 }
 
+static bool MergeTargetHasColor(const unsigned char *td, int base_count, unsigned short word)
+{
+    for (int i = 1; i < base_count; i++) {
+        unsigned short w = (unsigned short)(td[i * 2] | (td[i * 2 + 1] << 8));
+        if (w == word) return true;
+    }
+    return false;
+}
+
+/* Decide which source colors to append to the target's free slots. Only colors
+   ACTUALLY USED by a sprite assigned to a marked source palette are considered,
+   so unused palette entries never consume target slots. Colors already present
+   in the target (exact match) or already queued are skipped. Returns the count
+   and, via overflow_out, how many distinct used colors could not be added for
+   lack of room (those get approximated to the nearest existing color). */
+static int BuildMergeAdditions(int target_idx, int target_base_numc, bool grow,
+                               unsigned short added[256], int *overflow_out)
+{
+    if (overflow_out) *overflow_out = 0;
+    PAL *target = (target_idx >= 0) ? get_pal(target_idx) : NULL;
+    if (!grow || !target || !target->data_p) return 0;
+    if (target_base_numc > 256) target_base_numc = 256;
+    const unsigned char *td = (const unsigned char *)target->data_p;
+    int free_slots = 256 - target_base_numc;
+
+    int added_count = 0, overflow = 0;
+    int pal_idx = 0;
+    for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p, pal_idx++) {
+        if (!(pal->flags & 1) || pal_idx == target_idx || !pal->data_p || pal->numc == 0)
+            continue;
+        int src_count = (int)pal->numc;
+        if (src_count > 256) src_count = 256;
+        const unsigned char *sd = (const unsigned char *)pal->data_p;
+
+        /* Which source indices are actually painted by this palette's sprites. */
+        bool used[256] = {false};
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+            if ((int)img->palnum != pal_idx || !img->data_p || img->w == 0 || img->h == 0)
+                continue;
+            int stride = (img->w + 3) & ~3;
+            const unsigned char *px = (const unsigned char *)img->data_p;
+            for (int y = 0; y < img->h; y++)
+                for (int x = 0; x < img->w; x++)
+                    used[px[y * stride + x]] = true;
+        }
+
+        for (int si = 1; si < src_count; si++) {
+            if (!used[si]) continue;
+            unsigned short w = (unsigned short)(sd[si * 2] | (sd[si * 2 + 1] << 8));
+            if (MergeTargetHasColor(td, target_base_numc, w)) continue;
+            bool dup = false;
+            for (int j = 0; j < added_count; j++)
+                if (added[j] == w) { dup = true; break; }
+            if (dup) continue;
+            if (added_count < free_slots) added[added_count++] = w;
+            else overflow++;
+        }
+    }
+    if (overflow_out) *overflow_out = overflow;
+    return added_count;
+}
+
 static bool BuildMarkedPaletteMergeQuality(PaletteMergeQuality *out)
 {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
     out->target_idx = g_doc->plselected;
+    out->opt_grow = g_merge_opt_grow;
+    out->opt_perceptual = g_merge_opt_perceptual;
 
     PAL *target = (out->target_idx >= 0) ? get_pal(out->target_idx) : NULL;
     if (!target || !target->data_p || target->numc == 0) return false;
     snprintf(out->target_name, sizeof(out->target_name), "%.9s", target->n_s);
 
-    int target_count = (int)target->numc;
-    if (target_count > 256) target_count = 256;
+    int base_count = (int)target->numc;
+    if (base_count > 256) base_count = 256;
+    out->target_base_numc = base_count;
     const unsigned char *target_colors = (const unsigned char *)target->data_p;
+
+    /* Plan the colors growth would append to the target's free slots. */
+    out->colors_added = BuildMergeAdditions(out->target_idx, base_count, out->opt_grow,
+                                            out->added_words, &out->colors_overflow);
+    int final_count = base_count + out->colors_added;   /* <= 256 */
+
     int ppp_limit = (g_load2_ppp > 0 && g_load2_ppp <= 8) ? (1 << g_load2_ppp) : 0;
 
     int pal_idx = 0;
@@ -4926,7 +5248,8 @@ static bool BuildMarkedPaletteMergeQuality(PaletteMergeQuality *out)
         out->source_palettes++;
 
         unsigned char remap[256];
-        BuildPaletteMergeRemap(pal, target, remap);
+        BuildPaletteMergeRemap(pal, target, base_count, out->added_words,
+                               out->colors_added, out->opt_perceptual, remap);
 
         int src_count = (int)pal->numc;
         if (src_count > 256) src_count = 256;
@@ -4936,7 +5259,7 @@ static bool BuildMarkedPaletteMergeQuality(PaletteMergeQuality *out)
             if ((int)img->palnum != pal_idx) continue;
             out->remapped_images++;
             if (ppp_limit > 0 && (int)pal->numc <= ppp_limit &&
-                (int)target->numc > ppp_limit)
+                final_count > ppp_limit)
                 out->ppp_warning_images++;
 
             if (!img->data_p || img->w == 0 || img->h == 0) continue;
@@ -4955,15 +5278,15 @@ static bool BuildMarkedPaletteMergeQuality(PaletteMergeQuality *out)
                     }
 
                     unsigned char mapped = remap[ci];
-                    if (mapped == 0 || (int)mapped >= target_count) {
+                    if (mapped == 0 || (int)mapped >= final_count) {
                         out->transparent_drift_pixels++;
                         continue;
                     }
 
                     unsigned short sw = (unsigned short)(src_colors[ci * 2] |
                                                          (src_colors[ci * 2 + 1] << 8));
-                    unsigned short dw = (unsigned short)(target_colors[mapped * 2] |
-                                                         (target_colors[mapped * 2 + 1] << 8));
+                    unsigned short dw = MergedSlotWord(target_colors, base_count,
+                                                       out->added_words, mapped);
                     int dist = PaletteColorDistance5(sw, dw);
                     out->total_dist += dist;
                     if (dist == 0) {
@@ -5003,13 +5326,16 @@ static void MergeMarkedPalettes(bool force_quality_merge)
     if (!any_marked) return;
 
     PaletteMergeQuality quality = {};
-    if (BuildMarkedPaletteMergeQuality(&quality)) {
-        g_palette_merge_quality = quality;
-        if (!force_quality_merge && PaletteMergeQualityHasDrift(quality)) {
-            g_palette_merge_preview_only = false;
-            g_show_palette_merge_quality = true;
-            return;
-        }
+    if (!BuildMarkedPaletteMergeQuality(&quality)) return;
+    g_palette_merge_quality = quality;
+
+    /* Always route through the preview/choice dialog: the user picks the merge
+       mode (grow vs nearest, perceptual) and sees the result before committing.
+       The dialog's Merge button re-enters with force_quality_merge = true. */
+    if (!force_quality_merge) {
+        g_palette_merge_preview_only = false;
+        g_show_palette_merge_quality = true;
+        return;
     }
 
     doc_undo_push();
@@ -5017,7 +5343,29 @@ static void MergeMarkedPalettes(bool force_quality_merge)
     /* Clear mark on the selected palette so it survives deletion pass */
     sel->flags &= ~1;
 
-    /* Phase 1: build remap and remap images for each marked palette */
+    /* Grow the target with the planned additions before remapping, so exact
+       source colors land on real target slots (zero drift). PoolAlloc is
+       calloc, so realloc on data_p is safe. */
+    int base_count = (int)sel->numc;
+    if (base_count > 256) base_count = 256;
+    if (quality.colors_added > 0) {
+        int new_numc = base_count + quality.colors_added;   /* <= 256 */
+        unsigned char *nd =
+            (unsigned char *)realloc(sel->data_p, (size_t)new_numc * 2);
+        if (nd) {
+            sel->data_p = nd;
+            for (int j = 0; j < quality.colors_added; j++) {
+                unsigned short w = quality.added_words[j];
+                nd[(base_count + j) * 2 + 0] = (unsigned char)(w & 0xFF);
+                nd[(base_count + j) * 2 + 1] = (unsigned char)((w >> 8) & 0xFF);
+            }
+            sel->numc = (unsigned short)new_numc;
+        }
+    }
+
+    /* Phase 1: build remap and remap images for each marked palette. The target
+       now contains the appended colors, so a plain nearest search over it gives
+       exact matches for added colors and approximations for the rest. */
     PAL *pal = (PAL *)g_doc->pal_p;
     while (pal) {
         if (!(pal->flags & 1) || pal == sel || !pal->data_p || pal->numc == 0) {
@@ -5028,7 +5376,8 @@ static void MergeMarkedPalettes(bool force_quality_merge)
         unsigned short  src_numc   = pal->numc;
 
         unsigned char remap[256] = {0};
-        BuildPaletteMergeRemap(pal, sel, remap);
+        BuildPaletteMergeRemap(pal, sel, (int)sel->numc, NULL, 0,
+                               quality.opt_perceptual, remap);
 
         /* Find this palette's index in the linked list */
         int pal_idx = 0;
@@ -5095,25 +5444,31 @@ static void MergeMarkedPalettes(bool force_quality_merge)
     reset_palette_adjust_sliders();
     g_img_tex_idx = -2;
 
+    char added_note[48] = "";
+    if (quality.colors_added > 0)
+        snprintf(added_note, sizeof(added_note), " (+%d color%s)",
+                 quality.colors_added, quality.colors_added == 1 ? "" : "s");
+
     int drift_pixels = quality.color_drift_pixels +
                        quality.transparent_drift_pixels;
     if (drift_pixels > 0) {
         double max_drift = sqrt((double)quality.max_dist);
         snprintf(g_restore_msg, sizeof(g_restore_msg),
-                 "Merged %d palette%s; quality drift on %d/%d pixel%s (max %.1f).",
+                 "Merged %d palette%s%s; quality drift on %d/%d pixel%s (max %.1f).",
                  quality.source_palettes, quality.source_palettes == 1 ? "" : "s",
-                 drift_pixels, quality.affected_pixels,
+                 added_note, drift_pixels, quality.affected_pixels,
                  drift_pixels == 1 ? "" : "s", max_drift);
     } else if (quality.ppp_warning_images > 0) {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
-                 "Merged %d palette%s; no visual drift, PPP warning on %d image%s.",
+                 "Merged %d palette%s%s; no visual drift, PPP warning on %d image%s.",
                  quality.source_palettes, quality.source_palettes == 1 ? "" : "s",
-                 quality.ppp_warning_images,
+                 added_note, quality.ppp_warning_images,
                  quality.ppp_warning_images == 1 ? "" : "s");
     } else {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
-                 "Merged %d palette%s; quality check OK (no visual drift).",
-                 quality.source_palettes, quality.source_palettes == 1 ? "" : "s");
+                 "Merged %d palette%s%s; quality check OK (no visual drift).",
+                 quality.source_palettes, quality.source_palettes == 1 ? "" : "s",
+                 added_note);
     }
     g_restore_msg_timer = 5.0f;
 }
@@ -5136,11 +5491,13 @@ static void DrawPaletteMergeMappingPreview(const PaletteMergeQuality &q)
 {
     PAL *target = get_pal(q.target_idx);
     if (!target || !target->data_p) return;
-    int target_count = (int)target->numc;
-    if (target_count > 256) target_count = 256;
+    int base_count = q.target_base_numc;
+    if (base_count > 256) base_count = 256;
+    int final_count = base_count + q.colors_added;       /* after growth */
     const unsigned char *target_data = (const unsigned char *)target->data_p;
 
-    ImGui::TextDisabled("Swatch top = source color, bottom = mapped target color.");
+    ImGui::TextDisabled("Swatch top = source color, bottom = mapped target color "
+                        "(green border = added as a new color).");
     ImGui::BeginChild("##pal_merge_preview", ImVec2(560, 210), true);
     int pal_idx = 0;
     for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p, pal_idx++) {
@@ -5150,7 +5507,8 @@ static void DrawPaletteMergeMappingPreview(const PaletteMergeQuality &q)
 
         ImGui::Text("%.9s -> %.9s", pal->n_s, q.target_name);
         unsigned char remap[256];
-        BuildPaletteMergeRemap(pal, target, remap);
+        BuildPaletteMergeRemap(pal, target, base_count, q.added_words,
+                               q.colors_added, q.opt_perceptual, remap);
         const unsigned char *src_data = (const unsigned char *)pal->data_p;
         int src_count = (int)pal->numc;
         if (src_count > 256) src_count = 256;
@@ -5174,24 +5532,27 @@ static void DrawPaletteMergeMappingPreview(const PaletteMergeQuality &q)
             unsigned char sr = 0, sg = 0, sb = 0;
             pal_word_to_rgb8(src_data + si * 2, &sr, &sg, &sb);
             unsigned char mapped = remap[si];
+            bool valid = mapped > 0 && (int)mapped < final_count;
+            bool is_added = valid && (int)mapped >= base_count;
+
+            unsigned short src_word =
+                (unsigned short)(src_data[si * 2] | (src_data[si * 2 + 1] << 8));
+            unsigned short dst_word = valid
+                ? MergedSlotWord(target_data, base_count, q.added_words, mapped)
+                : 0;
+            unsigned char dst_bytes[2] = {
+                (unsigned char)(dst_word & 0xFF), (unsigned char)(dst_word >> 8) };
             unsigned char dr = 0, dg = 0, db = 0;
-            bool valid = mapped > 0 && (int)mapped < target_count;
-            if (valid)
-                pal_word_to_rgb8(target_data + mapped * 2, &dr, &dg, &db);
+            if (valid) pal_word_to_rgb8(dst_bytes, &dr, &dg, &db);
 
             dl->AddRectFilled(p0, p1, IM_COL32(sr, sg, sb, 255));
             dl->AddRectFilled(ImVec2(p0.x, p0.y + sw - 4.0f), p1,
                               valid ? IM_COL32(dr, dg, db, 255)
                                     : IM_COL32(255, 0, 0, 255));
 
-            unsigned short src_word =
-                (unsigned short)(src_data[si * 2] | (src_data[si * 2 + 1] << 8));
-            unsigned short dst_word = valid
-                ? (unsigned short)(target_data[mapped * 2] |
-                                   (target_data[mapped * 2 + 1] << 8))
-                : 0;
             int dist = valid ? PaletteColorDistance5(src_word, dst_word) : 9999;
-            ImU32 border = dist == 0 ? IM_COL32(70, 90, 110, 220)
+            ImU32 border = is_added  ? IM_COL32(80, 200, 120, 255)
+                          : dist == 0 ? IM_COL32(70, 90, 110, 220)
                           : dist < 36 ? IM_COL32(255, 190, 60, 255)
                                       : IM_COL32(255, 80, 80, 255);
             dl->AddRect(p0, p1, border);
@@ -5200,7 +5561,10 @@ static void DrawPaletteMergeMappingPreview(const PaletteMergeQuality &q)
             ImGui::PushID(pal_idx * 1000 + si);
             ImGui::InvisibleButton("##map", ImVec2(sw, sw));
             if (ImGui::IsItemHovered()) {
-                if (valid) {
+                if (is_added) {
+                    ImGui::SetTooltip("%.9s #%d -> %.9s #%d (added, exact)",
+                                      pal->n_s, si, q.target_name, (int)mapped);
+                } else if (valid) {
                     ImGui::SetTooltip("%.9s #%d -> %.9s #%d\nRGB drift %.2f",
                                       pal->n_s, si, q.target_name, (int)mapped,
                                       sqrt((double)dist));
@@ -5323,6 +5687,44 @@ static int PaletteColorDistance5(unsigned short a, unsigned short b)
     int dg = ag - bg;
     int db = ab - bb;
     return dr * dr + dg * dg + db * db;
+}
+
+/* Distance used for slot SELECTION. With perceptual on, squared channel diffs
+   are weighted by luma (R 0.30, G 0.59, B 0.11) so matches favour the colors
+   the eye is most sensitive to. Quality stats still report unweighted drift. */
+static int PaletteColorDistance5W(unsigned short a, unsigned short b, bool perceptual)
+{
+    int dr = ((a >> 10) & 0x1F) - ((b >> 10) & 0x1F);
+    int dg = ((a >>  5) & 0x1F) - ((b >>  5) & 0x1F);
+    int db = ( a        & 0x1F) - ( b        & 0x1F);
+    if (perceptual)
+        return 30 * dr * dr + 59 * dg * dg + 11 * db * db;
+    return dr * dr + dg * dg + db * db;
+}
+
+/* Nearest slot in the target as it will look after growth: original target
+   colors [1..base_count) plus the queued additions [base_count..+added_count).
+   Returns a final-space slot index, or 0 only when there is no usable color. */
+static int FindNearestMergedSlot(const PAL *target, int base_count,
+                                 const unsigned short *added, int added_count,
+                                 unsigned short color_word, bool perceptual)
+{
+    int best = 0;
+    int best_dist = 0x7FFFFFFF;
+    if (target && target->data_p) {
+        const unsigned char *td = (const unsigned char *)target->data_p;
+        if (base_count > 256) base_count = 256;
+        for (int i = 1; i < base_count; i++) {
+            unsigned short w = (unsigned short)(td[i * 2] | (td[i * 2 + 1] << 8));
+            int dist = PaletteColorDistance5W(color_word, w, perceptual);
+            if (dist < best_dist) { best_dist = dist; best = i; if (dist == 0) return best; }
+        }
+    }
+    for (int j = 0; j < added_count; j++) {
+        int dist = PaletteColorDistance5W(color_word, added[j], perceptual);
+        if (dist < best_dist) { best_dist = dist; best = base_count + j; if (dist == 0) return best; }
+    }
+    return best;
 }
 
 static int FindNearestPaletteSlot(const PAL *pal, unsigned short color_word)
@@ -9745,7 +10147,7 @@ static void LeastSquaresReduceMarked()
 }
 
 /* ---- ImGui Native File Dialog ---- */
-enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch, ImportSpriteSheetMatch, ImportGif, ExportPng, ExportPalette, ImportPalette, WriteAniLst, WriteTbl, WriteIrw };
+enum class FileDialogMode { OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm, SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch, ImportSpriteSheetMatch, ImportGif, ExportPng, ExportPalette, ImportPalette, WriteAniLst, WriteTbl, WriteIrw, LoadAsmAnim, SaveAsmAnim };
 static bool g_show_file_dialog = false;
 static FileDialogMode g_file_dialog_mode = FileDialogMode::OpenImg;
 static char g_file_dialog_dir[1024] = "";
@@ -9808,6 +10210,8 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::LoadLbm:
         case FileDialogMode::SaveLbm:
         case FileDialogMode::SaveMarkedLbm:   return "lbm";
+        case FileDialogMode::LoadAsmAnim:
+        case FileDialogMode::SaveAsmAnim:     return "asm";
     }
     return "img";
 }
@@ -10450,6 +10854,8 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::WriteAniLst: return "ASM";
         case FileDialogMode::WriteTbl:  return "TBL";
         case FileDialogMode::WriteIrw:  return "IRW";
+        case FileDialogMode::LoadAsmAnim:
+        case FileDialogMode::SaveAsmAnim: return "ASM";
     }
     return "";
 }
@@ -10618,6 +11024,8 @@ static void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) title = "Write ANILST";
     else if (g_file_dialog_mode == FileDialogMode::WriteTbl) title = "Write TBL";
     else if (g_file_dialog_mode == FileDialogMode::WriteIrw) title = "Write IRW";
+    else if (g_file_dialog_mode == FileDialogMode::LoadAsmAnim) title = "Load Character ASM";
+    else if (g_file_dialog_mode == FileDialogMode::SaveAsmAnim) title = "Save World View ASM";
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
     
@@ -10826,6 +11234,7 @@ static void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::OpenLod ||
                                 g_file_dialog_mode == FileDialogMode::LoadLbm ||
                                 g_file_dialog_mode == FileDialogMode::LoadTga ||
+                                g_file_dialog_mode == FileDialogMode::LoadAsmAnim ||
                                 g_file_dialog_mode == FileDialogMode::ImportPalette) ? "Open" : "Save";
         if (ImGui::Button(btn_text, ImVec2(100, 0)) || dbl_click_commit) {
             std::vector<std::string> selected_files = FileDialogSelectedFiles();
@@ -10917,6 +11326,21 @@ static void DrawFileDialog() {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".ASM";
                 WriteAnilstFromMarked(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::SaveAsmAnim) {
+                size_t dot = full_path.find_last_of('.');
+                if (dot == std::string::npos) full_path += ".ASM";
+                FILE *af = fopen(full_path.c_str(), "wb");
+                if (af) {
+                    fwrite(g_world_marked_generated_asm.data(), 1,
+                           g_world_marked_generated_asm.size(), af);
+                    fclose(af);
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Saved World View ASM (%d bytes).",
+                             (int)g_world_marked_generated_asm.size());
+                } else {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg), "Could not write ASM file.");
+                }
+                g_restore_msg_timer = 4.0f;
             } else if (g_file_dialog_mode == FileDialogMode::WriteTbl) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".TBL";
@@ -10943,6 +11367,27 @@ static void DrawFileDialog() {
                 g_doc->ilselected = original_selection;
             } else if (g_file_dialog_mode == FileDialogMode::OpenImg) {
                 OpenImgFile(full_path);
+                /* If this open was to locate an ASM viewer's IMG, re-resolve. */
+                if (g_openimg_for_asm) {
+                    g_openimg_for_asm = false;
+                    if (!g_asm_anims.empty())
+                        AsmAnimSelect(g_asm_anim_sel >= 0 ? g_asm_anim_sel : 0);
+                }
+                if (g_openimg_for_opp) {
+                    g_openimg_for_opp = false;
+                    g_asm_opp_doc = g_doc;
+                    g_asm_opp_doc_idx = document_active_index();
+                    if (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
+                        AsmResolveAnimAgainstDoc(g_asm_opp_anims[g_asm_opp_sel], g_asm_opp_doc);
+                }
+            } else if (g_file_dialog_mode == FileDialogMode::LoadAsmAnim) {
+                if (g_asm_dialog_opponent) {
+                    LoadAsmOpponent(full_path.c_str());
+                } else {
+                    LoadAsmAnimations(full_path.c_str());
+                }
+                g_asm_dialog_opponent = false;
+                g_show_asm_anim = true;
             } else if (g_file_dialog_mode == FileDialogMode::OpenLod) {
                 LodManifest manifest = ParseLodFile(full_path.c_str(),
                     g_lod_override_dir[0] ? g_lod_override_dir : nullptr);
@@ -11165,6 +11610,8 @@ Edit:
   Ctrl+J               Duplicate image (or duplicate floating paste)
   Ctrl+E               Merge Down: commit floating paste in place
   Ctrl+T               Free Transform floating paste (scale / rotate)
+  H / V                Flip floating paste horizontally / vertically
+  L                    Drop floating paste to a non-destructive sprite layer
 
 Image list:
   Space                Mark / Unmark current image
@@ -11715,6 +12162,27 @@ static void rebuild_img_texture(IMG *img)
             dst[y * (pitch / 4) + x] = (a << 24) | ((Uint32)c.r << 16) | ((Uint32)c.g << 8) | c.b;
         }
     }
+
+    /* Composite an attached overlay layer directly into the texture for the
+       canvas preview (non-destructive — base data_p is untouched). */
+    SpriteLayer *L = img_layer(img);
+    if (L && L->visible) {
+        const unsigned char *lp = layer_pixels(L);
+        for (int ly = 0; ly < L->h; ly++) {
+            int dy = L->y + ly;
+            if (dy < 0 || dy >= h) continue;
+            const unsigned char *lrow = lp + (size_t)ly * L->stride;
+            for (int lx = 0; lx < L->w; lx++) {
+                int dx = L->x + lx;
+                if (dx < 0 || dx >= w) continue;
+                unsigned char ci = lrow[lx];
+                if (ci == 0) continue;
+                SDL_Color c = g_palette[ci];
+                dst[dy * (pitch / 4) + dx] =
+                    (0xFFu << 24) | ((Uint32)c.r << 16) | ((Uint32)c.g << 8) | c.b;
+            }
+        }
+    }
     SDL_UnlockTexture(g_img_texture);
 }
 
@@ -11778,7 +12246,10 @@ static void copy_image(bool cut)
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
 
-    if (cut) undo_push();
+    /* Cut clears pixels in the source — capture them for pixel-level undo
+       (undo_push only saves metadata, which left cut un-undoable). */
+    PixelHist cut_snap = {};
+    bool cut_captured = cut && pixel_hist_capture(&cut_snap, false);
 
     ClearPixelClipboard();
 
@@ -11806,7 +12277,7 @@ static void copy_image(bool cut)
 
     /* Copy selected pixel data */
     g_clipboard.data_p = malloc(size);
-    if (!g_clipboard.data_p) return;
+    if (!g_clipboard.data_p) { if (cut_captured) pixel_hist_free(&cut_snap); return; }
 
     for (int y = 0; y < h; y++) {
         unsigned char *src = (unsigned char *)img->data_p + (y1 + y) * stride + x1;
@@ -11829,6 +12300,7 @@ static void copy_image(bool cut)
     }
 
     if (cut) {
+        if (cut_captured) push_pixel_history_entry(&cut_snap);
         mark_dirty();
         g_img_tex_idx = -2;
         /* Don't drop the marquee on cut, acts more like Photoshop where selection stays */
@@ -11923,8 +12395,9 @@ static void PasteClipboardAsNewImage(void)
 {
     if (!g_clipboard.valid || !g_clipboard.data_p || g_clipboard.w == 0 || g_clipboard.h == 0) return;
 
-    if (g_doc->ilselected >= 0) undo_push();
-    else mark_dirty();
+    /* Adds a whole new image — needs a document snapshot so undo removes it
+       (undo_push only restores the selected image's metadata). */
+    doc_undo_push();
 
     IMG *dst = (IMG *)AllocImg();
     if (!dst) return;
@@ -12251,11 +12724,142 @@ static bool paste_preview_rgba(unsigned char src_ci, unsigned char dst_ci,
     return true;
 }
 
+/* Mirror the floating clipboard in place so a paste can be flipped before it
+   is committed with Enter. Operates on palette indices, so it is lossless.
+   The floating overlay is drawn straight from the clipboard each frame, so the
+   preview updates immediately. */
+static void flip_clipboard_horizontal(void)
+{
+    if (!g_clipboard.valid || !g_clipboard.data_p) return;
+    int w = g_clipboard.w, h = g_clipboard.h, stride = g_clipboard.stride;
+    unsigned char *d = (unsigned char *)g_clipboard.data_p;
+    for (int y = 0; y < h; y++) {
+        unsigned char *row = d + (size_t)y * stride;
+        for (int x = 0; x < w / 2; x++) {
+            unsigned char t = row[x];
+            row[x] = row[w - 1 - x];
+            row[w - 1 - x] = t;
+        }
+    }
+}
+
+static void flip_clipboard_vertical(void)
+{
+    if (!g_clipboard.valid || !g_clipboard.data_p) return;
+    int w = g_clipboard.w, h = g_clipboard.h, stride = g_clipboard.stride;
+    unsigned char *d = (unsigned char *)g_clipboard.data_p;
+    for (int y = 0; y < h / 2; y++) {
+        unsigned char *r0 = d + (size_t)y * stride;
+        unsigned char *r1 = d + (size_t)(h - 1 - y) * stride;
+        for (int x = 0; x < w; x++) {
+            unsigned char t = r0[x]; r0[x] = r1[x]; r1[x] = t;
+        }
+    }
+}
+
+/* Permanently merge the layer into the host image's pixels and drop it. */
+static void flatten_img_layer(IMG *img)
+{
+    SpriteLayer *L = img_layer(img);
+    if (!L || !img->data_p) { if (L) { free(img->layer_p); img->layer_p = NULL; } return; }
+    if (L->visible) {
+        int stride = (img->w + 3) & ~3;
+        composite_layer_onto(L, (unsigned char *)img->data_p, img->w, img->h, stride);
+    }
+    free(img->layer_p);
+    img->layer_p = NULL;
+    g_img_tex_idx = -2;
+}
+
+static void delete_img_layer(IMG *img)
+{
+    if (img && img->layer_p) { free(img->layer_p); img->layer_p = NULL; g_img_tex_idx = -2; }
+}
+
+static void flip_layer_horizontal(SpriteLayer *L)
+{
+    if (!L) return;
+    unsigned char *p = layer_pixels(L);
+    for (int y = 0; y < L->h; y++) {
+        unsigned char *row = p + (size_t)y * L->stride;
+        for (int x = 0; x < L->w / 2; x++) {
+            unsigned char t = row[x]; row[x] = row[L->w - 1 - x]; row[L->w - 1 - x] = t;
+        }
+    }
+}
+static void flip_layer_vertical(SpriteLayer *L)
+{
+    if (!L) return;
+    unsigned char *p = layer_pixels(L);
+    for (int y = 0; y < L->h / 2; y++) {
+        unsigned char *r0 = p + (size_t)y * L->stride;
+        unsigned char *r1 = p + (size_t)(L->h - 1 - y) * L->stride;
+        for (int x = 0; x < L->w; x++) { unsigned char t = r0[x]; r0[x] = r1[x]; r1[x] = t; }
+    }
+}
+
+/* Turn the active floating paste into a layer on the selected sprite. The
+   clipboard indices are remapped to the host palette first (same nearest-color
+   mapping a normal paste uses) so the layer composites with a plain copy.
+   Replaces any existing layer (single-overlay model). */
+static void drop_paste_to_layer(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
+
+    int w = g_clipboard.w, h = g_clipboard.h;
+    if (w <= 0 || h <= 0) return;
+    int stride = (w + 3) & ~3;
+
+    SpriteLayer *L = (SpriteLayer *)malloc(layer_total_bytes(w, h));
+    if (!L) return;
+
+    doc_undo_push();
+
+    L->w = w; L->h = h; L->stride = stride;
+    L->x = g_pasted.paste_x; L->y = g_pasted.paste_y;
+    L->visible = 1;
+
+    unsigned char pal_map[256];
+    PAL *target_pal = get_pal(img->palnum);
+    bool remap = BuildClipboardPaletteMap(target_pal, pal_map);
+
+    unsigned char *dpix = layer_pixels(L);
+    int clip_stride = g_clipboard.stride;
+    const unsigned char *sp = (const unsigned char *)g_clipboard.data_p;
+    for (int y = 0; y < h; y++) {
+        unsigned char *drow = dpix + (size_t)y * stride;
+        const unsigned char *srow = sp + (size_t)y * clip_stride;
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = srow[x];
+            drow[x] = (ci && remap) ? pal_map[ci] : ci;
+        }
+        for (int x = w; x < stride; x++) drow[x] = 0;   /* pad */
+    }
+
+    if (img->layer_p) free(img->layer_p);
+    img->layer_p = L;
+
+    /* The paste has become the layer; clear the floating paste. */
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+    g_img_tex_idx = -2;
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Dropped paste to layer (%dx%d). Edit it in the Sprite Layer panel; "
+             "it flattens on save.", w, h);
+    g_restore_msg_timer = 5.0f;
+}
+
 static void apply_pasted_region(void)
 {
     mark_dirty();
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
+
+    /* Capture pre-paste pixels so committing a paste is undoable. */
+    PixelHist paste_snap = {};
+    bool paste_captured = pixel_hist_capture(&paste_snap, false);
 
     unsigned short stride = (img->w + 3) & ~3;
     unsigned short clip_stride = g_clipboard.stride;
@@ -12289,6 +12893,7 @@ static void apply_pasted_region(void)
                                                          px + x, py + y);
         }
     }
+    if (paste_captured) push_pixel_history_entry(&paste_snap);
     g_img_tex_idx = -2;
 }
 
@@ -13379,17 +13984,15 @@ static void canvas_rotate_button_rects(ImVec2 img_pos, ImVec2 img_sz,
                                        ImVec2 mins[2], ImVec2 maxs[2])
 {
     const float size = 24.0f;
-    const float gap = 4.0f;
     const float margin = 6.0f;
-    const float group_w = size * 2.0f + gap;
     float left = canvas_pos.x;
     float top = canvas_pos.y;
     float right = canvas_pos.x + canvas_sz.x;
     float bottom = canvas_pos.y + canvas_sz.y;
 
     float x0 = img_pos.x + img_sz.x + margin;
-    float y0 = img_pos.y + (img_sz.y - size) * 0.5f;
-    if (x0 + group_w > right) x0 = right - group_w - margin;
+    float y0 = img_pos.y;
+    if (x0 + size > right) x0 = right - size - margin;
     if (x0 < left) x0 = left;
     if (y0 < top) y0 = top;
     if (y0 + size > bottom) y0 = bottom - size;
@@ -13397,26 +14000,20 @@ static void canvas_rotate_button_rects(ImVec2 img_pos, ImVec2 img_sz,
 
     mins[0] = ImVec2(x0, y0);
     maxs[0] = ImVec2(x0 + size, y0 + size);
-    mins[1] = ImVec2(x0 + size + gap, y0);
-    maxs[1] = ImVec2(x0 + size + gap + size, y0 + size);
+    mins[1] = maxs[1] = ImVec2(0, 0);
 }
 
-static void draw_rotate_arrow(ImDrawList *dl, ImVec2 center, bool clockwise, ImU32 col)
+static void draw_rotate_arrow(ImDrawList *dl, ImVec2 center, ImU32 col)
 {
-    const float r = 6.5f;
-    float a0 = clockwise ? -2.55f : -0.65f;
-    float a1 = clockwise ?  0.65f :  2.55f;
-    const float icon_rot = 1.57079637f; /* 90 degrees clockwise in screen space */
-    a0 += icon_rot;
-    a1 += icon_rot;
-    dl->PathArcTo(center, r, a0, a1, 18);
+    const float r = 6.8f;
+    float a0 = -2.35f;
+    float a1 =  3.55f;
+    dl->PathArcTo(center, r, a0, a1, 24);
     dl->PathStroke(col, false, 1.8f);
 
-    float tip_a = clockwise ? a1 : a0;
+    float tip_a = a1;
     ImVec2 tip(center.x + cosf(tip_a) * r, center.y + sinf(tip_a) * r);
-    ImVec2 dir = clockwise
-        ? ImVec2(-sinf(tip_a),  cosf(tip_a))
-        : ImVec2( sinf(tip_a), -cosf(tip_a));
+    ImVec2 dir(-sinf(tip_a), cosf(tip_a));
     ImVec2 n(-dir.y, dir.x);
     ImVec2 p1(tip.x - dir.x * 5.0f + n.x * 3.0f,
               tip.y - dir.y * 5.0f + n.y * 3.0f);
@@ -13428,7 +14025,7 @@ static void draw_rotate_arrow(ImDrawList *dl, ImVec2 center, bool clockwise, ImU
 static void draw_canvas_rotate_buttons(ImDrawList *dl, const ImVec2 mins[2],
                                        const ImVec2 maxs[2], int hover_idx)
 {
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 1; i++) {
         bool hover = (i == hover_idx);
         ImU32 bg = hover ? IM_COL32(45, 45, 45, 230) : IM_COL32(12, 12, 12, 175);
         ImU32 border = hover ? IM_COL32(255, 220, 90, 255) : IM_COL32(235, 235, 235, 180);
@@ -13436,7 +14033,7 @@ static void draw_canvas_rotate_buttons(ImDrawList *dl, const ImVec2 mins[2],
         dl->AddRectFilled(mins[i], maxs[i], bg, 4.0f);
         dl->AddRect(mins[i], maxs[i], border, 4.0f, 0, hover ? 1.5f : 1.0f);
         ImVec2 c((mins[i].x + maxs[i].x) * 0.5f, (mins[i].y + maxs[i].y) * 0.5f);
-        draw_rotate_arrow(dl, c, i == 1, icon);
+        draw_rotate_arrow(dl, c, icon);
     }
 }
 
@@ -13818,7 +14415,7 @@ static void DrawRenameDialog(void)
         if (g_rename_target == RenameTarget::Image) {
             IMG *img = get_img(g_rename_idx);
             if (img) {
-                undo_push();
+                doc_undo_push();   /* EditSnapshot doesn't store n_s */
                 strncpy(img->n_s, g_rename_buf, 15);
                 img->n_s[15] = '\0';
             }
@@ -13947,6 +14544,728 @@ static void DrawLoad2VerifyDialog(void)
     ImGui::EndPopup();
 }
 
+/* ---- ASM animation viewer implementation ---- */
+
+static std::string asm_trim(const std::string &s)
+{
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+static bool asm_is_control_token(const std::string &t)
+{
+    /* MK2 naming: opcodes/anim refs are lowercase (ani_jump, a_xxx); frame
+       data symbols are uppercase (RNSTANCE1, RNSTANCE1A). */
+    return !t.empty() && (t[0] == '_' || (t[0] >= 'a' && t[0] <= 'z'));
+}
+
+/* Parse a TI-asm integer operand: optional '-', decimal, or hex (trailing 'h',
+   often with a leading 0 e.g. "0ah", "-020h"). */
+static int asm_parse_int(const std::string &tok)
+{
+    std::string s = asm_trim(tok);
+    if (s.empty()) return 0;
+    bool neg = false; size_t i = 0;
+    if (s[0] == '-') { neg = true; i = 1; } else if (s[0] == '+') i = 1;
+    std::string num = s.substr(i);
+    long v = 0;
+    if (!num.empty() && (num.back() == 'h' || num.back() == 'H')) {
+        v = strtol(num.c_str(), NULL, 16);
+    } else {
+        char *end = NULL;
+        v = strtol(num.c_str(), &end, 10);
+        if (end && *end) v = strtol(num.c_str(), NULL, 16); /* bare hex fallback */
+    }
+    return neg ? -(int)v : (int)v;
+}
+
+/* Operand count for the known MK2 animation opcodes (token after the opcode). */
+static int asm_opcode_operands(const std::string &op)
+{
+    if (op == "ani_jump")       return 1;  /* target */
+    if (op == "ani_adjustx")    return 1;  /* dx */
+    if (op == "ani_adjustxy")   return 2;  /* dx, dy */
+    if (op == "ani_calla")      return 1;  /* routine */
+    if (op == "ani_sound")      return 1;  /* sound id */
+    if (op == "ani_ochar_jump") return 2;  /* cond, target */
+    if (op == "ani_flip")       return 0;
+    if (op == "ani_flip_v")     return 0;
+    if (op == "ani_nosleep")    return 0;
+    return -1;                              /* unknown opcode */
+}
+
+static void asm_split_operands(const std::string &rest, std::vector<std::string> &out)
+{
+    std::string cur;
+    for (char c : rest) {
+        if (c == ',') { std::string t = asm_trim(cur); if (!t.empty()) out.push_back(t); cur.clear(); }
+        else cur.push_back(c);
+    }
+    std::string t = asm_trim(cur);
+    if (!t.empty()) out.push_back(t);
+}
+
+static void ClearAsmAnimTexture(void)
+{
+    if (g_asm_anim_tex) { SDL_DestroyTexture(g_asm_anim_tex); g_asm_anim_tex = NULL; }
+    g_asm_anim_tex_w = g_asm_anim_tex_h = 0;
+    g_asm_anim_last_drawn = -1;
+}
+
+/* Build a name->IMG-index map (case-insensitive) for the current document. */
+static void AsmBuildNameMap(std::unordered_map<std::string,int> &m)
+{
+    m.clear();
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        std::string n = img_name_string(img);
+        for (char &c : n) c = (char)toupper((unsigned char)c);
+        if (!n.empty()) m.emplace(n, idx);
+    }
+}
+
+static int AsmResolveSym(const std::unordered_map<std::string,int> &m, const std::string &sym)
+{
+    std::string key = sym;
+    /* drop any "+offset" suffix and uppercase */
+    size_t plus = key.find('+');
+    if (plus != std::string::npos) key = key.substr(0, plus);
+    for (char &c : key) c = (char)toupper((unsigned char)c);
+    auto it = m.find(key);
+    return (it != m.end()) ? it->second : -1;
+}
+
+/* Pure parse of a character/exported ASM into a list of animations (no globals,
+   no IMG load, no resolution against a specific doc beyond a best-effort first
+   pass against the active doc). Shared by the player and opponent loaders. */
+static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
+{
+    out.clear();
+    if (!path || !path[0]) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Could not open ASM: %s", path);
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+
+    /* Pass 1: gather label bodies (.long token lists) and per-entry comments. */
+    std::unordered_map<std::string, std::vector<std::string>> body;
+    std::unordered_map<std::string, std::vector<int>> word_body; /* .word ints, for *_local_anipts */
+    std::vector<std::string> label_order;               /* labels in file order */
+    std::unordered_map<std::string, std::string> comment_for; /* token -> comment */
+    std::vector<std::string> anitab_labels;             /* directory tables, in order */
+
+    char line[1024];
+    std::string cur_label;
+    while (fgets(line, sizeof(line), f)) {
+        std::string raw(line);
+        /* split off trailing comment */
+        std::string comment;
+        size_t sc = raw.find(';');
+        if (sc != std::string::npos) { comment = asm_trim(raw.substr(sc + 1)); raw = raw.substr(0, sc); }
+        /* full-line comment markers */
+        std::string lead = asm_trim(raw);
+        if (lead.empty()) continue;
+        if (lead[0] == '*') continue;
+
+        bool has_label = (line[0] != ' ' && line[0] != '\t');
+        std::string label, directive, rest;
+        std::string work = raw;
+        if (has_label) {
+            size_t ws = work.find_first_of(" \t");
+            label = asm_trim(work.substr(0, ws == std::string::npos ? work.size() : ws));
+            work = (ws == std::string::npos) ? "" : work.substr(ws);
+            if (!label.empty()) {
+                cur_label = label;
+                if (body.find(cur_label) == body.end()) { body[cur_label]; label_order.push_back(cur_label); }
+            }
+        }
+        work = asm_trim(work);
+        if (!work.empty()) {
+            size_t ws = work.find_first_of(" \t");
+            directive = asm_trim(work.substr(0, ws == std::string::npos ? work.size() : ws));
+            rest = (ws == std::string::npos) ? "" : asm_trim(work.substr(ws));
+        }
+
+        if (directive == ".long" && !cur_label.empty()) {
+            std::vector<std::string> ops;
+            asm_split_operands(rest, ops);
+            for (auto &t : ops) body[cur_label].push_back(t);
+            /* capture comment for a single anim-ref entry (anitab rows) */
+            if (ops.size() == 1 && !comment.empty()) comment_for[ops[0]] = comment;
+        } else if (directive == ".word" && !cur_label.empty()) {
+            std::vector<std::string> ops;
+            asm_split_operands(rest, ops);
+            for (auto &t : ops) word_body[cur_label].push_back(asm_parse_int(t));
+        }
+        /* directory tables are named "*anitab*" */
+        if (has_label && !label.empty()) {
+            std::string low = label; for (char &c : low) c = (char)tolower((unsigned char)c);
+            if (low.find("anitab") != std::string::npos) anitab_labels.push_back(label);
+        }
+    }
+    fclose(f);
+
+    /* Pass 2: build the ordered animation list. Prefer directory order. */
+    std::unordered_map<std::string,int> name_map;
+    AsmBuildNameMap(name_map);
+
+    std::vector<std::string> anim_labels;
+    std::unordered_map<std::string,bool> seen;
+    auto ends_with = [](const std::string &s, const char *suf) {
+        size_t n = strlen(suf);
+        return s.size() >= n && s.compare(s.size() - n, n, suf) == 0;
+    };
+    auto add_anim_label = [&](const std::string &lbl) {
+        if (lbl.empty() || seen.count(lbl)) return;
+        if (body.find(lbl) == body.end()) return;        /* defined here only */
+        if (ends_with(lbl, "_local_anipts")) return;     /* data table, not an anim */
+        seen[lbl] = true; anim_labels.push_back(lbl);
+    };
+    for (auto &tab : anitab_labels)
+        for (auto &tok : body[tab]) add_anim_label(tok);
+    for (auto &lbl : label_order)
+        if (lbl.size() > 2 && lbl[0] == 'a' && lbl[1] == '_') add_anim_label(lbl);
+
+    for (auto &lbl : anim_labels) {
+        AsmAnim a;
+        a.label = lbl;
+        auto cit = comment_for.find(lbl);
+        a.name = (cit != comment_for.end() && !cit->second.empty()) ? cit->second : lbl;
+        a.missing = 0;
+
+        const std::vector<std::string> &toks = body[lbl];
+        int cur_dx = 0, cur_dy = 0; bool cur_mirror = false;
+        bool stop = false;
+        for (size_t ti = 0; ti < toks.size() && !stop; ti++) {
+            const std::string &tok = toks[ti];
+            if (tok == "0") break;             /* ani_end terminator */
+            if (asm_is_control_token(tok)) {
+                int nops = asm_opcode_operands(tok);
+                if (tok == "ani_jump") {
+                    std::string tgt = (ti + 1 < toks.size()) ? toks[ti + 1] : "";
+                    a.control.push_back("loops" + (tgt.empty() ? "" : " to " + tgt));
+                    stop = true;               /* loop point — frames captured */
+                } else if (tok == "ani_adjustx" && ti + 1 < toks.size()) {
+                    cur_dx += asm_parse_int(toks[ti + 1]); ti += 1;
+                } else if (tok == "ani_adjustxy" && ti + 2 < toks.size()) {
+                    cur_dx += asm_parse_int(toks[ti + 1]);
+                    cur_dy += asm_parse_int(toks[ti + 2]); ti += 2;
+                } else if (tok == "ani_flip") {
+                    cur_mirror = !cur_mirror;
+                    if (std::find(a.control.begin(), a.control.end(), "flip") == a.control.end())
+                        a.control.push_back("flip");
+                } else if (tok == "ani_flip_v") {
+                    a.control.push_back("vflip");
+                } else if (nops >= 0) {
+                    a.control.push_back(tok);  /* known opcode: note + skip operands */
+                    ti += (size_t)nops;
+                } else {
+                    a.control.push_back(tok + "?");  /* unknown: note and stop safely */
+                    stop = true;
+                }
+                continue;
+            }
+            /* uppercase token = a frame-group label (or lone piece symbol) */
+            AsmAnimFrame fr;
+            fr.dx = cur_dx; fr.dy = cur_dy; fr.mirror = cur_mirror;
+            auto bit = body.find(tok);
+            if (bit != body.end()) {
+                for (auto &p : bit->second) { if (p == "0") break; fr.piece_syms.push_back(p); }
+            } else {
+                fr.piece_syms.push_back(tok);  /* treat as a lone piece symbol */
+            }
+            for (auto &p : fr.piece_syms) {
+                int ri = AsmResolveSym(name_map, p);
+                fr.piece_img.push_back(ri);
+                if (ri < 0) a.missing++;
+            }
+            a.frames.push_back(fr);
+        }
+        /* Round-trip local anipoints from a paired "<label>_local_anipts" .word
+           table (emitted by imgtool's ASM export), one dx,dy pair per frame. */
+        auto wit = word_body.find(lbl + "_local_anipts");
+        if (wit != word_body.end()) {
+            const std::vector<int> &w = wit->second;
+            for (size_t fi = 0; fi < a.frames.size() && fi * 2 + 1 < w.size(); fi++) {
+                a.frames[fi].dx = w[fi * 2];
+                a.frames[fi].dy = w[fi * 2 + 1];
+            }
+        }
+        if (!a.frames.empty() || !a.control.empty())
+            out.push_back(std::move(a));
+    }
+    return !out.empty();
+}
+
+/* Build a name->IMG-index map (case-insensitive) for an arbitrary document. */
+static void AsmBuildNameMapForDoc(Document *doc, std::unordered_map<std::string,int> &m)
+{
+    m.clear();
+    if (!doc) return;
+    int idx = 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        std::string n = img_name_string(img);
+        for (char &c : n) c = (char)toupper((unsigned char)c);
+        if (!n.empty()) m.emplace(n, idx);
+    }
+}
+
+/* Resolve an animation's piece symbols to IMG indices in the given doc. */
+static void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc)
+{
+    std::unordered_map<std::string,int> nm;
+    AsmBuildNameMapForDoc(doc, nm);
+    a.missing = 0;
+    for (auto &fr : a.frames) {
+        fr.piece_img.assign(fr.piece_syms.size(), -1);
+        for (size_t p = 0; p < fr.piece_syms.size(); p++) {
+            int ri = AsmResolveSym(nm, fr.piece_syms[p]);
+            fr.piece_img[p] = ri;
+            if (ri < 0) a.missing++;
+        }
+    }
+}
+
+/* Scan candidate folders (ASM dir, sibling data/, current doc dir) and open the
+   .IMG whose frame names best cover the animation symbols, if it beats the
+   current doc. Returns true if an IMG was opened. */
+static bool AsmAutoLoadImgForAnims(const std::vector<AsmAnim> &anims, const char *path)
+{
+    std::unordered_map<std::string,bool> symset;
+    for (auto &an : anims)
+        for (auto &fr : an.frames)
+            for (auto &s : fr.piece_syms) {
+                std::string u = s; size_t pl = u.find('+');
+                if (pl != std::string::npos) u = u.substr(0, pl);
+                for (char &c : u) c = (char)toupper((unsigned char)c);
+                if (!u.empty()) symset[u] = true;
+            }
+    if (symset.empty()) return false;
+
+    std::unordered_map<std::string,int> cur_map; AsmBuildNameMap(cur_map);
+    int cur_hits = 0;
+    for (auto &kv : symset) if (cur_map.count(kv.first)) cur_hits++;
+    if (cur_hits >= (int)symset.size()) return false;   /* current doc already covers it */
+
+    std::string asmdir = path;
+    size_t sl = asmdir.find_last_of("\\/");
+    asmdir = (sl != std::string::npos) ? asmdir.substr(0, sl) : ".";
+
+    /* Collect every plausible folder an IMG could live in, deduped. ASM files
+       commonly sit in a src/ tree while the IMGs live in a sibling data/ dir,
+       so probe those relatives plus every open tab's folder and IMGDIR. */
+    std::vector<std::string> dirs;
+    auto add_dir = [&](const std::string &d) {
+        if (d.empty()) return;
+        std::string low = d; for (char &c : low) c = (char)tolower((unsigned char)c);
+        for (auto &ex : dirs) {
+            std::string el = ex; for (char &c : el) c = (char)tolower((unsigned char)c);
+            if (el == low) return;
+        }
+        dirs.push_back(d);
+    };
+    add_dir(asmdir);
+    add_dir(asmdir + "\\data");
+    add_dir(asmdir + "\\..\\data");
+    add_dir(asmdir + "\\..\\DATA");
+    add_dir(asmdir + "\\..");
+    add_dir(asmdir + "\\..\\..\\data");
+    for (int t = 0; t < document_tab_count(); t++) {
+        Document *d = document_get(t);
+        if (d && d->fpath_s[0]) add_dir(d->fpath_s);
+    }
+    if (g_doc->fpath_s[0]) add_dir(g_doc->fpath_s);
+    const char *imgdir = getenv("IMGDIR");
+    if (imgdir && imgdir[0]) add_dir(imgdir);
+
+    std::string best_path; int best_hits = cur_hits;
+    for (auto &d : dirs) {
+        std::vector<FileEntry> entries;
+        GetDirectoryFiles(d, entries, "IMG");
+        for (auto &e : entries) {
+            if (e.is_dir) continue;
+            std::string full = PathCombine(d, e.name);
+            std::vector<std::string> names;
+            ProbeImgFrameNames(full.c_str(), names);
+            int hits = 0;
+            for (auto &nm : names) {
+                std::string u = nm; for (char &c : u) c = (char)toupper((unsigned char)c);
+                if (symset.count(u)) hits++;
+            }
+            if (hits > best_hits) { best_hits = hits; best_path = full; }
+        }
+    }
+    if (!best_path.empty() && best_hits > cur_hits) { OpenImgFile(best_path); return true; }
+    return false;
+}
+
+static bool LoadAsmAnimations(const char *path)   /* player */
+{
+    if (!ParseAsmAnimFile(path, g_asm_anims)) {
+        if (g_asm_anims.empty())
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "No animations found in ASM.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+    g_asm_anim_file = path;
+    bool auto_loaded = AsmAutoLoadImgForAnims(g_asm_anims, path);
+    AsmAnimSelect(g_asm_anims.empty() ? -1 : 0);
+
+    /* If the animation still resolves to nothing, the IMG wasn't found in any
+       known folder — prompt the user to locate it instead of giving up. */
+    int resolved = 0;
+    if (g_asm_anim_sel >= 0)
+        for (auto &fr : g_asm_anims[g_asm_anim_sel].frames)
+            for (int ri : fr.piece_img) if (ri >= 0) resolved++;
+    bool need_locate = (g_asm_anim_sel >= 0 && resolved == 0);
+    if (need_locate) g_request_locate_img = true;
+
+    const char *base = (strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path);
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             need_locate  ? "Loaded %d animation%s from %s; locate its IMG to view it."
+             : auto_loaded ? "Loaded %d animation%s from %s; auto-opened matching IMG."
+                           : "Loaded %d animation%s from %s.",
+             (int)g_asm_anims.size(), g_asm_anims.size() == 1 ? "" : "s", base);
+    g_restore_msg_timer = 4.0f;
+    return !g_asm_anims.empty();
+}
+
+static bool LoadAsmOpponent(const char *path)      /* fatality opponent */
+{
+    if (!ParseAsmAnimFile(path, g_asm_opp_anims)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No animations found in opponent ASM.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+    g_asm_opp_file = path;
+    AsmAutoLoadImgForAnims(g_asm_opp_anims, path);
+    g_asm_opp_doc = g_doc;
+    g_asm_opp_doc_idx = document_active_index();
+    g_asm_opp_sel = g_asm_opp_anims.empty() ? -1 : 0;
+    if (g_asm_opp_sel >= 0)
+        AsmResolveAnimAgainstDoc(g_asm_opp_anims[g_asm_opp_sel], g_asm_opp_doc);
+    g_asm_opp_enabled = true;
+
+    /* Default the opponent to face the player (mirror = opposite of the player
+       ASM lane); only set here so the user can still flip it. */
+    {
+        bool *pf = WorldMarkedMirrorFlag(kWorldAsmSlot);
+        bool *of = WorldMarkedMirrorFlag(kWorldAsmOpponentSlot);
+        if (of) *of = pf ? !*pf : true;
+    }
+
+    /* Prompt to locate the opponent IMG if nothing resolved. */
+    int resolved = 0;
+    if (g_asm_opp_sel >= 0)
+        for (auto &fr : g_asm_opp_anims[g_asm_opp_sel].frames)
+            for (int ri : fr.piece_img) if (ri >= 0) resolved++;
+    bool need_locate = (g_asm_opp_sel >= 0 && resolved == 0);
+    if (need_locate) g_request_locate_opp_img = true;
+
+    const char *base = (strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path);
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             need_locate ? "Loaded opponent: %d animation%s from %s; locate its IMG."
+                         : "Loaded opponent: %d animation%s from %s.",
+             (int)g_asm_opp_anims.size(), g_asm_opp_anims.size() == 1 ? "" : "s", base);
+    g_restore_msg_timer = 4.0f;
+    return !g_asm_opp_anims.empty();
+}
+
+/* Re-resolve the selected anim against the current IMG and size the playback
+   canvas to the anipoint-anchored union of all its frame pieces. */
+static void AsmAnimSelect(int i)
+{
+    g_asm_anim_sel = i;
+    g_asm_anim_frame = 0;
+    g_asm_anim_timer = 0.0f;
+    ClearAsmAnimTexture();
+    if (i < 0 || i >= (int)g_asm_anims.size()) return;
+
+    std::unordered_map<std::string,int> name_map;
+    AsmBuildNameMap(name_map);
+    g_asm_anim_doc = g_doc;                         /* frames resolve against the active doc */
+    g_asm_anim_doc_idx = document_active_index();
+
+    AsmAnim &a = g_asm_anims[i];
+    a.missing = 0;
+    int minx = 0x3FFFFFFF, miny = 0x3FFFFFFF, maxx = -0x3FFFFFFF, maxy = -0x3FFFFFFF;
+    bool any = false;
+    for (auto &fr : a.frames) {
+        fr.piece_img.assign(fr.piece_syms.size(), -1);
+        for (size_t p = 0; p < fr.piece_syms.size(); p++) {
+            int ri = AsmResolveSym(name_map, fr.piece_syms[p]);
+            fr.piece_img[p] = ri;
+            if (ri < 0) { a.missing++; continue; }
+            IMG *img = get_img(ri);
+            if (!img) continue;
+            int x0 = -(int)(short)img->anix + fr.dx, y0 = -(int)(short)img->aniy + fr.dy;
+            int x1 = x0 + img->w, y1 = y0 + img->h;
+            if (x0 < minx) minx = x0; if (y0 < miny) miny = y0;
+            if (x1 > maxx) maxx = x1; if (y1 > maxy) maxy = y1;
+            any = true;
+        }
+    }
+    if (!any) { g_asm_anim_canvas_w = g_asm_anim_canvas_h = 0; return; }
+    g_asm_anim_minx = minx; g_asm_anim_miny = miny;
+    int cw = maxx - minx, ch = maxy - miny;
+    if (cw < 1) cw = 1; if (ch < 1) ch = 1;
+    if (cw > 1024) cw = 1024; if (ch > 1024) ch = 1024;
+    g_asm_anim_canvas_w = cw; g_asm_anim_canvas_h = ch;
+}
+
+/* (Re)fill the playback texture with the current frame's composited pieces. */
+static void AsmAnimRefillTexture(void)
+{
+    if (g_asm_anim_sel < 0 || g_asm_anim_sel >= (int)g_asm_anims.size()) return;
+    if (g_asm_anim_canvas_w <= 0 || g_asm_anim_canvas_h <= 0) return;
+    AsmAnim &a = g_asm_anims[g_asm_anim_sel];
+    if (a.frames.empty()) return;
+    int fi = g_asm_anim_frame % (int)a.frames.size();
+
+    int w = g_asm_anim_canvas_w, h = g_asm_anim_canvas_h;
+    if (!g_asm_anim_tex || g_asm_anim_tex_w != w || g_asm_anim_tex_h != h) {
+        if (g_asm_anim_tex) SDL_DestroyTexture(g_asm_anim_tex);
+        g_asm_anim_tex = SDL_CreateTexture(g_imgui_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                           SDL_TEXTUREACCESS_STREAMING, w, h);
+        if (!g_asm_anim_tex) return;
+        SDL_SetTextureBlendMode(g_asm_anim_tex, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_asm_anim_tex, SDL_ScaleModeNearest);
+        g_asm_anim_tex_w = w; g_asm_anim_tex_h = h;
+    }
+
+    void *pixels; int pitch;
+    if (SDL_LockTexture(g_asm_anim_tex, NULL, &pixels, &pitch) != 0) return;
+    Uint32 *dst = (Uint32 *)pixels;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            dst[y * (pitch / 4) + x] = 0x00000000u;   /* transparent */
+
+    AsmAnimFrame &fr = a.frames[fi];
+    for (size_t p = 0; p < fr.piece_img.size(); p++) {
+        int ri = fr.piece_img[p];
+        if (ri < 0) continue;
+        IMG *img = get_img(ri);
+        if (!img || !img->data_p) continue;
+        PAL *pal = get_pal(img->palnum);
+        const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *sp = (const unsigned char *)img->data_p;
+        int ox = -(int)(short)img->anix + fr.dx - g_asm_anim_minx;
+        int oy = -(int)(short)img->aniy + fr.dy - g_asm_anim_miny;
+        for (int y = 0; y < img->h; y++) {
+            int dy = oy + y; if (dy < 0 || dy >= h) continue;
+            for (int x = 0; x < img->w; x++) {
+                /* ani_flip mirrors horizontally about the piece's anipoint */
+                int srcx = fr.mirror ? (img->w - 1 - x) : x;
+                int dx = ox + x; if (dx < 0 || dx >= w) continue;
+                unsigned char ci = sp[y * stride + srcx];
+                if (ci == 0) continue;
+                Uint32 r = 200, g = 200, b = 200;
+                if (pd) {
+                    unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
+                    r = ((w15 >> 10) & 0x1F) << 3; g = ((w15 >> 5) & 0x1F) << 3; b = (w15 & 0x1F) << 3;
+                }
+                dst[dy * (pitch / 4) + dx] = (0xFFu << 24) | (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+    SDL_UnlockTexture(g_asm_anim_tex);
+    g_asm_anim_last_drawn = fi;
+}
+
+static void DrawAsmAnimWindow(void)
+{
+    if (!g_show_asm_anim) return;
+    ImGui::SetNextWindowSize(ImVec2(420, 480), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("ASM Animations", &g_show_asm_anim)) { ImGui::End(); return; }
+
+    if (ImGui::Button("Load Character ASM...")) OpenFileDialog(FileDialogMode::LoadAsmAnim);
+    if (!g_asm_anim_file.empty()) {
+        ImGui::SameLine();
+        const char *base = strrchr(g_asm_anim_file.c_str(), '\\');
+        ImGui::TextDisabled("%s", base ? base + 1 : g_asm_anim_file.c_str());
+    }
+
+    if (g_asm_anims.empty()) {
+        ImGui::TextWrapped("Load a per-character ASM (e.g. MKRD.ASM for Raiden) to list its "
+                           "animations and play them against the currently loaded IMG.");
+        ImGui::End();
+        return;
+    }
+
+    /* Animation chooser */
+    const char *cur = (g_asm_anim_sel >= 0 && g_asm_anim_sel < (int)g_asm_anims.size())
+                    ? g_asm_anims[g_asm_anim_sel].name.c_str() : "(none)";
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##asm_anim_sel", cur)) {
+        for (int i = 0; i < (int)g_asm_anims.size(); i++) {
+            bool sel = (i == g_asm_anim_sel);
+            char lbl[96];
+            snprintf(lbl, sizeof(lbl), "%s  (%s)", g_asm_anims[i].name.c_str(), g_asm_anims[i].label.c_str());
+            if (ImGui::Selectable(lbl, sel)) AsmAnimSelect(i);
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (g_asm_anim_sel < 0) { ImGui::End(); return; }
+    AsmAnim &a = g_asm_anims[g_asm_anim_sel];
+
+    if (ImGui::Checkbox("Play in World View lane", &g_asm_lane_enabled) && g_asm_lane_enabled) {
+        g_world_view = true;
+        g_world_dual_marked_play = true;
+        WorldMarkedRestart();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Render this animation as a lane in World View, using the script's\n"
+                          "ticks, local anipoints, anipoint placement and loop.");
+    ImGui::Separator();
+
+    ImGui::Checkbox("Play", &g_asm_anim_play);
+    ImGui::SameLine(); ImGui::SetNextItemWidth(120);
+    ImGui::SliderFloat("fps", &g_asm_anim_fps, 1.0f, 30.0f, "%.0f");
+    int nframes = (int)a.frames.size();
+    if (nframes > 0) {
+        ImGui::SameLine(); ImGui::SetNextItemWidth(140);
+        int disp = g_asm_anim_frame % nframes + 1;
+        if (ImGui::SliderInt("##asm_frame", &disp, 1, nframes, "frame %d")) {
+            g_asm_anim_frame = disp - 1; g_asm_anim_play = false;
+        }
+    }
+
+    /* advance playback */
+    if (g_asm_anim_play && nframes > 0 && g_asm_anim_fps > 0.0f) {
+        g_asm_anim_timer += ImGui::GetIO().DeltaTime;
+        float step = 1.0f / g_asm_anim_fps;
+        while (g_asm_anim_timer >= step) { g_asm_anim_timer -= step; g_asm_anim_frame = (g_asm_anim_frame + 1) % nframes; }
+    }
+    if (nframes > 0 && (g_asm_anim_frame % nframes) != g_asm_anim_last_drawn)
+        AsmAnimRefillTexture();
+
+    /* preview */
+    if (g_asm_anim_tex && g_asm_anim_canvas_w > 0) {
+        float avail = ImGui::GetContentRegionAvail().x;
+        float scale = (g_asm_anim_canvas_w > 0) ? (avail / (float)g_asm_anim_canvas_w) : 1.0f;
+        if (scale > 4.0f) scale = 4.0f; if (scale < 0.25f) scale = 0.25f;
+        ImVec2 sz((float)g_asm_anim_canvas_w * scale, (float)g_asm_anim_canvas_h * scale);
+        ImGui::Image((ImTextureID)(intptr_t)g_asm_anim_tex, sz);
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f),
+                           "No frames of this animation resolve to the loaded IMG.");
+    }
+
+    /* missing-data report */
+    ImGui::Separator();
+    ImGui::Text("Frames: %d   Pieces missing in IMG: %d", nframes, a.missing);
+    if (!a.control.empty()) {
+        std::string ctl;
+        for (auto &c : a.control) { if (!ctl.empty()) ctl += ", "; ctl += c; }
+        ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "Control / opcodes: %s", ctl.c_str());
+    }
+    if (a.missing > 0 && ImGui::TreeNode("Unresolved symbols")) {
+        for (auto &fr : a.frames)
+            for (size_t p = 0; p < fr.piece_syms.size(); p++)
+                if (p < fr.piece_img.size() && fr.piece_img[p] < 0)
+                    ImGui::BulletText("%s", fr.piece_syms[p].c_str());
+        ImGui::TreePop();
+    }
+
+    /* ---- Fatality opponent (second ASM, drawn in the opponent lane) ---- */
+    ImGui::SeparatorText("Fatality opponent");
+    if (ImGui::Button("Load Johnny Cage")) {
+        /* Default opponent: MKJC.ASM in the same folder as the player ASM. */
+        std::string dir = g_asm_anim_file;
+        size_t sl = dir.find_last_of("\\/");
+        dir = (sl != std::string::npos) ? dir.substr(0, sl) : ".";
+        std::string jc = dir + "\\MKJC.ASM";
+        FILE *probe = fopen(jc.c_str(), "rb");
+        if (probe) { fclose(probe); LoadAsmOpponent(jc.c_str()); }
+        else       { g_request_load_opp_asm = true; }   /* not found -> pick manually */
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Load MKJC.ASM (Johnny Cage) from the player ASM's folder as the opponent.");
+    ImGui::SameLine();
+    if (ImGui::Button("Load Opponent ASM...")) g_request_load_opp_asm = true;
+
+    if (!g_asm_opp_anims.empty()) {
+        if (!g_asm_opp_file.empty()) {
+            const char *ob = strrchr(g_asm_opp_file.c_str(), '\\');
+            ImGui::SameLine(); ImGui::TextDisabled("%s", ob ? ob + 1 : g_asm_opp_file.c_str());
+        }
+        ImGui::Checkbox("Play opponent in World View lane", &g_asm_opp_enabled);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw the opponent animation in its own lane, facing the player.");
+        if (g_asm_opp_enabled) { g_world_view = true; g_world_dual_marked_play = true; }
+
+        const char *ocur = (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
+                         ? g_asm_opp_anims[g_asm_opp_sel].name.c_str() : "(none)";
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##asm_opp_sel", ocur)) {
+            for (int i = 0; i < (int)g_asm_opp_anims.size(); i++) {
+                bool seld = (i == g_asm_opp_sel);
+                char lbl[96];
+                snprintf(lbl, sizeof(lbl), "%s  (%s)", g_asm_opp_anims[i].name.c_str(),
+                         g_asm_opp_anims[i].label.c_str());
+                if (ImGui::Selectable(lbl, seld)) {
+                    g_asm_opp_sel = i;
+                    if (g_asm_opp_doc) AsmResolveAnimAgainstDoc(g_asm_opp_anims[i], g_asm_opp_doc);
+                    WorldMarkedRestart();
+                }
+                if (seld) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
+            ImGui::Text("Opponent frames: %d   missing: %d",
+                        (int)g_asm_opp_anims[g_asm_opp_sel].frames.size(),
+                        g_asm_opp_anims[g_asm_opp_sel].missing);
+    }
+
+    ImGui::End();
+}
+
+/* Controls for the selected sprite's non-destructive overlay layer. Only shown
+   when the current sprite actually has a layer (created via Drop Paste to
+   Layer). Move/flip/flatten/delete; the layer bakes onto the sprite on save. */
+static void DrawSpriteLayerPanel(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    SpriteLayer *L = img_layer(img);
+    if (!L) return;
+
+    ImGui::SetNextWindowSize(ImVec2(270, 0), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Sprite Layer")) {
+        ImGui::Text("On %.15s   layer %dx%d", img->n_s, L->w, L->h);
+        bool vis = L->visible != 0;
+        if (ImGui::Checkbox("Visible", &vis)) { L->visible = vis ? 1 : 0; mark_dirty(); g_img_tex_idx = -2; }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(bakes onto sprite on save)");
+
+        ImGui::Separator();
+        int pos[2] = { L->x, L->y };
+        if (ImGui::DragInt2("Offset", pos, 0.5f)) { L->x = pos[0]; L->y = pos[1]; mark_dirty(); g_img_tex_idx = -2; }
+        if (ImGui::Button("Left"))  { L->x--; mark_dirty(); g_img_tex_idx = -2; } ImGui::SameLine();
+        if (ImGui::Button("Right")) { L->x++; mark_dirty(); g_img_tex_idx = -2; } ImGui::SameLine();
+        if (ImGui::Button("Up"))    { L->y--; mark_dirty(); g_img_tex_idx = -2; } ImGui::SameLine();
+        if (ImGui::Button("Down"))  { L->y++; mark_dirty(); g_img_tex_idx = -2; }
+
+        ImGui::Separator();
+        if (ImGui::Button("Flip H")) { doc_undo_push(); flip_layer_horizontal(L); g_img_tex_idx = -2; }
+        ImGui::SameLine();
+        if (ImGui::Button("Flip V")) { doc_undo_push(); flip_layer_vertical(L); g_img_tex_idx = -2; }
+
+        ImGui::Separator();
+        if (ImGui::Button("Flatten Now")) { doc_undo_push(); flatten_img_layer(img); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Merge the layer into the sprite now (permanent).");
+        ImGui::SameLine();
+        if (ImGui::Button("Delete Layer")) { doc_undo_push(); delete_img_layer(img); }
+    }
+    ImGui::End();
+}
+
 static void DrawPaletteMergeQualityDialog(void)
 {
     if (g_show_palette_merge_quality) ImGui::OpenPopup("Palette Merge Quality Check");
@@ -13954,6 +15273,24 @@ static void DrawPaletteMergeQualityDialog(void)
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
 
     const PaletteMergeQuality &q = g_palette_merge_quality;
+
+    /* Merge-mode choices. Flipping either recomputes the plan + preview live. */
+    bool changed = false;
+    changed |= ImGui::Checkbox("Grow target (add used source colors to free slots)",
+                               &g_merge_opt_grow);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Append source colors the sprites actually use into the\n"
+                          "target's empty slots (lossless) instead of approximating\n"
+                          "them. Falls back to nearest match when slots run out.");
+    changed |= ImGui::Checkbox("Perceptual color match (luma-weighted)",
+                               &g_merge_opt_perceptual);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Weight nearest-color search by how the eye perceives\n"
+                          "brightness (green > red > blue) for closer-looking matches.");
+    if (changed)
+        BuildMarkedPaletteMergeQuality(&g_palette_merge_quality);
+    ImGui::Separator();
+
     int drift_pixels = q.color_drift_pixels + q.transparent_drift_pixels;
     double avg_drift = q.affected_pixels > 0
         ? sqrt((double)q.total_dist / (double)q.affected_pixels)
@@ -13963,6 +15300,16 @@ static void DrawPaletteMergeQualityDialog(void)
     ImGui::Text("Target: %s", q.target_name);
     ImGui::Text("Marked palettes: %d   Images: %d   Nonzero pixels: %d",
                 q.source_palettes, q.remapped_images, q.affected_pixels);
+    if (q.opt_grow && (q.colors_added > 0 || q.colors_overflow > 0)) {
+        ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.6f, 1.0f),
+                           "Target grows: %d -> %d colors (+%d added)",
+                           q.target_base_numc, q.target_base_numc + q.colors_added,
+                           q.colors_added);
+        if (q.colors_overflow > 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.35f, 1.0f),
+                               "%d color%s could not fit (no free slots) - approximated",
+                               q.colors_overflow, q.colors_overflow == 1 ? "" : "s");
+    }
     ImGui::Separator();
 
     if (drift_pixels == 0 && q.ppp_warning_images == 0) {
@@ -14007,7 +15354,7 @@ static void DrawPaletteMergeQualityDialog(void)
     DrawPaletteMergeMappingPreview(q);
 
     ImGui::Spacing();
-    const char *merge_label = g_palette_merge_preview_only ? "Merge" : "Merge Anyway";
+    const char *merge_label = drift_pixels > 0 ? "Merge Anyway" : "Merge";
     if (ImGui::Button(merge_label, ImVec2(120, 0))) {
         g_show_palette_merge_quality = false;
         g_palette_merge_preview_only = false;
@@ -16804,8 +18151,8 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiMod_Alt  | ImGuiKey_S, route)) OpenFileDialog(FileDialogMode::SaveLbm);
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_L, route)) OpenFileDialog(FileDialogMode::LoadTga);
 
-    /* View / Debug */
-    if (ImGui::Shortcut(ImGuiKey_H,  route)) g_show_help = true;
+    /* View / Debug (H is repurposed to flip the floating paste while one is up) */
+    if (!g_pasted.active && ImGui::Shortcut(ImGuiKey_H,  route)) g_show_help = true;
     if (ImGui::Shortcut(ImGuiKey_F9, route)) g_show_debug = !g_show_debug;
     if (!popup_using_keyboard && !io.WantTextInput) {
         if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Equal, route) ||
@@ -16829,7 +18176,7 @@ void imgui_overlay_render(void)
         else g_active_tool = ActiveTool::MagicWand;
         if (g_active_tool == ActiveTool::None) g_grid_sel.active = false;
     }
-    if (ImGui::Shortcut(ImGuiKey_L,  route)) {
+    if (!g_pasted.active && ImGui::Shortcut(ImGuiKey_L,  route)) {
         if (g_active_tool == ActiveTool::Lasso) g_active_tool = ActiveTool::None;
         else g_active_tool = ActiveTool::Lasso;
         g_lasso_points.clear();
@@ -16848,7 +18195,7 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiKey_G, route)) {
         g_active_tool = (g_active_tool == ActiveTool::PaintBucket) ? ActiveTool::None : ActiveTool::PaintBucket;
     }
-    if (ImGui::Shortcut(ImGuiKey_V, route)) {
+    if (!g_pasted.active && ImGui::Shortcut(ImGuiKey_V, route)) {
         g_active_tool = (g_active_tool == ActiveTool::VariantPaint) ? ActiveTool::None : ActiveTool::VariantPaint;
     }
     /* [ and ] do double duty depending on context:
@@ -16904,6 +18251,13 @@ void imgui_overlay_render(void)
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_T, route)) {
         if (g_xform.active)        xform_commit();
         else if (g_pasted.active)  xform_begin();
+    }
+    /* While a floating paste is up (and not free-transforming): H / V mirror it
+       in place, L drops it onto the sprite as a non-destructive layer. */
+    if (g_pasted.active && !g_xform.active && !io.WantTextInput) {
+        if (ImGui::Shortcut(ImGuiKey_H, route)) flip_clipboard_horizontal();
+        if (ImGui::Shortcut(ImGuiKey_V, route)) flip_clipboard_vertical();
+        if (ImGui::Shortcut(ImGuiKey_L, route)) drop_paste_to_layer();
     }
 
     /* Image Operations */
@@ -17065,11 +18419,14 @@ void imgui_overlay_render(void)
                 g_pasted.active = false;
                 g_pasted.dragging = false;
             }
+            if (ImGui::MenuItem("Drop Paste to Layer", "L", false, g_pasted.active && !g_xform.active))
+                drop_paste_to_layer();
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Image",     "Ctrl+R"))     OpenRenameImage();
             if (ImGui::MenuItem("Delete Image",     "Del"))        RequestDeleteImage(g_doc->ilselected);
             if (ImGui::MenuItem("Duplicate",        "Ctrl+J"))     DuplicateImage();
             if (ImGui::MenuItem("Trim Transparent Bounds", NULL, false, g_doc->ilselected >= 0)) {
+                doc_undo_push();
                 int n = CropSelectedImageToContent();
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          n > 0 ? "Trimmed selected sprite to non-transparent bounds."
@@ -17122,6 +18479,7 @@ void imgui_overlay_render(void)
                 ImGui::EndMenu();
             }
             if (ImGui::MenuItem("Crop Selected to Content", NULL, false, g_doc->ilselected >= 0)) {
+                doc_undo_push();
                 int n = CropSelectedImageToContent();
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          n > 0 ? "Cropped selected sprite to non-transparent bbox."
@@ -17133,6 +18491,7 @@ void imgui_overlay_render(void)
                 "Trim the selected image to its nearest non-transparent pixels.\n"
                 "Anipoints are adjusted so the on-screen position is unchanged.");
             if (ImGui::MenuItem("Crop Marked to Content")) {
+                doc_undo_push();
                 int n = CropMarkedImagesToContent();
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          "Cropped %d image(s) to non-transparent bbox.", n);
@@ -17391,6 +18750,9 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             if (ImGui::MenuItem("MK2 Hitboxes (MKSTK.ASM)...")) g_show_mk2 = true;
             if (ImGui::MenuItem("MK2 Fatality Lab...")) g_show_mk2_fatality = true;
+            if (ImGui::MenuItem("ASM Animation Viewer...", NULL, &g_show_asm_anim) &&
+                g_show_asm_anim && g_asm_anims.empty())
+                OpenFileDialog(FileDialogMode::LoadAsmAnim);
             ImGui::PopStyleVar();
             ImGui::EndMenu();
         }
@@ -17516,11 +18878,11 @@ void imgui_overlay_render(void)
         ImVec4 action_active(0.12f, 0.42f, 0.78f, 1.0f);
 
         auto place_tool = [&]() {
-            ImGui::SetCursorPos(ImVec2(left_x, tool_y));
+            ImGui::SetCursorPos(ImVec2(right_x, tool_y));
             tool_y += btn.y + 4.0f;
         };
         auto place_action = [&]() {
-            ImGui::SetCursorPos(ImVec2(right_x, action_y));
+            ImGui::SetCursorPos(ImVec2(left_x, action_y));
             action_y += btn.y + 4.0f;
         };
         auto toggle_tool = [&](ActiveTool tool) {
@@ -18034,6 +19396,7 @@ void imgui_overlay_render(void)
                             ImGui::EndMenu();
                         }
                         if (ImGui::MenuItem("Trim Bounds")) {
+                            doc_undo_push();
                             int n = CropSelectedImageToContent();
                             snprintf(g_restore_msg, sizeof(g_restore_msg),
                                      n > 0 ? "Trimmed selected sprite to non-transparent bounds."
@@ -18327,6 +19690,7 @@ void imgui_overlay_render(void)
             if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Resize selected sprite");
             ImGui::SameLine();
             if (ImGui::SmallButton("Trim##img")) {
+                doc_undo_push();
                 int n = CropSelectedImageToContent();
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          n > 0 ? "Trimmed selected sprite to non-transparent bounds."
@@ -19355,18 +20719,15 @@ void imgui_overlay_render(void)
         bool blank_marquee_click = false;
 
         if (rotate_buttons_visible && !canvas_input_blocked && !timeline_composite_preview_active) {
-            for (int i = 0; i < 2; i++) {
+            for (int i = 0; i < 1; i++) {
                 if (point_in_rect(mouse, rotate_button_min[i], rotate_button_max[i])) {
                     rotate_button_hovered = true;
                     rotate_button_hover_idx = i;
                     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-                    ImGui::SetTooltip(i == 0
-                        ? "Rotate 90 Counterclockwise (preserve anim points)"
-                        : "Rotate 90 Clockwise (preserve anim points)");
+                    ImGui::SetTooltip("Rotate 90 Clockwise (preserve anim points)");
                     widget_consumed_click = true;
                     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                        TransformSelectedSprite(i == 0 ? SpriteTransformOp::Rotate90CCW
-                                                       : SpriteTransformOp::Rotate90CW);
+                        TransformSelectedSprite(SpriteTransformOp::Rotate90CW);
                     }
                     break;
                 }
@@ -20256,7 +21617,7 @@ void imgui_overlay_render(void)
                                   cy_img + dxp * sa + dyp * ca);
                 };
                 ImVec2 paste_controls_min(canvas_origin.x + 10.0f, canvas_origin.y + 10.0f);
-                ImVec2 paste_controls_max(paste_controls_min.x + 252.0f,
+                ImVec2 paste_controls_max(paste_controls_min.x + 276.0f,
                                            paste_controls_min.y + 62.0f);
                 bool paste_controls_block =
                     mouse.x >= paste_controls_min.x && mouse.x < paste_controls_max.x &&
@@ -20355,7 +21716,7 @@ void imgui_overlay_render(void)
                 } else if (g_pasted.dragging)
                     dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 200, 0, 255), "Moving...");
                 else
-                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 255, 0, 255), "Drag to move | Ctrl+T transform | Click outside to place | Esc cancel");
+                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 255, 0, 255), "Drag to move | H/V flip | L to layer | Ctrl+T transform | Click outside to place | Esc cancel");
 
                 dl->AddRectFilled(paste_controls_min, paste_controls_max,
                                   IM_COL32(18, 20, 24, 230), 4.0f);
@@ -20365,8 +21726,9 @@ void imgui_overlay_render(void)
                 ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 8.0f,
                                                   paste_controls_min.y + 7.0f));
                 ImGui::TextUnformatted("Blend");
-                ImGui::SameLine(64.0f);
-                ImGui::SetNextItemWidth(170.0f);
+                ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 76.0f,
+                                                  paste_controls_min.y + 5.0f));
+                ImGui::SetNextItemWidth(paste_controls_max.x - paste_controls_min.x - 86.0f);
                 if (ImGui::BeginCombo("##blend", PasteBlendModeName(g_paste_blend_mode))) {
                     for (PasteBlendMode mode : k_paste_blend_modes) {
                         bool selected = (g_paste_blend_mode == mode);
@@ -20379,8 +21741,9 @@ void imgui_overlay_render(void)
                 ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 8.0f,
                                                   paste_controls_min.y + 34.0f));
                 ImGui::TextUnformatted("Opacity");
-                ImGui::SameLine(64.0f);
-                ImGui::SetNextItemWidth(170.0f);
+                ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 76.0f,
+                                                  paste_controls_min.y + 32.0f));
+                ImGui::SetNextItemWidth(paste_controls_max.x - paste_controls_min.x - 86.0f);
                 ImGui::SliderInt("##opacity", &g_paste_opacity, 0, 100, "%d%%");
                 ImGui::PopID();
 
@@ -21274,6 +22637,16 @@ void imgui_overlay_render(void)
     DrawLoad2VerifyDialog();
 
     DrawPaletteMergeQualityDialog();
+
+    DrawSpriteLayerPanel();
+
+    if (g_request_save_world_asm) { g_request_save_world_asm = false; OpenFileDialog(FileDialogMode::SaveAsmAnim); }
+    if (g_request_load_asm)       { g_request_load_asm = false; g_asm_dialog_opponent = false; OpenFileDialog(FileDialogMode::LoadAsmAnim); }
+    if (g_request_load_opp_asm)   { g_request_load_opp_asm = false; g_asm_dialog_opponent = true; OpenFileDialog(FileDialogMode::LoadAsmAnim); }
+    if (g_request_locate_img)     { g_request_locate_img = false; g_openimg_for_asm = true; OpenFileDialog(FileDialogMode::OpenImg); }
+    else if (g_request_locate_opp_img) { g_request_locate_opp_img = false; g_openimg_for_opp = true; OpenFileDialog(FileDialogMode::OpenImg); }
+
+    DrawAsmAnimWindow();
 
     DrawPaletteHistogramDialog();
 
