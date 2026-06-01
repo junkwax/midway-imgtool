@@ -8,6 +8,34 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.10.0] — World View ASM autoload and sequence polish
+
+Feature release focused on making multi-IMG character animations easier to load,
+inspect, and refine in World View.
+
+### World View
+- **Preserve edited sequences** — marked-tab sequence edits now survive marked
+  set changes: ordering, duplicate entries, local anipoints, per-frame delay,
+  visibility, and mirror flags are kept for still-marked frames.
+- **Less obstructive sequence panel** — the sequence editor stretches across the
+  bottom of the canvas so it covers fewer sprites while staging animations.
+- **On-canvas source tags** — each rendered lane is labeled with its source
+  animation/file and current frame to make multi-tab layouts easier to read.
+
+### ASM Animation Viewer
+- **Automatic multi-IMG loading** — selecting an ASM animation can locate and
+  open every referenced sprite IMG, then resolve the animation globally across
+  all open tabs.
+- **Cross-document sprite pieces** — composited ASM frames now track the owning
+  document for each sprite piece, fixing animations split across character IMG
+  libraries.
+- **Better save defaults** — saving generated ASM now proposes the generated
+  animation label instead of the currently active IMG name.
+
+### Palette Tools
+- **Quicker alignment workflow** — Color Tools now sit above the anipoint panel
+  so palette edits and sprite alignment controls stay close together.
+
 ## [v3.9.0] — World View ASM animations, fatalities, and undo hardening
 
 Feature release adding a MK2 ASM animation pipeline to World View, per-sprite

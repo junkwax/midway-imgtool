@@ -1752,6 +1752,7 @@ static void ClearWorldTempTextures(void)
 struct AsmAnimFrame {
     std::vector<std::string> piece_syms; /* sprite-piece symbols composing this frame */
     std::vector<int>         piece_img;  /* resolved IMG index per piece, -1 if missing */
+    std::vector<Document*>   piece_doc;  /* doc each piece resolved against (parallel) */
     int  dx = 0, dy = 0;                 /* cumulative ani_adjustx/xy offset at this frame */
     bool mirror = false;                 /* ani_flip state at this frame */
 };
@@ -1793,6 +1794,8 @@ static bool         g_request_locate_img = false;     /* deferred: prompt for th
 static bool         g_openimg_for_asm = false;        /* next OpenImg re-resolves the ASM viewer */
 static bool         g_request_locate_opp_img = false; /* deferred: prompt for the opponent IMG */
 static bool         g_openimg_for_opp = false;        /* next OpenImg re-resolves the opponent */
+static bool         g_request_asm_autoload = false;   /* deferred: open IMGs for the player anim */
+static bool         g_request_asm_opp_autoload = false; /* deferred: open IMGs for opponent anim */
 static void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc);
 
 static bool *WorldMarkedMirrorFlag(int slot)
@@ -2109,57 +2112,84 @@ static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx
     const std::vector<int> defaults = frames;
     bool doc_changed = g_world_marked_sequence_doc[slot] != doc ||
                        g_world_marked_sequence_doc_idx[slot] != doc_idx;
-    bool reset_sequence =
-        doc_changed ||
-        g_world_marked_default_frames[slot] != defaults ||
-        g_world_marked_sequence_frames[slot].empty();
+    bool have_seq = !g_world_marked_sequence_frames[slot].empty();
 
-    if (!reset_sequence) {
+    /* Does the persisted sequence still reference only frames the doc has? */
+    bool stale_entry = false;
+    if (!doc_changed && have_seq) {
         for (int idx : g_world_marked_sequence_frames[slot]) {
-            if (!doc_get_img(doc, idx)) {
-                reset_sequence = true;
-                break;
-            }
+            if (!doc_get_img(doc, idx)) { stale_entry = true; break; }
         }
     }
+    bool defaults_changed = g_world_marked_default_frames[slot] != defaults;
 
-    if (reset_sequence) {
-        /* When only the marked SET changed within the same doc (e.g. the user
-           unmarked one sprite), preserve each surviving frame's per-entry local
-           anipoint / delay / show-at edits, keyed by frame index. Previously
-           any marked-set change wiped every local edit. */
-        struct SavedEdit { int delay, dx, dy, vis; };
-        std::unordered_map<int, SavedEdit> saved;
-        bool preserve = !doc_changed && !g_world_marked_sequence_frames[slot].empty();
-        if (preserve) {
-            EnsureWorldMarkedFrameDelays(slot,
-                (int)g_world_marked_sequence_frames[slot].size());
-            std::vector<int> &sf = g_world_marked_sequence_frames[slot];
-            for (size_t i = 0; i < sf.size(); i++)
-                saved[sf[i]] = { g_world_marked_frame_delays[slot][i],
-                                 g_world_marked_local_dx[slot][i],
-                                 g_world_marked_local_dy[slot][i],
-                                 g_world_marked_visible_from[slot][i] };
-        }
-
+    if (doc_changed || !have_seq) {
+        /* A different sprite/tab now occupies this slot (or there is nothing
+           built yet): seed the sequence straight from the marked frames. */
         g_world_marked_sequence_doc[slot] = doc;
         g_world_marked_sequence_doc_idx[slot] = doc_idx;
         g_world_marked_default_frames[slot] = defaults;
         g_world_marked_sequence_frames[slot] = defaults;
         WorldMarkedClearSequenceState(slot);
         EnsureWorldMarkedFrameDelays(slot, (int)defaults.size());
+    } else if (defaults_changed || stale_entry) {
+        /* Same sprite, but the marked SET changed (the user marked another
+           frame/sprite) or a referenced frame was deleted. Reconcile in place
+           so the hand-built sequence survives: keep every still-marked entry
+           in its current position with its per-entry edits, drop entries whose
+           frame is gone or was unmarked, and append only the *newly* marked
+           frames at the end. Previously any marked-set change rebuilt the whole
+           sequence from defaults, discarding the user's ordering, duplicated
+           entries, and per-frame edits. */
+        EnsureWorldMarkedFrameDelays(slot,
+            (int)g_world_marked_sequence_frames[slot].size());
 
-        if (preserve) {
-            std::vector<int> &sf = g_world_marked_sequence_frames[slot];
-            for (size_t i = 0; i < sf.size(); i++) {
-                auto it = saved.find(sf[i]);
-                if (it == saved.end()) continue;
-                g_world_marked_frame_delays[slot][i] = it->second.delay;
-                g_world_marked_local_dx[slot][i]     = it->second.dx;
-                g_world_marked_local_dy[slot][i]     = it->second.dy;
-                g_world_marked_visible_from[slot][i] = it->second.vis;
-            }
+        std::vector<int> prev_defaults = g_world_marked_default_frames[slot];
+        std::vector<int> old_seq   = g_world_marked_sequence_frames[slot];
+        std::vector<int> old_delay = g_world_marked_frame_delays[slot];
+        std::vector<int> old_dx    = g_world_marked_local_dx[slot];
+        std::vector<int> old_dy    = g_world_marked_local_dy[slot];
+        std::vector<int> old_vis   = g_world_marked_visible_from[slot];
+        std::vector<int> old_mir   = g_world_marked_frame_mirror[slot];
+
+        std::vector<int> new_seq, new_delay, new_dx, new_dy, new_vis, new_mir;
+        new_seq.reserve(old_seq.size() + defaults.size());
+        for (size_t i = 0; i < old_seq.size(); i++) {
+            int idx = old_seq[i];
+            if (!doc_get_img(doc, idx)) continue;   /* frame deleted from doc */
+            if (std::find(defaults.begin(), defaults.end(), idx) == defaults.end())
+                continue;                            /* sprite was unmarked */
+            new_seq.push_back(idx);
+            new_delay.push_back(old_delay[i]);
+            new_dx.push_back(old_dx[i]);
+            new_dy.push_back(old_dy[i]);
+            new_vis.push_back(old_vis[i]);
+            new_mir.push_back(old_mir[i]);
         }
+        for (int idx : defaults) {
+            /* Only frames newly added to the marked set get appended; frames
+               the user deliberately removed from the sequence (still marked)
+               stay removed. */
+            if (std::find(prev_defaults.begin(), prev_defaults.end(), idx) != prev_defaults.end())
+                continue;
+            if (std::find(new_seq.begin(), new_seq.end(), idx) != new_seq.end())
+                continue;
+            new_seq.push_back(idx);
+            new_delay.push_back(1);
+            new_dx.push_back(0);
+            new_dy.push_back(0);
+            new_vis.push_back(0);
+            new_mir.push_back(0);
+        }
+
+        g_world_marked_default_frames[slot] = defaults;
+        g_world_marked_sequence_frames[slot] = new_seq;
+        g_world_marked_frame_delays[slot]    = new_delay;
+        g_world_marked_local_dx[slot]        = new_dx;
+        g_world_marked_local_dy[slot]        = new_dy;
+        g_world_marked_visible_from[slot]    = new_vis;
+        g_world_marked_frame_mirror[slot]    = new_mir;
+        EnsureWorldMarkedFrameDelays(slot, (int)new_seq.size());
     }
 
     frames = g_world_marked_sequence_frames[slot];
@@ -2705,6 +2735,10 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         int delay_slot;
         std::vector<int> frames;
         std::vector<std::vector<int>> frame_pieces;
+        /* For ASM lanes whose pieces span multiple IMG files, the owning doc per
+           frame / per piece. Empty for ordinary single-doc lanes. */
+        std::vector<Document*> frame_docs;
+        std::vector<std::vector<Document*>> frame_piece_docs;
         std::vector<std::string> frame_labels;
         int frame_pos;
         IMG *img;
@@ -2933,13 +2967,29 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         lane.frame_pos = 0;
         lane.dummy_decap = false;
         lane.label = a.name;
+        Document *rep_doc = NULL;     /* first doc that actually resolved a piece */
         for (auto &fr : a.frames) {
             std::vector<int> pcs;
-            for (int ri : fr.piece_img) if (ri >= 0) pcs.push_back(ri);
+            std::vector<Document*> pcs_docs;
+            for (size_t p = 0; p < fr.piece_img.size(); p++) {
+                int ri = fr.piece_img[p];
+                if (ri < 0) continue;
+                Document *pdoc = (p < fr.piece_doc.size() && fr.piece_doc[p])
+                               ? fr.piece_doc[p] : doc;
+                pcs.push_back(ri);
+                pcs_docs.push_back(pdoc);
+                if (!rep_doc) rep_doc = pdoc;
+            }
             lane.frames.push_back(pcs.empty() ? -1 : pcs[0]);
             lane.frame_pieces.push_back(pcs);
+            lane.frame_piece_docs.push_back(pcs_docs);
+            lane.frame_docs.push_back(pcs_docs.empty() ? doc : pcs_docs[0]);
             lane.frame_labels.push_back(a.name);
         }
+        /* Anchor the lane on a doc that actually contains a piece so the shared
+           render path (lane.img, thumbnails) resolves even when pieces live in
+           IMGs other than the one that was active when the ASM was selected. */
+        if (rep_doc) lane.doc = rep_doc;
         int n = (int)lane.frames.size();
         EnsureWorldMarkedFrameDelays(slot_id, n);
         for (int k = 0; k < n; k++) {
@@ -3007,7 +3057,9 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         if (n <= 0) continue;
         lane.frame_pos = WorldMarkedFrameForTick(lane.delay_slot, n, g_world_dual_frame,
                                                  g_world_marked_hold_end[lane.delay_slot]);
-        lane.img = doc_get_img(lane.doc, lane.frames[lane.frame_pos]);
+        Document *fdoc = (lane.frame_pos < (int)lane.frame_docs.size() && lane.frame_docs[lane.frame_pos])
+                       ? lane.frame_docs[lane.frame_pos] : lane.doc;
+        lane.img = doc_get_img(fdoc, lane.frames[lane.frame_pos]);
         if (lane.img) have_image = true;
     }
     if (!have_image) return false;
@@ -3065,18 +3117,25 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             g_world_marked_frame_mirror[state_slot][lane.frame_pos])
             mirror_x = !mirror_x;
         const std::vector<int> *pieces = NULL;
+        const std::vector<Document*> *piece_docs = NULL;
         if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frame_pieces.size())
             pieces = &lane.frame_pieces[lane.frame_pos];
+        if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frame_piece_docs.size())
+            piece_docs = &lane.frame_piece_docs[lane.frame_pos];
         std::vector<int> fallback_piece;
         if (!pieces || pieces->empty()) {
             if (!lane.img) return;
             fallback_piece.push_back(lane.frames[lane.frame_pos]);
             pieces = &fallback_piece;
+            piece_docs = NULL;
         }
-        for (int piece_idx : *pieces) {
-            IMG *img = doc_get_img(lane.doc, piece_idx);
+        for (size_t pi = 0; pi < pieces->size(); pi++) {
+            int piece_idx = (*pieces)[pi];
+            Document *pdoc = (piece_docs && pi < piece_docs->size() && (*piece_docs)[pi])
+                           ? (*piece_docs)[pi] : lane.doc;
+            IMG *img = doc_get_img(pdoc, piece_idx);
             if (!img) continue;
-            SDL_Texture *tex = BuildWorldSpriteTexture(lane.doc, img, alpha_by_slot[slot]);
+            SDL_Texture *tex = BuildWorldSpriteTexture(pdoc, img, alpha_by_slot[slot]);
             if (!tex) continue;
             int ax = (int)(short)img->anix + g_world_marked_local_dx[state_slot][lane.frame_pos];
             int ay = (int)(short)img->aniy + g_world_marked_local_dy[state_slot][lane.frame_pos];
@@ -3112,6 +3171,32 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     dl->AddCircle(ImVec2(ox, oy), 4.0f,
                   IM_COL32(255, 200, 0, 255), 0, 1.5f);
 
+    /* Tag each sprite in the canvas with its source file and current frame name
+       so it is clear which marked tab/frame each on-screen sprite came from. */
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        if (!lane_rect_valid[slot]) continue;
+        MarkedLane &lane = lanes[slot];
+        const char *doc_name = !lane.label.empty()
+                             ? lane.label.c_str()
+                             : (lane.doc && lane.doc->fname_s[0] ? lane.doc->fname_s
+                                                                 : "Untitled");
+        std::string frame_name = (lane.frame_pos >= 0 &&
+                                  lane.frame_pos < (int)lane.frame_labels.size() &&
+                                  !lane.frame_labels[lane.frame_pos].empty())
+                               ? lane.frame_labels[lane.frame_pos]
+                               : (lane.img ? img_name_string(lane.img) : std::string());
+        char tag[256];
+        snprintf(tag, sizeof(tag), "%s:%s", doc_name, frame_name.c_str());
+        ImVec2 tag_sz = ImGui::CalcTextSize(tag);
+        ImVec2 tag_pos(lane_rect_min[slot].x,
+                       lane_rect_min[slot].y - tag_sz.y - 3.0f);
+        if (tag_pos.y < wpos.y + 1.0f) tag_pos.y = wpos.y + 1.0f;
+        dl->AddRectFilled(ImVec2(tag_pos.x - 2.0f, tag_pos.y - 1.0f),
+                          ImVec2(tag_pos.x + tag_sz.x + 2.0f, tag_pos.y + tag_sz.y + 1.0f),
+                          IM_COL32(0, 0, 0, 190));
+        dl->AddText(tag_pos, outline_by_slot[slot], tag);
+    }
+
     std::string label = "Marked tabs: ";
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
         MarkedLane &lane = lanes[slot];
@@ -3144,17 +3229,17 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 IM_COL32(220, 220, 220, 255), label.c_str());
     dl->PopClipRect();
 
-    float panel_w = ww - 16.0f;
-    if (panel_w < 320.0f) panel_w = avail.x - 16.0f;
+    /* Stretch the sequence panel full-width and pin it to the very bottom of
+       the canvas so it no longer covers the world sprites. */
+    float panel_w = avail.x - 16.0f;
     if (panel_w < 240.0f) panel_w = 240.0f;
-    if (panel_w > avail.x - 16.0f) panel_w = avail.x - 16.0f;
     float panel_h = 54.0f + (float)lanes.size() * 104.0f;
     float max_panel_h = avail.y - 24.0f;
     if (max_panel_h > 380.0f) max_panel_h = 380.0f;
     if (panel_h > max_panel_h) panel_h = max_panel_h;
     if (panel_h < 96.0f) panel_h = 96.0f;
-    ImVec2 panel_pos(img_pos.x + (avail.x - panel_w) * 0.5f,
-                     wpos.y + wh - panel_h - 8.0f);
+    ImVec2 panel_pos(img_pos.x + 8.0f,
+                     img_pos.y + avail.y - panel_h - 8.0f);
     if (panel_pos.y < img_pos.y + 8.0f) panel_pos.y = img_pos.y + 8.0f;
 
     ImVec2 mouse = ImGui::GetMousePos();
@@ -3379,7 +3464,8 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             g_request_load_asm = true;
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.");
+            ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
+                              "The sprite IMGs it references are opened automatically.");
         ImGui::SameLine();
         if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body", &g_world_dummy_decap_body)) {
             g_world_dummy_decap_reset = true;
@@ -3557,8 +3643,10 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 ImGui::PushID(fi);
                 ImGui::BeginGroup();
                 int img_idx = lane.frames[fi];
-                IMG *thumb_img = doc_get_img(lane.doc, img_idx);
-                SDL_Texture *thumb_tex = BuildWorldSpriteTexture(lane.doc, thumb_img, 255);
+                Document *thumb_doc = (fi < (int)lane.frame_docs.size() && lane.frame_docs[fi])
+                                    ? lane.frame_docs[fi] : lane.doc;
+                IMG *thumb_img = doc_get_img(thumb_doc, img_idx);
+                SDL_Texture *thumb_tex = BuildWorldSpriteTexture(thumb_doc, thumb_img, 255);
                 bool current = (fi == lane.frame_pos);
                 if (current)
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.46f, 0.72f, 1.0f));
@@ -10911,6 +10999,29 @@ static void OpenFileDialog(FileDialogMode mode) {
                 strcat(g_file_dialog_file, ext);
             }
         }
+    } else if (mode == FileDialogMode::SaveAsmAnim) {
+        /* World View ASM is generated from the marked sprites across all open
+           tabs, not from the current IMG document. Seeding g_doc->fname_s here
+           produced a misleading default (the open IMG's name). Instead seed
+           from the first generated animation label (e.g. a_imgtool_slot1_kick),
+           falling back to a blank name if nothing has been generated yet. */
+        g_file_dialog_file[0] = '\0';
+        const std::string &asm_src = g_world_marked_generated_asm;
+        for (size_t ls = 0; ls < asm_src.size(); ) {
+            size_t le = asm_src.find('\n', ls);
+            size_t line_end = (le == std::string::npos) ? asm_src.size() : le;
+            size_t a = asm_src.find_first_not_of(" \t\r", ls);
+            if (a != std::string::npos && a < line_end && asm_src[a] != ';') {
+                size_t b = asm_src.find_first_of(" \t\r", a);
+                if (b == std::string::npos || b > line_end) b = line_end;
+                std::string label = asm_src.substr(a, b - a);
+                snprintf(g_file_dialog_file, sizeof(g_file_dialog_file),
+                         "%s.ASM", label.c_str());
+                break;
+            }
+            if (le == std::string::npos) break;
+            ls = le + 1;
+        }
     } else if (g_doc->fname_s[0] != '\0') {
         size_t n = 0;
         while (n < 12 && g_doc->fname_s[n] != '\0') n++;
@@ -14637,6 +14748,65 @@ static int AsmResolveSym(const std::unordered_map<std::string,int> &m, const std
     return (it != m.end()) ? it->second : -1;
 }
 
+/* Normalize a piece symbol to its IMG-frame name key (drop "+offset", uppercase). */
+static std::string AsmSymKey(const std::string &sym)
+{
+    std::string key = sym;
+    size_t plus = key.find('+');
+    if (plus != std::string::npos) key = key.substr(0, plus);
+    for (char &c : key) c = (char)toupper((unsigned char)c);
+    return key;
+}
+
+/* Build a name -> (document, local index) map spanning EVERY open tab. A
+   character's sprites are split across many IMG files (e.g. CAGE1..CAGE10.IMG),
+   so a single animation only resolves fully when its pieces are looked up across
+   all loaded documents. The active doc is inserted last so it wins name ties. */
+static void AsmBuildGlobalNameMap(
+        std::unordered_map<std::string, std::pair<Document*,int>> &m)
+{
+    m.clear();
+    int active = document_active_index();
+    int ntabs  = document_tab_count();
+    /* pass 0: every non-active doc; pass 1: the active doc (overwrites ties). */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int t = 0; t < ntabs; t++) {
+            bool is_active = (t == active);
+            if ((pass == 1) != is_active) continue;
+            Document *d = document_get(t);
+            if (!d) continue;
+            int idx = 0;
+            for (IMG *img = (IMG *)d->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+                std::string n = img_name_string(img);
+                for (char &c : n) c = (char)toupper((unsigned char)c);
+                if (!n.empty()) m[n] = std::make_pair(d, idx);
+            }
+        }
+    }
+}
+
+/* Resolve every piece of an animation against all open documents, filling both
+   the doc-local index (piece_img) and the owning document (piece_doc). */
+static void AsmResolveAnimGlobal(AsmAnim &a)
+{
+    std::unordered_map<std::string, std::pair<Document*,int>> m;
+    AsmBuildGlobalNameMap(m);
+    a.missing = 0;
+    for (auto &fr : a.frames) {
+        fr.piece_img.assign(fr.piece_syms.size(), -1);
+        fr.piece_doc.assign(fr.piece_syms.size(), (Document*)NULL);
+        for (size_t p = 0; p < fr.piece_syms.size(); p++) {
+            auto it = m.find(AsmSymKey(fr.piece_syms[p]));
+            if (it != m.end()) {
+                fr.piece_doc[p] = it->second.first;
+                fr.piece_img[p] = it->second.second;
+            } else {
+                a.missing++;
+            }
+        }
+    }
+}
+
 /* Pure parse of a character/exported ASM into a list of animations (no globals,
    no IMG load, no resolution against a specific doc beyond a best-effort first
    pass against the active doc). Shared by the player and opponent loaders. */
@@ -14802,56 +14972,42 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
 }
 
 /* Build a name->IMG-index map (case-insensitive) for an arbitrary document. */
-static void AsmBuildNameMapForDoc(Document *doc, std::unordered_map<std::string,int> &m)
-{
-    m.clear();
-    if (!doc) return;
-    int idx = 0;
-    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
-        std::string n = img_name_string(img);
-        for (char &c : n) c = (char)toupper((unsigned char)c);
-        if (!n.empty()) m.emplace(n, idx);
-    }
-}
-
-/* Resolve an animation's piece symbols to IMG indices in the given doc. */
+/* Resolve an animation's piece symbols across every open document. The doc
+   argument is kept for call-site compatibility but no longer constrains lookup:
+   a character's frames are split across many IMGs, so resolution must span them. */
 static void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc)
 {
-    std::unordered_map<std::string,int> nm;
-    AsmBuildNameMapForDoc(doc, nm);
-    a.missing = 0;
-    for (auto &fr : a.frames) {
-        fr.piece_img.assign(fr.piece_syms.size(), -1);
-        for (size_t p = 0; p < fr.piece_syms.size(); p++) {
-            int ri = AsmResolveSym(nm, fr.piece_syms[p]);
-            fr.piece_img[p] = ri;
-            if (ri < 0) a.missing++;
-        }
-    }
+    (void)doc;
+    AsmResolveAnimGlobal(a);
 }
 
-/* Scan candidate folders (ASM dir, sibling data/, current doc dir) and open the
-   .IMG whose frame names best cover the animation symbols, if it beats the
-   current doc. Returns true if an IMG was opened. */
-static bool AsmAutoLoadImgForAnims(const std::vector<AsmAnim> &anims, const char *path)
+/* Open every IMG (as a tab) needed to cover this animation's piece symbols that
+   no currently-open document already provides. Scans the ASM folder, sibling
+   data/ dirs, every open tab's folder and $IMGDIR. Greedy set-cover, so a
+   character whose sprites span several files (CAGE1..CAGE10) gets each opened.
+   Returns the number of IMGs opened. */
+static int AsmAutoOpenImgsForAnim(const AsmAnim &a, const char *asm_path)
 {
-    std::unordered_map<std::string,bool> symset;
-    for (auto &an : anims)
-        for (auto &fr : an.frames)
-            for (auto &s : fr.piece_syms) {
-                std::string u = s; size_t pl = u.find('+');
-                if (pl != std::string::npos) u = u.substr(0, pl);
-                for (char &c : u) c = (char)toupper((unsigned char)c);
-                if (!u.empty()) symset[u] = true;
-            }
-    if (symset.empty()) return false;
+    std::unordered_map<std::string,bool> need;
+    for (auto &fr : a.frames)
+        for (auto &s : fr.piece_syms) {
+            std::string u = AsmSymKey(s);
+            if (!u.empty()) need[u] = true;
+        }
+    if (need.empty()) return 0;
 
-    std::unordered_map<std::string,int> cur_map; AsmBuildNameMap(cur_map);
-    int cur_hits = 0;
-    for (auto &kv : symset) if (cur_map.count(kv.first)) cur_hits++;
-    if (cur_hits >= (int)symset.size()) return false;   /* current doc already covers it */
+    /* Drop symbols any already-open document provides. */
+    {
+        std::unordered_map<std::string, std::pair<Document*,int>> m;
+        AsmBuildGlobalNameMap(m);
+        for (auto it = need.begin(); it != need.end(); ) {
+            if (m.count(it->first)) it = need.erase(it);
+            else ++it;
+        }
+    }
+    if (need.empty()) return 0;
 
-    std::string asmdir = path;
+    std::string asmdir = asm_path ? asm_path : "";
     size_t sl = asmdir.find_last_of("\\/");
     asmdir = (sl != std::string::npos) ? asmdir.substr(0, sl) : ".";
 
@@ -14882,25 +15038,43 @@ static bool AsmAutoLoadImgForAnims(const std::vector<AsmAnim> &anims, const char
     const char *imgdir = getenv("IMGDIR");
     if (imgdir && imgdir[0]) add_dir(imgdir);
 
-    std::string best_path; int best_hits = cur_hits;
+    /* Probe every candidate IMG once, recording its uppercased frame names. */
+    struct ImgCand { std::string path; std::vector<std::string> names; };
+    std::vector<ImgCand> cands;
     for (auto &d : dirs) {
         std::vector<FileEntry> entries;
         GetDirectoryFiles(d, entries, "IMG");
         for (auto &e : entries) {
             if (e.is_dir) continue;
-            std::string full = PathCombine(d, e.name);
+            ImgCand c;
+            c.path = PathCombine(d, e.name);
             std::vector<std::string> names;
-            ProbeImgFrameNames(full.c_str(), names);
-            int hits = 0;
+            ProbeImgFrameNames(c.path.c_str(), names);
             for (auto &nm : names) {
-                std::string u = nm; for (char &c : u) c = (char)toupper((unsigned char)c);
-                if (symset.count(u)) hits++;
+                std::string u = nm; for (char &ch : u) ch = (char)toupper((unsigned char)ch);
+                c.names.push_back(u);
             }
-            if (hits > best_hits) { best_hits = hits; best_path = full; }
+            cands.push_back(std::move(c));
         }
     }
-    if (!best_path.empty() && best_hits > cur_hits) { OpenImgFile(best_path); return true; }
-    return false;
+
+    /* Greedy set-cover: repeatedly open the IMG covering the most still-missing
+       symbols until everything resolves or no remaining file helps. */
+    int opened = 0, guard = 0;
+    while (!need.empty() && guard++ < 64) {
+        int best = -1, best_hits = 0;
+        for (size_t i = 0; i < cands.size(); i++) {
+            int hits = 0;
+            for (auto &u : cands[i].names) if (need.count(u)) hits++;
+            if (hits > best_hits) { best_hits = hits; best = (int)i; }
+        }
+        if (best < 0) break;
+        OpenImgFile(cands[best].path);
+        opened++;
+        for (auto &u : cands[best].names) need.erase(u);
+        cands[best].names.clear();   /* don't pick the same file again */
+    }
+    return opened;
 }
 
 static bool LoadAsmAnimations(const char *path)   /* player */
@@ -14912,23 +15086,14 @@ static bool LoadAsmAnimations(const char *path)   /* player */
         return false;
     }
     g_asm_anim_file = path;
-    bool auto_loaded = AsmAutoLoadImgForAnims(g_asm_anims, path);
     AsmAnimSelect(g_asm_anims.empty() ? -1 : 0);
-
-    /* If the animation still resolves to nothing, the IMG wasn't found in any
-       known folder — prompt the user to locate it instead of giving up. */
-    int resolved = 0;
-    if (g_asm_anim_sel >= 0)
-        for (auto &fr : g_asm_anims[g_asm_anim_sel].frames)
-            for (int ri : fr.piece_img) if (ri >= 0) resolved++;
-    bool need_locate = (g_asm_anim_sel >= 0 && resolved == 0);
-    if (need_locate) g_request_locate_img = true;
+    /* Defer IMG loading to the main loop: opening tabs mid-parse is avoided, and
+       the handler opens every IMG the selected anim needs, then re-resolves. */
+    if (g_asm_anim_sel >= 0) g_request_asm_autoload = true;
 
     const char *base = (strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path);
     snprintf(g_restore_msg, sizeof(g_restore_msg),
-             need_locate  ? "Loaded %d animation%s from %s; locate its IMG to view it."
-             : auto_loaded ? "Loaded %d animation%s from %s; auto-opened matching IMG."
-                           : "Loaded %d animation%s from %s.",
+             "Loaded %d animation%s from %s; opening its sprites...",
              (int)g_asm_anims.size(), g_asm_anims.size() == 1 ? "" : "s", base);
     g_restore_msg_timer = 4.0f;
     return !g_asm_anims.empty();
@@ -14942,13 +15107,14 @@ static bool LoadAsmOpponent(const char *path)      /* fatality opponent */
         return false;
     }
     g_asm_opp_file = path;
-    AsmAutoLoadImgForAnims(g_asm_opp_anims, path);
     g_asm_opp_doc = g_doc;
     g_asm_opp_doc_idx = document_active_index();
     g_asm_opp_sel = g_asm_opp_anims.empty() ? -1 : 0;
     if (g_asm_opp_sel >= 0)
-        AsmResolveAnimAgainstDoc(g_asm_opp_anims[g_asm_opp_sel], g_asm_opp_doc);
+        AsmResolveAnimGlobal(g_asm_opp_anims[g_asm_opp_sel]);
     g_asm_opp_enabled = true;
+    /* Defer opening the opponent's sprite IMGs to the main loop. */
+    if (g_asm_opp_sel >= 0) g_request_asm_opp_autoload = true;
 
     /* Default the opponent to face the player (mirror = opposite of the player
        ASM lane); only set here so the user can still flip it. */
@@ -14958,18 +15124,9 @@ static bool LoadAsmOpponent(const char *path)      /* fatality opponent */
         if (of) *of = pf ? !*pf : true;
     }
 
-    /* Prompt to locate the opponent IMG if nothing resolved. */
-    int resolved = 0;
-    if (g_asm_opp_sel >= 0)
-        for (auto &fr : g_asm_opp_anims[g_asm_opp_sel].frames)
-            for (int ri : fr.piece_img) if (ri >= 0) resolved++;
-    bool need_locate = (g_asm_opp_sel >= 0 && resolved == 0);
-    if (need_locate) g_request_locate_opp_img = true;
-
     const char *base = (strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path);
     snprintf(g_restore_msg, sizeof(g_restore_msg),
-             need_locate ? "Loaded opponent: %d animation%s from %s; locate its IMG."
-                         : "Loaded opponent: %d animation%s from %s.",
+             "Loaded opponent: %d animation%s from %s; opening its sprites...",
              (int)g_asm_opp_anims.size(), g_asm_opp_anims.size() == 1 ? "" : "s", base);
     g_restore_msg_timer = 4.0f;
     return !g_asm_opp_anims.empty();
@@ -14985,22 +15142,18 @@ static void AsmAnimSelect(int i)
     ClearAsmAnimTexture();
     if (i < 0 || i >= (int)g_asm_anims.size()) return;
 
-    std::unordered_map<std::string,int> name_map;
-    AsmBuildNameMap(name_map);
-    g_asm_anim_doc = g_doc;                         /* frames resolve against the active doc */
+    g_asm_anim_doc = g_doc;                         /* representative doc for lane fallback */
     g_asm_anim_doc_idx = document_active_index();
 
     AsmAnim &a = g_asm_anims[i];
-    a.missing = 0;
+    AsmResolveAnimGlobal(a);                         /* resolve across all open IMGs */
     int minx = 0x3FFFFFFF, miny = 0x3FFFFFFF, maxx = -0x3FFFFFFF, maxy = -0x3FFFFFFF;
     bool any = false;
     for (auto &fr : a.frames) {
-        fr.piece_img.assign(fr.piece_syms.size(), -1);
         for (size_t p = 0; p < fr.piece_syms.size(); p++) {
-            int ri = AsmResolveSym(name_map, fr.piece_syms[p]);
-            fr.piece_img[p] = ri;
-            if (ri < 0) { a.missing++; continue; }
-            IMG *img = get_img(ri);
+            int ri = fr.piece_img[p];
+            if (ri < 0) continue;
+            IMG *img = doc_get_img(fr.piece_doc[p], ri);
             if (!img) continue;
             int x0 = -(int)(short)img->anix + fr.dx, y0 = -(int)(short)img->aniy + fr.dy;
             int x1 = x0 + img->w, y1 = y0 + img->h;
@@ -15015,6 +15168,36 @@ static void AsmAnimSelect(int i)
     if (cw < 1) cw = 1; if (ch < 1) ch = 1;
     if (cw > 1024) cw = 1024; if (ch > 1024) ch = 1024;
     g_asm_anim_canvas_w = cw; g_asm_anim_canvas_h = ch;
+}
+
+/* Deferred (main-loop) handler: open every IMG the selected player anim needs as
+   tabs, then re-resolve and re-size against them. If nothing resolves even after
+   the scan, fall back to prompting the user to locate an IMG. */
+static void AsmProcessAutoload(void)
+{
+    if (g_asm_anim_sel < 0 || g_asm_anim_sel >= (int)g_asm_anims.size()) return;
+    AsmAutoOpenImgsForAnim(g_asm_anims[g_asm_anim_sel], g_asm_anim_file.c_str());
+    AsmAnimSelect(g_asm_anim_sel);   /* re-resolve against the now-open IMGs */
+
+    int resolved = 0;
+    for (auto &fr : g_asm_anims[g_asm_anim_sel].frames)
+        for (int ri : fr.piece_img) if (ri >= 0) resolved++;
+    if (resolved == 0) g_request_locate_img = true;
+}
+
+/* Same as above for the fatality opponent ASM. */
+static void AsmProcessOppAutoload(void)
+{
+    if (g_asm_opp_sel < 0 || g_asm_opp_sel >= (int)g_asm_opp_anims.size()) return;
+    AsmAutoOpenImgsForAnim(g_asm_opp_anims[g_asm_opp_sel], g_asm_opp_file.c_str());
+    AsmResolveAnimGlobal(g_asm_opp_anims[g_asm_opp_sel]);
+    g_asm_opp_doc = g_doc;
+    g_asm_opp_doc_idx = document_active_index();
+
+    int resolved = 0;
+    for (auto &fr : g_asm_opp_anims[g_asm_opp_sel].frames)
+        for (int ri : fr.piece_img) if (ri >= 0) resolved++;
+    if (resolved == 0) g_request_locate_opp_img = true;
 }
 
 /* (Re)fill the playback texture with the current frame's composited pieces. */
@@ -15048,9 +15231,11 @@ static void AsmAnimRefillTexture(void)
     for (size_t p = 0; p < fr.piece_img.size(); p++) {
         int ri = fr.piece_img[p];
         if (ri < 0) continue;
-        IMG *img = get_img(ri);
+        Document *pdoc = (p < fr.piece_doc.size() && fr.piece_doc[p]) ? fr.piece_doc[p]
+                                                                      : g_asm_anim_doc;
+        IMG *img = doc_get_img(pdoc, ri);
         if (!img || !img->data_p) continue;
-        PAL *pal = get_pal(img->palnum);
+        PAL *pal = doc_get_pal(pdoc, img->palnum);
         const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
         int stride = (img->w + 3) & ~3;
         const unsigned char *sp = (const unsigned char *)img->data_p;
@@ -15092,7 +15277,9 @@ static void DrawAsmAnimWindow(void)
 
     if (g_asm_anims.empty()) {
         ImGui::TextWrapped("Load a per-character ASM (e.g. MKRD.ASM for Raiden) to list its "
-                           "animations and play them against the currently loaded IMG.");
+                           "animations. Selecting one automatically opens every sprite IMG "
+                           "it needs (a character's frames are split across several files) "
+                           "and plays it composited across them.");
         ImGui::End();
         return;
     }
@@ -15106,7 +15293,7 @@ static void DrawAsmAnimWindow(void)
             bool sel = (i == g_asm_anim_sel);
             char lbl[96];
             snprintf(lbl, sizeof(lbl), "%s  (%s)", g_asm_anims[i].name.c_str(), g_asm_anims[i].label.c_str());
-            if (ImGui::Selectable(lbl, sel)) AsmAnimSelect(i);
+            if (ImGui::Selectable(lbl, sel)) { AsmAnimSelect(i); g_request_asm_autoload = true; }
             if (sel) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
@@ -15211,7 +15398,8 @@ static void DrawAsmAnimWindow(void)
                          g_asm_opp_anims[i].label.c_str());
                 if (ImGui::Selectable(lbl, seld)) {
                     g_asm_opp_sel = i;
-                    if (g_asm_opp_doc) AsmResolveAnimAgainstDoc(g_asm_opp_anims[i], g_asm_opp_doc);
+                    AsmResolveAnimGlobal(g_asm_opp_anims[i]);
+                    g_request_asm_opp_autoload = true;
                     WorldMarkedRestart();
                 }
                 if (seld) ImGui::SetItemDefaultFocus();
@@ -19892,6 +20080,160 @@ void imgui_overlay_render(void)
                 g_palette_drag_undo_active = false;
         }
 
+        /* --- Color --- */
+        if (ImGui::CollapsingHeader("Color Tools")) {
+            auto begin_palette_drag_undo = []() {
+                if (!g_palette_drag_undo_active) {
+                    doc_undo_push();
+                    g_palette_drag_undo_active = true;
+                }
+            };
+            SDL_Color &col = g_palette[g_sel_color];
+            int r = col.r, g = col.g, b = col.b;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("R##cr", &r, 0, 255)) {
+                begin_palette_drag_undo();
+                col.r = (unsigned char)r;
+                palette_writeback(g_sel_color);
+                commit_palette_adjustments();
+            }
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("G##cg", &g, 0, 255)) {
+                begin_palette_drag_undo();
+                col.g = (unsigned char)g;
+                palette_writeback(g_sel_color);
+                commit_palette_adjustments();
+            }
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("B##cb", &b, 0, 255)) {
+                begin_palette_drag_undo();
+                col.b = (unsigned char)b;
+                palette_writeback(g_sel_color);
+                commit_palette_adjustments();
+            }
+
+            PAL *active_pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+            bool can_copy_zero = active_pal && active_pal->data_p;
+            if (!can_copy_zero) ImGui::BeginDisabled();
+            if (g_sel_color == 0) {
+                if (ImGui::SmallButton("Copy #0 to Free Slot")) {
+                    CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None);
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Copies the RGB stored at transparent index 0 into\n"
+                    "the first safe nonzero palette slot and selects it.");
+            } else {
+                if (ImGui::SmallButton("Copy #0 Here")) {
+                    CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None, g_sel_color);
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Copies transparent index 0's RGB into the selected\n"
+                    "nonzero swatch. Existing pixels using this swatch change color.");
+            }
+            bool has_selection = g_grid_sel.active;
+            if (!has_selection) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Remap Selection")) {
+                CopyPaletteZeroAndRemap(PaletteZeroRemapMode::Selection,
+                                        g_sel_color > 0 ? g_sel_color : -1);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Copies #0 to an opaque slot, then changes selected\n"
+                "pixels with index 0 to that slot.");
+            if (!has_selection) ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remap Sprite")) {
+                CopyPaletteZeroAndRemap(PaletteZeroRemapMode::CurrentImage,
+                                        g_sel_color > 0 ? g_sel_color : -1);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Copies #0 to an opaque slot, then changes every index-0\n"
+                "pixel in the current sprite to that slot. Transparent padding\n"
+                "will become opaque too.");
+            if (!can_copy_zero) ImGui::EndDisabled();
+            ImGui::Separator();
+            bool any_sel = false;
+            for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) { any_sel = true; break; }
+            if (any_sel) {
+                int n_sel = 0;
+                for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) n_sel++;
+                ImGui::TextDisabled("HSL adjustments target %d selected swatch%s (Ctrl/Shift-click to add).",
+                                    n_sel, n_sel == 1 ? "" : "es");
+            } else {
+                ImGui::TextDisabled("HSL adjustments target the whole palette. Ctrl/Shift-click swatches to scope to a subset.");
+            }
+            ImGui::Text("Hue");
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("##hue", &g_hue_slider, -180, 180)) {
+                begin_palette_drag_undo();
+                g_hue_last = g_hue_slider;
+                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
+            }
+            ImGui::Text("Saturation");
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("##sat", &g_sat_slider, -100, 100, "%d%%")) {
+                begin_palette_drag_undo();
+                g_sat_last = g_sat_slider;
+                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = grayscale, +100 = fully saturated. Makes a yellow more yellow at positive values.");
+            ImGui::Text("Lightness");
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("##light", &g_light_slider, -100, 100, "%d%%")) {
+                begin_palette_drag_undo();
+                g_light_last = g_light_slider;
+                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = black, +100 = white.");
+            if (ImGui::SmallButton("Reset HSL")) {
+                doc_undo_push();
+                reset_palette_adjust_sliders();
+                reset_palette_to_baseline();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Reset Hue/Saturation/Lightness sliders to 0 and restore the palette baseline.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("New from HSL")) {
+                PAL *src = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+                if (src && src->data_p) {
+                    doc_undo_push();
+                    PAL *pal = (PAL *)AllocPal();
+                    if (pal) {
+                        pal->flags   = src->flags;
+                        pal->bitspix = src->bitspix;
+                        pal->numc    = src->numc;
+                        pal->pad     = 0;
+                        memcpy(pal->n_s, src->n_s, 10);
+                        unsigned int col_sz = (unsigned int)pal->numc * 2;
+                        unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
+                        if (buf) {
+                            pal->data_p = buf;
+                            memcpy(buf, src->data_p, col_sz);
+                            if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
+                            ApplyPalette(g_doc->plselected);
+                            commit_palette_adjustments();
+                            mark_dirty();
+                        }
+                    }
+                }
+            }
+            if (g_palette_drag_undo_active && !ImGui::IsAnyItemActive())
+                g_palette_drag_undo_active = false;
+            ImGui::Separator();
+            if (ImGui::SmallButton("Variant Selection")) ApplyVariantToSelection();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Use the current swatch as the target-palette color,\n"
+                                  "but keep selected pixels visually unchanged on other palettes.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remap Similar")) ApplySelectionRemapToMatchingSprites();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Use the current selection as a sample, then remap likely\n"
+                                  "matching regions in every same-palette sprite to the\n"
+                                  "current swatch index.");
+            if (ImGui::SmallButton("Split Overlay")) SplitSelectionToOverlayFrame(true);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Move selected opaque pixels into a new transparent overlay frame.");
+        }
+
         /* --- Anipts: close to palette/color controls for sprite alignment. --- */
         if (ImGui::CollapsingHeader("Anipts##quick")) {
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -20097,160 +20439,6 @@ void imgui_overlay_render(void)
                 snprintf(buf, sizeof(buf), "\t.word   %d,%d,%d,%d\t; Hitbox X, Y, W, H\n", g_hitbox_x, g_hitbox_y, g_hitbox_w, g_hitbox_h);
                 ImGui::SetClipboardText(buf);
             }
-        }
-
-        /* --- Color --- */
-        if (ImGui::CollapsingHeader("Color Tools")) {
-            auto begin_palette_drag_undo = []() {
-                if (!g_palette_drag_undo_active) {
-                    doc_undo_push();
-                    g_palette_drag_undo_active = true;
-                }
-            };
-            SDL_Color &col = g_palette[g_sel_color];
-            int r = col.r, g = col.g, b = col.b;
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("R##cr", &r, 0, 255)) {
-                begin_palette_drag_undo();
-                col.r = (unsigned char)r;
-                palette_writeback(g_sel_color);
-                commit_palette_adjustments();
-            }
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("G##cg", &g, 0, 255)) {
-                begin_palette_drag_undo();
-                col.g = (unsigned char)g;
-                palette_writeback(g_sel_color);
-                commit_palette_adjustments();
-            }
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("B##cb", &b, 0, 255)) {
-                begin_palette_drag_undo();
-                col.b = (unsigned char)b;
-                palette_writeback(g_sel_color);
-                commit_palette_adjustments();
-            }
-
-            PAL *active_pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
-            bool can_copy_zero = active_pal && active_pal->data_p;
-            if (!can_copy_zero) ImGui::BeginDisabled();
-            if (g_sel_color == 0) {
-                if (ImGui::SmallButton("Copy #0 to Free Slot")) {
-                    CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None);
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-                    "Copies the RGB stored at transparent index 0 into\n"
-                    "the first safe nonzero palette slot and selects it.");
-            } else {
-                if (ImGui::SmallButton("Copy #0 Here")) {
-                    CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None, g_sel_color);
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-                    "Copies transparent index 0's RGB into the selected\n"
-                    "nonzero swatch. Existing pixels using this swatch change color.");
-            }
-            bool has_selection = g_grid_sel.active;
-            if (!has_selection) ImGui::BeginDisabled();
-            if (ImGui::SmallButton("Remap Selection")) {
-                CopyPaletteZeroAndRemap(PaletteZeroRemapMode::Selection,
-                                        g_sel_color > 0 ? g_sel_color : -1);
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-                "Copies #0 to an opaque slot, then changes selected\n"
-                "pixels with index 0 to that slot.");
-            if (!has_selection) ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Remap Sprite")) {
-                CopyPaletteZeroAndRemap(PaletteZeroRemapMode::CurrentImage,
-                                        g_sel_color > 0 ? g_sel_color : -1);
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-                "Copies #0 to an opaque slot, then changes every index-0\n"
-                "pixel in the current sprite to that slot. Transparent padding\n"
-                "will become opaque too.");
-            if (!can_copy_zero) ImGui::EndDisabled();
-            ImGui::Separator();
-            bool any_sel = false;
-            for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) { any_sel = true; break; }
-            if (any_sel) {
-                int n_sel = 0;
-                for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) n_sel++;
-                ImGui::TextDisabled("HSL adjustments target %d selected swatch%s (Ctrl/Shift-click to add).",
-                                    n_sel, n_sel == 1 ? "" : "es");
-            } else {
-                ImGui::TextDisabled("HSL adjustments target the whole palette. Ctrl/Shift-click swatches to scope to a subset.");
-            }
-            ImGui::Text("Hue");
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("##hue", &g_hue_slider, -180, 180)) {
-                begin_palette_drag_undo();
-                g_hue_last = g_hue_slider;
-                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
-            }
-            ImGui::Text("Saturation");
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("##sat", &g_sat_slider, -100, 100, "%d%%")) {
-                begin_palette_drag_undo();
-                g_sat_last = g_sat_slider;
-                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = grayscale, +100 = fully saturated. Makes a yellow more yellow at positive values.");
-            ImGui::Text("Lightness");
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("##light", &g_light_slider, -100, 100, "%d%%")) {
-                begin_palette_drag_undo();
-                g_light_last = g_light_slider;
-                hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = black, +100 = white.");
-            if (ImGui::SmallButton("Reset HSL")) {
-                doc_undo_push();
-                reset_palette_adjust_sliders();
-                reset_palette_to_baseline();
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Reset Hue/Saturation/Lightness sliders to 0 and restore the palette baseline.");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("New from HSL")) {
-                PAL *src = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
-                if (src && src->data_p) {
-                    doc_undo_push();
-                    PAL *pal = (PAL *)AllocPal();
-                    if (pal) {
-                        pal->flags   = src->flags;
-                        pal->bitspix = src->bitspix;
-                        pal->numc    = src->numc;
-                        pal->pad     = 0;
-                        memcpy(pal->n_s, src->n_s, 10);
-                        unsigned int col_sz = (unsigned int)pal->numc * 2;
-                        unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
-                        if (buf) {
-                            pal->data_p = buf;
-                            memcpy(buf, src->data_p, col_sz);
-                            if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
-                            ApplyPalette(g_doc->plselected);
-                            commit_palette_adjustments();
-                            mark_dirty();
-                        }
-                    }
-                }
-            }
-            if (g_palette_drag_undo_active && !ImGui::IsAnyItemActive())
-                g_palette_drag_undo_active = false;
-            ImGui::Separator();
-            if (ImGui::SmallButton("Variant Selection")) ApplyVariantToSelection();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Use the current swatch as the target-palette color,\n"
-                                  "but keep selected pixels visually unchanged on other palettes.");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Remap Similar")) ApplySelectionRemapToMatchingSprites();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Use the current selection as a sample, then remap likely\n"
-                                  "matching regions in every same-palette sprite to the\n"
-                                  "current swatch index.");
-            if (ImGui::SmallButton("Split Overlay")) SplitSelectionToOverlayFrame(true);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Move selected opaque pixels into a new transparent overlay frame.");
         }
 
         /* --- Library Info --- */
@@ -22643,6 +22831,8 @@ void imgui_overlay_render(void)
     if (g_request_save_world_asm) { g_request_save_world_asm = false; OpenFileDialog(FileDialogMode::SaveAsmAnim); }
     if (g_request_load_asm)       { g_request_load_asm = false; g_asm_dialog_opponent = false; OpenFileDialog(FileDialogMode::LoadAsmAnim); }
     if (g_request_load_opp_asm)   { g_request_load_opp_asm = false; g_asm_dialog_opponent = true; OpenFileDialog(FileDialogMode::LoadAsmAnim); }
+    if (g_request_asm_autoload)     { g_request_asm_autoload = false; AsmProcessAutoload(); }
+    if (g_request_asm_opp_autoload) { g_request_asm_opp_autoload = false; AsmProcessOppAutoload(); }
     if (g_request_locate_img)     { g_request_locate_img = false; g_openimg_for_asm = true; OpenFileDialog(FileDialogMode::OpenImg); }
     else if (g_request_locate_opp_img) { g_request_locate_opp_img = false; g_openimg_for_opp = true; OpenFileDialog(FileDialogMode::OpenImg); }
 
