@@ -6,6 +6,56 @@ maintainability problem is `platform/imgui_overlay.cpp` — a ~22,900-line
 manipulation logic. This document describes the strategy for breaking it up and
 tracks slice-by-slice progress.
 
+## Current checkpoint - June 9, 2026
+
+Branch: `refactor/overlay-split`.
+Last committed refactor slice:
+`340be75 refactor(overlay): extract pure HSL palette adjustment into color_ops`.
+
+The `color_ops` refactor was patch-staged out of the mixed working tree and
+committed on its own, verified by a clean Release build of the refactor-only
+state. The overlay still owns undo, dirty state, active palette selection, and
+`SDL_Color g_palette[]`; `color_ops` only transforms raw 15-bit palette buffers.
+
+The working tree remains intentionally dirty with **feature work only** (still
+being iterated, deliberately uncommitted) in `platform/imgui_overlay.cpp`:
+
+- Added `Operations -> Bulk Resize Marked...`.
+- Changed Break into Subframes to offer best horizontal and best vertical
+  splits, each scanning for the best LOAD2/ZCOM savings and ignoring cuts that
+  would leave either side at 5 px or less.
+- Made primary/secondary anipoint edits propagate by numbered animation
+  sequence, including inferred subframes. Example: changing `JCWALK1` by `-10`
+  on an axis applies the same delta to `JCWALK2`, etc.
+- Fixed mirrored World View movement so mirrored frames drag/invert on the
+  expected axis.
+- Added app session restore: on shutdown, disk-backed open IMG tabs are written
+  to `<exe_dir>/imgtool_session.txt`; on next launch they reopen and the prior
+  active tab is reselected. Missing/unreadable files are skipped. Recent Files
+  are preserved during automatic restore.
+- Removed the duplicated RGB sliders from `Color Tools`; RGB editing now lives
+  only under the quick `Color` section.
+
+The full mixed tree (features + color_ops) was previously verified green:
+`build.ps1` + `ctest` passed for both the session-restore feature state and the
+color_ops-extracted state.
+
+Suggested next steps:
+
+1. Land the feature work as its own commit(s) once it stops moving — it is
+   independent of the refactor now that `color_ops` is committed.
+2. Do not start Phase B globals surgery until the feature work is committed or
+   deliberately shelved (avoid mixing a large global migration with live
+   feature edits in the same file).
+3. To keep Phase A momentum without touching shared UI state, extract the next
+   pure helpers — e.g. `EdgeColorStrongVariant` / `FindInwardEdgeReplacement`
+   edge-replacement helpers into `color_ops` (or a sibling `image_ops`).
+
+Environment notes (noisy but nonblocking): git commands may warn about
+`C:\Users\xbx\.config\git\ignore` permission; `build.ps1` may print
+`'vswhere.exe' is not recognized...` after its success banner, yet binaries are
+produced and tests pass.
+
 ## Guiding principles (learned the hard way)
 
 A previous automated attempt failed by trying to extract all ~860 file-scope
@@ -39,8 +89,11 @@ declare in header → include from `imgui_overlay.cpp` → add to `CMakeLists.tx
       (`ResizeSpritePixelsNearest`, `ResizeSpritePixelsQuality`) with the UI
       palette fallback passed in explicitly; dialog/undo/hitbox state remains
       in the overlay.
-- [ ] **`color_ops`** — HSL/quantize/dither color math that takes raw buffers
-      and palettes (no `g_doc` / UI globals).
+- [x] **`color_ops` HSL core** — baseline-driven HSL palette adjustment now
+      takes raw packed palette words, an optional selection mask, and caller
+      output buffers (no `g_doc` / UI globals).
+- [ ] **`color_ops` follow-ups** — quantize/dither color math that takes raw
+      buffers and palettes (no `g_doc` / UI globals).
 - [ ] **Leaf helpers of the big image ops** — pull the pure inner helpers out of
       Strip Edge / Dither Replace / Least-Squares Reduce / the ASM-port block
       (e.g. `FindInwardEdgeReplacement`, `EdgeColorStrongVariant`). The
