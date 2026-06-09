@@ -58,6 +58,7 @@ set(IMGTOOL_SOURCES
     imgui/backends/imgui_impl_sdl2.cpp
     imgui/backends/imgui_impl_sdlrenderer2.cpp
     platform/imgui_overlay.cpp
+    platform/color_ops.cpp
     platform/palette_math.cpp
     platform/sprite_resize_ops.cpp
     platform/img_io.cpp

@@ -30,6 +30,7 @@
 #pragma comment(lib, "comdlg32.lib")
 #endif
 #include "img_format.h"
+#include "color_ops.h"
 #include "palette_math.h"
 #include "sprite_resize_ops.h"
 #include "img_io.h"
@@ -11943,91 +11944,21 @@ static void hsl_adjust_palette_from_baseline(int hue_deg, int sat_pct, int light
     if (g_palette_baseline_nc == 0) return;
     mark_dirty();
 
-    float dh = (float)hue_deg / 360.0f;
-    float ds = (float)sat_pct  / 100.0f;     /* -1..+1, additive on s */
-    float dl = (float)light_pct / 100.0f;    /* -1..+1, additive on l */
-
     int n = (int)pal->numc;
     if (n > 256) n = 256;
     if (n > g_palette_baseline_nc) n = g_palette_baseline_nc;
 
-    bool any_sel = false;
-    for (int i = 0; i < n; i++) if (g_palette_selection[i]) { any_sel = true; break; }
+    unsigned char rgb[256 * 3];
+    HslAdjustPaletteWordsFromBaseline(g_palette_baseline, n,
+                                      g_palette_selection,
+                                      hue_deg, sat_pct, light_pct,
+                                      (unsigned char *)pal->data_p,
+                                      rgb);
 
     for (int i = 0; i < n; i++) {
-        if (any_sel && !g_palette_selection[i]) {
-            /* Restore this color verbatim from baseline so an active slider
-             * doesn't bleed onto unselected swatches. */
-            unsigned char rr, gg, bb;
-            pal_word_to_rgb8(g_palette_baseline + i * 2, &rr, &gg, &bb);
-            g_palette[i].r = rr;
-            g_palette[i].g = gg;
-            g_palette[i].b = bb;
-            memcpy((unsigned char *)pal->data_p + i * 2,
-                   g_palette_baseline + i * 2, 2);
-            continue;
-        }
-
-        unsigned char br, bg, bb;
-        pal_word_to_rgb8(g_palette_baseline + i * 2, &br, &bg, &bb);
-        float r = (float)br / 255.0f;
-        float g = (float)bg / 255.0f;
-        float b = (float)bb / 255.0f;
-
-        float mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
-        float mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-        float l = (mx + mn) * 0.5f;
-
-        float h = 0.0f, s = 0.0f;
-        if (mx != mn) {
-            float d = mx - mn;
-            s = l > 0.5f ? d / (2.0f - mx - mn) : d / (mx + mn);
-            if (r == mx)      h = (g - b) / d + (g < b ? 6.0f : 0.0f);
-            else if (g == mx) h = (b - r) / d + 2.0f;
-            else              h = (r - g) / d + 4.0f;
-            h /= 6.0f;
-        }
-
-        h += dh;
-        if (h < 0.0f) h += 1.0f;
-        if (h >= 1.0f) h -= 1.0f;
-
-        s += ds;
-        if (s < 0.0f) s = 0.0f;
-        if (s > 1.0f) s = 1.0f;
-
-        l += dl;
-        if (l < 0.0f) l = 0.0f;
-        if (l > 1.0f) l = 1.0f;
-
-        auto hue2rgb = [](float p, float q, float t) -> float {
-            if (t < 0.0f) t += 1.0f;
-            if (t > 1.0f) t -= 1.0f;
-            if (t < 1.0f / 6.0f) return p + (q - p) * 6.0f * t;
-            if (t < 0.5f) return q;
-            if (t < 2.0f / 3.0f) return p + (q - p) * (2.0f / 3.0f - t) * 6.0f;
-            return p;
-        };
-
-        if (s < 0.0001f) {
-            r = g = b = l;
-        } else {
-            float q = l < 0.5f ? l * (1.0f + s) : l + s - l * s;
-            float p = 2.0f * l - q;
-            r = hue2rgb(p, q, h + 1.0f / 3.0f);
-            g = hue2rgb(p, q, h);
-            b = hue2rgb(p, q, h - 1.0f / 3.0f);
-        }
-
-        int ri = (int)(r * 255.0f + 0.5f); if (ri < 0) ri = 0; if (ri > 255) ri = 255;
-        int gi = (int)(g * 255.0f + 0.5f); if (gi < 0) gi = 0; if (gi > 255) gi = 255;
-        int bi = (int)(b * 255.0f + 0.5f); if (bi < 0) bi = 0; if (bi > 255) bi = 255;
-
-        g_palette[i].r = (unsigned char)ri;
-        g_palette[i].g = (unsigned char)gi;
-        g_palette[i].b = (unsigned char)bi;
-        rgb8_to_pal_word((unsigned char)ri, (unsigned char)gi, (unsigned char)bi,
-                         (unsigned char *)pal->data_p + i * 2);
+        g_palette[i].r = rgb[i * 3 + 0];
+        g_palette[i].g = rgb[i * 3 + 1];
+        g_palette[i].b = rgb[i * 3 + 2];
     }
 }
 
