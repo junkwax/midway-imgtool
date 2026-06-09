@@ -13,6 +13,15 @@
  *************************************************************/
 #pragma once
 #include <SDL.h>
+#include "document.h"   /* g_doc, Document::dirty */
+
+/* ---- Dirty marking ----
+   Single entry point for flagging the active document unsaved. Shared so any
+   module (not just the overlay) can mark edits; the palette-usage cache it
+   invalidates still lives in the overlay. Use this instead of touching
+   g_doc->dirty directly so future side-effects live in one place. */
+void InvalidatePaletteUsage(void);
+inline void mark_dirty(void) { g_doc->dirty = true; InvalidatePaletteUsage(); }
 
 /* ---- SDL state ---- */
 extern SDL_Window   *g_imgui_window;

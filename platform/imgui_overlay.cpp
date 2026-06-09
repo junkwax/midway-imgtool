@@ -467,13 +467,9 @@ static bool g_anipoint_drag1 = false;
 static bool g_anipoint_drag2 = false;
 static bool g_sequence_anipoint_undo_active = false;
 
-static void InvalidatePaletteUsage(void);
-
-/* Single dirty-marking entry point. Use this instead of `g_dirty = true` so
-   any future side-effects (auto-backup, dirty-bit tracing, etc.) only need
-   to be added in one place — and so it's obvious in a grep which writes are
-   intended to flip the unsaved flag vs. which are clearing it. */
-static inline void mark_dirty(void) { g_dirty = true; InvalidatePaletteUsage(); }
+/* mark_dirty() and the InvalidatePaletteUsage() declaration now live in
+   ui_internal.h (shared service). The g_dirty macro above stays for overlay
+   reads/clears; InvalidatePaletteUsage's definition stays below. */
 
 /* Two-column label/value renderer for the Properties panel. The value column
    is positioned by ImGui::SameLine(col_x) instead of by padding the label
@@ -5868,7 +5864,8 @@ static void ApplyMarkedImageRename(const char *base)
     }
 }
 
-static void InvalidatePaletteUsage(void)
+/* Declared in ui_internal.h so mark_dirty() (now shared) can call it. */
+void InvalidatePaletteUsage(void)
 {
     g_palette_usage_serial++;
     if (g_palette_usage_serial == 0) {
