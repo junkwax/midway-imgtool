@@ -33,6 +33,7 @@
 #include "color_ops.h"
 #include "image_ops.h"
 #include "palette_math.h"
+#include "ui_internal.h"
 #include "sprite_resize_ops.h"
 #include "img_io.h"
 #include "imgui_overlay.h"
@@ -84,14 +85,8 @@ static void PosixCrashHandler(int sig) {
 }
 #endif
 
-/* ---- SDL state ---- */
-static SDL_Window   *g_imgui_window   = NULL;
-static SDL_Renderer *g_imgui_renderer = NULL;
-static SDL_Texture  *g_canvas_texture = NULL;  /* VGA plane tex — kept for init compat, not displayed */
-
-/* Did we successfully load a Unicode-symbol font? Determines whether toolbar
-   shows glyph icons or falls back to short text labels. */
-static bool g_icon_font_loaded = false;
+/* SDL state (g_imgui_window/renderer, g_canvas_texture) and the icon-font flag
+   g_icon_font_loaded now live in ui_state.cpp; see ui_internal.h. */
 
 /* Toolbar icon glyphs (Material Symbols Sharp codepoints, UTF-8 encoded).
    Codepoints are stable across the Material Symbols family — see
@@ -137,24 +132,14 @@ static bool g_icon_font_loaded = false;
 #define ICON_UNLOCK_TXT   "Un"
 #define ICON_SUBFRAME_TXT "|-"
 
-/* Per-image render texture — rebuilt when selected image or palette changes */
-static SDL_Texture  *g_img_texture    = NULL;
-static int           g_img_tex_w      = 0;
-static int           g_img_tex_h      = 0;
+/* Per-image render texture state (g_img_texture / _w / _h) lives in
+   ui_state.cpp. g_img_tex_idx is defined in globals.c. */
 extern int           g_img_tex_idx;
 
 /* ---- Zoom / Pan ---- */
-static float g_zoom       = 1.0f;
-static float g_pan_x      = 0.0f;
-static float g_pan_y      = 0.0f;
-static bool  g_zoom_fit   = true;
-static bool  g_zoom_reset = true;
-static float g_zoom_wheel_accum = 0.0f;
-static int   g_zoom_pending_steps = 0;
-static bool  g_zoom_pending_fit = false;
+/* Mutable zoom/pan + pixel-undo state lives in ui_state.cpp (see ui_internal.h).
+   ZOOM_MAX stays here as a compile-time constant used by the zoom helpers. */
 static const float ZOOM_MAX = 128.0f;
-static unsigned char *g_pixel_undo = NULL;
-static int            g_pixel_undo_img = -1;  /* -2 = never built */
 
 static float ZoomFitScaleForAvailable(const ImVec2 &avail)
 {
