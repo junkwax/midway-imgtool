@@ -59,6 +59,7 @@ set(IMGTOOL_SOURCES
     imgui/backends/imgui_impl_sdlrenderer2.cpp
     platform/imgui_overlay.cpp
     platform/color_ops.cpp
+    platform/image_ops.cpp
     platform/palette_math.cpp
     platform/sprite_resize_ops.cpp
     platform/img_io.cpp
@@ -189,6 +190,22 @@ foreach(pure_test palette_math color_ops sprite_resize_ops)
     endif()
     add_test(NAME ${pure_test} COMMAND ${pure_test}_test)
 endforeach()
+
+# image_ops depends on palette_math, so it links both modules.
+add_executable(image_ops_test
+    test/image_ops_test.cpp
+    platform/image_ops.cpp
+    platform/palette_math.cpp
+)
+target_include_directories(image_ops_test PRIVATE platform)
+target_link_libraries(image_ops_test PRIVATE SDL2::SDL2)
+if(MSVC)
+    target_compile_options(image_ops_test PRIVATE /W3)
+    target_compile_definitions(image_ops_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+else()
+    target_compile_definitions(image_ops_test PRIVATE SDL_MAIN_HANDLED)
+endif()
+add_test(NAME image_ops COMMAND image_ops_test)
 
 # mk2_roundtrip_test: load + idempotent round-trip check on a real MKSTK.ASM.
 # Only built when MK2_MKSTK_PATH is set (so a fresh checkout without the mk2

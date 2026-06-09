@@ -94,11 +94,15 @@ declare in header → include from `imgui_overlay.cpp` → add to `CMakeLists.tx
       output buffers (no `g_doc` / UI globals).
 - [ ] **`color_ops` follow-ups** — quantize/dither color math that takes raw
       buffers and palettes (no `g_doc` / UI globals).
-- [ ] **Leaf helpers of the big image ops** — pull the pure inner helpers out of
-      Strip Edge / Dither Replace / Least-Squares Reduce / the ASM-port block
-      (e.g. `FindInwardEdgeReplacement`, `EdgeColorStrongVariant`). The
-      `...MarkedImages` wrappers stay in the UI layer until Phase B exists,
+- [x] **`image_ops` edge helpers** — pure indexed-image edge/stroke analysis
+      (`StrokeWordLuma8`, `EdgeBufferTransparent`,
+      `EdgeBufferTransparentNeighbors`, `EdgeColorStrongVariant`,
+      `FindInwardEdgeReplacement`) backing Strip Edge / Hard Stroke Remover.
+      The `...MarkedImages` wrappers stay in the UI layer until Phase B exists,
       because they walk `g_doc` and set status globals.
+- [ ] **More leaf helpers of the big image ops** — Dither Replace /
+      Least-Squares Reduce / the ASM-port block still have pure inner helpers to
+      pull into `image_ops`.
 
 ### Phase B — Globals foundation (the hard step, do carefully by hand)
 
