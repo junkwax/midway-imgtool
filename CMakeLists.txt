@@ -61,6 +61,7 @@ set(IMGTOOL_SOURCES
     platform/ui_state.cpp
     platform/ui_timeline.cpp
     platform/world_render.cpp
+    platform/anipoint.cpp
     platform/color_ops.cpp
     platform/image_ops.cpp
     platform/palette_math.cpp
@@ -178,7 +179,7 @@ add_test(NAME sprite_sheet_import
 # only: img_format.h includes document.h which includes SDL.h. SDL_MAIN_HANDLED
 # keeps SDL from redefining main(). Add new pure-logic modules here as the
 # overlay split proceeds.
-foreach(pure_test palette_math color_ops sprite_resize_ops)
+foreach(pure_test palette_math color_ops sprite_resize_ops anipoint)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp
