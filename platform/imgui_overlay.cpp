@@ -649,68 +649,17 @@ static unsigned int     g_timeline_built_for_imgcnt = 0;
 static bool             g_timeline_onion = false;  /* prev/next frame ghosting */
 static bool             g_timeline_pingpong = false; /* play forward then reverse, looping */
 static int              g_timeline_play_dir = 1;     /* +1 forward, -1 reverse (used when pingpong) */
-static int              g_timeline_composite[2] = {-1, -1}; /* Ctrl-click pair for anipoint-aligned preview */
-static bool             g_timeline_composite_locked[2] = {false, false};
-static int              g_timeline_composite_drag_slot = -1;
+/* g_timeline_composite[2] / _locked[2] / _drag_slot live in ui_timeline.{h,cpp}
+   along with the selection + playback logic. The drag mouse/anipoint state below
+   stays here with the composite-preview rendering. */
 static ImVec2           g_timeline_composite_drag_mouse(0.0f, 0.0f);
 static unsigned short   g_timeline_composite_drag_anix = 0;
 static unsigned short   g_timeline_composite_drag_aniy = 0;
 
-static void ClearTimelineCompositeSelection(void)
-{
-    g_timeline_composite[0] = -1;
-    g_timeline_composite[1] = -1;
-    g_timeline_composite_locked[0] = false;
-    g_timeline_composite_locked[1] = false;
-    g_timeline_composite_drag_slot = -1;
-}
-
-static void CompactTimelineCompositeSelection(void)
-{
-    if (g_timeline_composite[0] < 0 && g_timeline_composite[1] >= 0) {
-        g_timeline_composite[0] = g_timeline_composite[1];
-        g_timeline_composite[1] = -1;
-        g_timeline_composite_locked[0] = g_timeline_composite_locked[1];
-        g_timeline_composite_locked[1] = false;
-    }
-    if (g_timeline_composite[0] == g_timeline_composite[1]) {
-        g_timeline_composite[1] = -1;
-        g_timeline_composite_locked[1] = false;
-    }
-}
-
-static void PruneTimelineCompositeSelection(void)
-{
-    for (int i = 0; i < 2; i++) {
-        int idx = g_timeline_composite[i];
-        if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt) {
-            g_timeline_composite[i] = -1;
-            g_timeline_composite_locked[i] = false;
-            if (g_timeline_composite_drag_slot == i)
-                g_timeline_composite_drag_slot = -1;
-        }
-    }
-    CompactTimelineCompositeSelection();
-}
-
-static int TimelineCompositeSlot(int img_idx)
-{
-    if (g_timeline_composite[0] == img_idx) return 0;
-    if (g_timeline_composite[1] == img_idx) return 1;
-    return -1;
-}
-
-static bool TimelineCompositeReady(void)
-{
-    return g_timeline_composite[0] >= 0 && g_timeline_composite[1] >= 0 &&
-           g_timeline_composite[0] != g_timeline_composite[1];
-}
-
-static bool TimelineAnyCompositeLocked(void)
-{
-    return TimelineCompositeReady() &&
-           (g_timeline_composite_locked[0] || g_timeline_composite_locked[1]);
-}
+/* Composite selection helpers (ClearTimelineCompositeSelection,
+   CompactTimelineCompositeSelection, PruneTimelineCompositeSelection,
+   TimelineCompositeSlot, TimelineCompositeReady, TimelineAnyCompositeLocked)
+   now live in ui_timeline.cpp. */
 
 static void DrawTimelineCompositeLockToggle(int slot, const char *name)
 {
@@ -751,66 +700,8 @@ static void DrawTimelineCompositeLockToggle(int slot, const char *name)
    TimelineClearFrames, TimelineHoldAt, TimelineSetHoldAt, TimelineSwapFrames,
    TimelineMoveFrame) now live in ui_timeline.cpp. */
 
-static bool AdvanceTimelineComposite(int delta)
-{
-    if (!TimelineCompositeReady() || g_timeline_frames.empty()) return false;
-
-    int p0 = TimelineFramePosition(g_timeline_composite[0]);
-    int p1 = TimelineFramePosition(g_timeline_composite[1]);
-    if (p0 < 0 || p1 < 0) {
-        ClearTimelineCompositeSelection();
-        return false;
-    }
-
-    p0 = WrapTimelinePosition(p0 + delta);
-    p1 = WrapTimelinePosition(p1 + delta);
-    g_timeline_composite[0] = g_timeline_frames[p0];
-    g_timeline_composite[1] = g_timeline_frames[p1];
-    g_timeline_play_idx = p0;
-    g_doc->ilselected = g_timeline_composite[0];
-    g_zoom_reset = true;
-    return true;
-}
-
-static void StepTimelinePlayhead(int delta)
-{
-    if (g_timeline_frames.empty()) return;
-
-    if (AdvanceTimelineComposite(delta))
-        return;
-
-    g_timeline_play_idx = WrapTimelinePosition(g_timeline_play_idx + delta);
-    g_doc->ilselected = g_timeline_frames[g_timeline_play_idx];
-    g_zoom_reset = true;
-}
-
-static void ToggleTimelineCompositeFrame(int img_idx)
-{
-    if (img_idx < 0 || (unsigned int)img_idx >= g_doc->imgcnt) return;
-
-    int slot = TimelineCompositeSlot(img_idx);
-    if (slot >= 0) {
-        g_timeline_composite[slot] = -1;
-        g_timeline_composite_locked[slot] = false;
-        if (g_timeline_composite_drag_slot == slot)
-            g_timeline_composite_drag_slot = -1;
-        CompactTimelineCompositeSelection();
-        return;
-    }
-
-    if (g_timeline_composite[0] < 0) {
-        g_timeline_composite[0] = img_idx;
-        g_timeline_composite_locked[0] = false;
-    } else if (g_timeline_composite[1] < 0) {
-        g_timeline_composite[1] = img_idx;
-        g_timeline_composite_locked[1] = false;
-    } else {
-        g_timeline_composite[0] = g_timeline_composite[1];
-        g_timeline_composite[1] = img_idx;
-        g_timeline_composite_locked[0] = g_timeline_composite_locked[1];
-        g_timeline_composite_locked[1] = false;
-    }
-}
+/* AdvanceTimelineComposite, StepTimelinePlayhead, and ToggleTimelineCompositeFrame
+   now live in ui_timeline.cpp. */
 
 void imgtool_toggle_timeline_play(void)
 {

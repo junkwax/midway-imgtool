@@ -48,3 +48,21 @@ TimelineThumb *EnsureThumb(int idx);
 void InvalidateThumb(int idx);
 /* Destroy all cached thumbnail textures and clear the cache. */
 void ClearTimelineThumbCache(void);
+
+/* ---- Composite preview selection + playback ----
+   The composite pair (two image indices shown anipoint-aligned in the preview)
+   and the playhead-advance logic. The preview *rendering* (DrawTimelineComposite*)
+   and the public play-toggle thunk stay in the overlay and call in here. */
+extern int  g_timeline_composite[2];        /* Ctrl-click pair; -1 = empty slot */
+extern bool g_timeline_composite_locked[2];
+extern int  g_timeline_composite_drag_slot; /* slot being dragged, or -1 */
+
+void ClearTimelineCompositeSelection(void);
+void CompactTimelineCompositeSelection(void);
+void PruneTimelineCompositeSelection(void);   /* drop indices past g_doc->imgcnt */
+int  TimelineCompositeSlot(int img_idx);      /* 0/1 if selected, else -1 */
+bool TimelineCompositeReady(void);            /* two distinct slots chosen */
+bool TimelineAnyCompositeLocked(void);
+bool AdvanceTimelineComposite(int delta);     /* step the locked composite pair */
+void StepTimelinePlayhead(int delta);
+void ToggleTimelineCompositeFrame(int img_idx);
