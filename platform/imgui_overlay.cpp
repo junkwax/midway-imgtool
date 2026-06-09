@@ -30,6 +30,7 @@
 #pragma comment(lib, "comdlg32.lib")
 #endif
 #include "img_format.h"
+#include "palette_math.h"
 #include "img_io.h"
 #include "imgui_overlay.h"
 #include "load2_verify.h"
@@ -436,40 +437,6 @@ static void ClearPixelClipboard(void)
 {
     if (g_clipboard.data_p) free(g_clipboard.data_p);
     memset(&g_clipboard, 0, sizeof(g_clipboard));
-}
-
-static unsigned short palette_word_at(const unsigned char *data, int idx)
-{
-    return (unsigned short)(data[idx * 2] | (data[idx * 2 + 1] << 8));
-}
-
-static int palette_word_distance_sq(unsigned short a, unsigned short b)
-{
-    int ar = (a >> 10) & 0x1F, ag = (a >> 5) & 0x1F, ab = a & 0x1F;
-    int br = (b >> 10) & 0x1F, bg = (b >> 5) & 0x1F, bb = b & 0x1F;
-    int dr = ar - br, dg = ag - bg, db = ab - bb;
-    return dr * dr + dg * dg + db * db;
-}
-
-static unsigned char nearest_palette_index_for_word(unsigned short src_word,
-                                                    const PAL *target_pal)
-{
-    if (!target_pal || !target_pal->data_p || target_pal->numc <= 1) return 0;
-    const unsigned char *td = (const unsigned char *)target_pal->data_p;
-    int n = target_pal->numc;
-    if (n > 256) n = 256;
-
-    int best_idx = 1;
-    int best_dist = 0x7FFFFFFF;
-    for (int i = 1; i < n; i++) {
-        int dist = palette_word_distance_sq(src_word, palette_word_at(td, i));
-        if (dist < best_dist) {
-            best_dist = dist;
-            best_idx = i;
-            if (dist == 0) break;
-        }
-    }
-    return (unsigned char)best_idx;
 }
 
 static bool BuildClipboardPaletteMap(const PAL *target_pal, unsigned char map[256])
@@ -6994,20 +6961,6 @@ struct VariantPaintResult {
     int skipped_transparent;
     int skipped_no_slot;
 };
-
-static unsigned short pal_word_or_black(PAL *pal, int idx)
-{
-    if (!pal || !pal->data_p || idx < 0 || idx >= (int)pal->numc || idx >= 256) return 0;
-    const unsigned char *pd = (const unsigned char *)pal->data_p;
-    return (unsigned short)(pd[idx * 2] | (pd[idx * 2 + 1] << 8));
-}
-
-static unsigned short rgb_to_word15(unsigned char r, unsigned char g, unsigned char b)
-{
-    unsigned char tmp[2];
-    rgb8_to_pal_word(r, g, b, tmp);
-    return (unsigned short)(tmp[0] | (tmp[1] << 8));
-}
 
 static bool ensure_palette_numc(PAL *pal, int min_numc)
 {
