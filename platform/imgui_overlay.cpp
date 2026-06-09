@@ -89,49 +89,7 @@ static void PosixCrashHandler(int sig) {
 /* SDL state (g_imgui_window/renderer, g_canvas_texture) and the icon-font flag
    g_icon_font_loaded now live in ui_state.cpp; see ui_internal.h. */
 
-/* Toolbar icon glyphs (Material Symbols Sharp codepoints, UTF-8 encoded).
-   Codepoints are stable across the Material Symbols family — see
-   https://fonts.google.com/icons. When g_icon_font_loaded is false we fall
-   back to the *_TXT strings instead. */
-#define ICON_OPEN     "\xEE\x8B\x88"     /* U+E2C8 folder_open */
-#define ICON_FOLDER   "\xEE\x8B\x87"     /* U+E2C7 folder */
-#define ICON_IMAGE    "\xEE\x8F\xB4"     /* U+E3F4 image */
-#define ICON_VIS      "\xEE\xA3\xB4"     /* U+E8F4 visibility */
-#define ICON_SAVE     "\xEE\x85\xA1"     /* U+E161 save */
-#define ICON_MARK     "\xEE\xA0\xB4"     /* U+E834 check_box — reads as 'this sprite is checked/marked' */
-#define ICON_MARK_ALL "\xEE\x85\xA2"     /* U+E162 select_all */
-#define ICON_CLEAR    "\xEE\xA0\xB5"     /* U+E835 check_box_outline_blank — paired visually with ICON_MARK */
-#define ICON_POINTS   "\xEE\x86\xB3"     /* U+E1B3 gps_fixed — concentric registration target */
-#define ICON_HITBOX   "\xEE\x87\xA6"     /* U+E1E6 activity_zone */
-#define ICON_MARQUEE  "\xEE\xBD\x92"     /* U+EF52 highlight_alt — dashed-rect marquee */
-#define ICON_UNDO     "\xEE\x85\xA6"     /* U+E166 undo */
-#define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
-#define ICON_RESIZE   "\xEE\xA1\x9B"     /* U+E85B aspect_ratio */
-#define ICON_ZOOM_IN  "\xEE\xA3\xBF"     /* U+E8FF zoom_in */
-#define ICON_ZOOM_OUT "\xEE\xA4\x80"     /* U+E900 zoom_out */
-#define ICON_LOCK     "\xEE\xA2\x97"     /* U+E897 lock */
-#define ICON_UNLOCK   "\xEE\xA2\x98"     /* U+E898 lock_open */
-#define ICON_SUBFRAME "\xEE\x97\x9A"     /* U+E5DA subdirectory_arrow_right */
-
-#define ICON_OPEN_TXT     "Op"
-#define ICON_FOLDER_TXT   "D "
-#define ICON_IMAGE_TXT    "I "
-#define ICON_VIS_TXT      "V "
-#define ICON_SAVE_TXT     "Sv"
-#define ICON_MARK_TXT     "Mk"
-#define ICON_MARK_ALL_TXT "MA"
-#define ICON_CLEAR_TXT    "CM"
-#define ICON_POINTS_TXT   "Pt"
-#define ICON_HITBOX_TXT   "Hb"
-#define ICON_MARQUEE_TXT  "[]"
-#define ICON_UNDO_TXT     "Uz"
-#define ICON_REDO_TXT     "Ry"
-#define ICON_RESIZE_TXT   "Sz"
-#define ICON_ZOOM_IN_TXT  "Z+"
-#define ICON_ZOOM_OUT_TXT "Z-"
-#define ICON_LOCK_TXT     "Lk"
-#define ICON_UNLOCK_TXT   "Un"
-#define ICON_SUBFRAME_TXT "|-"
+/* Toolbar icon glyph macros (ICON_* / ICON_*_TXT) now live in ui_internal.h. */
 
 /* Per-image render texture state (g_img_texture / _w / _h) lives in
    ui_state.cpp. g_img_tex_idx is defined in globals.c. */
@@ -661,41 +619,9 @@ static unsigned short   g_timeline_composite_drag_aniy = 0;
    TimelineCompositeSlot, TimelineCompositeReady, TimelineAnyCompositeLocked)
    now live in ui_timeline.cpp. */
 
-static void DrawTimelineCompositeLockToggle(int slot, const char *name)
-{
-    if (slot < 0 || slot > 1) return;
+/* DrawTimelineCompositeLockToggle now lives in ui_timeline.cpp.
 
-    bool locked = g_timeline_composite_locked[slot];
-    ImVec4 bg = locked ? ImVec4(0.45f, 0.30f, 0.12f, 1.0f)
-                       : ImVec4(0.10f, 0.38f, 0.42f, 1.0f);
-    ImVec4 hover = locked ? ImVec4(0.58f, 0.39f, 0.16f, 1.0f)
-                          : ImVec4(0.14f, 0.50f, 0.55f, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, bg);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
-
-    char label[64];
-    const char *icon = locked
-        ? (g_icon_font_loaded ? ICON_LOCK : ICON_LOCK_TXT)
-        : (g_icon_font_loaded ? ICON_UNLOCK : ICON_UNLOCK_TXT);
-    snprintf(label, sizeof(label), "%s %s: %s##timeline_lock_%d",
-             icon, name, locked ? "Locked" : "Free", slot);
-    if (ImGui::SmallButton(label)) {
-        g_timeline_composite_locked[slot] = !locked;
-        if (g_timeline_composite_locked[slot] &&
-            g_timeline_composite_drag_slot == slot)
-            g_timeline_composite_drag_slot = -1;
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(locked
-            ? "%s sprite is locked. Click to allow anipoint dragging."
-            : "%s sprite can be dragged in the composite preview. Click to lock it.",
-            name);
-    }
-
-    ImGui::PopStyleColor(2);
-}
-
-/* Timeline frame-model operations (TimelineFramePosition, WrapTimelinePosition,
+   Timeline frame-model operations (TimelineFramePosition, WrapTimelinePosition,
    ClampTimelineHold, EnsureTimelineHolds, TimelinePushFrame, TimelineSetFrames,
    TimelineClearFrames, TimelineHoldAt, TimelineSetHoldAt, TimelineSwapFrames,
    TimelineMoveFrame) now live in ui_timeline.cpp. */

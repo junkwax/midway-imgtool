@@ -26,6 +26,50 @@ extern SDL_Texture  *g_img_texture;
 extern int           g_img_tex_w;
 extern int           g_img_tex_h;
 
+/* ---- Toolbar icon glyphs ----
+   Material Symbols Sharp codepoints (UTF-8). Codepoints are stable across the
+   Material Symbols family — see https://fonts.google.com/icons. When
+   g_icon_font_loaded is false the UI falls back to the *_TXT strings. */
+#define ICON_OPEN     "\xEE\x8B\x88"     /* U+E2C8 folder_open */
+#define ICON_FOLDER   "\xEE\x8B\x87"     /* U+E2C7 folder */
+#define ICON_IMAGE    "\xEE\x8F\xB4"     /* U+E3F4 image */
+#define ICON_VIS      "\xEE\xA3\xB4"     /* U+E8F4 visibility */
+#define ICON_SAVE     "\xEE\x85\xA1"     /* U+E161 save */
+#define ICON_MARK     "\xEE\xA0\xB4"     /* U+E834 check_box — reads as 'this sprite is checked/marked' */
+#define ICON_MARK_ALL "\xEE\x85\xA2"     /* U+E162 select_all */
+#define ICON_CLEAR    "\xEE\xA0\xB5"     /* U+E835 check_box_outline_blank — paired visually with ICON_MARK */
+#define ICON_POINTS   "\xEE\x86\xB3"     /* U+E1B3 gps_fixed — concentric registration target */
+#define ICON_HITBOX   "\xEE\x87\xA6"     /* U+E1E6 activity_zone */
+#define ICON_MARQUEE  "\xEE\xBD\x92"     /* U+EF52 highlight_alt — dashed-rect marquee */
+#define ICON_UNDO     "\xEE\x85\xA6"     /* U+E166 undo */
+#define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
+#define ICON_RESIZE   "\xEE\xA1\x9B"     /* U+E85B aspect_ratio */
+#define ICON_ZOOM_IN  "\xEE\xA3\xBF"     /* U+E8FF zoom_in */
+#define ICON_ZOOM_OUT "\xEE\xA4\x80"     /* U+E900 zoom_out */
+#define ICON_LOCK     "\xEE\xA2\x97"     /* U+E897 lock */
+#define ICON_UNLOCK   "\xEE\xA2\x98"     /* U+E898 lock_open */
+#define ICON_SUBFRAME "\xEE\x97\x9A"     /* U+E5DA subdirectory_arrow_right */
+
+#define ICON_OPEN_TXT     "Op"
+#define ICON_FOLDER_TXT   "D "
+#define ICON_IMAGE_TXT    "I "
+#define ICON_VIS_TXT      "V "
+#define ICON_SAVE_TXT     "Sv"
+#define ICON_MARK_TXT     "Mk"
+#define ICON_MARK_ALL_TXT "MA"
+#define ICON_CLEAR_TXT    "CM"
+#define ICON_POINTS_TXT   "Pt"
+#define ICON_HITBOX_TXT   "Hb"
+#define ICON_MARQUEE_TXT  "[]"
+#define ICON_UNDO_TXT     "Uz"
+#define ICON_REDO_TXT     "Ry"
+#define ICON_RESIZE_TXT   "Sz"
+#define ICON_ZOOM_IN_TXT  "Z+"
+#define ICON_ZOOM_OUT_TXT "Z-"
+#define ICON_LOCK_TXT     "Lk"
+#define ICON_UNLOCK_TXT   "Un"
+#define ICON_SUBFRAME_TXT "|-"
+
 /* ---- Zoom / Pan ---- */
 extern float g_zoom;
 extern float g_pan_x;

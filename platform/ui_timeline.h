@@ -66,3 +66,8 @@ bool TimelineAnyCompositeLocked(void);
 bool AdvanceTimelineComposite(int delta);     /* step the locked composite pair */
 void StepTimelinePlayhead(int delta);
 void ToggleTimelineCompositeFrame(int img_idx);
+
+/* Small ImGui control: a lock/free toggle button for composite slot 0/1.
+   (The large composite-preview rendering stays in the overlay for now because
+   it depends on World-View sprite texturing and anipoint editing.) */
+void DrawTimelineCompositeLockToggle(int slot, const char *name);

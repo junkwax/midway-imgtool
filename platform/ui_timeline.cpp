@@ -5,9 +5,11 @@
 #include "ui_timeline.h"
 #include "img_format.h"   /* IMG, PAL, get_img, get_pal */
 #include "document.h"     /* g_doc */
-#include "ui_internal.h"  /* g_imgui_renderer */
+#include "ui_internal.h"  /* g_imgui_renderer, g_icon_font_loaded, ICON_* */
 
+#include <imgui.h>     /* DrawTimelineCompositeLockToggle */
 #include <algorithm>   /* std::swap */
+#include <cstdio>      /* snprintf */
 
 std::vector<int> g_timeline_frames;
 std::vector<int> g_timeline_holds;   /* base-frame holds per timeline entry */
@@ -217,6 +219,40 @@ void CompactTimelineCompositeSelection(void)
         g_timeline_composite[1] = -1;
         g_timeline_composite_locked[1] = false;
     }
+}
+
+void DrawTimelineCompositeLockToggle(int slot, const char *name)
+{
+    if (slot < 0 || slot > 1) return;
+
+    bool locked = g_timeline_composite_locked[slot];
+    ImVec4 bg = locked ? ImVec4(0.45f, 0.30f, 0.12f, 1.0f)
+                       : ImVec4(0.10f, 0.38f, 0.42f, 1.0f);
+    ImVec4 hover = locked ? ImVec4(0.58f, 0.39f, 0.16f, 1.0f)
+                          : ImVec4(0.14f, 0.50f, 0.55f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, bg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
+
+    char label[64];
+    const char *icon = locked
+        ? (g_icon_font_loaded ? ICON_LOCK : ICON_LOCK_TXT)
+        : (g_icon_font_loaded ? ICON_UNLOCK : ICON_UNLOCK_TXT);
+    snprintf(label, sizeof(label), "%s %s: %s##timeline_lock_%d",
+             icon, name, locked ? "Locked" : "Free", slot);
+    if (ImGui::SmallButton(label)) {
+        g_timeline_composite_locked[slot] = !locked;
+        if (g_timeline_composite_locked[slot] &&
+            g_timeline_composite_drag_slot == slot)
+            g_timeline_composite_drag_slot = -1;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(locked
+            ? "%s sprite is locked. Click to allow anipoint dragging."
+            : "%s sprite can be dragged in the composite preview. Click to lock it.",
+            name);
+    }
+
+    ImGui::PopStyleColor(2);
 }
 
 void PruneTimelineCompositeSelection(void)
