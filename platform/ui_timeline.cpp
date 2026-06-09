@@ -3,6 +3,9 @@
  * Timeline frame-model state and operations declared in ui_timeline.h.
  *************************************************************/
 #include "ui_timeline.h"
+#include "img_format.h"   /* IMG, PAL, get_img, get_pal */
+#include "document.h"     /* g_doc */
+#include "ui_internal.h"  /* g_imgui_renderer */
 
 #include <algorithm>   /* std::swap */
 
@@ -105,4 +108,85 @@ void TimelineMoveFrame(int src_idx, int dst_idx)
     if (g_timeline_play_idx == src_idx) g_timeline_play_idx = dst_idx;
     else if (src_idx < g_timeline_play_idx && dst_idx >= g_timeline_play_idx) g_timeline_play_idx--;
     else if (src_idx > g_timeline_play_idx && dst_idx <= g_timeline_play_idx) g_timeline_play_idx++;
+}
+
+/* ---- Timeline thumbnail cache ---- */
+std::vector<TimelineThumb> g_thumb_cache;
+
+TimelineThumb *EnsureThumb(int idx)
+{
+    if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt) return NULL;
+    if (g_thumb_cache.size() < g_doc->imgcnt) g_thumb_cache.resize(g_doc->imgcnt, {NULL,0,0,0,0,-1});
+    IMG *img = get_img(idx);
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return NULL;
+    TimelineThumb &t = g_thumb_cache[idx];
+    /* Reuse if source dims and pixels haven't changed since bake (cheap proxy:
+       same src dims, same gen). */
+    if (t.tex && t.src_w == (int)img->w && t.src_h == (int)img->h) return &t;
+
+    const int MAX = 48;
+    float aspect = (float)img->w / (float)img->h;
+    int tw, th;
+    if (aspect >= 1.0f) { tw = MAX; th = (int)(MAX / aspect); if (th < 1) th = 1; }
+    else                { th = MAX; tw = (int)(MAX * aspect); if (tw < 1) tw = 1; }
+
+    if (t.tex) { SDL_DestroyTexture(t.tex); t.tex = NULL; }
+    t.tex = SDL_CreateTexture(g_imgui_renderer, SDL_PIXELFORMAT_ARGB8888,
+                              SDL_TEXTUREACCESS_STREAMING, tw, th);
+    if (!t.tex) return NULL;
+    SDL_SetTextureBlendMode(t.tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(t.tex, SDL_ScaleModeNearest);
+
+    void *pixels; int pitch;
+    if (SDL_LockTexture(t.tex, NULL, &pixels, &pitch) != 0) {
+        SDL_DestroyTexture(t.tex); t.tex = NULL; return NULL;
+    }
+    Uint32 *dst = (Uint32 *)pixels;
+    int src_stride = (img->w + 3) & ~3;
+    const unsigned char *sp = (const unsigned char *)img->data_p;
+    PAL *pal = get_pal(img->palnum);
+    const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
+    for (int y = 0; y < th; y++) {
+        int sy = (int)((float)y * img->h / th);
+        for (int x = 0; x < tw; x++) {
+            int sx_i = (int)((float)x * img->w / tw);
+            unsigned char ci = sp[sy * src_stride + sx_i];
+            Uint32 r=180, g=180, b=180, a=255;
+            if (ci == 0) {
+                /* Transparent — leaves the timeline strip / onion-skin host
+                   background showing through. Required for the onion-skin
+                   path which composites the thumb over the canvas. */
+                a = 0; r = g = b = 0;
+            } else if (pd) {
+                unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
+                r = (((w15 >> 10) & 0x1F) << 3);
+                g = (((w15 >>  5) & 0x1F) << 3);
+                b = (( w15        & 0x1F) << 3);
+            } else {
+                r = g = b = 200;
+            }
+            dst[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+    SDL_UnlockTexture(t.tex);
+    t.w = tw; t.h = th;
+    t.src_w = img->w; t.src_h = img->h;
+    return &t;
+}
+
+void InvalidateThumb(int idx)
+{
+    if (idx < 0 || (size_t)idx >= g_thumb_cache.size()) return;
+    if (g_thumb_cache[idx].tex) {
+        SDL_DestroyTexture(g_thumb_cache[idx].tex);
+        g_thumb_cache[idx].tex = NULL;
+    }
+}
+
+void ClearTimelineThumbCache(void)
+{
+    for (auto &t : g_thumb_cache) {
+        if (t.tex) SDL_DestroyTexture(t.tex);
+    }
+    g_thumb_cache.clear();
 }

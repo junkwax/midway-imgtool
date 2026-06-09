@@ -635,89 +635,8 @@ static bool g_bucket_contiguous = true; /* true = flood region; false = replace 
    particular color lives in the sprite. -1 = isolation off. */
 static int g_isolate_color = -1;
 
-/* Per-image thumbnail cache for the timeline strip. Keyed by image index; the
-   cached texture is invalidated whenever g_doc->imgcnt or the source pixels change
-   (we tag with a small generation counter bumped each frame by the texture
-   rebuild path). Thumbnails fit in a 48-pixel square preserving aspect. */
-struct TimelineThumb {
-    SDL_Texture *tex;
-    int w, h;       /* thumbnail texture dims */
-    int src_w, src_h; /* source image dims at time of bake */
-    int gen;        /* matches g_img_tex_idx at bake time */
-};
-static std::vector<TimelineThumb> g_thumb_cache;
-
-/* Build (or rebuild) thumbnail for image idx. Returns the entry pointer or
-   NULL on failure. */
-static TimelineThumb *EnsureThumb(int idx)
-{
-    if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt) return NULL;
-    if (g_thumb_cache.size() < g_doc->imgcnt) g_thumb_cache.resize(g_doc->imgcnt, {NULL,0,0,0,0,-1});
-    IMG *img = get_img(idx);
-    if (!img || !img->data_p || img->w == 0 || img->h == 0) return NULL;
-    TimelineThumb &t = g_thumb_cache[idx];
-    /* Reuse if source dims and pixels haven't changed since bake (cheap proxy:
-       same src dims, same gen). */
-    if (t.tex && t.src_w == (int)img->w && t.src_h == (int)img->h) return &t;
-
-    const int MAX = 48;
-    float aspect = (float)img->w / (float)img->h;
-    int tw, th;
-    if (aspect >= 1.0f) { tw = MAX; th = (int)(MAX / aspect); if (th < 1) th = 1; }
-    else                { th = MAX; tw = (int)(MAX * aspect); if (tw < 1) tw = 1; }
-
-    if (t.tex) { SDL_DestroyTexture(t.tex); t.tex = NULL; }
-    t.tex = SDL_CreateTexture(g_imgui_renderer, SDL_PIXELFORMAT_ARGB8888,
-                              SDL_TEXTUREACCESS_STREAMING, tw, th);
-    if (!t.tex) return NULL;
-    SDL_SetTextureBlendMode(t.tex, SDL_BLENDMODE_BLEND);
-    SDL_SetTextureScaleMode(t.tex, SDL_ScaleModeNearest);
-
-    void *pixels; int pitch;
-    if (SDL_LockTexture(t.tex, NULL, &pixels, &pitch) != 0) {
-        SDL_DestroyTexture(t.tex); t.tex = NULL; return NULL;
-    }
-    Uint32 *dst = (Uint32 *)pixels;
-    int src_stride = (img->w + 3) & ~3;
-    const unsigned char *sp = (const unsigned char *)img->data_p;
-    PAL *pal = get_pal(img->palnum);
-    const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
-    for (int y = 0; y < th; y++) {
-        int sy = (int)((float)y * img->h / th);
-        for (int x = 0; x < tw; x++) {
-            int sx_i = (int)((float)x * img->w / tw);
-            unsigned char ci = sp[sy * src_stride + sx_i];
-            Uint32 r=180, g=180, b=180, a=255;
-            if (ci == 0) {
-                /* Transparent — leaves the timeline strip / onion-skin host
-                   background showing through. Required for the onion-skin
-                   path which composites the thumb over the canvas. */
-                a = 0; r = g = b = 0;
-            } else if (pd) {
-                unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
-                r = (((w15 >> 10) & 0x1F) << 3);
-                g = (((w15 >>  5) & 0x1F) << 3);
-                b = (( w15        & 0x1F) << 3);
-            } else {
-                r = g = b = 200;
-            }
-            dst[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-    }
-    SDL_UnlockTexture(t.tex);
-    t.w = tw; t.h = th;
-    t.src_w = img->w; t.src_h = img->h;
-    return &t;
-}
-
-static void InvalidateThumb(int idx)
-{
-    if (idx < 0 || (size_t)idx >= g_thumb_cache.size()) return;
-    if (g_thumb_cache[idx].tex) {
-        SDL_DestroyTexture(g_thumb_cache[idx].tex);
-        g_thumb_cache[idx].tex = NULL;
-    }
-}
+/* Timeline thumbnail cache (TimelineThumb, g_thumb_cache, EnsureThumb,
+   InvalidateThumb, ClearTimelineThumbCache) now lives in ui_timeline.{h,cpp}. */
 
 /* Timeline state (lifted to file scope so keyboard shortcuts and onion-skin
    can address it). g_timeline_built_for_imgcnt drives stale-index pruning. */
@@ -1007,7 +926,6 @@ void undo_push(void);
 static void xform_begin(void);  /* forward decl — used by paste_image */
 static int  FindDirtyDocumentIndex(void);
 static bool HasDirtyDocuments(void);
-static void ClearTimelineThumbCache(void);
 static int  BuildMergeAdditions(int target_idx, int target_base_numc, bool grow,
                                 unsigned short added[256], int *overflow_out);
 static void MergeMarkedPalettes(bool force_quality_merge = false);
@@ -1343,14 +1261,6 @@ static void ClearPixelHistoryStacks(void)
     for (auto &e : g_pixel_redo) pixel_hist_free(&e);
     g_pixel_hist.clear();
     g_pixel_redo.clear();
-}
-
-static void ClearTimelineThumbCache(void)
-{
-    for (auto &t : g_thumb_cache) {
-        if (t.tex) SDL_DestroyTexture(t.tex);
-    }
-    g_thumb_cache.clear();
 }
 
 static void ResetPerDocumentUiState(bool clear_pixel_clipboard = false)

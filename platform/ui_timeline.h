@@ -10,6 +10,7 @@
  *************************************************************/
 #pragma once
 #include <vector>
+#include <SDL.h>
 
 /* Ordered timeline frames (image indices) and matching per-frame hold counts;
    g_timeline_play_idx is the current playhead position into g_timeline_frames. */
@@ -28,3 +29,22 @@ int  TimelineHoldAt(int pos);
 void TimelineSetHoldAt(int pos, int hold);
 void TimelineSwapFrames(int a, int b);
 void TimelineMoveFrame(int src_idx, int dst_idx);
+
+/* ---- Timeline thumbnail cache ----
+   Per-image thumbnails for the timeline strip, keyed by image index. Building
+   a thumbnail reads the document (g_doc/get_img/get_pal) and the SDL renderer,
+   so unlike the frame model these helpers are coupled to overlay state. */
+struct TimelineThumb {
+    SDL_Texture *tex;
+    int w, h;          /* thumbnail texture dims */
+    int src_w, src_h;  /* source image dims at time of bake */
+    int gen;           /* matches g_img_tex_idx at bake time */
+};
+extern std::vector<TimelineThumb> g_thumb_cache;
+
+/* Build (or rebuild) the thumbnail for image idx; returns the entry or NULL. */
+TimelineThumb *EnsureThumb(int idx);
+/* Drop the cached texture for image idx (entry stays, tex set to NULL). */
+void InvalidateThumb(int idx);
+/* Destroy all cached thumbnail textures and clear the cache. */
+void ClearTimelineThumbCache(void);
