@@ -9,47 +9,25 @@ tracks slice-by-slice progress.
 ## Current checkpoint - June 9, 2026
 
 Branch: `refactor/overlay-split`.
-Last committed refactor slice:
-`340be75 refactor(overlay): extract pure HSL palette adjustment into color_ops`.
 
-The `color_ops` refactor was patch-staged out of the mixed working tree and
-committed on its own, verified by a clean Release build of the refactor-only
-state. The overlay still owns undo, dirty state, active palette selection, and
-`SDL_Color g_palette[]`; `color_ops` only transforms raw 15-bit palette buffers.
+Phase A (pure-logic extraction) is complete and unit-tested:
+`palette_math`, `sprite_resize_ops`, `color_ops`, and `image_ops` (edge/stroke
+helpers) all moved out of `imgui_overlay.cpp`, each with a `ctest` suite.
 
-The working tree remains intentionally dirty with **feature work only** (still
-being iterated, deliberately uncommitted) in `platform/imgui_overlay.cpp`:
+The accumulated user feature work (bulk resize, smarter subframe cuts, anim
+propagation, mirrored World View fix, session restore, RGB-slider de-dup) is
+committed (`fc4edeb`).
 
-- Added `Operations -> Bulk Resize Marked...`.
-- Changed Break into Subframes to offer best horizontal and best vertical
-  splits, each scanning for the best LOAD2/ZCOM savings and ignoring cuts that
-  would leave either side at 5 px or less.
-- Made primary/secondary anipoint edits propagate by numbered animation
-  sequence, including inferred subframes. Example: changing `JCWALK1` by `-10`
-  on an axis applies the same delta to `JCWALK2`, etc.
-- Fixed mirrored World View movement so mirrored frames drag/invert on the
-  expected axis.
-- Added app session restore: on shutdown, disk-backed open IMG tabs are written
-  to `<exe_dir>/imgtool_session.txt`; on next launch they reopen and the prior
-  active tab is reselected. Missing/unreadable files are skipped. Recent Files
-  are preserved during automatic restore.
-- Removed the duplicated RGB sliders from `Color Tools`; RGB editing now lives
-  only under the quick `Color` section.
+Phase B (globals foundation) has begun: `ui_internal.h` (shared extern decls)
+and `ui_state.cpp` (definitions home) exist, with the SDL/zoom/pan group and the
+undo-snapshot group migrated.
 
-The full mixed tree (features + color_ops) was previously verified green:
-`build.ps1` + `ctest` passed for both the session-restore feature state and the
-color_ops-extracted state.
-
-Suggested next steps:
-
-1. Land the feature work as its own commit(s) once it stops moving — it is
-   independent of the refactor now that `color_ops` is committed.
-2. Do not start Phase B globals surgery until the feature work is committed or
-   deliberately shelved (avoid mixing a large global migration with live
-   feature edits in the same file).
-3. To keep Phase A momentum without touching shared UI state, extract the next
-   pure helpers — e.g. `EdgeColorStrongVariant` / `FindInwardEdgeReplacement`
-   edge-replacement helpers into `color_ops` (or a sibling `image_ops`).
+**Strategy decision: the rest of Phase B is demand-driven.** Rather than bulk-
+migrating the remaining ~300 globals up front (high churn, no consumer until UI
+code moves, and the ~1000-line "Editor state" block is risky), each global is
+moved to `ui_state.cpp` only when a Phase C function move actually needs it
+across translation units. The foundation is in place; migration rides along with
+Phase C.
 
 Environment notes (noisy but nonblocking): git commands may warn about
 `C:\Users\xbx\.config\git\ignore` permission; `build.ps1` may print
@@ -104,18 +82,23 @@ declare in header → include from `imgui_overlay.cpp` → add to `CMakeLists.tx
       Least-Squares Reduce / the ASM-port block still have pure inner helpers to
       pull into `image_ops`.
 
-### Phase B — Globals foundation (the hard step, do carefully by hand)
+### Phase B — Globals foundation (incremental, compiler-verified)
 
-- [ ] Create `platform/ui_internal.h` (one shared internal header) +
-      `platform/ui_state.cpp` (one home for the file-scope state, with
-      initializers preserved) declaring the remaining shared globals `extern`.
-      This is the prerequisite that unlocks moving UI code, and the step the
-      prior attempt botched — do it incrementally against the compiler.
+- [x] Create `platform/ui_internal.h` (shared internal header) +
+      `platform/ui_state.cpp` (definitions home). Foundation in place.
+- [x] Migrate SDL/zoom-pan scalar group and the undo-snapshot group (proves both
+      the scalar and struct-backed patterns).
+- [ ] **Remaining globals: demand-driven.** Move each global to `ui_state.cpp`
+      (its type to `ui_internal.h` if struct-backed) only when a Phase C function
+      move needs it across translation units — not in a big up-front sweep.
+      Preserve initializers exactly; keep compile-time constants as header
+      constants rather than `extern`.
 
-### Phase C — UI section modules (mechanical once Phase B lands)
+### Phase C — UI section modules (carries Phase B migration with it)
 
 Split along the existing `/* ---- section ---- */ ` markers, one module at a
-time, building green after each:
+time, building green after each; pull each function's required globals into the
+foundation as you go:
 
 - [ ] `ui_canvas` — canvas render, pan/zoom, World View.
 - [ ] `ui_palette` — palette editor, HSL sliders, histogram, color picking.
