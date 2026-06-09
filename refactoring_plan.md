@@ -32,7 +32,9 @@ declare in header → include from `imgui_overlay.cpp` → add to `CMakeLists.tx
 
 - [x] **`palette_math`** — 15-bit palette-word helpers (`palette_word_at`,
       `palette_word_distance_sq`, `nearest_palette_index_for_word`,
-      `pal_word_or_black`, `rgb_to_word15`).
+      `pal_word_or_black`, `rgb_to_word15`), plus the distance/nearest-slot
+      helpers (`PaletteColorDistance5`, `PaletteColorDistance5W`,
+      `FindNearestPaletteSlot`, `FindNearestMergedSlot`).
 - [ ] **`color_ops`** — HSL/quantize/dither color math that takes raw buffers
       and palettes (no `g_doc` / UI globals).
 - [ ] **Leaf helpers of the big image ops** — pull the pure inner helpers out of
