@@ -60,6 +60,7 @@ set(IMGTOOL_SOURCES
     platform/imgui_overlay.cpp
     platform/ui_state.cpp
     platform/ui_timeline.cpp
+    platform/world_render.cpp
     platform/color_ops.cpp
     platform/image_ops.cpp
     platform/palette_math.cpp

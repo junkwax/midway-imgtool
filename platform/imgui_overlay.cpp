@@ -35,6 +35,7 @@
 #include "palette_math.h"
 #include "ui_internal.h"
 #include "ui_timeline.h"
+#include "world_render.h"
 #include "sprite_resize_ops.h"
 #include "img_io.h"
 #include "imgui_overlay.h"
@@ -1308,18 +1309,11 @@ static int   g_world_dummy_decap_doc_idx = -1;
 static std::string g_world_dummy_decap_prefix;
 static bool  g_world_marked_show_asm = false;
 static std::string g_world_marked_generated_asm;
-static std::vector<SDL_Texture *> g_world_temp_textures;
+/* g_world_temp_textures + ClearWorldTempTextures + BuildWorldSpriteTexture +
+   doc_get_pal now live in world_render.{h,cpp}. */
 static int   g_load2_selected_idx = -1;          /* index into g_load2_report.issues */
 static SDL_Texture *g_load2_drift_tex = NULL;
 static int   g_load2_drift_tex_w = 0, g_load2_drift_tex_h = 0;
-
-static void ClearWorldTempTextures(void)
-{
-    for (SDL_Texture *tex : g_world_temp_textures) {
-        if (tex) SDL_DestroyTexture(tex);
-    }
-    g_world_temp_textures.clear();
-}
 
 /* ---- ASM animation viewer ----
    Parses a MK2 per-character ASM (e.g. MKRD.ASM) and lets the user inspect /
@@ -2144,13 +2138,7 @@ static void MirrorMarkedAnipointsToReverseWithToast(void)
     g_restore_msg_timer = 4.0f;
 }
 
-static PAL *doc_get_pal(Document *doc, int idx)
-{
-    if (!doc || idx < 0) return NULL;
-    PAL *pal = (PAL *)doc->pal_p;
-    for (int i = 0; i < idx && pal; i++) pal = (PAL *)pal->nxt_p;
-    return pal;
-}
+/* doc_get_pal now lives in world_render.{h,cpp}. */
 
 static void collect_marked_frames(Document *doc, std::vector<int> &out)
 {
@@ -2163,51 +2151,7 @@ static void collect_marked_frames(Document *doc, std::vector<int> &out)
     }
 }
 
-static SDL_Texture *BuildWorldSpriteTexture(Document *doc, IMG *img, unsigned char alpha)
-{
-    if (!g_imgui_renderer || !doc || !img || !img->data_p || img->w == 0 || img->h == 0)
-        return NULL;
-
-    SDL_Texture *tex = SDL_CreateTexture(g_imgui_renderer,
-        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-        img->w, img->h);
-    if (!tex) return NULL;
-    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-    SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
-
-    void *pixels; int pitch;
-    if (SDL_LockTexture(tex, NULL, &pixels, &pitch) != 0) {
-        SDL_DestroyTexture(tex);
-        return NULL;
-    }
-
-    PAL *pal = doc_get_pal(doc, img->palnum);
-    const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
-    int pal_colors = pal ? (int)pal->numc : 0;
-    int stride = (img->w + 3) & ~3;
-    const unsigned char *src = (const unsigned char *)img->data_p;
-    Uint32 *dst = (Uint32 *)pixels;
-    for (int y = 0; y < img->h; y++) {
-        for (int x = 0; x < img->w; x++) {
-            unsigned char ci = src[y * stride + x];
-            Uint32 r = 200, g = 200, b = 200;
-            if (pd && ci < pal_colors) {
-                unsigned short w15 = (unsigned short)(pd[ci * 2] | (pd[ci * 2 + 1] << 8));
-                r = (((w15 >> 10) & 0x1F) << 3);
-                g = (((w15 >>  5) & 0x1F) << 3);
-                b = (( w15        & 0x1F) << 3);
-            } else if (doc == g_doc) {
-                SDL_Color c = g_palette[ci];
-                r = c.r; g = c.g; b = c.b;
-            }
-            Uint32 a = (ci == 0) ? 0u : (Uint32)alpha;
-            dst[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-    }
-    SDL_UnlockTexture(tex);
-    g_world_temp_textures.push_back(tex);
-    return tex;
-}
+/* BuildWorldSpriteTexture now lives in world_render.{h,cpp}. */
 
 static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
 {
