@@ -529,6 +529,7 @@ static bool g_pending_quit = false;
    frame of a drag). */
 static bool g_anipoint_drag1 = false;
 static bool g_anipoint_drag2 = false;
+static bool g_sequence_anipoint_undo_active = false;
 
 static void InvalidatePaletteUsage(void);
 
@@ -1134,6 +1135,9 @@ static void AsmAnimSelect(int i);
 static bool secondary_anipoint_in_use(const IMG *img);
 static bool clipboard_secondary_anipoint_in_use(void);
 static void clear_secondary_anipoint(IMG *img);
+static void activate_secondary_anipoint(IMG *img);
+static unsigned short signed_to_img_word(int v);
+static void MakeDerivedImageName(const char *base, const char *suffix, char out[16]);
 
 struct DocSnapshot {
     unsigned int seq;
@@ -1687,6 +1691,7 @@ static int   g_world_marked_drag_frame = -1;
 static ImVec2 g_world_marked_drag_mouse = ImVec2(0, 0);
 static int   g_world_marked_drag_dx = 0;
 static int   g_world_marked_drag_dy = 0;
+static bool  g_world_marked_drag_mirror = false;
 static bool  g_world_dummy_decap_body = false;
 static bool  g_world_dummy_decap_reset = true;
 static bool  g_world_dummy_decap_manual = false;
@@ -2360,6 +2365,158 @@ static std::string InferSubframeParentName(const char *name)
     return std::string();
 }
 
+static std::string trim_sprite_name(std::string s)
+{
+    while (!s.empty() && std::isspace((unsigned char)s.back()))
+        s.pop_back();
+    while (!s.empty() && std::isspace((unsigned char)s.front()))
+        s.erase(s.begin());
+    return s;
+}
+
+static bool ascii_iequals(const std::string &a, const std::string &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        if (std::tolower((unsigned char)a[i]) !=
+            std::tolower((unsigned char)b[i]))
+            return false;
+    }
+    return true;
+}
+
+static bool strip_trailing_sequence_digits(const std::string &name,
+                                           std::string *stem_out)
+{
+    std::string s = trim_sprite_name(name);
+    size_t pos = s.size();
+    while (pos > 0 && std::isdigit((unsigned char)s[pos - 1]))
+        pos--;
+    if (pos == s.size() || pos == 0) return false;
+    if (stem_out) *stem_out = s.substr(0, pos);
+    return true;
+}
+
+static std::string anipoint_sequence_parent_name(const IMG *img)
+{
+    std::string name = trim_sprite_name(img_name_string(img));
+    std::string parent = InferSubframeParentName(name.c_str());
+    return parent.empty() ? name : parent;
+}
+
+static bool same_anipoint_sequence(const IMG *src, const IMG *candidate)
+{
+    if (!src || !candidate) return false;
+    std::string src_parent = anipoint_sequence_parent_name(src);
+    std::string candidate_parent = anipoint_sequence_parent_name(candidate);
+    if (src_parent.empty() || candidate_parent.empty()) return false;
+
+    std::string src_stem, candidate_stem;
+    bool src_numbered = strip_trailing_sequence_digits(src_parent, &src_stem);
+    bool candidate_numbered =
+        strip_trailing_sequence_digits(candidate_parent, &candidate_stem);
+
+    if (src_numbered)
+        return candidate_numbered && ascii_iequals(src_stem, candidate_stem);
+    return ascii_iequals(src_parent, candidate_parent);
+}
+
+static bool begin_sequence_anipoint_edit(void)
+{
+    if (g_sequence_anipoint_undo_active) {
+        mark_dirty();
+        return true;
+    }
+    if (!doc_undo_push()) return false;
+    g_sequence_anipoint_undo_active = true;
+    return true;
+}
+
+static void finish_sequence_anipoint_edit_if_idle(void)
+{
+    if (g_sequence_anipoint_undo_active &&
+        !ImGui::IsAnyItemActive() &&
+        !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        g_sequence_anipoint_undo_active = false;
+}
+
+static int apply_anipoint_delta_to_sequence(IMG *src, int src_idx,
+                                            int dx1, int dy1,
+                                            int dx2, int dy2,
+                                            bool affect_primary,
+                                            bool affect_secondary)
+{
+    if (!src || (!affect_primary && !affect_secondary)) return 0;
+    int changed = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (idx == src_idx || !same_anipoint_sequence(src, img)) continue;
+
+        bool touched = false;
+        if (affect_primary && (dx1 != 0 || dy1 != 0)) {
+            img->anix = signed_to_img_word((int)(short)img->anix + dx1);
+            img->aniy = signed_to_img_word((int)(short)img->aniy + dy1);
+            touched = true;
+        }
+        if (affect_secondary && (dx2 != 0 || dy2 != 0) &&
+            secondary_anipoint_in_use(img)) {
+            img->anix2 = signed_to_img_word((int)(short)img->anix2 + dx2);
+            img->aniy2 = signed_to_img_word((int)(short)img->aniy2 + dy2);
+            touched = true;
+        }
+        if (touched) {
+            InvalidateThumb(idx);
+            changed++;
+        }
+    }
+    return changed;
+}
+
+static bool set_primary_anipoint_with_sequence(IMG *img, int new_ax, int new_ay)
+{
+    if (!img) return false;
+    int old_ax = (int)(short)img->anix;
+    int old_ay = (int)(short)img->aniy;
+    int dx = new_ax - old_ax;
+    int dy = new_ay - old_ay;
+    if (dx == 0 && dy == 0) return false;
+    if (!begin_sequence_anipoint_edit()) return false;
+
+    img->anix = signed_to_img_word(new_ax);
+    img->aniy = signed_to_img_word(new_ay);
+    apply_anipoint_delta_to_sequence(img, g_doc->ilselected,
+                                     dx, dy, 0, 0, true, false);
+    InvalidateThumb(g_doc->ilselected);
+    g_img_tex_idx = -2;
+    mark_dirty();
+    return true;
+}
+
+static bool set_secondary_anipoint_with_sequence(IMG *img, int new_ax2, int new_ay2)
+{
+    if (!img) return false;
+    bool was_active = secondary_anipoint_in_use(img);
+    int old_ax2 = was_active ? (int)(short)img->anix2 : 0;
+    int old_ay2 = was_active ? (int)(short)img->aniy2 : 0;
+    int dx = new_ax2 - old_ax2;
+    int dy = new_ay2 - old_ay2;
+    if (was_active && dx == 0 && dy == 0) return false;
+    if (!begin_sequence_anipoint_edit()) return false;
+    if (!was_active)
+        activate_secondary_anipoint(img);
+
+    img->anix2 = signed_to_img_word(new_ax2);
+    img->aniy2 = signed_to_img_word(new_ay2);
+    if (dx != 0 || dy != 0) {
+        apply_anipoint_delta_to_sequence(img, g_doc->ilselected,
+                                         0, 0, dx, dy, false, true);
+    }
+    InvalidateThumb(g_doc->ilselected);
+    g_img_tex_idx = -2;
+    mark_dirty();
+    return true;
+}
+
 static void MirrorMarkedAnipointsToReverseWithToast(void)
 {
     int marked = CountMarkedImages();
@@ -2656,7 +2813,6 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
         g_timeline_composite_drag_aniy = p[hover_slot].img->aniy;
         g_doc->ilselected = g_timeline_composite[hover_slot];
         g_zoom_reset = true;
-        undo_push();
     }
 
     if (g_timeline_composite_drag_slot >= 0) {
@@ -2664,10 +2820,6 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
         IMG *drag_img = p[slot].img;
         if (!drag_img || g_timeline_composite_locked[slot] ||
             !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            if (drag_img && !g_timeline_composite_locked[slot]) {
-                g_doc->ilselected = g_timeline_composite[slot];
-                undo_push();
-            }
             g_timeline_composite_drag_slot = -1;
         } else {
             int dx = (int)((mouse.x - g_timeline_composite_drag_mouse.x) / scale);
@@ -2676,10 +2828,8 @@ static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
             int ny = (int)(short)g_timeline_composite_drag_aniy - dy;
             if (nx < -32768) nx = -32768; if (nx > 32767) nx = 32767;
             if (ny < -32768) ny = -32768; if (ny > 32767) ny = 32767;
-            drag_img->anix = (unsigned short)(short)nx;
-            drag_img->aniy = (unsigned short)(short)ny;
             g_doc->ilselected = g_timeline_composite[slot];
-            mark_dirty();
+            set_primary_anipoint_with_sequence(drag_img, nx, ny);
         }
     }
 
@@ -3060,6 +3210,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         IM_COL32(240, 80, 80, 230)      /* ASM opponent lane */
     };
     bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
+    bool lane_mirror_x[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
     ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
 
@@ -3079,6 +3230,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             lane.frame_pos < (int)g_world_marked_frame_mirror[state_slot].size() &&
             g_world_marked_frame_mirror[state_slot][lane.frame_pos])
             mirror_x = !mirror_x;
+        lane_mirror_x[slot] = mirror_x;
         const std::vector<int> *pieces = NULL;
         const std::vector<Document*> *piece_docs = NULL;
         if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frame_pieces.size())
@@ -3240,6 +3392,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             g_world_marked_drag_mouse = mouse;
             g_world_marked_drag_dx = g_world_marked_local_dx[state_slot][lane.frame_pos];
             g_world_marked_drag_dy = g_world_marked_local_dy[state_slot][lane.frame_pos];
+            g_world_marked_drag_mirror = lane_mirror_x[hover_slot];
         }
     }
     if (g_world_marked_drag_slot >= 0) {
@@ -3250,11 +3403,13 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             frame_idx < 0 || frame_idx >= (int)g_world_marked_local_dx[state_slot].size()) {
             g_world_marked_drag_slot = -1;
             g_world_marked_drag_frame = -1;
+            g_world_marked_drag_mirror = false;
         } else {
             int px = (int)((mouse.x - g_world_marked_drag_mouse.x) / wscale);
             int py = (int)((mouse.y - g_world_marked_drag_mouse.y) / wscale);
             g_world_marked_local_dx[state_slot][frame_idx] =
-                ClampWorldMarkedAniptDelta(g_world_marked_drag_dx - px);
+                ClampWorldMarkedAniptDelta(g_world_marked_drag_dx +
+                                           (g_world_marked_drag_mirror ? px : -px));
             g_world_marked_local_dy[state_slot][frame_idx] =
                 ClampWorldMarkedAniptDelta(g_world_marked_drag_dy - py);
         }
@@ -3753,6 +3908,13 @@ static int   g_histogram_img_count = 0;
 /* ---- Bulk Restore Regex state ---- */
 static bool g_show_restore_regex = false;
 static bool g_show_auto_chop = false;
+enum AutoChopMode {
+    AutoChopMode_BestHorizontal = 0,
+    AutoChopMode_BestVertical,
+    AutoChopMode_ManualGrid
+};
+static int  g_chop_mode = AutoChopMode_BestHorizontal;
+static const int k_auto_split_min_side = 5;
 static int  g_chop_w = 64;
 static int  g_chop_h = 64;
 static bool g_chop_trim = true;
@@ -3776,6 +3938,9 @@ struct AutoChopPreview {
     long long src_zcom_bits;
     long long split_uncomp_bits;
     long long split_zcom_bits;
+    bool best_split_valid;
+    bool best_split_vertical;
+    int best_split_pos;
 };
 
 static IMG *AutoChopPrimaryTarget(int *out_idx = NULL)
@@ -3807,6 +3972,7 @@ static void AutoChopSetThreeBandSize(void)
     IMG *img = AutoChopPrimaryTarget(&idx);
     if (!img || img->w == 0 || img->h == 0) return;
 
+    g_chop_mode = AutoChopMode_ManualGrid;
     g_chop_w = (int)img->w;
     g_chop_h = ((int)img->h + 2) / 3;
     if (g_chop_h < 1) g_chop_h = 1;
@@ -3833,6 +3999,9 @@ static void AutoChopPreviewClear(AutoChopPreview *p)
     p->src_zcom_bits = 0;
     p->split_uncomp_bits = 0;
     p->split_zcom_bits = 0;
+    p->best_split_valid = false;
+    p->best_split_vertical = false;
+    p->best_split_pos = 0;
 }
 
 static int AutoChopBppForImage(const IMG *img)
@@ -3997,6 +4166,160 @@ static bool BuildAutoChopPreviewForImage(const IMG *img, AutoChopPreview *out)
     return true;
 }
 
+static bool BuildAutoSplitPieceForRect(const IMG *img, int rx, int ry,
+                                       int rw, int rh, int piece_no, int bpp,
+                                       AutoChopPiecePreview *piece)
+{
+    if (!img || !img->data_p || !piece || rw <= 0 || rh <= 0) return false;
+
+    int stride = ((int)img->w + 3) & ~3;
+    const unsigned char *src = (const unsigned char *)img->data_p;
+    int min_x = rw, min_y = rh;
+    int max_x = -1, max_y = -1;
+    int opaque = 0;
+
+    for (int y = 0; y < rh; y++) {
+        for (int x = 0; x < rw; x++) {
+            if (src[(ry + y) * stride + (rx + x)] != 0) {
+                if (x < min_x) min_x = x;
+                if (x > max_x) max_x = x;
+                if (y < min_y) min_y = y;
+                if (y > max_y) max_y = y;
+                opaque++;
+            }
+        }
+    }
+
+    if (max_x < min_x) return false;
+
+    if (!g_chop_trim) {
+        min_x = 0; min_y = 0;
+        max_x = rw - 1; max_y = rh - 1;
+    }
+
+    *piece = {};
+    piece->cell_x = rx;
+    piece->cell_y = ry;
+    piece->cell_w = rw;
+    piece->cell_h = rh;
+    piece->out_x = rx + min_x;
+    piece->out_y = ry + min_y;
+    piece->out_w = max_x - min_x + 1;
+    piece->out_h = max_y - min_y + 1;
+    piece->piece_no = piece_no;
+    piece->opaque_pixels = opaque;
+    piece->uncomp_bits = (long long)piece->out_w *
+                         (long long)piece->out_h *
+                         (long long)bpp;
+    piece->zcom_bits = EstimateZcomBitsForRect(img, piece->out_x,
+                                               piece->out_y,
+                                               piece->out_w,
+                                               piece->out_h,
+                                               bpp);
+    return true;
+}
+
+static bool BuildAutoSplitPreviewForImageAt(const IMG *img, bool vertical,
+                                            int split_pos,
+                                            AutoChopPreview *out)
+{
+    if (!out) return false;
+    AutoChopPreviewClear(out);
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+
+    int w = (int)img->w;
+    int h = (int)img->h;
+    if (vertical) {
+        if (split_pos <= k_auto_split_min_side ||
+            w - split_pos <= k_auto_split_min_side)
+            return false;
+    } else {
+        if (split_pos <= k_auto_split_min_side ||
+            h - split_pos <= k_auto_split_min_side)
+            return false;
+    }
+
+    out->target_count = 1;
+    out->raw_cells = 2;
+    out->bpp = AutoChopBppForImage(img);
+    out->src_uncomp_bits = (long long)w * (long long)h * out->bpp;
+    out->src_zcom_bits = EstimateZcomBitsForRect(img, 0, 0, w, h, out->bpp);
+    out->best_split_valid = true;
+    out->best_split_vertical = vertical;
+    out->best_split_pos = split_pos;
+
+    AutoChopPiecePreview piece = {};
+    if (vertical) {
+        if (BuildAutoSplitPieceForRect(img, 0, 0, split_pos, h, 0,
+                                       out->bpp, &piece)) {
+            out->split_uncomp_bits += piece.uncomp_bits;
+            out->split_zcom_bits += piece.zcom_bits;
+            out->pieces.push_back(piece);
+        } else {
+            out->empty_cells++;
+        }
+        if (BuildAutoSplitPieceForRect(img, split_pos, 0, w - split_pos, h, 1,
+                                       out->bpp, &piece)) {
+            out->split_uncomp_bits += piece.uncomp_bits;
+            out->split_zcom_bits += piece.zcom_bits;
+            out->pieces.push_back(piece);
+        } else {
+            out->empty_cells++;
+        }
+    } else {
+        if (BuildAutoSplitPieceForRect(img, 0, 0, w, split_pos, 0,
+                                       out->bpp, &piece)) {
+            out->split_uncomp_bits += piece.uncomp_bits;
+            out->split_zcom_bits += piece.zcom_bits;
+            out->pieces.push_back(piece);
+        } else {
+            out->empty_cells++;
+        }
+        if (BuildAutoSplitPieceForRect(img, 0, split_pos, w, h - split_pos, 1,
+                                       out->bpp, &piece)) {
+            out->split_uncomp_bits += piece.uncomp_bits;
+            out->split_zcom_bits += piece.zcom_bits;
+            out->pieces.push_back(piece);
+        } else {
+            out->empty_cells++;
+        }
+    }
+
+    return out->pieces.size() == 2;
+}
+
+static bool BuildBestAutoSplitPreviewForImage(const IMG *img, bool vertical,
+                                              AutoChopPreview *out)
+{
+    if (!out) return false;
+    AutoChopPreviewClear(out);
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+
+    int dim = vertical ? (int)img->w : (int)img->h;
+    int first = k_auto_split_min_side + 1;
+    int last = dim - (k_auto_split_min_side + 1);
+    if (first > last) return false;
+
+    bool have_best = false;
+    AutoChopPreview best;
+    for (int split = first; split <= last; split++) {
+        AutoChopPreview trial;
+        if (!BuildAutoSplitPreviewForImageAt(img, vertical, split, &trial))
+            continue;
+        if (!have_best ||
+            trial.split_zcom_bits < best.split_zcom_bits ||
+            (trial.split_zcom_bits == best.split_zcom_bits &&
+             std::abs(split - dim / 2) < std::abs(best.best_split_pos - dim / 2))) {
+            best = trial;
+            have_best = true;
+        }
+    }
+
+    if (!have_best) return false;
+    *out = best;
+    return true;
+}
+
 static bool SelectedImageWillAutoChop(void)
 {
     if (g_doc->ilselected < 0) return false;
@@ -4030,6 +4353,181 @@ static void BuildAutoChopTargetSummary(AutoChopPreview *out)
         else if (out->bpp != one.bpp) out->bpp = -1;
         out->pieces.insert(out->pieces.end(), one.pieces.begin(), one.pieces.end());
     }
+}
+
+struct AutoChopTargetRef {
+    IMG *img;
+    int idx;
+};
+
+static void CollectAutoChopTargets(std::vector<AutoChopTargetRef> &targets)
+{
+    targets.clear();
+    int marked = CountMarkedImages();
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        bool target = marked > 0 ? ((img->flags & 1) != 0)
+                                 : (idx == g_doc->ilselected);
+        if (target) targets.push_back({img, idx});
+    }
+}
+
+struct AutoSplitTargetSummary {
+    AutoChopPreview selected_preview;
+    int target_count;
+    int split_count;
+    int skipped_count;
+    int bpp;
+    long long src_zcom_bits;
+    long long split_zcom_bits;
+};
+
+static void AutoSplitTargetSummaryClear(AutoSplitTargetSummary *s)
+{
+    if (!s) return;
+    AutoChopPreviewClear(&s->selected_preview);
+    s->target_count = 0;
+    s->split_count = 0;
+    s->skipped_count = 0;
+    s->bpp = 0;
+    s->src_zcom_bits = 0;
+    s->split_zcom_bits = 0;
+}
+
+static void BuildAutoSplitTargetSummary(bool vertical,
+                                        AutoSplitTargetSummary *summary)
+{
+    if (!summary) return;
+    AutoSplitTargetSummaryClear(summary);
+
+    std::vector<AutoChopTargetRef> targets;
+    CollectAutoChopTargets(targets);
+    summary->target_count = (int)targets.size();
+
+    for (const AutoChopTargetRef &target : targets) {
+        AutoChopPreview preview;
+        if (!BuildBestAutoSplitPreviewForImage(target.img, vertical, &preview)) {
+            summary->skipped_count++;
+            continue;
+        }
+
+        if (target.idx == g_doc->ilselected)
+            summary->selected_preview = preview;
+        summary->split_count++;
+        summary->src_zcom_bits += preview.src_zcom_bits;
+        summary->split_zcom_bits += preview.split_zcom_bits;
+        if (summary->bpp == 0) summary->bpp = preview.bpp;
+        else if (summary->bpp != preview.bpp) summary->bpp = -1;
+    }
+}
+
+static void UnlinkAllocatedImage(IMG *img)
+{
+    if (!img) return;
+    IMG *prev = NULL;
+    IMG *cur = (IMG *)g_doc->img_p;
+    while (cur && cur != img) {
+        prev = cur;
+        cur = (IMG *)cur->nxt_p;
+    }
+    if (cur == img) {
+        if (prev) prev->nxt_p = cur->nxt_p;
+        else g_doc->img_p = cur->nxt_p;
+        if (g_doc->imgcnt > 0) g_doc->imgcnt--;
+    }
+    FreeImg(img);
+}
+
+static bool CreateAutoSplitPiece(IMG *master,
+                                 const AutoChopPiecePreview &piece,
+                                 const char *suffix)
+{
+    if (!master || !master->data_p || piece.out_w <= 0 || piece.out_h <= 0)
+        return false;
+
+    IMG *child = AllocImg();
+    if (!child) return false;
+
+    child->w = (unsigned short)piece.out_w;
+    child->h = (unsigned short)piece.out_h;
+    child->palnum = master->palnum;
+    child->flags = 0;
+    child->opals = master->opals;
+    child->anix = signed_to_img_word((int)(short)master->anix - piece.out_x);
+    child->aniy = signed_to_img_word((int)(short)master->aniy - piece.out_y);
+    clear_secondary_anipoint(child);
+
+    int src_stride = ((int)master->w + 3) & ~3;
+    int dst_stride = (piece.out_w + 3) & ~3;
+    child->data_p = PoolAlloc((size_t)dst_stride * (size_t)piece.out_h);
+    if (!child->data_p) {
+        UnlinkAllocatedImage(child);
+        return false;
+    }
+
+    const unsigned char *src = (const unsigned char *)master->data_p;
+    unsigned char *dst = (unsigned char *)child->data_p;
+    for (int y = 0; y < piece.out_h; y++) {
+        memcpy(dst + y * dst_stride,
+               src + (piece.out_y + y) * src_stride + piece.out_x,
+               piece.out_w);
+    }
+
+    strncpy(child->src_filename, master->src_filename,
+            sizeof(child->src_filename) - 1);
+    child->src_filename[sizeof(child->src_filename) - 1] = '\0';
+    MakeDerivedImageName(master->n_s, suffix, child->n_s);
+    return true;
+}
+
+static int ApplyBestAutoSplitToTargets(bool vertical)
+{
+    std::vector<AutoChopTargetRef> targets;
+    CollectAutoChopTargets(targets);
+    if (targets.empty()) return 0;
+
+    struct PendingSplit {
+        IMG *img;
+        int idx;
+        AutoChopPreview preview;
+    };
+    std::vector<PendingSplit> pending;
+    for (const AutoChopTargetRef &target : targets) {
+        AutoChopPreview preview;
+        if (BuildBestAutoSplitPreviewForImage(target.img, vertical, &preview))
+            pending.push_back({target.img, target.idx, preview});
+    }
+    if (pending.empty()) return 0;
+
+    if (!doc_undo_push()) return 0;
+
+    int created = 0;
+    int first_created_idx = -1;
+    for (const PendingSplit &plan : pending) {
+        int local_created = 0;
+        for (int i = 0; i < (int)plan.preview.pieces.size(); i++) {
+            char suffix[4];
+            snprintf(suffix, sizeof(suffix), "%c", 'A' + i);
+            if (CreateAutoSplitPiece(plan.img, plan.preview.pieces[(size_t)i], suffix)) {
+                local_created++;
+                created++;
+                if (first_created_idx < 0)
+                    first_created_idx = (int)g_doc->imgcnt - 1;
+            }
+        }
+        if (local_created > 0) {
+            plan.img->flags &= ~1;
+            InvalidateThumb(plan.idx);
+        }
+    }
+
+    if (created > 0) {
+        if (first_created_idx >= 0) g_doc->ilselected = first_created_idx;
+        g_img_tex_idx = -2;
+        g_zoom_reset = true;
+        mark_dirty();
+    }
+    return created;
 }
 
 static void AutoChopPieceLabel(const AutoChopPiecePreview &piece,
@@ -10794,6 +11292,108 @@ static void OpenImgFile(const std::string &full_path)
     Mk2AutoSelectFromImg();
 }
 
+/* ===== Session restore (open IMG tabs from the last clean shutdown) =====
+   Stored beside the MRU list so portable builds keep their state local to
+   the executable folder. Only disk-backed IMG documents are persisted. */
+static std::string SessionFilesPath()
+{
+    std::string base = exe_dir[0] ? exe_dir : ".";
+#ifdef _WIN32
+    return base + "\\imgtool_session.txt";
+#else
+    return base + "/imgtool_session.txt";
+#endif
+}
+
+static void SessionSave()
+{
+    FILE *f = fopen(SessionFilesPath().c_str(), "w");
+    if (!f) return;
+
+    std::vector<std::string> paths;
+    int active_doc = document_active_index();
+    int active_session_idx = -1;
+
+    for (int i = 0; i < document_tab_count(); i++) {
+        Document *doc = document_get(i);
+        std::string path = DocFullPath(doc);
+        if (!doc || path.empty() || doc->imgcnt == 0) continue;
+        if (i == active_doc) active_session_idx = (int)paths.size();
+        paths.push_back(path);
+    }
+
+    if (active_session_idx < 0 && !paths.empty()) active_session_idx = 0;
+    fprintf(f, "active=%d\n", active_session_idx);
+    for (const std::string &path : paths)
+        fprintf(f, "%s\n", path.c_str());
+    fclose(f);
+}
+
+static bool SessionLoad(std::vector<std::string> *paths, int *active_session_idx)
+{
+    if (paths) paths->clear();
+    if (active_session_idx) *active_session_idx = 0;
+
+    FILE *f = fopen(SessionFilesPath().c_str(), "r");
+    if (!f) return false;
+
+    char line[2048];
+    while (fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
+        if (!n) continue;
+
+        if (strncmp(line, "active=", 7) == 0) {
+            if (active_session_idx) *active_session_idx = (int)strtol(line + 7, NULL, 10);
+            continue;
+        }
+
+        if (paths) paths->push_back(line);
+    }
+
+    fclose(f);
+    return paths && !paths->empty();
+}
+
+static bool PathReadable(const std::string &path)
+{
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+static void SessionRestore()
+{
+    std::vector<std::string> paths;
+    int active_session_idx = 0;
+    if (!SessionLoad(&paths, &active_session_idx)) return;
+
+    std::vector<std::string> recent_before = g_recent_files;
+    std::vector<int> restored_tabs;
+    for (const std::string &path : paths) {
+        if (!PathReadable(path)) continue;
+
+        OpenImgFile(path);
+        int idx = FindOpenDocumentByPath(path);
+        Document *doc = document_get(idx);
+        if (!doc || doc->imgcnt == 0) continue;
+
+        doc->dirty = false;
+        restored_tabs.push_back(idx);
+    }
+
+    if (g_recent_files != recent_before) {
+        g_recent_files = recent_before;
+        RecentSave();
+    }
+
+    if (restored_tabs.empty()) return;
+    if (active_session_idx < 0 || active_session_idx >= (int)restored_tabs.size())
+        active_session_idx = 0;
+    ActivateDocumentTab(restored_tabs[(size_t)active_session_idx]);
+}
+
 static const char* GetDialogExtension(FileDialogMode mode)
 {
     switch (mode) {
@@ -13241,6 +13841,12 @@ static int  g_resize_scale_y = 100;
 static bool g_resize_lock_aspect = true;
 static int  g_resize_mode = (int)SpriteResizeMode::IndexNearest;
 static bool g_resize_trim_bounds = false;
+static bool g_show_bulk_resize = false;
+static int  g_bulk_resize_scale_x = 100;
+static int  g_bulk_resize_scale_y = 100;
+static bool g_bulk_resize_lock_aspect = true;
+static int  g_bulk_resize_mode = (int)SpriteResizeMode::IndexNearest;
+static bool g_bulk_resize_trim_bounds = false;
 
 static int clamp_int(int v, int lo, int hi)
 {
@@ -13336,7 +13942,9 @@ static void OpenResizeSpriteDialog(void)
     g_show_resize_sprite = true;
 }
 
-static bool trim_image_to_content(IMG *img, bool shrink_empty, int *out_trim_x, int *out_trim_y)
+static bool trim_image_to_content(IMG *img, bool shrink_empty,
+                                  int *out_trim_x, int *out_trim_y,
+                                  bool adjust_hitbox = true)
 {
     if (out_trim_x) *out_trim_x = 0;
     if (out_trim_y) *out_trim_y = 0;
@@ -13391,8 +13999,10 @@ static bool trim_image_to_content(IMG *img, bool shrink_empty, int *out_trim_x, 
         img->anix2 = signed_to_img_word((int)(short)img->anix2 - min_x);
         img->aniy2 = signed_to_img_word((int)(short)img->aniy2 - min_y);
     }
-    g_hitbox_x -= min_x;
-    g_hitbox_y -= min_y;
+    if (adjust_hitbox) {
+        g_hitbox_x -= min_x;
+        g_hitbox_y -= min_y;
+    }
     if (out_trim_x) *out_trim_x = min_x;
     if (out_trim_y) *out_trim_y = min_y;
     return true;
@@ -13870,6 +14480,122 @@ static bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool tri
     return true;
 }
 
+static void OpenBulkResizeDialog(void)
+{
+    g_bulk_resize_scale_x = 100;
+    g_bulk_resize_scale_y = 100;
+    g_bulk_resize_lock_aspect = true;
+    g_bulk_resize_mode = (int)SpriteResizeMode::IndexNearest;
+    g_bulk_resize_trim_bounds = false;
+    g_show_bulk_resize = true;
+}
+
+static void BuildResizeFallbackRgb(ResizeRgb fallback_rgb[256])
+{
+    for (int i = 0; i < 256; i++) {
+        fallback_rgb[i].r = g_palette[i].r;
+        fallback_rgb[i].g = g_palette[i].g;
+        fallback_rgb[i].b = g_palette[i].b;
+    }
+}
+
+static int BulkResizeMarkedSprites(int scale_x, int scale_y,
+                                   SpriteResizeMode mode, bool trim_bounds)
+{
+    scale_x = clamp_int(scale_x, 1, 3200);
+    scale_y = clamp_int(scale_y, 1, 3200);
+
+    struct BulkResizeTarget {
+        IMG *img;
+        int idx;
+        int nw;
+        int nh;
+    };
+    std::vector<BulkResizeTarget> targets;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (!(img->flags & 1) || !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+        int nw = clamp_int(round_to_int((double)img->w * (double)scale_x / 100.0), 1, 4096);
+        int nh = clamp_int(round_to_int((double)img->h * (double)scale_y / 100.0), 1, 4096);
+        bool force_trim = (mode == SpriteResizeMode::QualitySmallBytes);
+        if (nw == (int)img->w && nh == (int)img->h && !(trim_bounds || force_trim))
+            continue;
+        targets.push_back({img, idx, nw, nh});
+    }
+    if (targets.empty()) return 0;
+    if (!doc_undo_push()) return 0;
+
+    bool optimize_bytes = (mode == SpriteResizeMode::QualitySmallBytes);
+    bool use_quality = (mode != SpriteResizeMode::IndexNearest);
+    ResizeRgb fallback_rgb[256];
+    BuildResizeFallbackRgb(fallback_rgb);
+
+    int changed = 0;
+    for (const BulkResizeTarget &target : targets) {
+        IMG *img = target.img;
+        int old_w = img->w;
+        int old_h = img->h;
+        unsigned short old_anix = img->anix;
+        unsigned short old_aniy = img->aniy;
+        unsigned short old_anix2 = img->anix2;
+        unsigned short old_aniy2 = img->aniy2;
+        unsigned short old_aniz2 = img->aniz2;
+
+        PAL *pal = get_pal(img->palnum);
+        unsigned int new_stride = 0;
+        unsigned char *new_pixels = use_quality
+            ? ResizeSpritePixelsQuality(img, pal, fallback_rgb,
+                                        target.nw, target.nh,
+                                        optimize_bytes, &new_stride)
+            : ResizeSpritePixelsNearest(img, target.nw, target.nh,
+                                        &new_stride);
+        if (!new_pixels) continue;
+
+        free(img->data_p);
+        img->data_p = new_pixels;
+        img->w = (unsigned short)target.nw;
+        img->h = (unsigned short)target.nh;
+        img->anix = signed_to_img_word(scaled_coord(old_anix, old_w, target.nw));
+        img->aniy = signed_to_img_word(scaled_coord(old_aniy, old_h, target.nh));
+        if (secondary_anipoint_words_in_use(old_anix2, old_aniy2, old_aniz2)) {
+            img->anix2 = signed_to_img_word(scaled_coord(old_anix2, old_w, target.nw));
+            img->aniy2 = signed_to_img_word(scaled_coord(old_aniy2, old_h, target.nh));
+            img->aniz2 = old_aniz2;
+        } else {
+            clear_secondary_anipoint(img);
+        }
+
+        bool selected = (target.idx == g_doc->ilselected);
+        if (selected && g_hitbox_w > 0 && g_hitbox_h > 0) {
+            g_hitbox_x = scaled_coord((unsigned short)(short)g_hitbox_x, old_w, target.nw);
+            g_hitbox_y = scaled_coord((unsigned short)(short)g_hitbox_y, old_h, target.nh);
+            g_hitbox_w = clamp_int(round_to_int((double)g_hitbox_w * (double)target.nw / (double)old_w), 1, 4096);
+            g_hitbox_h = clamp_int(round_to_int((double)g_hitbox_h * (double)target.nh / (double)old_h), 1, 4096);
+        }
+
+        if (trim_bounds || optimize_bytes) {
+            int trim_x = 0, trim_y = 0;
+            trim_image_to_content(img, optimize_bytes, &trim_x, &trim_y, selected);
+        }
+
+        InvalidateThumb(target.idx);
+        changed++;
+        (void)new_stride;
+    }
+
+    if (changed > 0) {
+        mark_dirty();
+        g_img_tex_idx = -2;
+        g_zoom_reset = true;
+        g_pasted.active = false;
+        g_pasted.dragging = false;
+        g_xform.active = false;
+        deselect_all();
+    }
+    return changed;
+}
+
 static void DrawResizeSpriteDialog(void)
 {
     if (g_show_resize_sprite) ImGui::OpenPopup("Resize Sprite");
@@ -13983,6 +14709,105 @@ static void DrawResizeSpriteDialog(void)
     ImGui::EndPopup();
 }
 
+static void DrawBulkResizeDialog(void)
+{
+    if (g_show_bulk_resize) ImGui::OpenPopup("Bulk Resize Marked");
+    if (!ImGui::BeginPopupModal("Bulk Resize Marked", &g_show_bulk_resize,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    int marked = CountMarkedImages();
+    if (marked <= 0) {
+        ImGui::TextDisabled("No marked sprites");
+        if (ImGui::Button("Close", ImVec2(100, 0))) {
+            g_show_bulk_resize = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    ImGui::Text("%d marked sprite%s", marked, marked == 1 ? "" : "s");
+    ImGui::Separator();
+
+    ImGui::Checkbox("Constrain Aspect Ratio", &g_bulk_resize_lock_aspect);
+    ImGui::SetNextItemWidth(110);
+    if (g_bulk_resize_lock_aspect) {
+        int pct = g_bulk_resize_scale_x;
+        if (ImGui::InputInt("Scale %", &pct, 1, 10)) {
+            g_bulk_resize_scale_x = g_bulk_resize_scale_y = clamp_int(pct, 1, 3200);
+        }
+    } else {
+        int sx = g_bulk_resize_scale_x;
+        if (ImGui::InputInt("Scale X %", &sx, 1, 10))
+            g_bulk_resize_scale_x = clamp_int(sx, 1, 3200);
+        ImGui::SetNextItemWidth(110);
+        int sy = g_bulk_resize_scale_y;
+        if (ImGui::InputInt("Scale Y %", &sy, 1, 10))
+            g_bulk_resize_scale_y = clamp_int(sy, 1, 3200);
+    }
+
+    const char *mode_names[] = {
+        "Lossless Palette IDs",
+        "Max Quality",
+        "Quality + Smallest Bytes"
+    };
+    ImGui::SetNextItemWidth(220);
+    ImGui::Combo("Mode", &g_bulk_resize_mode, mode_names, 3);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Lossless Palette IDs keeps existing indices exact with nearest-neighbor.\n"
+                          "Max Quality resamples RGB from each sprite palette and remaps.\n"
+                          "Quality + Smallest Bytes also trims transparent bounds.");
+    }
+
+    bool force_trim = (g_bulk_resize_mode == (int)SpriteResizeMode::QualitySmallBytes);
+    bool trim_box = force_trim ? true : g_bulk_resize_trim_bounds;
+    if (force_trim) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("Trim Transparent Bounds", &trim_box) && !force_trim)
+        g_bulk_resize_trim_bounds = trim_box;
+    if (force_trim) ImGui::EndDisabled();
+
+    int preview_changed = 0;
+    long long old_bytes = 0;
+    long long new_bytes = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (!(img->flags & 1) || !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+        int nw = clamp_int(round_to_int((double)img->w * (double)g_bulk_resize_scale_x / 100.0), 1, 4096);
+        int nh = clamp_int(round_to_int((double)img->h * (double)g_bulk_resize_scale_y / 100.0), 1, 4096);
+        old_bytes += (long long)(((int)img->w + 3) & ~3) * (long long)img->h;
+        new_bytes += (long long)((nw + 3) & ~3) * (long long)nh;
+        if (nw != (int)img->w || nh != (int)img->h || g_bulk_resize_trim_bounds || force_trim)
+            preview_changed++;
+    }
+    ImGui::TextDisabled("IMG data before trim: %lld B -> %lld B", old_bytes, new_bytes);
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(preview_changed <= 0);
+    if (ImGui::Button("Resize Marked", ImVec2(120, 0))) {
+        SpriteResizeMode mode = (SpriteResizeMode)clamp_int(g_bulk_resize_mode, 0, 2);
+        int n = BulkResizeMarkedSprites(g_bulk_resize_scale_x,
+                                        g_bulk_resize_scale_y,
+                                        mode,
+                                        g_bulk_resize_trim_bounds);
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 n > 0 ? "Bulk resized %d marked sprite%s."
+                       : "No marked sprites resized.",
+                 n, n == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+        if (n > 0) {
+            g_show_bulk_resize = false;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_bulk_resize = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 /* ---- Public C interface ---- */
 
 void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *canvas_tex)
@@ -14070,6 +14895,7 @@ void imgui_overlay_init(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture 
 
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
+    SessionRestore();
 }
 
 void imgui_overlay_process_event(SDL_Event *e)
@@ -16838,59 +17664,123 @@ static void DrawPaletteReduceDialog(void)
     if (!g_show_palette_reduce) ClearPaletteReducePreviewTextures();
 }
 
+static void DrawAutoSplitSummaryLine(const char *label,
+                                     const AutoSplitTargetSummary &summary)
+{
+    if (summary.split_count <= 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.66f, 0.30f, 1.0f),
+                           "%s: no legal split", label);
+        return;
+    }
+
+    long long delta = summary.src_zcom_bits - summary.split_zcom_bits;
+    double pct = summary.src_zcom_bits > 0
+        ? (double)delta * 100.0 / (double)summary.src_zcom_bits
+        : 0.0;
+    ImVec4 col = delta >= 0
+        ? ImVec4(0.42f, 0.90f, 0.55f, 1.0f)
+        : ImVec4(1.0f, 0.66f, 0.30f, 1.0f);
+    ImGui::TextColored(col, "%s: %lld -> %lld bits (%+.1f%%)",
+                       label, summary.src_zcom_bits,
+                       summary.split_zcom_bits, pct);
+    if (summary.selected_preview.best_split_valid &&
+        summary.selected_preview.target_count > 0) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("selected cut %s=%d",
+                            summary.selected_preview.best_split_vertical ? "x" : "y",
+                            summary.selected_preview.best_split_pos);
+    }
+    ImGui::TextDisabled("%d split-ready target%s, %d skipped below/empty threshold",
+                        summary.split_count,
+                        summary.split_count == 1 ? "" : "s",
+                        summary.skipped_count);
+}
+
 static void DrawAutoChopDialog(void)
 {
     if (g_show_auto_chop) ImGui::OpenPopup("Break into Subframes");
     if (!ImGui::BeginPopupModal("Break into Subframes", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) return;
 
     ImGui::TextWrapped("Breaks marked sprites, or the selected sprite if none are marked,\n"
-                       "into Midway-style A/B/C pieces and recalculates ANIX/ANIY.\n"
-                       "MK2 character art usually splits into horizontal pieces; ANIX/ANIY keeps them lined up.");
+                       "into Midway-style A/B pieces and recalculates ANIX/ANIY.");
     ImGui::Spacing();
-    if (ImGui::Button("Auto 3 Subframes", ImVec2(140, 0))) AutoChopSetThreeBandSize();
+
+    AutoSplitTargetSummary horizontal_summary;
+    AutoSplitTargetSummary vertical_summary;
+    BuildAutoSplitTargetSummary(false, &horizontal_summary);
+    BuildAutoSplitTargetSummary(true, &vertical_summary);
+
+    ImGui::RadioButton("Best Horizontal Cut", &g_chop_mode,
+                       AutoChopMode_BestHorizontal);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
-    if (ImGui::InputInt("Piece Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
-    ImGui::SetNextItemWidth(100);
-    if (ImGui::InputInt("Piece Height", &g_chop_h)) { if (g_chop_h < 1) g_chop_h = 1; }
+    ImGui::RadioButton("Best Vertical Cut", &g_chop_mode,
+                       AutoChopMode_BestVertical);
+    ImGui::SameLine();
+    ImGui::RadioButton("Manual Grid", &g_chop_mode, AutoChopMode_ManualGrid);
     ImGui::Checkbox("Trim empty space (Highly recommended)", &g_chop_trim);
 
-    AutoChopPreview summary;
-    BuildAutoChopTargetSummary(&summary);
-    if (summary.target_count > 0) {
-        if (summary.pieces.empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 0.66f, 0.30f, 1.0f),
-                               "LOAD2 ZCOM: no non-empty pieces");
-        } else {
-            long long delta = summary.src_zcom_bits - summary.split_zcom_bits;
-            double pct = summary.src_zcom_bits > 0
-                ? (double)delta * 100.0 / (double)summary.src_zcom_bits
-                : 0.0;
-            ImVec4 col = delta >= 0
-                ? ImVec4(0.42f, 0.90f, 0.55f, 1.0f)
-                : ImVec4(1.0f, 0.66f, 0.30f, 1.0f);
-            ImGui::TextColored(col, "LOAD2 ZCOM: %lld -> %lld bits (%+.1f%%)",
-                               summary.src_zcom_bits, summary.split_zcom_bits, pct);
+    ImGui::Spacing();
+    ImGui::TextDisabled("Best cuts require both sides to be greater than %dpx.",
+                        k_auto_split_min_side);
+    DrawAutoSplitSummaryLine("Horizontal", horizontal_summary);
+    DrawAutoSplitSummaryLine("Vertical", vertical_summary);
+
+    if (g_chop_mode == AutoChopMode_ManualGrid) {
+        ImGui::Spacing();
+        if (ImGui::Button("Auto 3 Subframes", ImVec2(140, 0))) AutoChopSetThreeBandSize();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt("Piece Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt("Piece Height", &g_chop_h)) { if (g_chop_h < 1) g_chop_h = 1; }
+
+        AutoChopPreview summary;
+        BuildAutoChopTargetSummary(&summary);
+        if (summary.target_count > 0) {
+            if (summary.pieces.empty()) {
+                ImGui::TextColored(ImVec4(1.0f, 0.66f, 0.30f, 1.0f),
+                                   "LOAD2 ZCOM: no non-empty pieces");
+            } else {
+                long long delta = summary.src_zcom_bits - summary.split_zcom_bits;
+                double pct = summary.src_zcom_bits > 0
+                    ? (double)delta * 100.0 / (double)summary.src_zcom_bits
+                    : 0.0;
+                ImVec4 col = delta >= 0
+                    ? ImVec4(0.42f, 0.90f, 0.55f, 1.0f)
+                    : ImVec4(1.0f, 0.66f, 0.30f, 1.0f);
+                ImGui::TextColored(col, "Manual grid LOAD2 ZCOM: %lld -> %lld bits (%+.1f%%)",
+                                   summary.src_zcom_bits, summary.split_zcom_bits, pct);
+            }
+            char bpp_buf[32];
+            if (summary.bpp > 0) snprintf(bpp_buf, sizeof(bpp_buf), "%d bpp", summary.bpp);
+            else snprintf(bpp_buf, sizeof(bpp_buf), "mixed bpp");
+            ImGui::TextDisabled("%d target%s, %d piece%s, %d empty cell%s skipped, %s",
+                                summary.target_count,
+                                summary.target_count == 1 ? "" : "s",
+                                (int)summary.pieces.size(),
+                                summary.pieces.size() == 1 ? "" : "s",
+                                summary.empty_cells,
+                                summary.empty_cells == 1 ? "" : "s",
+                                bpp_buf);
         }
-        char bpp_buf[32];
-        if (summary.bpp > 0) snprintf(bpp_buf, sizeof(bpp_buf), "%d bpp", summary.bpp);
-        else snprintf(bpp_buf, sizeof(bpp_buf), "mixed bpp");
-        ImGui::TextDisabled("%d target%s, %d piece%s, %d empty cell%s skipped, %s",
-                            summary.target_count,
-                            summary.target_count == 1 ? "" : "s",
-                            (int)summary.pieces.size(),
-                            summary.pieces.size() == 1 ? "" : "s",
-                            summary.empty_cells,
-                            summary.empty_cells == 1 ? "" : "s",
-                            bpp_buf);
     }
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
+    bool best_horizontal = (g_chop_mode == AutoChopMode_BestHorizontal);
+    bool best_vertical = (g_chop_mode == AutoChopMode_BestVertical);
+    bool can_best = best_horizontal ? (horizontal_summary.split_count > 0)
+                                    : (vertical_summary.split_count > 0);
+    if (g_chop_mode == AutoChopMode_ManualGrid) can_best = true;
+    ImGui::BeginDisabled(!can_best);
     if (ImGui::Button("Break", ImVec2(100, 0))) {
-        int count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim);
+        int count = 0;
+        if (best_horizontal || best_vertical)
+            count = ApplyBestAutoSplitToTargets(best_vertical);
+        else
+            count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim);
         if (count > 0) {
             snprintf(g_restore_msg, sizeof(g_restore_msg), "Broke into %d subframe piece(s).", count);
         } else {
@@ -16900,6 +17790,7 @@ static void DrawAutoChopDialog(void)
         g_show_auto_chop = false;
         ImGui::CloseCurrentPopup();
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(100, 0))) {
         g_show_auto_chop = false;
@@ -18313,6 +19204,7 @@ void imgui_overlay_render(void)
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Break into Subframes...")) OpenAutoChopDialog();
             if (ImGui::MenuItem("Resize Sprite...", NULL, false, g_doc->ilselected >= 0)) OpenResizeSpriteDialog();
+            if (ImGui::MenuItem("Bulk Resize Marked...", NULL, false, CountMarkedImages() > 0)) OpenBulkResizeDialog();
             if (ImGui::BeginMenu("Transform Selected", g_doc->ilselected >= 0)) {
                 DrawSpriteTransformMenuItems();
                 ImGui::EndMenu();
@@ -19562,6 +20454,10 @@ void imgui_overlay_render(void)
             if (!g_clipboard.valid) ImGui::EndDisabled();
             ImGui::SameLine();
             if (n_marked_imgs == 0) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Bulk Size##img")) OpenBulkResizeDialog();
+            if (n_marked_imgs > 0 && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Resize every marked sprite by percentage");
+            ImGui::SameLine();
             if (ImGui::SmallButton("Bulk Rename##img")) OpenRenameMarkedImages();
             if (n_marked_imgs > 0 && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Rename marked sprites as Base1, Base2, Base3...");
@@ -19731,7 +20627,7 @@ void imgui_overlay_render(void)
                 g_palette_drag_undo_active = false;
         }
 
-        /* --- Color --- */
+        /* --- Color tools: remap and palette-wide adjustments. --- */
         if (ImGui::CollapsingHeader("Color Tools")) {
             auto begin_palette_drag_undo = []() {
                 if (!g_palette_drag_undo_active) {
@@ -19739,30 +20635,6 @@ void imgui_overlay_render(void)
                     g_palette_drag_undo_active = true;
                 }
             };
-            SDL_Color &col = g_palette[g_sel_color];
-            int r = col.r, g = col.g, b = col.b;
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("R##cr", &r, 0, 255)) {
-                begin_palette_drag_undo();
-                col.r = (unsigned char)r;
-                palette_writeback(g_sel_color);
-                commit_palette_adjustments();
-            }
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("G##cg", &g, 0, 255)) {
-                begin_palette_drag_undo();
-                col.g = (unsigned char)g;
-                palette_writeback(g_sel_color);
-                commit_palette_adjustments();
-            }
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("B##cb", &b, 0, 255)) {
-                begin_palette_drag_undo();
-                col.b = (unsigned char)b;
-                palette_writeback(g_sel_color);
-                commit_palette_adjustments();
-            }
-
             PAL *active_pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
             bool can_copy_zero = active_pal && active_pal->data_p;
             if (!can_copy_zero) ImGui::BeginDisabled();
@@ -19891,37 +20763,41 @@ void imgui_overlay_render(void)
             if (img) {
                 int ax = (short)img->anix, ay = (short)img->aniy;
                 int ax2 = (short)img->anix2, ay2 = (short)img->aniy2, az2 = (short)img->aniz2;
-                if (AnimPointSliderInt("X1##quick_ptx",  &ax,  -1024, 1024)) { undo_push(); img->anix  = (unsigned short)(short)ax;  }
-                if (AnimPointSliderInt("Y1##quick_pty",  &ay,  -1024, 1024)) { undo_push(); img->aniy  = (unsigned short)(short)ay;  }
+                if (AnimPointSliderInt("X1##quick_ptx",  &ax,  -1024, 1024))
+                    set_primary_anipoint_with_sequence(img, ax, (int)(short)img->aniy);
+                if (AnimPointSliderInt("Y1##quick_pty",  &ay,  -1024, 1024))
+                    set_primary_anipoint_with_sequence(img, (int)(short)img->anix, ay);
                 if (AnimPointSliderInt("X2##quick_ptx2", &ax2, -1024, 1024)) {
-                    undo_push();
-                    activate_secondary_anipoint(img);
-                    img->anix2 = (unsigned short)(short)ax2;
+                    int cur_y2 = secondary_anipoint_in_use(img) ? (int)(short)img->aniy2 : 0;
+                    set_secondary_anipoint_with_sequence(img, ax2, cur_y2);
                 }
                 if (AnimPointSliderInt("Y2##quick_pty2", &ay2, -1024, 1024)) {
-                    undo_push();
-                    activate_secondary_anipoint(img);
-                    img->aniy2 = (unsigned short)(short)ay2;
+                    int cur_x2 = secondary_anipoint_in_use(img) ? (int)(short)img->anix2 : 0;
+                    set_secondary_anipoint_with_sequence(img, cur_x2, ay2);
                 }
                 if (AnimPointSliderInt("AZ2##quick_ptz2", &az2, -1024, 1024)) {
-                    undo_push();
-                    if (az2 == -1) clear_secondary_anipoint(img);
-                    else {
-                        activate_secondary_anipoint(img);
-                        img->aniz2 = (unsigned short)(short)az2;
+                    if (begin_sequence_anipoint_edit()) {
+                        if (az2 == -1) clear_secondary_anipoint(img);
+                        else {
+                            activate_secondary_anipoint(img);
+                            img->aniz2 = (unsigned short)(short)az2;
+                        }
                     }
                 }
                 if (ImGui::SmallButton("Default Center##quick_anipts")) {
-                    undo_push();
-                    default_anipoints_to_center(img);
+                    set_primary_anipoint_with_sequence(img,
+                                                       (int)img->w / 2,
+                                                       (int)img->h / 2);
+                    if (begin_sequence_anipoint_edit())
+                        clear_secondary_anipoint(img);
                     g_img_tex_idx = -2;
                 }
                 ImGui::SameLine();
                 bool had_second_point = secondary_anipoint_in_use(img);
                 if (!had_second_point) ImGui::BeginDisabled();
                 if (ImGui::SmallButton("Clear 2nd##quick_anipts")) {
-                    undo_push();
-                    clear_secondary_anipoint(img);
+                    if (begin_sequence_anipoint_edit())
+                        clear_secondary_anipoint(img);
                 }
                 if (!had_second_point) ImGui::EndDisabled();
             } else {
@@ -19988,32 +20864,36 @@ void imgui_overlay_render(void)
             if (img) {
                 int ax = (short)img->anix, ay = (short)img->aniy;
                 int ax2 = (short)img->anix2, ay2 = (short)img->aniy2, az2 = (short)img->aniz2;
-                if (AnimPointSliderInt("X1##ptx",  &ax,  -1024, 1024)) { undo_push(); img->anix  = (unsigned short)(short)ax;  }
-                if (AnimPointSliderInt("Y1##pty",  &ay,  -1024, 1024)) { undo_push(); img->aniy  = (unsigned short)(short)ay;  }
+                if (AnimPointSliderInt("X1##ptx",  &ax,  -1024, 1024))
+                    set_primary_anipoint_with_sequence(img, ax, (int)(short)img->aniy);
+                if (AnimPointSliderInt("Y1##pty",  &ay,  -1024, 1024))
+                    set_primary_anipoint_with_sequence(img, (int)(short)img->anix, ay);
                 if (AnimPointSliderInt("X2##ptx2", &ax2, -1024, 1024)) {
-                    undo_push();
-                    activate_secondary_anipoint(img);
-                    img->anix2 = (unsigned short)(short)ax2;
+                    int cur_y2 = secondary_anipoint_in_use(img) ? (int)(short)img->aniy2 : 0;
+                    set_secondary_anipoint_with_sequence(img, ax2, cur_y2);
                 }
                 if (AnimPointSliderInt("Y2##pty2", &ay2, -1024, 1024)) {
-                    undo_push();
-                    activate_secondary_anipoint(img);
-                    img->aniy2 = (unsigned short)(short)ay2;
+                    int cur_x2 = secondary_anipoint_in_use(img) ? (int)(short)img->anix2 : 0;
+                    set_secondary_anipoint_with_sequence(img, cur_x2, ay2);
                 }
                 if (AnimPointSliderInt("AZ2##ptz2", &az2, -1024, 1024)) {
-                    undo_push();
-                    if (az2 == -1) {
-                        clear_secondary_anipoint(img);
-                    } else {
-                        activate_secondary_anipoint(img);
-                        img->aniz2 = (unsigned short)(short)az2;
+                    if (begin_sequence_anipoint_edit()) {
+                        if (az2 == -1) {
+                            clear_secondary_anipoint(img);
+                        } else {
+                            activate_secondary_anipoint(img);
+                            img->aniz2 = (unsigned short)(short)az2;
+                        }
                     }
                 }
 
                 ImGui::Spacing();
                 if (ImGui::Button("Default Center", ImVec2(-1, 0))) {
-                    undo_push();
-                    default_anipoints_to_center(img);
+                    set_primary_anipoint_with_sequence(img,
+                                                       (int)img->w / 2,
+                                                       (int)img->h / 2);
+                    if (begin_sequence_anipoint_edit())
+                        clear_secondary_anipoint(img);
                     g_img_tex_idx = -2;
                     snprintf(g_restore_msg, sizeof(g_restore_msg),
                              "Centered anim point for %s and cleared secondary.", img->n_s);
@@ -20025,8 +20905,8 @@ void imgui_overlay_render(void)
                 bool had_second_point = secondary_anipoint_in_use(img);
                 if (!had_second_point) ImGui::BeginDisabled();
                 if (ImGui::Button("Clear 2nd Point", ImVec2(-1, 0))) {
-                    undo_push();
-                    clear_secondary_anipoint(img);
+                    if (begin_sequence_anipoint_edit())
+                        clear_secondary_anipoint(img);
                 }
                 if (had_second_point && ImGui::IsItemHovered())
                     ImGui::SetTooltip("Clears X2/Y2/AZ2. AZ2 becomes -1.");
@@ -20254,9 +21134,10 @@ void imgui_overlay_render(void)
                         int dx = (int)(d.x / wscale);
                         int dy = (int)(d.y / wscale);
                         if (dx != 0 || dy != 0) {
-                            cimg->anix = (unsigned short)((int)(short)cimg->anix - dx);
-                            cimg->aniy = (unsigned short)((int)(short)cimg->aniy - dy);
-                            mark_dirty();
+                            int next_ax = (int)(short)cimg->anix +
+                                          (g_world_mirror_active ? dx : -dx);
+                            int next_ay = (int)(short)cimg->aniy - dy;
+                            set_primary_anipoint_with_sequence(cimg, next_ax, next_ay);
                         }
                     }
                     /* Wheel zooms world canvas (changes wscale via origin sizing). */
@@ -20422,9 +21303,18 @@ void imgui_overlay_render(void)
                 g_show_auto_chop && SelectedImageWillAutoChop();
             if (show_auto_chop_preview) {
                 IMG *chop_img = get_img(g_doc->ilselected);
-                show_auto_chop_preview =
-                    BuildAutoChopPreviewForImage(chop_img, &auto_chop_preview) &&
-                    !auto_chop_preview.pieces.empty();
+                if (g_chop_mode == AutoChopMode_BestHorizontal ||
+                    g_chop_mode == AutoChopMode_BestVertical) {
+                    bool vertical = (g_chop_mode == AutoChopMode_BestVertical);
+                    show_auto_chop_preview =
+                        BuildBestAutoSplitPreviewForImage(chop_img, vertical,
+                                                          &auto_chop_preview) &&
+                        !auto_chop_preview.pieces.empty();
+                } else {
+                    show_auto_chop_preview =
+                        BuildAutoChopPreviewForImage(chop_img, &auto_chop_preview) &&
+                        !auto_chop_preview.pieces.empty();
+                }
                 if (show_auto_chop_preview) {
                     DrawAutoChopPreviewRects(dl, auto_chop_preview,
                                              img_pos, sx, sy, false);
@@ -20884,14 +21774,13 @@ void imgui_overlay_render(void)
                 ImU32 col1 = h1 ? IM_COL32(255, 220, 60, 255) : IM_COL32(255, 255, 255, 255);
                 draw_crosshair(s1, col1, 14.f, h1 ? 2.f : 1.5f);
 
-                if (h1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag1 = true; undo_push(); widget_consumed_click = true; }
+                if (h1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag1 = true; widget_consumed_click = true; }
                 if (g_anipoint_drag1 && mbdn) {
                     int nx = (int)((mouse.x - img_pos.x) / sx);
                     int ny = (int)((mouse.y - img_pos.y) / sy);
-                    img->anix = (unsigned short)(short)nx;
-                    img->aniy = (unsigned short)(short)ny;
+                    set_primary_anipoint_with_sequence(img, nx, ny);
                     widget_consumed_click = true;
-                } else if (!mbdn && g_anipoint_drag1) { g_anipoint_drag1 = false; undo_push(); }
+                } else if (!mbdn && g_anipoint_drag1) { g_anipoint_drag1 = false; }
 
                 /* Secondary anipoint sentinel is signed -1; cast first so
                    (-1, -1) doesn't read as 0xFFFF and emit a phantom line. */
@@ -20905,15 +21794,13 @@ void imgui_overlay_render(void)
                     /* Thin connector line between the two anipoints. */
                     dl->AddLine(s1, s2, IM_COL32(255, 255, 0, 140), 1.f);
 
-                    if (h2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag2 = true; undo_push(); widget_consumed_click = true; }
+                    if (h2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag2 = true; widget_consumed_click = true; }
                     if (g_anipoint_drag2 && mbdn) {
                         int nx = (int)((mouse.x - img_pos.x) / sx);
                         int ny = (int)((mouse.y - img_pos.y) / sy);
-                        img->anix2 = (unsigned short)(short)nx;
-                        img->aniy2 = (unsigned short)(short)ny;
-                        if ((short)img->aniz2 == -1) img->aniz2 = 0;
+                        set_secondary_anipoint_with_sequence(img, nx, ny);
                         widget_consumed_click = true;
-                    } else if (!mbdn && g_anipoint_drag2) { g_anipoint_drag2 = false; undo_push(); }
+                    } else if (!mbdn && g_anipoint_drag2) { g_anipoint_drag2 = false; }
                 }
             }
         }
@@ -22501,6 +23388,8 @@ void imgui_overlay_render(void)
 
     DrawResizeSpriteDialog();
 
+    DrawBulkResizeDialog();
+
     DrawBulkRestoreRegexDialog();
 
     DrawDeleteImagesConfirm();
@@ -22525,6 +23414,7 @@ void imgui_overlay_render(void)
     DrawAboutModal();
     DrawTransientToast(io.DeltaTime);
     DrawVerboseLogWindow();
+    finish_sequence_anipoint_edit_if_idle();
 
     /* Flush to renderer */
     ImGui::Render();
@@ -22533,6 +23423,7 @@ void imgui_overlay_render(void)
 
 void imgui_overlay_shutdown(void)
 {
+    SessionSave();
     if (g_img_texture) { SDL_DestroyTexture(g_img_texture); g_img_texture = NULL; }
     if (g_world_onion_tex) { SDL_DestroyTexture(g_world_onion_tex); g_world_onion_tex = NULL; }
     ClearPaletteReducePreviewTextures();
