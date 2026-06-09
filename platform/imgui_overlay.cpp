@@ -1123,12 +1123,6 @@ static void xform_begin(void);  /* forward decl — used by paste_image */
 static int  FindDirtyDocumentIndex(void);
 static bool HasDirtyDocuments(void);
 static void ClearTimelineThumbCache(void);
-static int  PaletteColorDistance5(unsigned short a, unsigned short b);
-static int  PaletteColorDistance5W(unsigned short a, unsigned short b, bool perceptual);
-static int  FindNearestPaletteSlot(const PAL *pal, unsigned short color_word);
-static int  FindNearestMergedSlot(const PAL *target, int base_count,
-                                   const unsigned short *added, int added_count,
-                                   unsigned short color_word, bool perceptual);
 static int  BuildMergeAdditions(int target_idx, int target_base_numc, bool grow,
                                 unsigned short added[256], int *overflow_out);
 static void MergeMarkedPalettes(bool force_quality_merge = false);
@@ -5728,80 +5722,6 @@ static int MergeDuplicatePalettes(void)
              remapped_images ? "" : " (no sprites remapped)");
     g_restore_msg_timer = 4.0f;
     return duplicates;
-}
-
-static int PaletteColorDistance5(unsigned short a, unsigned short b)
-{
-    int ar = (a >> 10) & 0x1F;
-    int ag = (a >>  5) & 0x1F;
-    int ab =  a        & 0x1F;
-    int br = (b >> 10) & 0x1F;
-    int bg = (b >>  5) & 0x1F;
-    int bb =  b        & 0x1F;
-    int dr = ar - br;
-    int dg = ag - bg;
-    int db = ab - bb;
-    return dr * dr + dg * dg + db * db;
-}
-
-/* Distance used for slot SELECTION. With perceptual on, squared channel diffs
-   are weighted by luma (R 0.30, G 0.59, B 0.11) so matches favour the colors
-   the eye is most sensitive to. Quality stats still report unweighted drift. */
-static int PaletteColorDistance5W(unsigned short a, unsigned short b, bool perceptual)
-{
-    int dr = ((a >> 10) & 0x1F) - ((b >> 10) & 0x1F);
-    int dg = ((a >>  5) & 0x1F) - ((b >>  5) & 0x1F);
-    int db = ( a        & 0x1F) - ( b        & 0x1F);
-    if (perceptual)
-        return 30 * dr * dr + 59 * dg * dg + 11 * db * db;
-    return dr * dr + dg * dg + db * db;
-}
-
-/* Nearest slot in the target as it will look after growth: original target
-   colors [1..base_count) plus the queued additions [base_count..+added_count).
-   Returns a final-space slot index, or 0 only when there is no usable color. */
-static int FindNearestMergedSlot(const PAL *target, int base_count,
-                                 const unsigned short *added, int added_count,
-                                 unsigned short color_word, bool perceptual)
-{
-    int best = 0;
-    int best_dist = 0x7FFFFFFF;
-    if (target && target->data_p) {
-        const unsigned char *td = (const unsigned char *)target->data_p;
-        if (base_count > 256) base_count = 256;
-        for (int i = 1; i < base_count; i++) {
-            unsigned short w = (unsigned short)(td[i * 2] | (td[i * 2 + 1] << 8));
-            int dist = PaletteColorDistance5W(color_word, w, perceptual);
-            if (dist < best_dist) { best_dist = dist; best = i; if (dist == 0) return best; }
-        }
-    }
-    for (int j = 0; j < added_count; j++) {
-        int dist = PaletteColorDistance5W(color_word, added[j], perceptual);
-        if (dist < best_dist) { best_dist = dist; best = base_count + j; if (dist == 0) return best; }
-    }
-    return best;
-}
-
-static int FindNearestPaletteSlot(const PAL *pal, unsigned short color_word)
-{
-    if (!pal || !pal->data_p || pal->numc <= 1) return 0;
-
-    const unsigned char *pd = (const unsigned char *)pal->data_p;
-    int count = pal->numc;
-    if (count > 256) count = 256;
-
-    int best = 1;
-    int best_dist = 0x7FFFFFFF;
-    for (int i = 1; i < count; i++) {
-        unsigned short w = (unsigned short)(pd[i * 2] | (pd[i * 2 + 1] << 8));
-        int dist = PaletteColorDistance5(color_word, w);
-        if (dist < best_dist) {
-            best_dist = dist;
-            best = i;
-            if (dist == 0) break;
-        }
-    }
-    return best;
 }
 
 static int FindMarkedPaletteExcept(int except_idx)

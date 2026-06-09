@@ -32,3 +32,24 @@ unsigned short pal_word_or_black(PAL *pal, int idx);
 
 /* Convert 8-bit RGB to a packed 15-bit palette word. */
 unsigned short rgb_to_word15(unsigned char r, unsigned char g, unsigned char b);
+
+/* Squared 5/5/5 channel distance between two packed words. Equivalent to
+   palette_word_distance_sq; kept under this name for the slot-selection call
+   sites that pair with the perceptual variant below. */
+int PaletteColorDistance5(unsigned short a, unsigned short b);
+
+/* Distance used for slot SELECTION. With `perceptual` on, squared channel
+   diffs are luma-weighted (R 0.30, G 0.59, B 0.11) so matches favor the
+   colors the eye is most sensitive to. */
+int PaletteColorDistance5W(unsigned short a, unsigned short b, bool perceptual);
+
+/* Nearest non-transparent slot [1..numc) in `pal` to `color_word`, by
+   PaletteColorDistance5. Returns 0 when the palette is empty/invalid. */
+int FindNearestPaletteSlot(const PAL *pal, unsigned short color_word);
+
+/* Nearest slot in the target as it will look after growth: original target
+   colors [1..base_count) plus queued additions [base_count..+added_count).
+   Returns a final-space slot index, or 0 only when there is no usable color. */
+int FindNearestMergedSlot(const PAL *target, int base_count,
+                          const unsigned short *added, int added_count,
+                          unsigned short color_word, bool perceptual);

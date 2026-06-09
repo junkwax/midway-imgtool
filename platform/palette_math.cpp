@@ -52,3 +52,71 @@ unsigned short rgb_to_word15(unsigned char r, unsigned char g, unsigned char b)
     rgb8_to_pal_word(r, g, b, tmp);
     return (unsigned short)(tmp[0] | (tmp[1] << 8));
 }
+
+int PaletteColorDistance5(unsigned short a, unsigned short b)
+{
+    int ar = (a >> 10) & 0x1F;
+    int ag = (a >>  5) & 0x1F;
+    int ab =  a        & 0x1F;
+    int br = (b >> 10) & 0x1F;
+    int bg = (b >>  5) & 0x1F;
+    int bb =  b        & 0x1F;
+    int dr = ar - br;
+    int dg = ag - bg;
+    int db = ab - bb;
+    return dr * dr + dg * dg + db * db;
+}
+
+int PaletteColorDistance5W(unsigned short a, unsigned short b, bool perceptual)
+{
+    int dr = ((a >> 10) & 0x1F) - ((b >> 10) & 0x1F);
+    int dg = ((a >>  5) & 0x1F) - ((b >>  5) & 0x1F);
+    int db = ( a        & 0x1F) - ( b        & 0x1F);
+    if (perceptual)
+        return 30 * dr * dr + 59 * dg * dg + 11 * db * db;
+    return dr * dr + dg * dg + db * db;
+}
+
+int FindNearestMergedSlot(const PAL *target, int base_count,
+                          const unsigned short *added, int added_count,
+                          unsigned short color_word, bool perceptual)
+{
+    int best = 0;
+    int best_dist = 0x7FFFFFFF;
+    if (target && target->data_p) {
+        const unsigned char *td = (const unsigned char *)target->data_p;
+        if (base_count > 256) base_count = 256;
+        for (int i = 1; i < base_count; i++) {
+            unsigned short w = (unsigned short)(td[i * 2] | (td[i * 2 + 1] << 8));
+            int dist = PaletteColorDistance5W(color_word, w, perceptual);
+            if (dist < best_dist) { best_dist = dist; best = i; if (dist == 0) return best; }
+        }
+    }
+    for (int j = 0; j < added_count; j++) {
+        int dist = PaletteColorDistance5W(color_word, added[j], perceptual);
+        if (dist < best_dist) { best_dist = dist; best = base_count + j; if (dist == 0) return best; }
+    }
+    return best;
+}
+
+int FindNearestPaletteSlot(const PAL *pal, unsigned short color_word)
+{
+    if (!pal || !pal->data_p || pal->numc <= 1) return 0;
+
+    const unsigned char *pd = (const unsigned char *)pal->data_p;
+    int count = pal->numc;
+    if (count > 256) count = 256;
+
+    int best = 1;
+    int best_dist = 0x7FFFFFFF;
+    for (int i = 1; i < count; i++) {
+        unsigned short w = (unsigned short)(pd[i * 2] | (pd[i * 2 + 1] << 8));
+        int dist = PaletteColorDistance5(color_word, w);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best = i;
+            if (dist == 0) break;
+        }
+    }
+    return best;
+}
