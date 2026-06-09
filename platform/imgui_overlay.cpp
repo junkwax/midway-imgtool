@@ -384,20 +384,8 @@ static const float PALETTE_H   = 112.0f;
 static const float TIMELINE_H  = 108.0f;
 
 /* ---- Undo system ---- */
-#define UNDO_STACK_SIZE 32
-struct EditSnapshot {
-    unsigned int   seq;
-    int            image_idx;
-    unsigned short anix, aniy;
-    unsigned short anix2, aniy2, aniz2;
-    unsigned short w, h;
-    unsigned short palnum;
-    unsigned short flags;
-    int            hitbox_x, hitbox_y, hitbox_w, hitbox_h;
-};
-static EditSnapshot g_undo[UNDO_STACK_SIZE];
-static int          g_undo_idx   = -1;
-static int          g_undo_count =  0;
+/* EditSnapshot, UNDO_STACK_SIZE, and g_undo[]/g_undo_idx/g_undo_count moved to
+   ui_internal.h / ui_state.cpp. */
 
 /* ---- Clipboard (pixel data only) ---- */
 struct CopiedImage {

@@ -37,3 +37,19 @@ extern int   g_zoom_pending_steps;
 extern bool  g_zoom_pending_fit;
 extern unsigned char *g_pixel_undo;
 extern int            g_pixel_undo_img;  /* -2 = never built */
+
+/* ---- Undo system (geometry / metadata snapshots) ---- */
+#define UNDO_STACK_SIZE 32
+struct EditSnapshot {
+    unsigned int   seq;
+    int            image_idx;
+    unsigned short anix, aniy;
+    unsigned short anix2, aniy2, aniz2;
+    unsigned short w, h;
+    unsigned short palnum;
+    unsigned short flags;
+    int            hitbox_x, hitbox_y, hitbox_w, hitbox_h;
+};
+extern EditSnapshot g_undo[UNDO_STACK_SIZE];
+extern int          g_undo_idx;
+extern int          g_undo_count;

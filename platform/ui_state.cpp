@@ -29,3 +29,8 @@ int   g_zoom_pending_steps = 0;
 bool  g_zoom_pending_fit   = false;
 unsigned char *g_pixel_undo     = NULL;
 int            g_pixel_undo_img = -1;  /* -2 = never built */
+
+/* ---- Undo system ---- */
+EditSnapshot g_undo[UNDO_STACK_SIZE];
+int          g_undo_idx   = -1;
+int          g_undo_count =  0;
