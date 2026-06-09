@@ -37,6 +37,7 @@
 #include "ui_timeline.h"
 #include "world_render.h"
 #include "anipoint.h"
+#include "img_util.h"
 #include "sprite_resize_ops.h"
 #include "img_io.h"
 #include "imgui_overlay.h"
@@ -754,7 +755,6 @@ static void AsmAnimSelect(int i);
 static bool clipboard_secondary_anipoint_in_use(void);
 static void clear_secondary_anipoint(IMG *img);
 static void activate_secondary_anipoint(IMG *img);
-static unsigned short signed_to_img_word(int v);
 static void MakeDerivedImageName(const char *base, const char *suffix, char out[16]);
 
 struct DocSnapshot {
@@ -1640,13 +1640,7 @@ static IMG *doc_get_img(Document *doc, int idx)
     return img;
 }
 
-static std::string img_name_string(const IMG *img)
-{
-    if (!img) return std::string();
-    size_t n = 0;
-    while (n < sizeof(img->n_s) && img->n_s[n] != '\0') n++;
-    return std::string(img->n_s, img->n_s + n);
-}
+/* img_name_string now lives in img_util.{h,cpp}. */
 
 static void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                             std::vector<std::vector<int>> &frame_pieces,
@@ -13208,12 +13202,7 @@ static int round_to_int(double v)
     return (int)(v >= 0.0 ? v + 0.5 : v - 0.5);
 }
 
-static unsigned short signed_to_img_word(int v)
-{
-    if (v < -32768) v = -32768;
-    if (v >  32767) v =  32767;
-    return (unsigned short)(short)v;
-}
+/* signed_to_img_word now lives in img_util.{h,cpp}. */
 
 static void clear_secondary_anipoint(IMG *img)
 {
