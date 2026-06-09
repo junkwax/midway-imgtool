@@ -35,6 +35,10 @@ declare in header → include from `imgui_overlay.cpp` → add to `CMakeLists.tx
       `pal_word_or_black`, `rgb_to_word15`), plus the distance/nearest-slot
       helpers (`PaletteColorDistance5`, `PaletteColorDistance5W`,
       `FindNearestPaletteSlot`, `FindNearestMergedSlot`).
+- [x] **`sprite_resize_ops`** — full-sprite resize resampling helpers
+      (`ResizeSpritePixelsNearest`, `ResizeSpritePixelsQuality`) with the UI
+      palette fallback passed in explicitly; dialog/undo/hitbox state remains
+      in the overlay.
 - [ ] **`color_ops`** — HSL/quantize/dither color math that takes raw buffers
       and palettes (no `g_doc` / UI globals).
 - [ ] **Leaf helpers of the big image ops** — pull the pure inner helpers out of
