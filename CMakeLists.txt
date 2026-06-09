@@ -169,6 +169,27 @@ endif()
 add_test(NAME sprite_sheet_import
          COMMAND sprite_sheet_import_test)
 
+# Pure-module unit tests. Each links only the extracted module under test (no
+# app/UI sources), so they're small and fast. They still pull SDL2 for headers
+# only: img_format.h includes document.h which includes SDL.h. SDL_MAIN_HANDLED
+# keeps SDL from redefining main(). Add new pure-logic modules here as the
+# overlay split proceeds.
+foreach(pure_test palette_math color_ops sprite_resize_ops)
+    add_executable(${pure_test}_test
+        test/${pure_test}_test.cpp
+        platform/${pure_test}.cpp
+    )
+    target_include_directories(${pure_test}_test PRIVATE platform)
+    target_link_libraries(${pure_test}_test PRIVATE SDL2::SDL2)
+    if(MSVC)
+        target_compile_options(${pure_test}_test PRIVATE /W3)
+        target_compile_definitions(${pure_test}_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+    else()
+        target_compile_definitions(${pure_test}_test PRIVATE SDL_MAIN_HANDLED)
+    endif()
+    add_test(NAME ${pure_test} COMMAND ${pure_test}_test)
+endforeach()
+
 # mk2_roundtrip_test: load + idempotent round-trip check on a real MKSTK.ASM.
 # Only built when MK2_MKSTK_PATH is set (so a fresh checkout without the mk2
 # source tree doesn't fail to configure). Run after build with:

@@ -6,7 +6,6 @@ doc/
 CMakeCache.txt
 CMakeFiles/
 prototype_outputs/
-test/
 codex-build/
 cmake_install.cmake
 *.vcxproj*
