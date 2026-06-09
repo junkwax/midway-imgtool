@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-x64",
+      "displayName": "Windows x64 (VS 2022)",
+      "description": "64-bit Visual Studio build. Requires the SDL2_DIR env var to point at the SDL2 devel 'cmake' folder (build.ps1 sets this up automatically).",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "SDL2_DIR": "$env{SDL2_DIR}"
+      }
+    },
+    {
+      "name": "windows-x86",
+      "inherits": "windows-x64",
+      "displayName": "Windows x86 (VS 2022)",
+      "architecture": "Win32"
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux (system SDL2)",
+      "description": "Uses the distro's libsdl2-dev. Install it first, e.g. 'sudo apt-get install libsdl2-dev'.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "macos",
+      "displayName": "macOS (Homebrew SDL2)",
+      "description": "Uses Homebrew's sdl2. Install it first with 'brew install sdl2'.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "$env{HOMEBREW_PREFIX}"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-x64", "configurePreset": "windows-x64", "configuration": "Release" },
+    { "name": "windows-x86", "configurePreset": "windows-x86", "configuration": "Release" },
+    { "name": "linux",       "configurePreset": "linux" },
+    { "name": "macos",       "configurePreset": "macos" }
+  ]
+}

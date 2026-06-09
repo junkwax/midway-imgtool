@@ -41,3 +41,5 @@ Thumbs.db
 *.md
 !README.md
 !CHANGELOG.md
+!CONTRIBUTING.md
+!refactoring_plan.md

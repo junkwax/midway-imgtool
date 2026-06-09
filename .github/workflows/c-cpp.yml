@@ -2,10 +2,15 @@ name: C/C++ CI
 
 on:
   push:
-    branches: ["SDL-main"]
+    # Mainline and integration branches plus refactor work; tag pushes
+    # (v*) additionally publish a Release (see the tag-gated steps below).
+    branches: ["SDL-main", "sdl-experimental", "refactor/**"]
     tags:     ["v*"]
+  # Build-verify every pull request regardless of target branch, so
+  # individual contributors get CI feedback before merge.
   pull_request:
-    branches: ["SDL-main"]
+  # Allow maintainers to trigger a build manually from the Actions tab.
+  workflow_dispatch:
 
 # Required for softprops/action-gh-release to create/update Releases on a
 # tagged push. The default GITHUB_TOKEN has read-only contents permission;
