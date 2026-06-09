@@ -33,6 +33,26 @@ int main(void)
         CHECK(secondary_anipoint_in_use(nullptr) == false);
     }
 
+    /* clear_secondary_anipoint sets the -1 sentinel; activate normalizes it so
+       the point reads as in-use. */
+    {
+        IMG img {};
+        img.anix2 = 3; img.aniy2 = 4; img.aniz2 = 0;
+        clear_secondary_anipoint(&img);
+        CHECK(secondary_anipoint_in_use(&img) == false);
+        CHECK(img.aniz2 == (unsigned short)-1);
+
+        activate_secondary_anipoint(&img);
+        CHECK(secondary_anipoint_in_use(&img) == true);  /* sentinels -> 0 */
+        CHECK(img.anix2 == 0 && img.aniy2 == 0 && img.aniz2 == 0);
+
+        /* activate leaves an already-valid point untouched. */
+        IMG img2 {};
+        img2.anix2 = 7; img2.aniy2 = 9; img2.aniz2 = 0;
+        activate_secondary_anipoint(&img2);
+        CHECK(img2.anix2 == 7 && img2.aniy2 == 9 && img2.aniz2 == 0);
+    }
+
     /* trim_sprite_name strips surrounding whitespace. */
     CHECK(trim_sprite_name("  WALK  ") == "WALK");
     CHECK(trim_sprite_name("WALK") == "WALK");

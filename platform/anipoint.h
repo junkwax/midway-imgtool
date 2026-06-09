@@ -18,6 +18,13 @@ bool secondary_anipoint_words_in_use(unsigned short x, unsigned short y, unsigne
 /* As above, for an IMG's anix2/aniy2/aniz2. */
 bool secondary_anipoint_in_use(const IMG *img);
 
+/* Mark the secondary anipoint unused (sets anix2/aniy2/aniz2 to the -1
+   sentinel). */
+void clear_secondary_anipoint(IMG *img);
+/* Make the secondary anipoint active, normalizing the -1 sentinel fields to 0
+   so secondary_anipoint_in_use() reports true. */
+void activate_secondary_anipoint(IMG *img);
+
 /* Trim leading/trailing whitespace from a sprite name. */
 std::string trim_sprite_name(std::string s);
 /* ASCII case-insensitive string equality. */

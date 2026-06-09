@@ -20,6 +20,22 @@ bool secondary_anipoint_in_use(const IMG *img)
     return secondary_anipoint_words_in_use(img->anix2, img->aniy2, img->aniz2);
 }
 
+void clear_secondary_anipoint(IMG *img)
+{
+    if (!img) return;
+    img->anix2 = (unsigned short)-1;
+    img->aniy2 = (unsigned short)-1;
+    img->aniz2 = (unsigned short)-1;
+}
+
+void activate_secondary_anipoint(IMG *img)
+{
+    if (!img) return;
+    if ((short)img->anix2 < 0) img->anix2 = 0;
+    if ((short)img->aniy2 < 0) img->aniy2 = 0;
+    if ((short)img->aniz2 == -1) img->aniz2 = 0;
+}
+
 std::string trim_sprite_name(std::string s)
 {
     while (!s.empty() && std::isspace((unsigned char)s.back()))

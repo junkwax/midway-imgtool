@@ -753,8 +753,6 @@ static bool LoadAsmAnimations(const char *path);
 static bool LoadAsmOpponent(const char *path);
 static void AsmAnimSelect(int i);
 static bool clipboard_secondary_anipoint_in_use(void);
-static void clear_secondary_anipoint(IMG *img);
-static void activate_secondary_anipoint(IMG *img);
 static void MakeDerivedImageName(const char *base, const char *suffix, char out[16]);
 
 struct DocSnapshot {
@@ -13204,23 +13202,8 @@ static int round_to_int(double v)
 
 /* signed_to_img_word now lives in img_util.{h,cpp}. */
 
-static void clear_secondary_anipoint(IMG *img)
-{
-    if (!img) return;
-    img->anix2 = (unsigned short)-1;
-    img->aniy2 = (unsigned short)-1;
-    img->aniz2 = (unsigned short)-1;
-}
-
-static void activate_secondary_anipoint(IMG *img)
-{
-    if (!img) return;
-    if ((short)img->anix2 < 0) img->anix2 = 0;
-    if ((short)img->aniy2 < 0) img->aniy2 = 0;
-    if ((short)img->aniz2 == -1) img->aniz2 = 0;
-}
-
-/* secondary_anipoint_words_in_use now lives in anipoint.{h,cpp}. */
+/* clear_secondary_anipoint / activate_secondary_anipoint and
+   secondary_anipoint_words_in_use now live in anipoint.{h,cpp}. */
 
 static bool clipboard_secondary_anipoint_in_use(void)
 {
