@@ -62,6 +62,7 @@ set(IMGTOOL_SOURCES
     platform/ui_timeline.cpp
     platform/world_render.cpp
     platform/anipoint.cpp
+    platform/anipoint_edit.cpp
     platform/img_util.cpp
     platform/color_ops.cpp
     platform/image_ops.cpp

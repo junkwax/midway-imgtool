@@ -37,6 +37,7 @@
 #include "ui_timeline.h"
 #include "world_render.h"
 #include "anipoint.h"
+#include "anipoint_edit.h"
 #include "img_util.h"
 #include "sprite_resize_ops.h"
 #include "img_io.h"
@@ -465,7 +466,8 @@ static bool g_pending_quit = false;
    frame of a drag). */
 static bool g_anipoint_drag1 = false;
 static bool g_anipoint_drag2 = false;
-static bool g_sequence_anipoint_undo_active = false;
+/* g_sequence_anipoint_undo_active + the sequence anipoint setters live in
+   anipoint_edit.{h,cpp}. */
 
 /* mark_dirty() and the InvalidatePaletteUsage() declaration now live in
    ui_internal.h (shared service). The g_dirty macro above stays for overlay
@@ -1924,125 +1926,10 @@ static int CountMarkedImages(void)
 /* InferSubframeParentName, trim_sprite_name, ascii_iequals, and
    strip_trailing_sequence_digits now live in anipoint.{h,cpp}. */
 
-static std::string anipoint_sequence_parent_name(const IMG *img)
-{
-    std::string name = trim_sprite_name(img_name_string(img));
-    std::string parent = InferSubframeParentName(name.c_str());
-    return parent.empty() ? name : parent;
-}
-
-static bool same_anipoint_sequence(const IMG *src, const IMG *candidate)
-{
-    if (!src || !candidate) return false;
-    std::string src_parent = anipoint_sequence_parent_name(src);
-    std::string candidate_parent = anipoint_sequence_parent_name(candidate);
-    if (src_parent.empty() || candidate_parent.empty()) return false;
-
-    std::string src_stem, candidate_stem;
-    bool src_numbered = strip_trailing_sequence_digits(src_parent, &src_stem);
-    bool candidate_numbered =
-        strip_trailing_sequence_digits(candidate_parent, &candidate_stem);
-
-    if (src_numbered)
-        return candidate_numbered && ascii_iequals(src_stem, candidate_stem);
-    return ascii_iequals(src_parent, candidate_parent);
-}
-
-static bool begin_sequence_anipoint_edit(void)
-{
-    if (g_sequence_anipoint_undo_active) {
-        mark_dirty();
-        return true;
-    }
-    if (!doc_undo_push()) return false;
-    g_sequence_anipoint_undo_active = true;
-    return true;
-}
-
-static void finish_sequence_anipoint_edit_if_idle(void)
-{
-    if (g_sequence_anipoint_undo_active &&
-        !ImGui::IsAnyItemActive() &&
-        !ImGui::IsMouseDown(ImGuiMouseButton_Left))
-        g_sequence_anipoint_undo_active = false;
-}
-
-static int apply_anipoint_delta_to_sequence(IMG *src, int src_idx,
-                                            int dx1, int dy1,
-                                            int dx2, int dy2,
-                                            bool affect_primary,
-                                            bool affect_secondary)
-{
-    if (!src || (!affect_primary && !affect_secondary)) return 0;
-    int changed = 0;
-    int idx = 0;
-    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
-        if (idx == src_idx || !same_anipoint_sequence(src, img)) continue;
-
-        bool touched = false;
-        if (affect_primary && (dx1 != 0 || dy1 != 0)) {
-            img->anix = signed_to_img_word((int)(short)img->anix + dx1);
-            img->aniy = signed_to_img_word((int)(short)img->aniy + dy1);
-            touched = true;
-        }
-        if (affect_secondary && (dx2 != 0 || dy2 != 0) &&
-            secondary_anipoint_in_use(img)) {
-            img->anix2 = signed_to_img_word((int)(short)img->anix2 + dx2);
-            img->aniy2 = signed_to_img_word((int)(short)img->aniy2 + dy2);
-            touched = true;
-        }
-        if (touched) {
-            InvalidateThumb(idx);
-            changed++;
-        }
-    }
-    return changed;
-}
-
-static bool set_primary_anipoint_with_sequence(IMG *img, int new_ax, int new_ay)
-{
-    if (!img) return false;
-    int old_ax = (int)(short)img->anix;
-    int old_ay = (int)(short)img->aniy;
-    int dx = new_ax - old_ax;
-    int dy = new_ay - old_ay;
-    if (dx == 0 && dy == 0) return false;
-    if (!begin_sequence_anipoint_edit()) return false;
-
-    img->anix = signed_to_img_word(new_ax);
-    img->aniy = signed_to_img_word(new_ay);
-    apply_anipoint_delta_to_sequence(img, g_doc->ilselected,
-                                     dx, dy, 0, 0, true, false);
-    InvalidateThumb(g_doc->ilselected);
-    g_img_tex_idx = -2;
-    mark_dirty();
-    return true;
-}
-
-static bool set_secondary_anipoint_with_sequence(IMG *img, int new_ax2, int new_ay2)
-{
-    if (!img) return false;
-    bool was_active = secondary_anipoint_in_use(img);
-    int old_ax2 = was_active ? (int)(short)img->anix2 : 0;
-    int old_ay2 = was_active ? (int)(short)img->aniy2 : 0;
-    int dx = new_ax2 - old_ax2;
-    int dy = new_ay2 - old_ay2;
-    if (was_active && dx == 0 && dy == 0) return false;
-    if (!begin_sequence_anipoint_edit()) return false;
-    if (!was_active)
-        activate_secondary_anipoint(img);
-
-    img->anix2 = signed_to_img_word(new_ax2);
-    img->aniy2 = signed_to_img_word(new_ay2);
-    if (dx != 0 || dy != 0) {
-        apply_anipoint_delta_to_sequence(img, g_doc->ilselected,
-                                         0, 0, dx, dy, false, true);
-    }
-    InvalidateThumb(g_doc->ilselected);
-    g_img_tex_idx = -2;
-    mark_dirty();
-    return true;
-}
+/* anipoint_sequence_parent_name, same_anipoint_sequence,
+   begin_sequence_anipoint_edit, finish_sequence_anipoint_edit_if_idle,
+   apply_anipoint_delta_to_sequence, and set_primary/secondary_anipoint_with_sequence
+   now live in anipoint_edit.{h,cpp}. */
 
 static void MirrorMarkedAnipointsToReverseWithToast(void)
 {
