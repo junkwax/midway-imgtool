@@ -279,6 +279,45 @@ void DrawCanvasZoomIndicator(bool zoom_fit, float zoom)
     ImGui::TextDisabled("%s", zbuf);
 }
 
+void DrawCanvasDmaCompressionOverlay(ImDrawList *dl, IMG *img,
+                                     ImVec2 img_pos, float sx, float sy)
+{
+    if (!dl || !img || !img->data_p)
+        return;
+
+    unsigned short stride = (img->w + 3) & ~3;
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    for (int y = 0; y < img->h; y++) {
+        int leading = 0;
+        while (leading < img->w && pixels[y * stride + leading] == 0)
+            leading++;
+
+        if (leading == img->w) {
+            ImVec2 p_min(img_pos.x, img_pos.y + y * sy);
+            ImVec2 p_max(img_pos.x + img->w * sx, img_pos.y + (y + 1) * sy);
+            dl->AddRectFilled(p_min, p_max, IM_COL32(255, 0, 255, 100));
+        } else {
+            if (leading > 0) {
+                ImVec2 p_min(img_pos.x, img_pos.y + y * sy);
+                ImVec2 p_max(img_pos.x + leading * sx, img_pos.y + (y + 1) * sy);
+                dl->AddRectFilled(p_min, p_max, IM_COL32(255, 0, 255, 100));
+            }
+
+            int trailing = 0;
+            while (trailing < img->w &&
+                   pixels[y * stride + (img->w - 1 - trailing)] == 0)
+                trailing++;
+            if (trailing > 0) {
+                ImVec2 p_min(img_pos.x + (img->w - trailing) * sx,
+                             img_pos.y + y * sy);
+                ImVec2 p_max(img_pos.x + img->w * sx,
+                             img_pos.y + (y + 1) * sy);
+                dl->AddRectFilled(p_min, p_max, IM_COL32(0, 255, 255, 100));
+            }
+        }
+    }
+}
+
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,

@@ -18574,39 +18574,9 @@ void imgui_overlay_render(void)
                 }
             }
 
-            /* --- DMA Compression overlay --- */
             if (g_show_dma_comp) {
                 IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-                if (img && img->data_p) {
-                    unsigned short stride = (img->w + 3) & ~3;
-                    unsigned char *pixels = (unsigned char *)img->data_p;
-                    for (int y = 0; y < img->h; y++) {
-                        int leading = 0;
-                        while (leading < img->w && pixels[y * stride + leading] == 0) leading++;
-
-                        if (leading == img->w) {
-                            /* Entire line is compressed */
-                            ImVec2 p_min(img_pos.x, img_pos.y + y * sy);
-                            ImVec2 p_max(img_pos.x + img->w * sx, img_pos.y + (y + 1) * sy);
-                            dl->AddRectFilled(p_min, p_max, IM_COL32(255, 0, 255, 100));
-                        } else {
-                            /* Leading zeros */
-                            if (leading > 0) {
-                                ImVec2 p_min(img_pos.x, img_pos.y + y * sy);
-                                ImVec2 p_max(img_pos.x + leading * sx, img_pos.y + (y + 1) * sy);
-                                dl->AddRectFilled(p_min, p_max, IM_COL32(255, 0, 255, 100));
-                            }
-                            /* Trailing zeros */
-                            int trailing = 0;
-                            while (trailing < img->w && pixels[y * stride + (img->w - 1 - trailing)] == 0) trailing++;
-                            if (trailing > 0) {
-                                ImVec2 p_min(img_pos.x + (img->w - trailing) * sx, img_pos.y + y * sy);
-                                ImVec2 p_max(img_pos.x + img->w * sx, img_pos.y + (y + 1) * sy);
-                                dl->AddRectFilled(p_min, p_max, IM_COL32(0, 255, 255, 100));
-                            }
-                        }
-                    }
-                }
+                DrawCanvasDmaCompressionOverlay(dl, img, img_pos, sx, sy);
             }
 
             DrawCanvasPixelGrid(dl, img_pos, img_sz, g_img_tex_w, g_img_tex_h, scale);

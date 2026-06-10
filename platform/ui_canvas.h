@@ -72,6 +72,8 @@ void DrawCanvasCheckerboard(ImDrawList *dl, ImVec2 img_pos, ImVec2 img_sz,
 void DrawCanvasPixelGrid(ImDrawList *dl, ImVec2 img_pos, ImVec2 img_sz,
                          int tex_w, int tex_h, float scale);
 void DrawCanvasZoomIndicator(bool zoom_fit, float zoom);
+void DrawCanvasDmaCompressionOverlay(ImDrawList *dl, IMG *img,
+                                     ImVec2 img_pos, float sx, float sy);
 
 struct WorldMarkedSequenceState {
     bool marked_play = false;
