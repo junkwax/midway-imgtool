@@ -1462,16 +1462,7 @@ static void MirrorMarkedAnipointsToReverseWithToast(void)
 
 /* doc_get_pal now lives in world_render.{h,cpp}. */
 
-static void collect_marked_frames(Document *doc, std::vector<int> &out)
-{
-    out.clear();
-    if (!doc) return;
-    int idx = 0;
-    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
-        if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0)
-            out.push_back(idx);
-    }
-}
+/* WorldCollectMarkedFrames now lives in ui_canvas.{h,cpp}. */
 
 /* BuildWorldSpriteTexture now lives in world_render.{h,cpp}. */
 
@@ -1682,7 +1673,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         lane.frame_pos = 0;
         lane.img = NULL;
         lane.dummy_decap = false;
-        collect_marked_frames(doc, lane.frames);
+        WorldCollectMarkedFrames(doc, lane.frames);
         if (!lane.frames.empty()) {
             WorldMarkedBuildSingleFrameLane(doc, lane.frames, lane.frame_pieces, lane.frame_labels);
             WorldMarkedSyncSequenceOverride(g_world_marked_state, lane.delay_slot, doc, doc_idx,

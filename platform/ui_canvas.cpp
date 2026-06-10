@@ -161,6 +161,17 @@ void WorldResetDummyDecapDelays(WorldMarkedSequenceState &state, int frame_count
     state.dummy_decap_reset = false;
 }
 
+void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out)
+{
+    out.clear();
+    if (!doc) return;
+    int idx = 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0)
+            out.push_back(idx);
+    }
+}
+
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
 {
     std::string out;
