@@ -11,6 +11,14 @@
 /* Scratch textures handed out this frame; freed by ClearWorldTempTextures(). */
 static std::vector<SDL_Texture *> g_world_temp_textures;
 
+IMG *doc_get_img(Document *doc, int idx)
+{
+    if (!doc || idx < 0) return NULL;
+    IMG *img = (IMG *)doc->img_p;
+    for (int i = 0; i < idx && img; i++) img = (IMG *)img->nxt_p;
+    return img;
+}
+
 PAL *doc_get_pal(Document *doc, int idx)
 {
     if (!doc || idx < 0) return NULL;

@@ -45,7 +45,7 @@ committed (`fc4edeb`).
 | `img_util.{h,cpp}` | `img_name_string`, `signed_to_img_word` | ✅ |
 | `anipoint.{h,cpp}` | secondary-anipoint predicates/mutators, seq-name parsing | ✅ |
 | `anipoint_edit.{h,cpp}` | sequence-propagating anipoint setters + undo coalescing | — |
-| `world_render.{h,cpp}` | `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
+| `world_render.{h,cpp}` | `doc_get_img`, `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
 | `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
 | `ui_canvas.{h,cpp}` | single-sprite World View canvas + onion texture cache | — |
 | `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |

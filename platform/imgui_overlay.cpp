@@ -1623,13 +1623,7 @@ static std::string WorldMarkedAsmLabelPart(const char *raw, int slot)
     return out;
 }
 
-static IMG *doc_get_img(Document *doc, int idx)
-{
-    if (!doc || idx < 0) return NULL;
-    IMG *img = (IMG *)doc->img_p;
-    for (int i = 0; i < idx && img; i++) img = (IMG *)img->nxt_p;
-    return img;
-}
+/* doc_get_img now lives in world_render.{h,cpp}. */
 
 /* img_name_string now lives in img_util.{h,cpp}. */
 

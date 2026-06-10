@@ -13,7 +13,8 @@
 #include "document.h"    /* Document */
 #include "img_format.h"  /* IMG, PAL */
 
-/* Palette at index `idx` in `doc`'s palette list, or NULL. */
+/* Image/palette at index `idx` in `doc`'s linked lists, or NULL. */
+IMG *doc_get_img(Document *doc, int idx);
 PAL *doc_get_pal(Document *doc, int idx);
 
 /* Build an ARGB streaming texture for `img` rendered in `doc`'s palette at the
