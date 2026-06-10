@@ -1681,61 +1681,17 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             ImGui::PushID(slot);
             WorldDrawMarkedLaneControls(g_world_marked_state, lane, slot);
 
-            ImGui::BeginChild("##world_lane_frames", ImVec2(0.0f, 42.0f), false,
-                              ImGuiWindowFlags_HorizontalScrollbar |
-                              ImGuiWindowFlags_NoBackground);
-            for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
-                if (fi > 0) ImGui::SameLine(0.0f, 6.0f);
-                ImGui::PushID(fi);
-                ImGui::BeginGroup();
-                int img_idx = lane.frames[fi];
-                Document *thumb_doc = (fi < (int)lane.frame_docs.size() && lane.frame_docs[fi])
-                                    ? lane.frame_docs[fi] : lane.doc;
-                IMG *thumb_img = doc_get_img(thumb_doc, img_idx);
-                SDL_Texture *thumb_tex = BuildWorldSpriteTexture(thumb_doc, thumb_img, 255);
-                bool current = (fi == lane.frame_pos);
-                if (current)
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.46f, 0.72f, 1.0f));
-                bool clicked = false;
-                if (thumb_tex) {
-                    clicked = ImGui::ImageButton("##world_thumb",
-                                                 (ImTextureID)(intptr_t)thumb_tex,
-                                                 ImVec2(34.0f, 34.0f),
-                                                 ImVec2(0, 0), ImVec2(1, 1),
-                                                 ImVec4(0, 0, 0, 0),
-                                                 ImVec4(1, 1, 1, 1));
-                } else {
-                    char fallback[16];
-                    snprintf(fallback, sizeof(fallback), "%d", img_idx);
-                    clicked = ImGui::Button(fallback, ImVec2(34.0f, 34.0f));
+            WorldMarkedLaneThumbClick thumb_click =
+                WorldDrawMarkedLaneThumbnails(g_world_marked_state, lane);
+            if (thumb_click.clicked) {
+                if (thumb_click.doc_idx != document_active_index()) {
+                    document_set_active(thumb_click.doc_idx);
+                    ResetPerDocumentUiState(false);
+                    g_doc_tab_select_request = thumb_click.doc_idx;
                 }
-                if (current)
-                    ImGui::PopStyleColor();
-                if (clicked) {
-                    g_world_marked_state.paused = true;
-                    g_world_marked_state.timer = 0.0f;
-                    g_world_marked_state.frame = WorldMarkedTickForFrame(g_world_marked_state, lane.delay_slot,
-                                                                 (int)lane.frames.size(), fi);
-                    lane.frame_pos = fi;
-                    if (lane.doc_idx != document_active_index()) {
-                        document_set_active(lane.doc_idx);
-                        ResetPerDocumentUiState(false);
-                        g_doc_tab_select_request = lane.doc_idx;
-                    }
-                    g_doc->ilselected = img_idx;
-                    g_zoom_reset = true;
-                }
-                if (ImGui::IsItemHovered()) {
-                    std::string sprite_name = (fi < (int)lane.frame_labels.size() &&
-                                               !lane.frame_labels[fi].empty())
-                                            ? lane.frame_labels[fi]
-                                            : (thumb_img ? img_name_string(thumb_img) : std::string());
-                    ImGui::SetTooltip("[%d] %s", img_idx, sprite_name.c_str());
-                }
-                ImGui::EndGroup();
-                ImGui::PopID();
+                g_doc->ilselected = thumb_click.img_idx;
+                g_zoom_reset = true;
             }
-            ImGui::EndChild();
             ImGui::PopID();
         }
     }

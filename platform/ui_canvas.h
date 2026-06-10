@@ -107,6 +107,12 @@ struct WorldAsmLaneFrame {
     bool mirror = false;
 };
 
+struct WorldMarkedLaneThumbClick {
+    bool clicked = false;
+    int doc_idx = -1;
+    int img_idx = -1;
+};
+
 struct WorldMarkedLaneRenderInfo {
     bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
     bool lane_mirror_x[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
@@ -163,6 +169,8 @@ void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
 void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                                  WorldMarkedLane &lane,
                                  int display_slot);
+WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState &state,
+                                                        WorldMarkedLane &lane);
 std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes);
 bool WorldDrawMarkedAsmPopup(WorldMarkedSequenceState &state);

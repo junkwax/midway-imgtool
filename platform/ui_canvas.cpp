@@ -838,6 +838,66 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
     }
 }
 
+WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState &state,
+                                                        WorldMarkedLane &lane)
+{
+    WorldMarkedLaneThumbClick action = {};
+
+    ImGui::BeginChild("##world_lane_frames", ImVec2(0.0f, 42.0f), false,
+                      ImGuiWindowFlags_HorizontalScrollbar |
+                      ImGuiWindowFlags_NoBackground);
+    for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+        if (fi > 0) ImGui::SameLine(0.0f, 6.0f);
+        ImGui::PushID(fi);
+        ImGui::BeginGroup();
+        int img_idx = lane.frames[fi];
+        Document *thumb_doc = (fi < (int)lane.frame_docs.size() && lane.frame_docs[fi])
+                            ? lane.frame_docs[fi] : lane.doc;
+        IMG *thumb_img = doc_get_img(thumb_doc, img_idx);
+        SDL_Texture *thumb_tex = BuildWorldSpriteTexture(thumb_doc, thumb_img, 255);
+        bool current = (fi == lane.frame_pos);
+        if (current)
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.46f, 0.72f, 1.0f));
+        bool clicked = false;
+        if (thumb_tex) {
+            clicked = ImGui::ImageButton("##world_thumb",
+                                         (ImTextureID)(intptr_t)thumb_tex,
+                                         ImVec2(34.0f, 34.0f),
+                                         ImVec2(0, 0), ImVec2(1, 1),
+                                         ImVec4(0, 0, 0, 0),
+                                         ImVec4(1, 1, 1, 1));
+        } else {
+            char fallback[16];
+            snprintf(fallback, sizeof(fallback), "%d", img_idx);
+            clicked = ImGui::Button(fallback, ImVec2(34.0f, 34.0f));
+        }
+        if (current)
+            ImGui::PopStyleColor();
+        if (clicked) {
+            state.paused = true;
+            state.timer = 0.0f;
+            state.frame = WorldMarkedTickForFrame(state, lane.delay_slot,
+                                                  (int)lane.frames.size(), fi);
+            lane.frame_pos = fi;
+            action.clicked = true;
+            action.doc_idx = lane.doc_idx;
+            action.img_idx = img_idx;
+        }
+        if (ImGui::IsItemHovered()) {
+            std::string sprite_name = (fi < (int)lane.frame_labels.size() &&
+                                       !lane.frame_labels[fi].empty())
+                                    ? lane.frame_labels[fi]
+                                    : (thumb_img ? img_name_string(thumb_img) : std::string());
+            ImGui::SetTooltip("[%d] %s", img_idx, sprite_name.c_str());
+        }
+        ImGui::EndGroup();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    return action;
+}
+
 std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes)
 {
