@@ -126,6 +126,11 @@ void CanvasResizeTransformRect(TransformHandle handle,
                                bool lock_aspect,
                                int *out_x, int *out_y,
                                int *out_w, int *out_h);
+float CanvasRotateTransformAngle(float start_angle_deg,
+                                 ImVec2 drag_mouse,
+                                 ImVec2 mouse,
+                                 ImVec2 center,
+                                 bool snap_15_deg);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);

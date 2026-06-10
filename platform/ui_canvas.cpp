@@ -465,6 +465,25 @@ void CanvasResizeTransformRect(TransformHandle handle,
     *out_h = rh;
 }
 
+float CanvasRotateTransformAngle(float start_angle_deg,
+                                 ImVec2 drag_mouse,
+                                 ImVec2 mouse,
+                                 ImVec2 center,
+                                 bool snap_15_deg)
+{
+    const float pi = 3.14159265358979323846f;
+    float a0 = atan2f(drag_mouse.y - center.y,
+                      drag_mouse.x - center.x);
+    float a1 = atan2f(mouse.y - center.y,
+                      mouse.x - center.x);
+    float new_angle = start_angle_deg + (a1 - a0) * 180.0f / pi;
+    while (new_angle <= -180.0f) new_angle += 360.0f;
+    while (new_angle >   180.0f) new_angle -= 360.0f;
+    if (snap_15_deg)
+        new_angle = roundf(new_angle / 15.0f) * 15.0f;
+    return new_angle;
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])

@@ -19484,19 +19484,11 @@ void imgui_overlay_render(void)
                             g_xform.rx = g_xform.drag_rx + dx;
                             g_xform.ry = g_xform.drag_ry + dy;
                         } else if (g_xform.handle == TransformHandle::Rotate) {
-                            const float PI_F = 3.14159265358979323846f;
-                            float a0 = atan2f(g_xform.drag_my - center_sy,
-                                              g_xform.drag_mx - center_sx);
-                            float a1 = atan2f(mouse.y - center_sy,
-                                              mouse.x - center_sx);
-                            float new_angle = g_xform.drag_angle_deg +
-                                (a1 - a0) * 180.0f / PI_F;
-                            while (new_angle <= -180.0f) new_angle += 360.0f;
-                            while (new_angle >   180.0f) new_angle -= 360.0f;
-                            if (ImGui::GetIO().KeyShift) {
-                                new_angle = roundf(new_angle / 15.0f) * 15.0f;
-                            }
-                            g_xform.angle_deg = new_angle;
+                            g_xform.angle_deg = CanvasRotateTransformAngle(
+                                g_xform.drag_angle_deg,
+                                ImVec2(g_xform.drag_mx, g_xform.drag_my),
+                                mouse, ImVec2(center_sx, center_sy),
+                                ImGui::GetIO().KeyShift);
                         } else {
                             int dx = (int)((mouse.x - g_xform.drag_mx) / sx);
                             int dy = (int)((mouse.y - g_xform.drag_my) / sy);
