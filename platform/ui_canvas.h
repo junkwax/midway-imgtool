@@ -37,6 +37,12 @@ struct WorldMarkedSequenceState {
     bool dummy_decap_manual = false;
     int dummy_decap_doc_idx = -1;
     std::string dummy_decap_prefix;
+    int drag_slot = -1;
+    int drag_frame = -1;
+    ImVec2 drag_mouse = ImVec2(0, 0);
+    int drag_dx = 0;
+    int drag_dy = 0;
+    bool drag_mirror = false;
     bool hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
     std::vector<int> frame_delays[kWorldMarkedMaxTabs];
     std::vector<int> local_dx[kWorldMarkedMaxTabs];

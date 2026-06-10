@@ -1266,12 +1266,6 @@ static int   g_world_origin_y = 20; /* anchor target inside world (top-anchored)
 static bool  g_world_onion = false; /* faintly draw prev frame underneath */
 /* Marked World View slot constants now live in ui_canvas.h. */
 static WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
-static int   g_world_marked_drag_slot = -1;
-static int   g_world_marked_drag_frame = -1;
-static ImVec2 g_world_marked_drag_mouse = ImVec2(0, 0);
-static int   g_world_marked_drag_dx = 0;
-static int   g_world_marked_drag_dy = 0;
-static bool  g_world_marked_drag_mirror = false;
 static bool  g_world_marked_show_asm = false;
 static std::string g_world_marked_generated_asm;
 /* g_world_temp_textures + ClearWorldTempTextures + BuildWorldSpriteTexture +
@@ -2042,31 +2036,31 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
         if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size()) {
             g_world_marked_state.paused = true;
-            g_world_marked_drag_slot = state_slot;
-            g_world_marked_drag_frame = lane.frame_pos;
-            g_world_marked_drag_mouse = mouse;
-            g_world_marked_drag_dx = g_world_marked_state.local_dx[state_slot][lane.frame_pos];
-            g_world_marked_drag_dy = g_world_marked_state.local_dy[state_slot][lane.frame_pos];
-            g_world_marked_drag_mirror = lane_mirror_x[hover_slot];
+            g_world_marked_state.drag_slot = state_slot;
+            g_world_marked_state.drag_frame = lane.frame_pos;
+            g_world_marked_state.drag_mouse = mouse;
+            g_world_marked_state.drag_dx = g_world_marked_state.local_dx[state_slot][lane.frame_pos];
+            g_world_marked_state.drag_dy = g_world_marked_state.local_dy[state_slot][lane.frame_pos];
+            g_world_marked_state.drag_mirror = lane_mirror_x[hover_slot];
         }
     }
-    if (g_world_marked_drag_slot >= 0) {
-        int state_slot = g_world_marked_drag_slot;
-        int frame_idx = g_world_marked_drag_frame;
+    if (g_world_marked_state.drag_slot >= 0) {
+        int state_slot = g_world_marked_state.drag_slot;
+        int frame_idx = g_world_marked_state.drag_frame;
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
             state_slot < 0 || state_slot >= kWorldMarkedMaxTabs ||
             frame_idx < 0 || frame_idx >= (int)g_world_marked_state.local_dx[state_slot].size()) {
-            g_world_marked_drag_slot = -1;
-            g_world_marked_drag_frame = -1;
-            g_world_marked_drag_mirror = false;
+            g_world_marked_state.drag_slot = -1;
+            g_world_marked_state.drag_frame = -1;
+            g_world_marked_state.drag_mirror = false;
         } else {
-            int px = (int)((mouse.x - g_world_marked_drag_mouse.x) / wscale);
-            int py = (int)((mouse.y - g_world_marked_drag_mouse.y) / wscale);
+            int px = (int)((mouse.x - g_world_marked_state.drag_mouse.x) / wscale);
+            int py = (int)((mouse.y - g_world_marked_state.drag_mouse.y) / wscale);
             g_world_marked_state.local_dx[state_slot][frame_idx] =
-                ClampWorldMarkedAniptDelta(g_world_marked_drag_dx +
-                                           (g_world_marked_drag_mirror ? px : -px));
+                ClampWorldMarkedAniptDelta(g_world_marked_state.drag_dx +
+                                           (g_world_marked_state.drag_mirror ? px : -px));
             g_world_marked_state.local_dy[state_slot][frame_idx] =
-                ClampWorldMarkedAniptDelta(g_world_marked_drag_dy - py);
+                ClampWorldMarkedAniptDelta(g_world_marked_state.drag_dy - py);
         }
     }
 
