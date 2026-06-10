@@ -41,6 +41,12 @@ struct WorldCanvasLayout {
     float origin_y = 0.0f;
 };
 
+struct WorldMarkedPanelLayout {
+    ImVec2 pos = ImVec2(0, 0);
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
 struct WorldMarkedSequenceState {
     bool marked_play = false;
     float fps = 12.0f;
@@ -105,6 +111,9 @@ WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,
                                            int world_origin_y);
+WorldMarkedPanelLayout ComputeWorldMarkedPanelLayout(ImVec2 avail,
+                                                     ImVec2 img_pos,
+                                                     int lane_count);
 WorldMarkedSequenceState &WorldMarkedState(void);
 bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot);
 
@@ -136,6 +145,11 @@ void WorldDrawMarkedLaneTags(ImDrawList *dl,
 void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
                                ImVec2 world_pos, float world_width);
+void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
+                               const std::vector<WorldMarkedLane> &lanes,
+                               const WorldMarkedLaneRenderInfo &render_info,
+                               const WorldCanvasLayout &world_layout,
+                               const WorldMarkedPanelLayout &panel_layout);
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);

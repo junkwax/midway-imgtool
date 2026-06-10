@@ -50,6 +50,25 @@ WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
     return layout;
 }
 
+WorldMarkedPanelLayout ComputeWorldMarkedPanelLayout(ImVec2 avail,
+                                                     ImVec2 img_pos,
+                                                     int lane_count)
+{
+    WorldMarkedPanelLayout layout;
+    layout.width = avail.x - 16.0f;
+    if (layout.width < 240.0f) layout.width = 240.0f;
+    layout.height = 54.0f + (float)lane_count * 104.0f;
+    float max_h = avail.y - 24.0f;
+    if (max_h > 380.0f) max_h = 380.0f;
+    if (layout.height > max_h) layout.height = max_h;
+    if (layout.height < 96.0f) layout.height = 96.0f;
+    layout.pos = ImVec2(img_pos.x + 8.0f,
+                        img_pos.y + avail.y - layout.height - 8.0f);
+    if (layout.pos.y < img_pos.y + 8.0f)
+        layout.pos.y = img_pos.y + 8.0f;
+    return layout;
+}
+
 WorldMarkedSequenceState &WorldMarkedState(void)
 {
     static WorldMarkedSequenceState state;
@@ -614,6 +633,85 @@ void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
     dl->AddText(ImVec2(world_pos.x + 4, world_pos.y + 2),
                 IM_COL32(220, 220, 220, 255), label.c_str());
     dl->PopClipRect();
+}
+
+void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
+                               const std::vector<WorldMarkedLane> &lanes,
+                               const WorldMarkedLaneRenderInfo &render_info,
+                               const WorldCanvasLayout &world_layout,
+                               const WorldMarkedPanelLayout &panel_layout)
+{
+    ImVec2 mouse = ImGui::GetMousePos();
+    bool over_panel =
+        mouse.x >= panel_layout.pos.x &&
+        mouse.x <= panel_layout.pos.x + panel_layout.width &&
+        mouse.y >= panel_layout.pos.y &&
+        mouse.y <= panel_layout.pos.y + panel_layout.height;
+    bool over_world =
+        mouse.x >= world_layout.pos.x &&
+        mouse.x <= world_layout.pos.x + world_layout.width &&
+        mouse.y >= world_layout.pos.y &&
+        mouse.y <= world_layout.pos.y + world_layout.height;
+
+    int hover_slot = -1;
+    if (over_world && !over_panel) {
+        for (int slot = 0; slot < (int)lanes.size(); slot++) {
+            if (!render_info.lane_rect_valid[slot]) continue;
+            if (mouse.x >= render_info.lane_rect_min[slot].x &&
+                mouse.x <= render_info.lane_rect_max[slot].x &&
+                mouse.y >= render_info.lane_rect_min[slot].y &&
+                mouse.y <= render_info.lane_rect_max[slot].y) {
+                hover_slot = slot;
+                break;
+            }
+        }
+    }
+
+    if (hover_slot >= 0) {
+        if (dl) {
+            dl->AddRect(render_info.lane_rect_min[hover_slot],
+                        render_info.lane_rect_max[hover_slot],
+                        IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
+        }
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+
+    if (hover_slot >= 0 && ImGui::IsWindowHovered() &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        const WorldMarkedLane &lane = lanes[hover_slot];
+        int state_slot = lane.delay_slot;
+        EnsureWorldMarkedFrameDelays(state, state_slot, (int)lane.frames.size());
+        if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size()) {
+            state.paused = true;
+            state.drag_slot = state_slot;
+            state.drag_frame = lane.frame_pos;
+            state.drag_mouse = mouse;
+            state.drag_dx = state.local_dx[state_slot][lane.frame_pos];
+            state.drag_dy = state.local_dy[state_slot][lane.frame_pos];
+            state.drag_mirror = render_info.lane_mirror_x[hover_slot];
+        }
+    }
+
+    if (state.drag_slot >= 0) {
+        int state_slot = state.drag_slot;
+        int frame_idx = state.drag_frame;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+            state_slot < 0 || state_slot >= kWorldMarkedMaxTabs ||
+            frame_idx < 0 ||
+            frame_idx >= (int)state.local_dx[state_slot].size()) {
+            state.drag_slot = -1;
+            state.drag_frame = -1;
+            state.drag_mirror = false;
+        } else {
+            int px = (int)((mouse.x - state.drag_mouse.x) / world_layout.scale);
+            int py = (int)((mouse.y - state.drag_mouse.y) / world_layout.scale);
+            state.local_dx[state_slot][frame_idx] =
+                ClampWorldMarkedAniptDelta(state.drag_dx +
+                                           (state.drag_mirror ? px : -px));
+            state.local_dy[state_slot][frame_idx] =
+                ClampWorldMarkedAniptDelta(state.drag_dy - py);
+        }
+    }
 }
 
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)

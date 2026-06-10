@@ -1593,7 +1593,6 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     WorldCanvasLayout layout =
         ComputeWorldCanvasLayout(avail, img_pos, g_world_state.w, g_world_state.h,
                                  g_world_state.origin_x, g_world_state.origin_y);
-    float wscale = layout.scale;
     float ww = layout.width;
     float wh = layout.height;
     ImVec2 wpos = layout.pos;
@@ -1618,79 +1617,13 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 
     WorldDrawMarkedLaneStatus(dl, g_world_marked_state, lanes, wpos, ww);
 
-    /* Stretch the sequence panel full-width and pin it to the very bottom of
-       the canvas so it no longer covers the world sprites. */
-    float panel_w = avail.x - 16.0f;
-    if (panel_w < 240.0f) panel_w = 240.0f;
-    float panel_h = 54.0f + (float)lanes.size() * 104.0f;
-    float max_panel_h = avail.y - 24.0f;
-    if (max_panel_h > 380.0f) max_panel_h = 380.0f;
-    if (panel_h > max_panel_h) panel_h = max_panel_h;
-    if (panel_h < 96.0f) panel_h = 96.0f;
-    ImVec2 panel_pos(img_pos.x + 8.0f,
-                     img_pos.y + avail.y - panel_h - 8.0f);
-    if (panel_pos.y < img_pos.y + 8.0f) panel_pos.y = img_pos.y + 8.0f;
-
-    ImVec2 mouse = ImGui::GetMousePos();
-    bool over_panel =
-        mouse.x >= panel_pos.x && mouse.x <= panel_pos.x + panel_w &&
-        mouse.y >= panel_pos.y && mouse.y <= panel_pos.y + panel_h;
-    bool over_world =
-        mouse.x >= wpos.x && mouse.x <= wpos.x + ww &&
-        mouse.y >= wpos.y && mouse.y <= wpos.y + wh;
-    int hover_slot = -1;
-    if (over_world && !over_panel) {
-        for (int slot = 0; slot < (int)lanes.size(); slot++) {
-            if (!render_info.lane_rect_valid[slot]) continue;
-            if (mouse.x >= render_info.lane_rect_min[slot].x &&
-                mouse.x <= render_info.lane_rect_max[slot].x &&
-                mouse.y >= render_info.lane_rect_min[slot].y &&
-                mouse.y <= render_info.lane_rect_max[slot].y) {
-                hover_slot = slot;
-                break;
-            }
-        }
-    }
-    if (hover_slot >= 0) {
-        dl->AddRect(render_info.lane_rect_min[hover_slot],
-                    render_info.lane_rect_max[hover_slot],
-                    IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-    }
-    if (hover_slot >= 0 && ImGui::IsWindowHovered() &&
-        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        WorldMarkedLane &lane = lanes[hover_slot];
-        int state_slot = lane.delay_slot;
-        EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
-        if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size()) {
-            g_world_marked_state.paused = true;
-            g_world_marked_state.drag_slot = state_slot;
-            g_world_marked_state.drag_frame = lane.frame_pos;
-            g_world_marked_state.drag_mouse = mouse;
-            g_world_marked_state.drag_dx = g_world_marked_state.local_dx[state_slot][lane.frame_pos];
-            g_world_marked_state.drag_dy = g_world_marked_state.local_dy[state_slot][lane.frame_pos];
-            g_world_marked_state.drag_mirror = render_info.lane_mirror_x[hover_slot];
-        }
-    }
-    if (g_world_marked_state.drag_slot >= 0) {
-        int state_slot = g_world_marked_state.drag_slot;
-        int frame_idx = g_world_marked_state.drag_frame;
-        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
-            state_slot < 0 || state_slot >= kWorldMarkedMaxTabs ||
-            frame_idx < 0 || frame_idx >= (int)g_world_marked_state.local_dx[state_slot].size()) {
-            g_world_marked_state.drag_slot = -1;
-            g_world_marked_state.drag_frame = -1;
-            g_world_marked_state.drag_mirror = false;
-        } else {
-            int px = (int)((mouse.x - g_world_marked_state.drag_mouse.x) / wscale);
-            int py = (int)((mouse.y - g_world_marked_state.drag_mouse.y) / wscale);
-            g_world_marked_state.local_dx[state_slot][frame_idx] =
-                ClampWorldMarkedAniptDelta(g_world_marked_state.drag_dx +
-                                           (g_world_marked_state.drag_mirror ? px : -px));
-            g_world_marked_state.local_dy[state_slot][frame_idx] =
-                ClampWorldMarkedAniptDelta(g_world_marked_state.drag_dy - py);
-        }
-    }
+    WorldMarkedPanelLayout panel_layout =
+        ComputeWorldMarkedPanelLayout(avail, img_pos, (int)lanes.size());
+    float panel_w = panel_layout.width;
+    float panel_h = panel_layout.height;
+    ImVec2 panel_pos = panel_layout.pos;
+    WorldHandleMarkedLaneDrag(dl, g_world_marked_state, lanes, render_info,
+                              layout, panel_layout);
 
     ImGui::SetCursorScreenPos(img_pos);
     ImGui::Dummy(ImVec2(avail.x, avail.y));
