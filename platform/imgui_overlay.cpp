@@ -19602,10 +19602,8 @@ void imgui_overlay_render(void)
                             g_snap_guide_y = guide.guide_y;
                         }
 
-                        if (nx < 0) nx = 0;
-                        if (ny < 0) ny = 0;
-                        if (nx + pw > (int)g_img_tex_w) nx = g_img_tex_w - pw;
-                        if (ny + ph > (int)g_img_tex_h) ny = g_img_tex_h - ph;
+                        CanvasClampPasteRect(g_img_tex_w, g_img_tex_h,
+                                             pw, ph, &nx, &ny);
                         g_pasted.paste_x = nx;
                         g_pasted.paste_y = ny;
                     }

@@ -632,6 +632,19 @@ CanvasPasteSnapResult CanvasPasteCenterGuide(int x, int y, int w, int h,
     return result;
 }
 
+void CanvasClampPasteRect(int canvas_w, int canvas_h,
+                          int rect_w, int rect_h,
+                          int *x, int *y)
+{
+    if (!x || !y)
+        return;
+
+    if (*x < 0) *x = 0;
+    if (*y < 0) *y = 0;
+    if (*x + rect_w > canvas_w) *x = canvas_w - rect_w;
+    if (*y + rect_h > canvas_h) *y = canvas_h - rect_h;
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])

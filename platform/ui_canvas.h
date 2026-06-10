@@ -157,6 +157,9 @@ CanvasPasteSnapResult CanvasPasteCenterGuide(int x, int y, int w, int h,
                                              int target_w, int target_h,
                                              bool hit_x, bool hit_y,
                                              int guide_x, int guide_y);
+void CanvasClampPasteRect(int canvas_w, int canvas_h,
+                          int rect_w, int rect_h,
+                          int *x, int *y);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);
