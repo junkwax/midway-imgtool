@@ -150,6 +150,17 @@ struct CanvasPastePreviewCell {
     ImVec2 quad[4] = {};
 };
 
+struct CanvasPasteGeometry {
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+    float angle_deg = 0.0f;
+    CanvasTransform2D transform;
+    ImVec2 corners[4] = {};
+    CanvasPasteHitTest hit;
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -204,6 +215,17 @@ CanvasPastePreviewCell CanvasPastePreviewCellForPixel(
     int paste_w, int paste_h,
     int clip_w, int clip_h,
     int pixel_x, int pixel_y);
+CanvasPasteGeometry CanvasPasteGeometryForState(
+    ImVec2 img_pos,
+    float sx, float sy,
+    ImVec2 img_sz,
+    ImVec2 mouse,
+    bool transform_active,
+    int transform_x, int transform_y,
+    int transform_w, int transform_h,
+    float transform_angle_deg,
+    int paste_x, int paste_y,
+    int paste_w, int paste_h);
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked);

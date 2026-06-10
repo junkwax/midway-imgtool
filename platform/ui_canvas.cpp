@@ -374,6 +374,44 @@ CanvasPastePreviewCell CanvasPastePreviewCellForPixel(
     return cell;
 }
 
+CanvasPasteGeometry CanvasPasteGeometryForState(
+    ImVec2 img_pos,
+    float sx, float sy,
+    ImVec2 img_sz,
+    ImVec2 mouse,
+    bool transform_active,
+    int transform_x, int transform_y,
+    int transform_w, int transform_h,
+    float transform_angle_deg,
+    int paste_x, int paste_y,
+    int paste_w, int paste_h)
+{
+    CanvasPasteGeometry geom;
+    if (transform_active) {
+        geom.x = transform_x;
+        geom.y = transform_y;
+        geom.w = transform_w;
+        geom.h = transform_h;
+        geom.angle_deg = transform_angle_deg;
+    } else {
+        geom.x = paste_x;
+        geom.y = paste_y;
+        geom.w = paste_w;
+        geom.h = paste_h;
+        geom.angle_deg = 0.0f;
+    }
+
+    geom.transform = CanvasMakeTransform(img_pos, sx, sy,
+                                         geom.x, geom.y,
+                                         geom.w, geom.h,
+                                         geom.angle_deg);
+    CanvasTransformRectCorners(geom.transform,
+                               geom.x, geom.y, geom.w, geom.h,
+                               geom.corners);
+    geom.hit = CanvasPasteHitTestFor(geom.corners, img_pos, img_sz, mouse);
+    return geom;
+}
+
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked)

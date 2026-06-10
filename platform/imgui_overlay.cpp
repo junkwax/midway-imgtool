@@ -19289,34 +19289,25 @@ void imgui_overlay_render(void)
 
             /* Paste overlay with pixel preview */
             if (g_pasted.active && g_clipboard.valid && g_clipboard.w > 0 && g_clipboard.h > 0) {
-                /* In transform mode the visible rect is the live transform
-                   rect, not the static clipboard size. The pixel preview is
-                   skipped during transform (interpolated preview would
-                   disagree with the post-commit nearest-neighbor result and
-                   confuse the user). */
-                int px, py, pw, ph;
-                if (g_xform.active) {
-                    px = g_xform.rx; py = g_xform.ry;
-                    pw = g_xform.rw; ph = g_xform.rh;
-                } else {
-                    px = g_pasted.paste_x; py = g_pasted.paste_y;
-                    pw = g_clipboard.w;    ph = g_clipboard.h;
-                }
+                CanvasPasteGeometry paste_geom = CanvasPasteGeometryForState(
+                    img_pos, sx, sy, img_sz, mouse,
+                    g_xform.active,
+                    g_xform.rx, g_xform.ry, g_xform.rw, g_xform.rh,
+                    g_xform.angle_deg,
+                    g_pasted.paste_x, g_pasted.paste_y,
+                    g_clipboard.w, g_clipboard.h);
+                int px = paste_geom.x;
+                int py = paste_geom.y;
+                int pw = paste_geom.w;
+                int ph = paste_geom.h;
                 unsigned short cs = g_clipboard.stride;
 
-                float angle_deg = g_xform.active ? g_xform.angle_deg : 0.0f;
-                CanvasTransform2D paste_xf =
-                    CanvasMakeTransform(img_pos, sx, sy, px, py, pw, ph,
-                                        angle_deg);
+                const CanvasTransform2D &paste_xf = paste_geom.transform;
                 CanvasPasteControlsLayout paste_controls =
                     CanvasPasteControlsLayoutFor(canvas_origin, mouse);
                 bool paste_controls_block = paste_controls.blocks_mouse;
-                ImVec2 rc[4];
-                CanvasTransformRectCorners(paste_xf, px, py, pw, ph, rc);
-                CanvasPasteHitTest paste_hit =
-                    CanvasPasteHitTestFor(rc, img_pos, img_sz, mouse);
-                bool hovering = paste_hit.hovering;
-                bool over_sprite = paste_hit.over_sprite;
+                bool hovering = paste_geom.hit.hovering;
+                bool over_sprite = paste_geom.hit.over_sprite;
 
                 /* Render clipboard pixel preview, including live scale/rotation
                    while Free Transform is active. At Normal/100 this is fully
@@ -19360,7 +19351,8 @@ void imgui_overlay_render(void)
                     }
                 }
 
-                DrawCanvasPasteBorder(dl, rc, g_xform.active, hovering);
+                DrawCanvasPasteBorder(dl, paste_geom.corners,
+                                      g_xform.active, hovering);
 
                 /* Snap guides — drawn while a snap is active this frame so
                    the user sees exactly which edge their paste locked onto. */
@@ -19404,7 +19396,8 @@ void imgui_overlay_render(void)
                 /* ----- Free Transform handles + interaction ----- */
                 if (g_xform.active && !canvas_input_blocked) {
                     CanvasTransformHandleOverlay handle_overlay =
-                        DrawCanvasTransformHandles(dl, rc, mouse,
+                        DrawCanvasTransformHandles(dl, paste_geom.corners,
+                                                   mouse,
                                                    g_xform.handle,
                                                    g_xform.aspect_locked);
                     TransformHandle hover_h = handle_overlay.hover;
