@@ -1471,29 +1471,20 @@ static void MirrorMarkedAnipointsToReverseWithToast(void)
 
 static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 {
-    if (!g_world_marked_state.marked_play)
-        return false;
-
-    /* WorldMarkedLane now lives in ui_canvas.h. */
-
-    /* WorldBuildDummyDecapLane now lives in ui_canvas.{h,cpp}. */
-
-    std::vector<WorldMarkedLane> lanes;
-    lanes.reserve(kWorldMarkedMaxTabs);
-
-    bool dummy_decap_missing = false;
-    WorldAppendMarkedDocumentLanes(g_world_marked_state, document_active_index(),
-                                   lanes, &dummy_decap_missing);
-
-    /* ASM-driven lane(s): overlay owns parsing; ui_canvas owns lane building. */
-    bool asm_present = false;
+    std::vector<WorldMarkedAsmLaneInput> asm_lanes;
+    asm_lanes.reserve(2);
     auto add_asm_lane = [&](std::vector<AsmAnim> &anims, bool enabled, int sel,
                             int slot_id, Document *doc, int doc_idx) {
         if (!enabled || sel < 0 || sel >= (int)anims.size() || !doc) return;
         AsmAnim &a = anims[sel];
         if (a.frames.empty()) return;
-        std::vector<WorldAsmLaneFrame> frames;
-        frames.reserve(a.frames.size());
+        WorldMarkedAsmLaneInput input = {};
+        input.enabled = true;
+        input.slot_id = slot_id;
+        input.doc = doc;
+        input.doc_idx = doc_idx;
+        input.name = a.name.c_str();
+        input.frames.reserve(a.frames.size());
         for (const AsmAnimFrame &fr : a.frames) {
             WorldAsmLaneFrame view = {};
             view.piece_img = &fr.piece_img;
@@ -1501,38 +1492,24 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             view.dx = fr.dx;
             view.dy = fr.dy;
             view.mirror = fr.mirror;
-            frames.push_back(view);
+            input.frames.push_back(view);
         }
-        if (WorldAppendAsmLane(g_world_marked_state, a.name.c_str(), frames,
-                               doc, doc_idx, slot_id, lanes))
-            asm_present = true;
+        asm_lanes.push_back(input);
     };
     add_asm_lane(g_asm_anims, g_asm_lane_enabled, g_asm_anim_sel,
                  kWorldAsmSlot, g_asm_anim_doc, g_asm_anim_doc_idx);
     add_asm_lane(g_asm_opp_anims, g_asm_opp_enabled, g_asm_opp_sel,
                  kWorldAsmOpponentSlot, g_asm_opp_doc, g_asm_opp_doc_idx);
 
-    /* WorldAssignSelectedDummyDecap now lives in ui_canvas.{h,cpp}. */
-
-    if (lanes.empty()) return false;
-    if (lanes.size() < 2 && !asm_present) return false;
-
-    if (!WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, io.DeltaTime))
+    IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
+    WorldMarkedTabsResult tabs_result =
+        WorldDrawMarkedTabs(g_world_marked_state, g_world_state,
+                            avail, img_pos, io.DeltaTime,
+                            document_active_index(), selected_img, asm_lanes);
+    if (!tabs_result.drew)
         return false;
 
-    WorldMarkedSceneResult scene =
-        WorldDrawMarkedScene(g_world_marked_state, g_world_state, lanes,
-                             avail, img_pos);
-
-    ImGui::SetCursorScreenPos(img_pos);
-    ImGui::Dummy(ImVec2(avail.x, avail.y));
-
-    IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
-    WorldMarkedPanelResult panel_result =
-        WorldDrawMarkedPanel(g_world_marked_state, lanes,
-                             scene.panel_layout, dummy_decap_missing,
-                             selected_img, document_active_index());
-    WorldMarkedPanelAction panel_action = panel_result.header;
+    WorldMarkedPanelAction panel_action = tabs_result.panel.header;
     if (panel_action.copied_asm) {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Copied World View ASM for %d lane%s.",
@@ -1557,16 +1534,16 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                  "Select a DECAP body frame/piece first.");
         g_restore_msg_timer = 4.0f;
     }
-    if (panel_result.thumb_click.clicked) {
-        if (panel_result.thumb_click.doc_idx != document_active_index()) {
-            document_set_active(panel_result.thumb_click.doc_idx);
+    if (tabs_result.panel.thumb_click.clicked) {
+        if (tabs_result.panel.thumb_click.doc_idx != document_active_index()) {
+            document_set_active(tabs_result.panel.thumb_click.doc_idx);
             ResetPerDocumentUiState(false);
-            g_doc_tab_select_request = panel_result.thumb_click.doc_idx;
+            g_doc_tab_select_request = tabs_result.panel.thumb_click.doc_idx;
         }
-        g_doc->ilselected = panel_result.thumb_click.img_idx;
+        g_doc->ilselected = tabs_result.panel.thumb_click.img_idx;
         g_zoom_reset = true;
     }
-    if (panel_result.copied_popup_asm) {
+    if (tabs_result.panel.copied_popup_asm) {
         snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied World View ASM.");
         g_restore_msg_timer = 4.0f;
     }

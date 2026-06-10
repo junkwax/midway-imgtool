@@ -529,6 +529,53 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
     return true;
 }
 
+WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
+                                          const WorldViewState &world,
+                                          ImVec2 avail,
+                                          ImVec2 img_pos,
+                                          float delta_time,
+                                          int active_doc_idx,
+                                          IMG *selected_img,
+                                          const std::vector<WorldMarkedAsmLaneInput> &asm_lanes)
+{
+    WorldMarkedTabsResult result = {};
+    if (!state.marked_play)
+        return result;
+
+    std::vector<WorldMarkedLane> lanes;
+    lanes.reserve(kWorldMarkedMaxTabs);
+
+    bool dummy_decap_missing = false;
+    WorldAppendMarkedDocumentLanes(state, active_doc_idx, lanes,
+                                   &dummy_decap_missing);
+
+    bool asm_present = false;
+    for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
+        if (!input.enabled) continue;
+        if (WorldAppendAsmLane(state, input.name, input.frames, input.doc,
+                               input.doc_idx, input.slot_id, lanes))
+            asm_present = true;
+    }
+
+    if (lanes.empty()) return result;
+    if (lanes.size() < 2 && !asm_present) return result;
+    if (!WorldUpdateMarkedLanePlayback(state, lanes, delta_time))
+        return result;
+
+    WorldMarkedSceneResult scene =
+        WorldDrawMarkedScene(state, world, lanes, avail, img_pos);
+
+    ImGui::SetCursorScreenPos(img_pos);
+    ImGui::Dummy(ImVec2(avail.x, avail.y));
+
+    result.panel =
+        WorldDrawMarkedPanel(state, lanes, scene.panel_layout,
+                             dummy_decap_missing, selected_img,
+                             active_doc_idx);
+    result.drew = true;
+    return result;
+}
+
 bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                                    std::vector<WorldMarkedLane> &lanes,
                                    float delta_time)

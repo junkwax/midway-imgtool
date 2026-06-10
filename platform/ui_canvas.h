@@ -107,6 +107,15 @@ struct WorldAsmLaneFrame {
     bool mirror = false;
 };
 
+struct WorldMarkedAsmLaneInput {
+    bool enabled = false;
+    int slot_id = 0;
+    Document *doc = nullptr;
+    int doc_idx = -1;
+    const char *name = nullptr;
+    std::vector<WorldAsmLaneFrame> frames;
+};
+
 struct WorldMarkedLaneThumbClick {
     bool clicked = false;
     int doc_idx = -1;
@@ -126,6 +135,11 @@ struct WorldMarkedPanelResult {
     WorldMarkedPanelAction header;
     WorldMarkedLaneThumbClick thumb_click;
     bool copied_popup_asm = false;
+};
+
+struct WorldMarkedTabsResult {
+    bool drew = false;
+    WorldMarkedPanelResult panel;
 };
 
 struct WorldMarkedLaneRenderInfo {
@@ -176,6 +190,14 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
                         const std::vector<WorldAsmLaneFrame> &frames,
                         Document *doc, int doc_idx, int slot_id,
                         std::vector<WorldMarkedLane> &lanes);
+WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
+                                          const WorldViewState &world,
+                                          ImVec2 avail,
+                                          ImVec2 img_pos,
+                                          float delta_time,
+                                          int active_doc_idx,
+                                          IMG *selected_img,
+                                          const std::vector<WorldMarkedAsmLaneInput> &asm_lanes);
 bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                                    std::vector<WorldMarkedLane> &lanes,
                                    float delta_time);
