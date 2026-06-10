@@ -1490,83 +1490,7 @@ static const int kWorldDummyDecapDefaultDelays[] = {
     6, 6, 6, 6
 };
 
-static bool WorldReadDecapFrameNo(const std::string &upper, size_t pos, int *frame_no, size_t *end_pos)
-{
-    if (pos >= upper.size() || !std::isdigit((unsigned char)upper[pos])) return false;
-
-    int val = 0;
-    size_t p = pos;
-    while (p < upper.size() && std::isdigit((unsigned char)upper[p])) {
-        val = val * 10 + (upper[p] - '0');
-        p++;
-    }
-    if (val < 1 || val > 7) return false;
-    if (frame_no) *frame_no = val;
-    if (end_pos) *end_pos = p;
-    return true;
-}
-
-static std::string WorldUpperName(const std::string &name)
-{
-    std::string upper;
-    upper.reserve(name.size());
-    for (char c : name)
-        upper.push_back((char)std::toupper((unsigned char)c));
-    return upper;
-}
-
-static bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *prefix)
-{
-    std::string upper = WorldUpperName(name);
-    if (upper.find("DECAPHEAD") != std::string::npos ||
-        upper.find("DECAPLEG") != std::string::npos ||
-        upper.find("DECAPTORSO") != std::string::npos)
-        return false;
-
-    size_t pos = upper.rfind("DECAP");
-    if (pos == std::string::npos) return false;
-    size_t p = pos + 5;
-    int val = 0;
-    if (!WorldReadDecapFrameNo(upper, p, &val, &p)) return false;
-    if (p != upper.size()) return false;
-
-    if (frame_no) *frame_no = val;
-    if (prefix) *prefix = upper.substr(0, pos);
-    return true;
-}
-
-static bool WorldDecapBodyPieceInfo(const std::string &name, int *frame_no,
-                                    std::string *prefix, int *kind)
-{
-    std::string upper = WorldUpperName(name);
-    size_t pos = upper.rfind("DECAPLEG");
-    int piece_kind = 0; /* leg before torso */
-    size_t token_len = 8;
-    if (pos == std::string::npos) {
-        pos = upper.rfind("DECAPTORSO");
-        piece_kind = 1;
-        token_len = 10;
-    }
-    if (pos == std::string::npos) return false;
-
-    size_t p = pos + token_len;
-    int val = 0;
-    if (!WorldReadDecapFrameNo(upper, p, &val, &p)) return false;
-
-    if (frame_no) *frame_no = val;
-    if (prefix) *prefix = upper.substr(0, pos);
-    if (kind) *kind = piece_kind;
-    return true;
-}
-
-static bool WorldDecapPrefixFromName(const std::string &name, std::string *prefix)
-{
-    int frame_no = 0;
-    if (WorldDecapBodyFrameNo(name, &frame_no, prefix)) return true;
-    int kind = 0;
-    if (WorldDecapBodyPieceInfo(name, &frame_no, prefix, &kind)) return true;
-    return false;
-}
+/* World decap-name parsing now lives in ui_canvas.{h,cpp}. */
 
 static void WorldResetDummyDecapDelays(int frame_count)
 {
@@ -1583,45 +1507,7 @@ static void WorldResetDummyDecapDelays(int frame_count)
     g_world_dummy_decap_reset = false;
 }
 
-static std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
-{
-    std::string out;
-    out.reserve(raw.size() + 8);
-    for (char c : raw) {
-        unsigned char uc = (unsigned char)c;
-        if (std::isalnum(uc) || c == '_' || c == '+' || c == '-' || c == '*' ||
-            c == '(' || c == ')')
-            out.push_back(c);
-    }
-    if (out.empty() && fallback) out = fallback;
-    if (!out.empty() && std::isdigit((unsigned char)out[0]))
-        out.insert(out.begin(), '_');
-    return out;
-}
-
-static std::string WorldMarkedAsmLabelPart(const char *raw, int slot)
-{
-    std::string out;
-    if (raw) {
-        for (size_t i = 0; raw[i] && i < 64; i++) {
-            char c = raw[i];
-            if (c == '.') break;
-            unsigned char uc = (unsigned char)c;
-            if (std::isalnum(uc))
-                out.push_back((char)std::tolower(uc));
-            else if (c == '_')
-                out.push_back('_');
-        }
-    }
-    if (out.empty()) {
-        char fallback[24];
-        snprintf(fallback, sizeof(fallback), "tab%d", slot + 1);
-        out = fallback;
-    }
-    if (std::isdigit((unsigned char)out[0]))
-        out.insert(out.begin(), '_');
-    return out;
-}
+/* World marked ASM string helpers now live in ui_canvas.{h,cpp}. */
 
 /* doc_get_img now lives in world_render.{h,cpp}. */
 
