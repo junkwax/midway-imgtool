@@ -81,6 +81,10 @@ void DrawCanvasPixelHoverHighlight(ImDrawList *dl, ImVec2 mouse,
                                    ImVec2 img_pos, ImVec2 img_sz,
                                    float sx, float sy,
                                    bool suppress);
+void DrawCanvasPencilCursor(ImDrawList *dl, ImVec2 img_pos,
+                            float sx, float sy,
+                            int pixel_x, int pixel_y,
+                            int brush, ImU32 color);
 void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
                                  float len, float thick);
 bool CanvasAnipointHitTest(const IMG *img, ImVec2 img_pos,

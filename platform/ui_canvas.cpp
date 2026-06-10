@@ -369,6 +369,39 @@ void DrawCanvasPixelHoverHighlight(ImDrawList *dl, ImVec2 mouse,
                 IM_COL32(255, 255, 0, 180), 0.0f, 0, 1.5f);
 }
 
+void DrawCanvasPencilCursor(ImDrawList *dl, ImVec2 img_pos,
+                            float sx, float sy,
+                            int pixel_x, int pixel_y,
+                            int brush, ImU32 color)
+{
+    if (!dl)
+        return;
+
+    ImVec2 cc(img_pos.x + (pixel_x + 0.5f) * sx,
+              img_pos.y + (pixel_y + 0.5f) * sy);
+    if (brush > 1) {
+        float rr = (sx + sy) * 0.5f * (brush - 1);
+        dl->AddCircle(cc, rr, IM_COL32(0, 0, 0, 200), 0, 3.0f);
+        dl->AddCircle(cc, rr, color, 0, 1.5f);
+        return;
+    }
+
+    float pix = (sx + sy) * 0.5f;
+    float gap = pix * 0.5f;
+    if (gap > 4.0f) gap = 4.0f;
+    if (gap < 1.0f) gap = 1.0f;
+    float len = 8.0f;
+    ImU32 halo = IM_COL32(0, 0, 0, 200);
+    auto arm = [&](ImVec2 a, ImVec2 b) {
+        dl->AddLine(a, b, halo, 3.0f);
+        dl->AddLine(a, b, color, 1.5f);
+    };
+    arm(ImVec2(cc.x - gap - len, cc.y), ImVec2(cc.x - gap, cc.y));
+    arm(ImVec2(cc.x + gap, cc.y), ImVec2(cc.x + gap + len, cc.y));
+    arm(ImVec2(cc.x, cc.y - gap - len), ImVec2(cc.x, cc.y - gap));
+    arm(ImVec2(cc.x, cc.y + gap), ImVec2(cc.x, cc.y + gap + len));
+}
+
 void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
                                  float len, float thick)
 {

@@ -19003,8 +19003,6 @@ void imgui_overlay_render(void)
             if (g_active_tool == ActiveTool::Pencil && mouse_over_sprite) {
                 int mx = (int)((mouse.x - img_pos.x) / sx);
                 int my = (int)((mouse.y - img_pos.y) / sy);
-                ImVec2 cc(img_pos.x + (mx + 0.5f) * sx,
-                          img_pos.y + (my + 0.5f) * sy);
                 ImU32 col;
                 if (g_sel_color > 0) {
                     SDL_Color &c = g_palette[g_sel_color];
@@ -19012,37 +19010,8 @@ void imgui_overlay_render(void)
                 } else {
                     col = IM_COL32(255, 255, 255, 200);
                 }
-                if (g_pencil_brush > 1) {
-                    float rr = (sx + sy) * 0.5f * (g_pencil_brush - 1);
-                    /* Black halo so the ring stays visible against same-
-                       colored pixels. */
-                    dl->AddCircle(cc, rr, IM_COL32(0, 0, 0, 200), 0, 3.0f);
-                    dl->AddCircle(cc, rr, col, 0, 1.5f);
-                } else {
-                    /* Half-pixel inset puts the gap right at the target
-                       pixel's edge so the arms hug it, not float away.
-                       The gap is capped: at high zoom the pixel is huge,
-                       but a 30-px gap would visually disconnect the arms
-                       from the pixel they point at. Cap at 4px. The arm
-                       length stays modest (8px) so the marker doesn't
-                       grow into the rest of the sprite. */
-                    float pix = (sx + sy) * 0.5f;
-                    float gap = pix * 0.5f;
-                    if (gap > 4.0f) gap = 4.0f;
-                    if (gap < 1.0f) gap = 1.0f;
-                    float len = 8.0f;
-                    /* 1-px darker halo behind each arm so the cursor stays
-                       legible when its color matches the underlying pixel. */
-                    ImU32 halo = IM_COL32(0, 0, 0, 200);
-                    auto arm = [&](ImVec2 a, ImVec2 b) {
-                        dl->AddLine(a, b, halo, 3.0f);
-                        dl->AddLine(a, b, col,  1.5f);
-                    };
-                    arm(ImVec2(cc.x - gap - len, cc.y), ImVec2(cc.x - gap, cc.y));
-                    arm(ImVec2(cc.x + gap,        cc.y), ImVec2(cc.x + gap + len, cc.y));
-                    arm(ImVec2(cc.x, cc.y - gap - len), ImVec2(cc.x, cc.y - gap));
-                    arm(ImVec2(cc.x, cc.y + gap),        ImVec2(cc.x, cc.y + gap + len));
-                }
+                DrawCanvasPencilCursor(dl, img_pos, sx, sy, mx, my,
+                                       g_pencil_brush, col);
             }
 
             /* Clone Stamp visual aids: source crosshair and destination brush ring. */
