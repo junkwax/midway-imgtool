@@ -443,6 +443,65 @@ bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
     return true;
 }
 
+bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
+                        const std::vector<WorldAsmLaneFrame> &frames,
+                        Document *doc, int doc_idx, int slot_id,
+                        std::vector<WorldMarkedLane> &lanes)
+{
+    if (!doc || frames.empty()) return false;
+
+    WorldMarkedLane lane = {};
+    lane.doc = doc;
+    lane.doc_idx = doc_idx;
+    lane.delay_slot = slot_id;
+    lane.frame_pos = 0;
+    lane.dummy_decap = false;
+    lane.label = name ? name : "";
+
+    Document *rep_doc = NULL;     /* first doc that actually resolved a piece */
+    for (const WorldAsmLaneFrame &fr : frames) {
+        std::vector<int> pcs;
+        std::vector<Document*> pcs_docs;
+        const std::vector<int> *piece_img = fr.piece_img;
+        const std::vector<Document*> *piece_doc = fr.piece_doc;
+        if (piece_img) {
+            for (size_t p = 0; p < piece_img->size(); p++) {
+                int ri = (*piece_img)[p];
+                if (ri < 0) continue;
+                Document *pdoc = (piece_doc && p < piece_doc->size() &&
+                                  (*piece_doc)[p])
+                               ? (*piece_doc)[p] : doc;
+                pcs.push_back(ri);
+                pcs_docs.push_back(pdoc);
+                if (!rep_doc) rep_doc = pdoc;
+            }
+        }
+        lane.frames.push_back(pcs.empty() ? -1 : pcs[0]);
+        lane.frame_pieces.push_back(pcs);
+        lane.frame_piece_docs.push_back(pcs_docs);
+        lane.frame_docs.push_back(pcs_docs.empty() ? doc : pcs_docs[0]);
+        lane.frame_labels.push_back(name ? name : "");
+    }
+
+    /* Anchor the lane on a doc that actually contains a piece so the shared
+       render path resolves even when pieces live outside the active IMG. */
+    if (rep_doc) lane.doc = rep_doc;
+
+    int n = (int)lane.frames.size();
+    EnsureWorldMarkedFrameDelays(state, slot_id, n);
+    for (int k = 0; k < n; k++) {
+        const WorldAsmLaneFrame &fr = frames[k];
+        state.frame_delays[slot_id][k] = 1;
+        state.local_dx[slot_id][k] = fr.dx;
+        state.local_dy[slot_id][k] = fr.dy;
+        state.visible_from[slot_id][k] = 0;
+        state.frame_mirror[slot_id][k] = fr.mirror ? 1 : 0;
+    }
+
+    lanes.push_back(lane);
+    return true;
+}
+
 bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                                    std::vector<WorldMarkedLane> &lanes,
                                    float delta_time)

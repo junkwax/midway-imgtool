@@ -99,6 +99,14 @@ struct WorldMarkedLane {
     std::string asm_label_part;
 };
 
+struct WorldAsmLaneFrame {
+    const std::vector<int> *piece_img = nullptr;
+    const std::vector<Document*> *piece_doc = nullptr;
+    int dx = 0;
+    int dy = 0;
+    bool mirror = false;
+};
+
 struct WorldMarkedLaneRenderInfo {
     bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
     bool lane_mirror_x[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
@@ -133,6 +141,10 @@ WorldMarkedLane WorldBuildDummyDecapLane(WorldMarkedSequenceState &state,
                                          int active_doc_idx);
 bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
                                  std::vector<WorldMarkedLane> &lanes);
+bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
+                        const std::vector<WorldAsmLaneFrame> &frames,
+                        Document *doc, int doc_idx, int slot_id,
+                        std::vector<WorldMarkedLane> &lanes);
 bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                                    std::vector<WorldMarkedLane> &lanes,
                                    float delta_time);

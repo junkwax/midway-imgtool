@@ -1497,56 +1497,27 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             dummy_decap_missing = true;
     }
 
-    /* ASM-driven lane(s): play a parsed character animation through the same
-       render path (ticks via repeated frames, local anipt via dx/dy, anipoint
-       placement, loop). Script-driven, so its slot arrays are refilled here. */
+    /* ASM-driven lane(s): overlay owns parsing; ui_canvas owns lane building. */
     bool asm_present = false;
     auto add_asm_lane = [&](std::vector<AsmAnim> &anims, bool enabled, int sel,
                             int slot_id, Document *doc, int doc_idx) {
         if (!enabled || sel < 0 || sel >= (int)anims.size() || !doc) return;
         AsmAnim &a = anims[sel];
         if (a.frames.empty()) return;
-        WorldMarkedLane lane = {};
-        lane.doc = doc;
-        lane.doc_idx = doc_idx;
-        lane.delay_slot = slot_id;
-        lane.frame_pos = 0;
-        lane.dummy_decap = false;
-        lane.label = a.name;
-        Document *rep_doc = NULL;     /* first doc that actually resolved a piece */
-        for (auto &fr : a.frames) {
-            std::vector<int> pcs;
-            std::vector<Document*> pcs_docs;
-            for (size_t p = 0; p < fr.piece_img.size(); p++) {
-                int ri = fr.piece_img[p];
-                if (ri < 0) continue;
-                Document *pdoc = (p < fr.piece_doc.size() && fr.piece_doc[p])
-                               ? fr.piece_doc[p] : doc;
-                pcs.push_back(ri);
-                pcs_docs.push_back(pdoc);
-                if (!rep_doc) rep_doc = pdoc;
-            }
-            lane.frames.push_back(pcs.empty() ? -1 : pcs[0]);
-            lane.frame_pieces.push_back(pcs);
-            lane.frame_piece_docs.push_back(pcs_docs);
-            lane.frame_docs.push_back(pcs_docs.empty() ? doc : pcs_docs[0]);
-            lane.frame_labels.push_back(a.name);
+        std::vector<WorldAsmLaneFrame> frames;
+        frames.reserve(a.frames.size());
+        for (const AsmAnimFrame &fr : a.frames) {
+            WorldAsmLaneFrame view = {};
+            view.piece_img = &fr.piece_img;
+            view.piece_doc = &fr.piece_doc;
+            view.dx = fr.dx;
+            view.dy = fr.dy;
+            view.mirror = fr.mirror;
+            frames.push_back(view);
         }
-        /* Anchor the lane on a doc that actually contains a piece so the shared
-           render path (lane.img, thumbnails) resolves even when pieces live in
-           IMGs other than the one that was active when the ASM was selected. */
-        if (rep_doc) lane.doc = rep_doc;
-        int n = (int)lane.frames.size();
-        EnsureWorldMarkedFrameDelays(g_world_marked_state, slot_id, n);
-        for (int k = 0; k < n; k++) {
-            g_world_marked_state.frame_delays[slot_id][k] = 1;
-            g_world_marked_state.local_dx[slot_id][k] = a.frames[k].dx;
-            g_world_marked_state.local_dy[slot_id][k] = a.frames[k].dy;
-            g_world_marked_state.visible_from[slot_id][k] = 0;
-            g_world_marked_state.frame_mirror[slot_id][k] = a.frames[k].mirror ? 1 : 0;
-        }
-        lanes.push_back(lane);
-        asm_present = true;
+        if (WorldAppendAsmLane(g_world_marked_state, a.name.c_str(), frames,
+                               doc, doc_idx, slot_id, lanes))
+            asm_present = true;
     };
     add_asm_lane(g_asm_anims, g_asm_lane_enabled, g_asm_anim_sel,
                  kWorldAsmSlot, g_asm_anim_doc, g_asm_anim_doc_idx);
