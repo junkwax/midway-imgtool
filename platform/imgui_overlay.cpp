@@ -1270,11 +1270,7 @@ static float g_world_dual_timer = 0.0f;
 static int   g_world_dual_frame = 0;
 static bool  g_world_mirror_active = false;
 static bool  g_world_mirror_other = false;
-static const int kWorldMarkedSourceTabs = 4;
-static const int kWorldDummyDecapSlot = 4;       /* optional dummy body */
-static const int kWorldAsmSlot = 5;              /* ASM-driven player lane */
-static const int kWorldAsmOpponentSlot = 6;      /* ASM-driven opponent lane (fatalities) */
-static const int kWorldMarkedMaxTabs = 7;        /* 4 tabs + dummy + 2 ASM lanes */
+/* Marked World View slot constants now live in ui_canvas.h. */
 static bool  g_world_mirror_extra[5] = {false, false, false, false, false};
 static bool  g_world_marked_hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
 static bool  g_world_marked_paused = false;

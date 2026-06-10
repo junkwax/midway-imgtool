@@ -15,6 +15,14 @@
 #include "document.h"    /* Document */
 #include "img_format.h"  /* IMG */
 
+enum {
+    kWorldMarkedSourceTabs = 4,
+    kWorldDummyDecapSlot = 4,      /* optional dummy body */
+    kWorldAsmSlot = 5,             /* ASM-driven player lane */
+    kWorldAsmOpponentSlot = 6,     /* ASM-driven opponent lane (fatalities) */
+    kWorldMarkedMaxTabs = 7        /* 4 tabs + dummy + 2 ASM lanes */
+};
+
 /* Pure string helpers used by the marked World View panel. */
 bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *prefix);
 bool WorldDecapBodyPieceInfo(const std::string &name, int *frame_no,
