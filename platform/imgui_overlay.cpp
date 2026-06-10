@@ -572,14 +572,6 @@ static int            g_paste_opacity = 100;
    Enter/Ctrl+T/click-outside, or cancels with Esc (reverts to pre-transform
    size). Aspect ratio is locked by default; the chain icon toggles the lock
    for the rest of the session, Shift inverts it temporarily for one drag. */
-enum class TransformHandle {
-    None,
-    Move,
-    Rotate,
-    TL, T, TR,
-    L,      R,
-    BL, B, BR
-};
 struct FreeTransform {
     bool         active;
     bool         aspect_locked;   /* persistent — chain icon toggles */
@@ -19435,87 +19427,19 @@ void imgui_overlay_render(void)
 
                 /* ----- Free Transform handles + interaction ----- */
                 if (g_xform.active && !canvas_input_blocked) {
-                    /* 8 handles positioned at the corners and edge midpoints
-                       of the live rect. Each is a 10x10 screen-pixel square
-                       drawn outside the rect so the rect stroke stays clean. */
-                    const float HSZ = 5.0f; /* half-size in screen pixels */
-                    struct HandleSpec { TransformHandle h; float cx, cy; };
-                    HandleSpec specs[8] = {
-                        { TransformHandle::TL, rc[0].x, rc[0].y },
-                        { TransformHandle::T,  (rc[0].x + rc[1].x) * 0.5f, (rc[0].y + rc[1].y) * 0.5f },
-                        { TransformHandle::TR, rc[1].x, rc[1].y },
-                        { TransformHandle::L,  (rc[0].x + rc[3].x) * 0.5f, (rc[0].y + rc[3].y) * 0.5f },
-                        { TransformHandle::R,  (rc[1].x + rc[2].x) * 0.5f, (rc[1].y + rc[2].y) * 0.5f },
-                        { TransformHandle::BL, rc[3].x, rc[3].y },
-                        { TransformHandle::B,  (rc[3].x + rc[2].x) * 0.5f, (rc[3].y + rc[2].y) * 0.5f },
-                        { TransformHandle::BR, rc[2].x, rc[2].y },
-                    };
-
-                    TransformHandle hover_h = TransformHandle::None;
-                    for (int i = 0; i < 8; i++) {
-                        const HandleSpec &s = specs[i];
-                        bool hov = mouse.x >= s.cx - HSZ && mouse.x <= s.cx + HSZ &&
-                                   mouse.y >= s.cy - HSZ && mouse.y <= s.cy + HSZ;
-                        if (hov && g_xform.handle == TransformHandle::None) hover_h = s.h;
-                        ImU32 fill = (hov || g_xform.handle == s.h) ? IM_COL32(255, 255, 255, 255)
-                                                                    : IM_COL32(0, 220, 255, 255);
-                        dl->AddRectFilled(ImVec2(s.cx - HSZ, s.cy - HSZ),
-                                          ImVec2(s.cx + HSZ, s.cy + HSZ),
-                                          fill);
-                        dl->AddRect(ImVec2(s.cx - HSZ, s.cy - HSZ),
-                                    ImVec2(s.cx + HSZ, s.cy + HSZ),
-                                    IM_COL32(0, 0, 0, 255), 0.0f, 0, 1.0f);
-                    }
-
-                    float center_sx = (rc[0].x + rc[2].x) * 0.5f;
-                    float center_sy = (rc[0].y + rc[2].y) * 0.5f;
-                    float top_mid_x = (rc[0].x + rc[1].x) * 0.5f;
-                    float top_mid_y = (rc[0].y + rc[1].y) * 0.5f;
-                    float vx = top_mid_x - center_sx;
-                    float vy = top_mid_y - center_sy;
-                    float vlen = sqrtf(vx * vx + vy * vy);
-                    if (vlen < 0.001f) { vx = 0.0f; vy = -1.0f; vlen = 1.0f; }
-                    vx /= vlen; vy /= vlen;
-                    ImVec2 rot_handle(top_mid_x + vx * 26.0f, top_mid_y + vy * 26.0f);
-                    dl->AddLine(ImVec2(top_mid_x, top_mid_y), rot_handle, IM_COL32(0, 220, 255, 190), 1.5f);
-                    float rdist = (mouse.x - rot_handle.x) * (mouse.x - rot_handle.x) +
-                                  (mouse.y - rot_handle.y) * (mouse.y - rot_handle.y);
-                    bool rot_hov = rdist <= 9.0f * 9.0f;
-                    if (rot_hov && g_xform.handle == TransformHandle::None) hover_h = TransformHandle::Rotate;
-                    dl->AddCircleFilled(rot_handle, 7.0f,
-                                        (rot_hov || g_xform.handle == TransformHandle::Rotate)
-                                            ? IM_COL32(255, 255, 255, 255)
-                                            : IM_COL32(0, 220, 255, 255));
-                    dl->AddCircle(rot_handle, 7.0f, IM_COL32(0, 0, 0, 255), 0, 1.0f);
-                    if (rot_hov)
+                    CanvasTransformHandleOverlay handle_overlay =
+                        DrawCanvasTransformHandles(dl, rc, mouse,
+                                                   g_xform.handle,
+                                                   g_xform.aspect_locked);
+                    TransformHandle hover_h = handle_overlay.hover;
+                    float center_sx = handle_overlay.center.x;
+                    float center_sy = handle_overlay.center.y;
+                    ImVec2 ch1 = handle_overlay.chain_min;
+                    ImVec2 ch2 = handle_overlay.chain_max;
+                    bool chain_hov = handle_overlay.chain_hover;
+                    if (handle_overlay.rotate_hover)
                         ImGui::SetTooltip("Rotate paste");
 
-                    /* Chain icon at the top-right corner of the rect, offset
-                       upward so it doesn't collide with the TR handle. Click
-                       toggles g_xform.aspect_locked (persistent). Drawn as
-                       two interlocked squares — minimal but recognizable. */
-                    float chain_cx = rc[1].x + 14;
-                    float chain_cy = rc[1].y - 14;
-                    float chain_hs = 8;
-                    ImVec2 ch1(chain_cx - chain_hs, chain_cy - chain_hs);
-                    ImVec2 ch2(chain_cx + chain_hs, chain_cy + chain_hs);
-                    bool chain_hov = mouse.x >= ch1.x && mouse.x <= ch2.x &&
-                                     mouse.y >= ch1.y && mouse.y <= ch2.y;
-                    ImU32 chain_bg = chain_hov ? IM_COL32(255, 255, 255, 200)
-                                               : IM_COL32(40, 40, 40, 200);
-                    ImU32 chain_fg = g_xform.aspect_locked ? IM_COL32(0, 220, 255, 255)
-                                                           : IM_COL32(180, 180, 180, 255);
-                    dl->AddRectFilled(ch1, ch2, chain_bg, 2.0f);
-                    dl->AddRect(ch1, ch2, IM_COL32(0, 0, 0, 255), 2.0f, 0, 1.0f);
-                    /* Glyph: two linked rings when locked, two broken arcs when not.
-                       Drawn with primitives — no font dependency. */
-                    if (g_xform.aspect_locked) {
-                        dl->AddCircle(ImVec2(chain_cx - 3, chain_cy), 3.5f, chain_fg, 0, 1.5f);
-                        dl->AddCircle(ImVec2(chain_cx + 3, chain_cy), 3.5f, chain_fg, 0, 1.5f);
-                    } else {
-                        dl->AddCircle(ImVec2(chain_cx - 4, chain_cy - 2), 3.0f, chain_fg, 0, 1.5f);
-                        dl->AddCircle(ImVec2(chain_cx + 4, chain_cy + 2), 3.0f, chain_fg, 0, 1.5f);
-                    }
                     if (chain_hov) {
                         ImGui::SetTooltip(g_xform.aspect_locked
                             ? "Aspect ratio locked. Click to unlock (free scale)."

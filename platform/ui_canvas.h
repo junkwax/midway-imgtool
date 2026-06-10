@@ -58,6 +58,24 @@ struct CanvasTransform2D {
     float sa = 0.0f;
 };
 
+enum class TransformHandle {
+    None,
+    Move,
+    Rotate,
+    TL, T, TR,
+    L,      R,
+    BL, B, BR
+};
+
+struct CanvasTransformHandleOverlay {
+    TransformHandle hover = TransformHandle::None;
+    bool rotate_hover = false;
+    bool chain_hover = false;
+    ImVec2 center = ImVec2(0, 0);
+    ImVec2 chain_min = ImVec2(0, 0);
+    ImVec2 chain_max = ImVec2(0, 0);
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -97,6 +115,9 @@ void DrawCanvasPasteSnapGuides(ImDrawList *dl, ImVec2 img_pos,
                                bool hit_y, int guide_y);
 void DrawCanvasPasteHint(ImDrawList *dl, ImVec2 img_pos,
                          const char *hint, ImU32 color);
+CanvasTransformHandleOverlay DrawCanvasTransformHandles(
+    ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
+    TransformHandle active_handle, bool aspect_locked);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);

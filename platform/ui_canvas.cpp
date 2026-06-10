@@ -292,6 +292,101 @@ void DrawCanvasPasteHint(ImDrawList *dl, ImVec2 img_pos,
                 color, hint);
 }
 
+CanvasTransformHandleOverlay DrawCanvasTransformHandles(
+    ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
+    TransformHandle active_handle, bool aspect_locked)
+{
+    CanvasTransformHandleOverlay out;
+    if (!dl || !corners)
+        return out;
+
+    const float hsz = 5.0f;
+    struct HandleSpec { TransformHandle h; float cx, cy; };
+    HandleSpec specs[8] = {
+        { TransformHandle::TL, corners[0].x, corners[0].y },
+        { TransformHandle::T,  (corners[0].x + corners[1].x) * 0.5f,
+                               (corners[0].y + corners[1].y) * 0.5f },
+        { TransformHandle::TR, corners[1].x, corners[1].y },
+        { TransformHandle::L,  (corners[0].x + corners[3].x) * 0.5f,
+                               (corners[0].y + corners[3].y) * 0.5f },
+        { TransformHandle::R,  (corners[1].x + corners[2].x) * 0.5f,
+                               (corners[1].y + corners[2].y) * 0.5f },
+        { TransformHandle::BL, corners[3].x, corners[3].y },
+        { TransformHandle::B,  (corners[3].x + corners[2].x) * 0.5f,
+                               (corners[3].y + corners[2].y) * 0.5f },
+        { TransformHandle::BR, corners[2].x, corners[2].y },
+    };
+
+    for (int i = 0; i < 8; i++) {
+        const HandleSpec &s = specs[i];
+        bool hov = mouse.x >= s.cx - hsz && mouse.x <= s.cx + hsz &&
+                   mouse.y >= s.cy - hsz && mouse.y <= s.cy + hsz;
+        if (hov && active_handle == TransformHandle::None)
+            out.hover = s.h;
+        ImU32 fill = (hov || active_handle == s.h)
+            ? IM_COL32(255, 255, 255, 255)
+            : IM_COL32(0, 220, 255, 255);
+        dl->AddRectFilled(ImVec2(s.cx - hsz, s.cy - hsz),
+                          ImVec2(s.cx + hsz, s.cy + hsz),
+                          fill);
+        dl->AddRect(ImVec2(s.cx - hsz, s.cy - hsz),
+                    ImVec2(s.cx + hsz, s.cy + hsz),
+                    IM_COL32(0, 0, 0, 255), 0.0f, 0, 1.0f);
+    }
+
+    out.center.x = (corners[0].x + corners[2].x) * 0.5f;
+    out.center.y = (corners[0].y + corners[2].y) * 0.5f;
+    float top_mid_x = (corners[0].x + corners[1].x) * 0.5f;
+    float top_mid_y = (corners[0].y + corners[1].y) * 0.5f;
+    float vx = top_mid_x - out.center.x;
+    float vy = top_mid_y - out.center.y;
+    float vlen = sqrtf(vx * vx + vy * vy);
+    if (vlen < 0.001f) { vx = 0.0f; vy = -1.0f; vlen = 1.0f; }
+    vx /= vlen;
+    vy /= vlen;
+    ImVec2 rot_handle(top_mid_x + vx * 26.0f, top_mid_y + vy * 26.0f);
+    dl->AddLine(ImVec2(top_mid_x, top_mid_y), rot_handle,
+                IM_COL32(0, 220, 255, 190), 1.5f);
+    float rdist = (mouse.x - rot_handle.x) * (mouse.x - rot_handle.x) +
+                  (mouse.y - rot_handle.y) * (mouse.y - rot_handle.y);
+    out.rotate_hover = rdist <= 9.0f * 9.0f;
+    if (out.rotate_hover && active_handle == TransformHandle::None)
+        out.hover = TransformHandle::Rotate;
+    dl->AddCircleFilled(rot_handle, 7.0f,
+                        (out.rotate_hover || active_handle == TransformHandle::Rotate)
+                            ? IM_COL32(255, 255, 255, 255)
+                            : IM_COL32(0, 220, 255, 255));
+    dl->AddCircle(rot_handle, 7.0f, IM_COL32(0, 0, 0, 255), 0, 1.0f);
+
+    float chain_cx = corners[1].x + 14.0f;
+    float chain_cy = corners[1].y - 14.0f;
+    float chain_hs = 8.0f;
+    out.chain_min = ImVec2(chain_cx - chain_hs, chain_cy - chain_hs);
+    out.chain_max = ImVec2(chain_cx + chain_hs, chain_cy + chain_hs);
+    out.chain_hover = mouse.x >= out.chain_min.x && mouse.x <= out.chain_max.x &&
+                      mouse.y >= out.chain_min.y && mouse.y <= out.chain_max.y;
+    ImU32 chain_bg = out.chain_hover ? IM_COL32(255, 255, 255, 200)
+                                     : IM_COL32(40, 40, 40, 200);
+    ImU32 chain_fg = aspect_locked ? IM_COL32(0, 220, 255, 255)
+                                   : IM_COL32(180, 180, 180, 255);
+    dl->AddRectFilled(out.chain_min, out.chain_max, chain_bg, 2.0f);
+    dl->AddRect(out.chain_min, out.chain_max, IM_COL32(0, 0, 0, 255),
+                2.0f, 0, 1.0f);
+    if (aspect_locked) {
+        dl->AddCircle(ImVec2(chain_cx - 3.0f, chain_cy), 3.5f,
+                      chain_fg, 0, 1.5f);
+        dl->AddCircle(ImVec2(chain_cx + 3.0f, chain_cy), 3.5f,
+                      chain_fg, 0, 1.5f);
+    } else {
+        dl->AddCircle(ImVec2(chain_cx - 4.0f, chain_cy - 2.0f), 3.0f,
+                      chain_fg, 0, 1.5f);
+        dl->AddCircle(ImVec2(chain_cx + 4.0f, chain_cy + 2.0f), 3.0f,
+                      chain_fg, 0, 1.5f);
+    }
+
+    return out;
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])
