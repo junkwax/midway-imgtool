@@ -160,6 +160,10 @@ bool WorldAssignSelectedDummyDecap(WorldMarkedSequenceState &state,
 void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out);
 WorldMarkedLane WorldBuildDummyDecapLane(WorldMarkedSequenceState &state,
                                          int active_doc_idx);
+bool WorldAppendMarkedDocumentLanes(WorldMarkedSequenceState &state,
+                                    int active_doc_idx,
+                                    std::vector<WorldMarkedLane> &lanes,
+                                    bool *dummy_decap_missing);
 bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
                                  std::vector<WorldMarkedLane> &lanes);
 bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,

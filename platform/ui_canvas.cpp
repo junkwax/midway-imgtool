@@ -443,6 +443,33 @@ bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
     return true;
 }
 
+bool WorldAppendMarkedDocumentLanes(WorldMarkedSequenceState &state,
+                                    int active_doc_idx,
+                                    std::vector<WorldMarkedLane> &lanes,
+                                    bool *dummy_decap_missing)
+{
+    if (dummy_decap_missing) *dummy_decap_missing = false;
+    bool appended = false;
+
+    for (int i = 0; i < document_tab_count(); i++) {
+        if (WorldAppendMarkedSourceLane(state, i, lanes))
+            appended = true;
+        if ((int)lanes.size() >= kWorldMarkedSourceTabs) break;
+    }
+
+    if (state.dummy_decap_body) {
+        WorldMarkedLane dummy = WorldBuildDummyDecapLane(state, active_doc_idx);
+        if (dummy.doc && !dummy.frames.empty()) {
+            lanes.push_back(dummy);
+            appended = true;
+        } else if (dummy_decap_missing) {
+            *dummy_decap_missing = true;
+        }
+    }
+
+    return appended;
+}
+
 bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
                         const std::vector<WorldAsmLaneFrame> &frames,
                         Document *doc, int doc_idx, int slot_id,
