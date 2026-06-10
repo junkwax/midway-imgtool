@@ -11,6 +11,7 @@
 #pragma once
 #include <vector>
 #include <SDL.h>
+#include <imgui.h>   /* ImVec2 for the composite-preview signature */
 
 /* Ordered timeline frames (image indices) and matching per-frame hold counts;
    g_timeline_play_idx is the current playhead position into g_timeline_frames. */
@@ -67,7 +68,14 @@ bool AdvanceTimelineComposite(int delta);     /* step the locked composite pair 
 void StepTimelinePlayhead(int delta);
 void ToggleTimelineCompositeFrame(int img_idx);
 
-/* Small ImGui control: a lock/free toggle button for composite slot 0/1.
-   (The large composite-preview rendering stays in the overlay for now because
-   it depends on World-View sprite texturing and anipoint editing.) */
+/* Small ImGui control: a lock/free toggle button for composite slot 0/1. */
 void DrawTimelineCompositeLockToggle(int slot, const char *name);
+
+/* Whether timeline playback is currently running (lives here as timeline state;
+   the playback advance loop and the play-toggle thunk in the overlay use it). */
+extern bool g_is_playing;
+
+/* Render the anipoint-aligned composite preview of the two selected frames into
+   the given canvas area; handles lock toggles and anipoint dragging. Returns
+   true if a composite was drawn (two distinct frames selected). */
+bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos);

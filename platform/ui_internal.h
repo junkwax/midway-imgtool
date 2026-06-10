@@ -90,6 +90,7 @@ extern int   g_zoom_pending_steps;
 extern bool  g_zoom_pending_fit;
 extern unsigned char *g_pixel_undo;
 extern int            g_pixel_undo_img;  /* -2 = never built */
+static const float ZOOM_MAX = 128.0f;    /* max canvas/preview zoom factor */
 
 /* ---- Undo system (geometry / metadata snapshots) ---- */
 #define UNDO_STACK_SIZE 32

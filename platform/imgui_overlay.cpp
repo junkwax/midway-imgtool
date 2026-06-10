@@ -100,9 +100,8 @@ static void PosixCrashHandler(int sig) {
 extern int           g_img_tex_idx;
 
 /* ---- Zoom / Pan ---- */
-/* Mutable zoom/pan + pixel-undo state lives in ui_state.cpp (see ui_internal.h).
-   ZOOM_MAX stays here as a compile-time constant used by the zoom helpers. */
-static const float ZOOM_MAX = 128.0f;
+/* Mutable zoom/pan + pixel-undo state and ZOOM_MAX live in ui_state.cpp /
+   ui_internal.h. */
 
 static float ZoomFitScaleForAvailable(const ImVec2 &avail)
 {
@@ -599,7 +598,7 @@ static int g_isolate_color = -1;
 
 /* Timeline state (lifted to file scope so keyboard shortcuts and onion-skin
    can address it). g_timeline_built_for_imgcnt drives stale-index pruning. */
-static bool             g_is_playing = false;
+/* g_is_playing lives in ui_timeline.{h,cpp}. */
 static float            g_play_speed = 12.0f; /* fps */
 static float            g_play_timer = 0.0f;
 /* g_timeline_frames / g_timeline_holds / g_timeline_play_idx and the frame-model
@@ -611,9 +610,7 @@ static int              g_timeline_play_dir = 1;     /* +1 forward, -1 reverse (
 /* g_timeline_composite[2] / _locked[2] / _drag_slot live in ui_timeline.{h,cpp}
    along with the selection + playback logic. The drag mouse/anipoint state below
    stays here with the composite-preview rendering. */
-static ImVec2           g_timeline_composite_drag_mouse(0.0f, 0.0f);
-static unsigned short   g_timeline_composite_drag_anix = 0;
-static unsigned short   g_timeline_composite_drag_aniy = 0;
+/* Composite-preview drag state lives in ui_timeline.cpp with the preview. */
 
 /* Composite selection helpers (ClearTimelineCompositeSelection,
    CompactTimelineCompositeSelection, PruneTimelineCompositeSelection,
@@ -1964,242 +1961,8 @@ static void collect_marked_frames(Document *doc, std::vector<int> &out)
 
 /* BuildWorldSpriteTexture now lives in world_render.{h,cpp}. */
 
-static bool DrawTimelineCompositePreview(ImVec2 avail, ImVec2 img_pos)
-{
-    PruneTimelineCompositeSelection();
-    if (!TimelineCompositeReady()) return false;
-
-    int back_idx = g_timeline_composite[0];
-    int front_idx = g_timeline_composite[1];
-    IMG *back = get_img(back_idx);
-    IMG *front = get_img(front_idx);
-    if (!back || !front || !back->data_p || !front->data_p ||
-        back->w == 0 || back->h == 0 || front->w == 0 || front->h == 0)
-        return false;
-
-    struct Placement {
-        IMG *img;
-        int left, top, right, bottom;
-        ImU32 outline;
-        unsigned char alpha;
-    };
-
-    Placement p[2] = {
-        { back,
-          -(int)(short)back->anix,  -(int)(short)back->aniy,
-          -(int)(short)back->anix + (int)back->w,
-          -(int)(short)back->aniy + (int)back->h,
-          IM_COL32(120, 190, 255, 220), 185 },
-        { front,
-          -(int)(short)front->anix, -(int)(short)front->aniy,
-          -(int)(short)front->anix + (int)front->w,
-          -(int)(short)front->aniy + (int)front->h,
-          IM_COL32(255, 190, 90, 230), 255 }
-    };
-
-    int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
-    for (int i = 0; i < 2; i++) {
-        if (p[i].left   < min_x) min_x = p[i].left;
-        if (p[i].top    < min_y) min_y = p[i].top;
-        if (p[i].right  > max_x) max_x = p[i].right;
-        if (p[i].bottom > max_y) max_y = p[i].bottom;
-        if (secondary_anipoint_in_use(p[i].img)) {
-            int sx2 = p[i].left + (int)(short)p[i].img->anix2;
-            int sy2 = p[i].top  + (int)(short)p[i].img->aniy2;
-            if (sx2 < min_x) min_x = sx2;
-            if (sy2 < min_y) min_y = sy2;
-            if (sx2 > max_x) max_x = sx2;
-            if (sy2 > max_y) max_y = sy2;
-        }
-    }
-
-    int union_w = max_x - min_x;
-    int union_h = max_y - min_y;
-    if (union_w <= 0 || union_h <= 0) return false;
-
-    const float margin = 24.0f;
-    float fit_x = (avail.x - margin * 2.0f) / (float)union_w;
-    float fit_y = (avail.y - margin * 2.0f) / (float)union_h;
-    float scale = fit_x < fit_y ? fit_x : fit_y;
-    if (scale > 1.0f) scale = floorf(scale);
-    if (scale < 0.25f) scale = 0.25f;
-    if (scale > ZOOM_MAX) scale = ZOOM_MAX;
-
-    float cw = union_w * scale;
-    float ch = union_h * scale;
-    ImVec2 cpos(img_pos.x + (avail.x - cw) * 0.5f,
-                img_pos.y + (avail.y - ch) * 0.5f);
-    ImVec2 cend(cpos.x + cw, cpos.y + ch);
-    ImVec2 anchor(cpos.x + (0 - min_x) * scale,
-                  cpos.y + (0 - min_y) * scale);
-
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    float cs = 8.0f * scale;
-    if (cs < 6.0f) cs = 6.0f;
-    for (float y = cpos.y; y < cend.y; y += cs) {
-        for (float x = cpos.x; x < cend.x; x += cs) {
-            int row = (int)((y - cpos.y) / cs);
-            int col = (int)((x - cpos.x) / cs);
-            ImU32 col32 = ((row + col) & 1) ? IM_COL32(70, 70, 70, 255) : IM_COL32(40, 40, 40, 255);
-            float x2 = x + cs; if (x2 > cend.x) x2 = cend.x;
-            float y2 = y + cs; if (y2 > cend.y) y2 = cend.y;
-            dl->AddRectFilled(ImVec2(x, y), ImVec2(x2, y2), col32);
-        }
-    }
-
-    auto draw_crosshair = [&](ImVec2 pt, ImU32 col, float len, float thick) {
-        dl->AddLine(ImVec2(pt.x - len, pt.y), ImVec2(pt.x + len, pt.y), col, thick);
-        dl->AddLine(ImVec2(pt.x, pt.y - len), ImVec2(pt.x, pt.y + len), col, thick);
-        dl->AddCircleFilled(pt, 1.5f, col);
-    };
-
-    SDL_Texture *tex[2] = {
-        BuildWorldSpriteTexture(g_doc, p[0].img, p[0].alpha),
-        BuildWorldSpriteTexture(g_doc, p[1].img, p[1].alpha)
-    };
-    ImVec2 sprite_min[2] = {};
-    ImVec2 sprite_max[2] = {};
-    bool sprite_valid[2] = {false, false};
-
-    for (int i = 0; i < 2; i++) {
-        if (!tex[i]) continue;
-        ImVec2 sp(cpos.x + (p[i].left - min_x) * scale,
-                  cpos.y + (p[i].top - min_y) * scale);
-        ImVec2 se(sp.x + p[i].img->w * scale,
-                  sp.y + p[i].img->h * scale);
-        sprite_min[i] = sp;
-        sprite_max[i] = se;
-        sprite_valid[i] = true;
-        dl->AddImage((ImTextureID)(intptr_t)tex[i], sp, se);
-        dl->AddRect(sp, se, p[i].outline, 0.0f, 0, 1.0f);
-
-        if (secondary_anipoint_in_use(p[i].img)) {
-            ImVec2 s2(sp.x + (short)p[i].img->anix2 * scale,
-                      sp.y + (short)p[i].img->aniy2 * scale);
-            draw_crosshair(s2, p[i].outline, 9.0f, 1.2f);
-            dl->AddLine(anchor, s2, p[i].outline, 1.0f);
-        }
-    }
-
-    draw_crosshair(anchor, IM_COL32(255, 230, 80, 255), 15.0f, 1.6f);
-    dl->AddRect(cpos, cend, IM_COL32(210, 210, 210, 160), 0.0f, 0, 1.0f);
-
-    ImGuiIO &io = ImGui::GetIO();
-    ImVec2 mouse = io.MousePos;
-    bool over_lock_control = false;
-    auto mouse_in_rect = [&](ImVec2 a, ImVec2 b) -> bool {
-        return mouse.x >= a.x && mouse.x < b.x && mouse.y >= a.y && mouse.y < b.y;
-    };
-
-    std::string back_name = img_name_string(back);
-    std::string front_name = img_name_string(front);
-    char buf[224];
-    snprintf(buf, sizeof(buf), "Composite  [%d] %s  +  [%d] %s",
-             back_idx, back_name.c_str(), front_idx, front_name.c_str());
-    ImVec2 label_sz = ImGui::CalcTextSize(buf);
-    float label_w = label_sz.x + 10.0f;
-    if (label_w > cw) label_w = cw;
-    float header_h = (cend.y - cpos.y >= 48.0f) ? 48.0f : 20.0f;
-    dl->AddRectFilled(cpos, ImVec2(cend.x, cpos.y + header_h),
-                      IM_COL32(0, 0, 0, 170));
-    dl->AddRectFilled(cpos, ImVec2(cpos.x + label_w, cpos.y + 20.0f),
-                      IM_COL32(0, 0, 0, 180));
-    dl->AddText(ImVec2(cpos.x + 5.0f, cpos.y + 3.0f),
-                IM_COL32(235, 235, 235, 255), buf);
-
-    auto draw_lock_button = [&](int slot, const char *name, ImVec2 pos) {
-        char lbuf[48];
-        bool locked = g_timeline_composite_locked[slot];
-        const char *icon = locked
-            ? (g_icon_font_loaded ? ICON_LOCK : ICON_LOCK_TXT)
-            : (g_icon_font_loaded ? ICON_UNLOCK : ICON_UNLOCK_TXT);
-        snprintf(lbuf, sizeof(lbuf), "%s %s: %s", icon, name,
-                 locked ? "Locked" : "Free");
-        ImVec2 text_sz = ImGui::CalcTextSize(lbuf);
-        ImVec2 pad(6.0f, 3.0f);
-        ImVec2 a(pos.x, pos.y);
-        ImVec2 b(pos.x + text_sz.x + pad.x * 2.0f,
-                 pos.y + text_sz.y + pad.y * 2.0f);
-        bool hover = mouse_in_rect(a, b);
-        over_lock_control = over_lock_control || hover;
-        ImU32 bg = locked
-            ? IM_COL32(90, 70, 40, hover ? 245 : 215)
-            : IM_COL32(25, 75, 75, hover ? 245 : 210);
-        dl->AddRectFilled(a, b, bg, 3.0f);
-        dl->AddRect(a, b, IM_COL32(230, 230, 230, 180), 3.0f);
-        dl->AddText(ImVec2(a.x + pad.x, a.y + pad.y),
-                    IM_COL32(245, 245, 245, 255), lbuf);
-        if (hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            g_timeline_composite_locked[slot] = !g_timeline_composite_locked[slot];
-            if (g_timeline_composite_locked[slot] &&
-                g_timeline_composite_drag_slot == slot)
-                g_timeline_composite_drag_slot = -1;
-        }
-        return b.x - a.x;
-    };
-
-    ImVec2 lock_pos(cpos.x + 5.0f, cpos.y + 24.0f);
-    float lock_w = draw_lock_button(0, "Back", lock_pos);
-    draw_lock_button(1, "Front", ImVec2(lock_pos.x + lock_w + 6.0f, lock_pos.y));
-
-    auto hit_test_sprite = [&](int slot) -> bool {
-        if (slot < 0 || slot > 1 || g_timeline_composite_locked[slot] || !sprite_valid[slot])
-            return false;
-        if (!mouse_in_rect(sprite_min[slot], sprite_max[slot]))
-            return false;
-        IMG *img = p[slot].img;
-        int px = (int)((mouse.x - sprite_min[slot].x) / scale);
-        int py = (int)((mouse.y - sprite_min[slot].y) / scale);
-        if (px < 0 || py < 0 || px >= (int)img->w || py >= (int)img->h)
-            return false;
-        int stride = (img->w + 3) & ~3;
-        const unsigned char *data = (const unsigned char *)img->data_p;
-        return data && data[py * stride + px] != 0;
-    };
-
-    int hover_slot = -1;
-    if (!over_lock_control) {
-        if (hit_test_sprite(1)) hover_slot = 1;
-        else if (hit_test_sprite(0)) hover_slot = 0;
-    }
-    if (hover_slot >= 0) {
-        dl->AddRect(sprite_min[hover_slot], sprite_max[hover_slot],
-                    IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-    }
-
-    if (!over_lock_control && hover_slot >= 0 &&
-        ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        g_is_playing = false;
-        g_timeline_composite_drag_slot = hover_slot;
-        g_timeline_composite_drag_mouse = mouse;
-        g_timeline_composite_drag_anix = p[hover_slot].img->anix;
-        g_timeline_composite_drag_aniy = p[hover_slot].img->aniy;
-        g_doc->ilselected = g_timeline_composite[hover_slot];
-        g_zoom_reset = true;
-    }
-
-    if (g_timeline_composite_drag_slot >= 0) {
-        int slot = g_timeline_composite_drag_slot;
-        IMG *drag_img = p[slot].img;
-        if (!drag_img || g_timeline_composite_locked[slot] ||
-            !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            g_timeline_composite_drag_slot = -1;
-        } else {
-            int dx = (int)((mouse.x - g_timeline_composite_drag_mouse.x) / scale);
-            int dy = (int)((mouse.y - g_timeline_composite_drag_mouse.y) / scale);
-            int nx = (int)(short)g_timeline_composite_drag_anix - dx;
-            int ny = (int)(short)g_timeline_composite_drag_aniy - dy;
-            if (nx < -32768) nx = -32768; if (nx > 32767) nx = 32767;
-            if (ny < -32768) ny = -32768; if (ny > 32767) ny = 32767;
-            g_doc->ilselected = g_timeline_composite[slot];
-            set_primary_anipoint_with_sequence(drag_img, nx, ny);
-        }
-    }
-
-    ImGui::Dummy(ImVec2(avail.x, avail.y));
-    return true;
-}
+/* DrawTimelineCompositePreview now lives in ui_timeline.{h,cpp} — its last
+   blockers (world_render, anipoint, anipoint_edit) are all extracted. */
 
 static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 {
