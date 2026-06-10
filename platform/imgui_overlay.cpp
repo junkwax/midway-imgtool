@@ -18978,31 +18978,13 @@ void imgui_overlay_render(void)
             int hw = rec.fields[mk2::F_X_SIZE  ].has_value ? (int)rec.fields[mk2::F_X_SIZE  ].value : 0;
             int hh = rec.fields[mk2::F_Y_SIZE  ].has_value ? (int)rec.fields[mk2::F_Y_SIZE  ].value : 0;
             ImDrawList *dl = ImGui::GetWindowDrawList();
-            ImVec2 tl(img_pos.x + hx * sx, img_pos.y + hy * sy);
-            ImVec2 br(img_pos.x + (hx + hw) * sx, img_pos.y + (hy + hh) * sy);
-            ImVec2 tr(br.x, tl.y), bl(tl.x, br.y);
-            ImU32 col_line   = IM_COL32(255, 80, 220, 230);
-            ImU32 col_fill   = IM_COL32(255, 80, 220,  40);
-            ImU32 col_hover  = IM_COL32(255, 255, 0, 255);
-            dl->AddRectFilled(tl, br, col_fill);
-            dl->AddRect(tl, br, col_line, 0, 0, 2.f);
-            /* Label above the rect. */
             char tag[80];
             snprintf(tag, sizeof(tag), "%s  (%d,%d %dx%d)", rec.label.c_str(), hx, hy, hw, hh);
-            dl->AddText(ImVec2(tl.x, tl.y - 16.f), col_line, tag);
-
-            ImVec2 corners[4] = { tl, tr, br, bl };
-            float hr = 12.f * 12.f;
             bool  hovering[4] = { false, false, false, false };
-            if (!canvas_input_blocked) {
-                for (int c = 0; c < 4; c++) {
-                    ImVec2 d = mouse - corners[c];
-                    hovering[c] = (d.x * d.x + d.y * d.y < hr);
-                }
-            }
-            for (int c = 0; c < 4; c++) {
-                dl->AddCircleFilled(corners[c], 5.f, hovering[c] ? col_hover : col_line);
-            }
+            DrawCanvasStrikeBoxOverlay(dl, img_pos, sx, sy,
+                                       hx, hy, hw, hh,
+                                       tag, mouse, !canvas_input_blocked,
+                                       hovering);
             if (!canvas_input_blocked) {
                 for (int c = 0; c < 4; c++) {
                     if (hovering[c] && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {

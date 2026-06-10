@@ -408,6 +408,46 @@ void DrawCanvasHitboxOverlay(ImDrawList *dl, ImVec2 img_pos,
     }
 }
 
+void DrawCanvasStrikeBoxOverlay(ImDrawList *dl, ImVec2 img_pos,
+                                float sx, float sy,
+                                int x, int y, int w, int h,
+                                const char *label,
+                                ImVec2 mouse, bool enable_hover,
+                                bool hovering[4])
+{
+    if (!dl) {
+        if (hovering) {
+            for (int c = 0; c < 4; c++) hovering[c] = false;
+        }
+        return;
+    }
+
+    ImVec2 tl(img_pos.x + x * sx, img_pos.y + y * sy);
+    ImVec2 br(img_pos.x + (x + w) * sx, img_pos.y + (y + h) * sy);
+    ImVec2 tr(br.x, tl.y);
+    ImVec2 bl(tl.x, br.y);
+    ImU32 col_line = IM_COL32(255, 80, 220, 230);
+    ImU32 col_fill = IM_COL32(255, 80, 220, 40);
+    ImU32 col_hover = IM_COL32(255, 255, 0, 255);
+
+    dl->AddRectFilled(tl, br, col_fill);
+    dl->AddRect(tl, br, col_line, 0, 0, 2.0f);
+    if (label && label[0])
+        dl->AddText(ImVec2(tl.x, tl.y - 16.0f), col_line, label);
+
+    ImVec2 corners[4] = {tl, tr, br, bl};
+    float hr = 12.0f * 12.0f;
+    for (int c = 0; c < 4; c++) {
+        bool hover = false;
+        if (enable_hover) {
+            ImVec2 d(mouse.x - corners[c].x, mouse.y - corners[c].y);
+            hover = (d.x * d.x + d.y * d.y < hr);
+        }
+        if (hovering) hovering[c] = hover;
+        dl->AddCircleFilled(corners[c], 5.0f, hover ? col_hover : col_line);
+    }
+}
+
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,
