@@ -719,6 +719,99 @@ void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
     dl->PopClipRect();
 }
 
+WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &state,
+                                                  const std::vector<WorldMarkedLane> &lanes,
+                                                  bool dummy_decap_missing,
+                                                  IMG *selected_img,
+                                                  int active_doc_idx)
+{
+    WorldMarkedPanelAction action = {};
+
+    ImGui::Text("Frame Sequence");
+    ImGui::SameLine();
+    if (ImGui::SmallButton(state.paused ? "Play##world_marked_pause"
+                                        : "Pause##world_marked_pause")) {
+        state.paused = !state.paused;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Refresh##world_marked_restart"))
+        WorldMarkedRestart(state);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Restart every marked tab sequence from frame 1.");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(105.0f);
+    ImGui::SliderFloat("FPS##world_marked_panel_fps", &state.fps, 1.0f, 60.0f, "%.1f");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Tick %d", state.frame);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy ASM##world_marked_copy_asm")) {
+        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+        ImGui::SetClipboardText(state.generated_asm.c_str());
+        action.copied_asm = true;
+        action.copied_lane_count = (int)lanes.size();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned local-anipoint tables.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("View ASM##world_marked_view_asm")) {
+        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+        state.show_asm = true;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Preview the generated animation-table source.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Save ASM##world_marked_save_asm")) {
+        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+        action.request_save_asm = true;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Save the generated animation tables to a .ASM file.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Load ASM##world_marked_load_asm"))
+        action.request_load_asm = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
+                          "The sprite IMGs it references are opened automatically.");
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body",
+                        &state.dummy_decap_body)) {
+        state.dummy_decap_reset = true;
+        state.hold_end[kWorldDummyDecapSlot] = true;
+        WorldMarkedRestart(state);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Adds the stock fatality decap body as its own sync lane using *DECAP1-7 frames from open tabs.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Use Selected##world_dummy_assign")) {
+        if (WorldAssignSelectedDummyDecap(state, selected_img, active_doc_idx))
+            action.dummy_assigned = true;
+        else
+            action.dummy_assign_failed = true;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Assign the dummy body from the selected *DECAP frame, *DECAPLEG piece, or *DECAPTORSO piece.");
+    if (state.dummy_decap_manual) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("[%d] %sDECAP",
+                            state.dummy_decap_doc_idx,
+                            state.dummy_decap_prefix.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Auto##world_dummy_auto")) {
+            state.dummy_decap_manual = false;
+            state.dummy_decap_reset = true;
+            WorldMarkedRestart(state);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Return to automatic dummy body selection.");
+    }
+    if (state.dummy_decap_body && dummy_decap_missing) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("No assigned *DECAP body found");
+    }
+
+    return action;
+}
+
 void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                                  WorldMarkedLane &lane,
                                  int display_slot)
