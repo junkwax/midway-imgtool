@@ -145,6 +145,8 @@ void WorldDrawMarkedLaneTags(ImDrawList *dl,
 void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
                                ImVec2 world_pos, float world_width);
+std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
+                                const std::vector<WorldMarkedLane> &lanes);
 void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
                                const WorldMarkedLaneRenderInfo &render_info,

@@ -8,8 +8,8 @@ tracks slice-by-slice progress.
 
 ## Current checkpoint - June 10, 2026
 
-Branch: `refactor/overlay-split` (54 commits ahead of `SDL-main`). Working tree
-clean. `imgui_overlay.cpp` is down to 19,573 lines; `ui_canvas.cpp` is now 1,109
+Branch: `refactor/overlay-split` (55 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is down to 19,473 lines; `ui_canvas.cpp` is now 1,215
 lines. Full app builds; all 7 `ctest` suites pass.
 
 **Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
@@ -32,7 +32,7 @@ reset helpers, plus the marked-lane model, marked-frame collection, and
 source/dummy-decap lane builders, lane playback resolver, and shared World View
 layout helper used by single and marked World View rendering. It also owns
 marked-lane panel layout, drag handling, sprite/tag/status drawing, and
-render-rect bookkeeping. Supporting
+render-rect bookkeeping, plus the marked World View ASM text generator. Supporting
 modules extracted along the way:
 `world_render` (sprite→texture), `anipoint` (pure predicates + sequence-name
 parsing), `anipoint_edit` (sequence-propagating setters), `img_util`
@@ -55,7 +55,7 @@ committed (`fc4edeb`).
 | `anipoint_edit.{h,cpp}` | sequence-propagating anipoint setters + undo coalescing | — |
 | `world_render.{h,cpp}` | `doc_get_img`, `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
 | `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
-| `ui_canvas.{h,cpp}` | single-sprite World View canvas, World View config/layout state, onion texture cache, marked World View lane model/constants/playback+sequence+mirror+dummy-decap+drag+ASM-popup state/string/model helpers, marked-frame collection, source/dummy-decap lane builders, lane playback resolver, panel layout/drag, sprite/tag/status drawing + render rects | — |
+| `ui_canvas.{h,cpp}` | single-sprite World View canvas, World View config/layout state, onion texture cache, marked World View lane model/constants/playback+sequence+mirror+dummy-decap+drag+ASM-popup state/string/model helpers, marked-frame collection, source/dummy-decap lane builders, lane playback resolver, panel layout/drag, sprite/tag/status drawing, render rects + ASM generation | — |
 | `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |
 
 ### For the next agent — how to continue
@@ -164,8 +164,9 @@ foundation as you go:
       helpers, sequence tick/sync/edit helpers, and dummy-decap timing reset
       helpers, plus the marked-lane model, marked-frame collection, and
       source/dummy-decap lane builders, lane playback resolver, and sprite
-      panel layout/drag handling, tag/status drawing, and render rect bookkeeping now live in `ui_canvas`; marked-tab
-      panel controls, ASM export text generation, and the regular edit canvas
+      panel layout/drag handling, tag/status drawing, render rect bookkeeping,
+      and ASM export text generation now live in `ui_canvas`; marked-tab
+      panel controls and the regular edit canvas
       remain in `imgui_overlay.cpp`.
 - [ ] `ui_palette` — palette editor, HSL sliders, histogram, color picking.
 - [ ] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso,

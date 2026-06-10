@@ -635,6 +635,118 @@ void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
     dl->PopClipRect();
 }
 
+std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
+                                const std::vector<WorldMarkedLane> &lanes)
+{
+    std::string out;
+    out.reserve(4096);
+    out += "; IMGTOOL World View fatality sequence draft\n";
+    out += "; One lane is one actor/object animation table.\n";
+    out += "; Delay ticks are encoded by repeating that frame label.\n";
+    out += "; Hidden entries export as 0 until their Show@ preview tick.\n";
+    out += "; Each *_local_anipts table is aligned 1:1 with the .long rows.\n";
+    out += "; Run these lanes at the same animation sleep/FPS used in the preview.\n\n";
+
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        const WorldMarkedLane &lane = lanes[slot];
+        const char *doc_name = lane.doc && lane.doc->fname_s[0]
+                             ? lane.doc->fname_s : "Untitled";
+        if (!lane.label.empty())
+            doc_name = lane.label.c_str();
+        std::string doc_part = !lane.asm_label_part.empty()
+                             ? lane.asm_label_part
+                             : WorldMarkedAsmLabelPart(doc_name, slot);
+        char label_buf[96];
+        if (lane.dummy_decap)
+            snprintf(label_buf, sizeof(label_buf), "a_imgtool_%s", doc_part.c_str());
+        else
+            snprintf(label_buf, sizeof(label_buf), "a_imgtool_slot%d_%s",
+                     slot + 1, doc_part.c_str());
+        std::string anim_label = label_buf;
+
+        char comment[192];
+        snprintf(comment, sizeof(comment),
+                 "; Slot %d  [%d] %s  %d frame%s%s\n",
+                 slot + 1, lane.doc_idx, doc_name,
+                 (int)lane.frames.size(), lane.frames.size() == 1 ? "" : "s",
+                 state.hold_end[lane.delay_slot] ? "  stop-on-final" : "  looping");
+        out += comment;
+        if (lane.dummy_decap)
+            out += "; Stock decap body timing: stand, fall-to-knees, wobble, fall-to-ground.\n";
+
+        bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
+        if (mirror_flag && *mirror_flag)
+            out += "; Preview mirror is enabled; spawn/draw this object mirrored in routine code.\n";
+
+        out += anim_label;
+        out += "\n";
+        EnsureWorldMarkedFrameDelays(state, lane.delay_slot, (int)lane.frames.size());
+        std::string local_table;
+        local_table += anim_label;
+        local_table += "_local_anipts\n";
+        int tick = 0;
+        for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+            IMG *frame_img = doc_get_img(lane.doc, lane.frames[fi]);
+            char fallback[32];
+            snprintf(fallback, sizeof(fallback), "slot%d_frame%d", slot + 1, fi + 1);
+            std::string raw_label = (fi < (int)lane.frame_labels.size() &&
+                                     !lane.frame_labels[fi].empty())
+                                  ? lane.frame_labels[fi]
+                                  : img_name_string(frame_img);
+            std::string sprite = WorldMarkedAsmToken(raw_label, fallback);
+            int delay = ClampTimelineHold(state.frame_delays[lane.delay_slot][fi]);
+            int local_dx = state.local_dx[lane.delay_slot][fi];
+            int local_dy = state.local_dy[lane.delay_slot][fi];
+            int visible_from = state.visible_from[lane.delay_slot][fi];
+            for (int repeat = 0; repeat < delay; repeat++) {
+                bool hidden = tick < visible_from;
+                out += "\t.long\t";
+                out += hidden ? "0" : sprite;
+                if (repeat == 0) {
+                    out += "\t; ";
+                    out += sprite;
+                    out += " delay x";
+                    out += std::to_string(delay);
+                    if (local_dx || local_dy) {
+                        out += " dAX=";
+                        out += std::to_string(local_dx);
+                        out += " dAY=";
+                        out += std::to_string(local_dy);
+                    }
+                    if (visible_from > 0) {
+                        out += " show>=";
+                        out += std::to_string(visible_from);
+                    }
+                } else if (hidden) {
+                    out += "\t; hidden";
+                }
+                out += "\n";
+
+                local_table += "\t.word\t";
+                local_table += std::to_string(local_dx);
+                local_table += ",";
+                local_table += std::to_string(local_dy);
+                local_table += "\t; tick ";
+                local_table += std::to_string(tick);
+                local_table += hidden ? " hidden " : " ";
+                local_table += sprite;
+                local_table += "\n";
+                tick++;
+            }
+        }
+        if (state.hold_end[lane.delay_slot]) {
+            out += "\t.long\t0\t; stop on final frame\n\n";
+        } else {
+            out += "\t.long\tani_jump,";
+            out += anim_label;
+            out += "\t; loop\n\n";
+        }
+        out += local_table;
+        out += "\n";
+    }
+    return out;
+}
+
 void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
                                const WorldMarkedLaneRenderInfo &render_info,
