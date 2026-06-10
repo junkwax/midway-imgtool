@@ -402,6 +402,34 @@ void DrawCanvasPencilCursor(ImDrawList *dl, ImVec2 img_pos,
     arm(ImVec2(cc.x, cc.y + gap), ImVec2(cc.x, cc.y + gap + len));
 }
 
+void DrawCanvasCloneStampAids(ImDrawList *dl, ImVec2 img_pos,
+                              float sx, float sy,
+                              int source_x, int source_y,
+                              bool show_dest_brush,
+                              int dest_x, int dest_y,
+                              int brush)
+{
+    if (!dl)
+        return;
+
+    ImVec2 sc(img_pos.x + (source_x + 0.5f) * sx,
+              img_pos.y + (source_y + 0.5f) * sy);
+    ImU32 src_col = IM_COL32(0, 255, 255, 230);
+    dl->AddLine(ImVec2(sc.x - 8, sc.y), ImVec2(sc.x + 8, sc.y),
+                src_col, 1.5f);
+    dl->AddLine(ImVec2(sc.x, sc.y - 8), ImVec2(sc.x, sc.y + 8),
+                src_col, 1.5f);
+    dl->AddCircle(sc, 4.0f, src_col, 0, 1.0f);
+
+    if (show_dest_brush && brush > 1) {
+        int r = brush - 1;
+        ImVec2 cc(img_pos.x + (dest_x + 0.5f) * sx,
+                  img_pos.y + (dest_y + 0.5f) * sy);
+        float rr = (sx + sy) * 0.5f * r;
+        dl->AddCircle(cc, rr, IM_COL32(255, 255, 255, 200), 0, 1.0f);
+    }
+}
+
 void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
                                  float len, float thick)
 {

@@ -85,6 +85,12 @@ void DrawCanvasPencilCursor(ImDrawList *dl, ImVec2 img_pos,
                             float sx, float sy,
                             int pixel_x, int pixel_y,
                             int brush, ImU32 color);
+void DrawCanvasCloneStampAids(ImDrawList *dl, ImVec2 img_pos,
+                              float sx, float sy,
+                              int source_x, int source_y,
+                              bool show_dest_brush,
+                              int dest_x, int dest_y,
+                              int brush);
 void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
                                  float len, float thick);
 bool CanvasAnipointHitTest(const IMG *img, ImVec2 img_pos,

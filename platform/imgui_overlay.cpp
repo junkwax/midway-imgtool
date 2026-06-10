@@ -19016,21 +19016,17 @@ void imgui_overlay_render(void)
 
             /* Clone Stamp visual aids: source crosshair and destination brush ring. */
             if (g_active_tool == ActiveTool::CloneStamp && g_clone_source_set) {
-                ImVec2 sc(img_pos.x + (g_clone_src_x + 0.5f) * sx,
-                          img_pos.y + (g_clone_src_y + 0.5f) * sy);
-                ImU32 src_col = IM_COL32(0, 255, 255, 230);
-                dl->AddLine(ImVec2(sc.x - 8, sc.y), ImVec2(sc.x + 8, sc.y), src_col, 1.5f);
-                dl->AddLine(ImVec2(sc.x, sc.y - 8), ImVec2(sc.x, sc.y + 8), src_col, 1.5f);
-                dl->AddCircle(sc, 4.0f, src_col, 0, 1.0f);
-                if (mouse_over_sprite && g_clone_brush > 1) {
-                    int r = g_clone_brush - 1;
-                    int mx = (int)((mouse.x - img_pos.x) / sx);
-                    int my = (int)((mouse.y - img_pos.y) / sy);
-                    ImVec2 cc(img_pos.x + (mx + 0.5f) * sx,
-                              img_pos.y + (my + 0.5f) * sy);
-                    float rr = (sx + sy) * 0.5f * r;
-                    dl->AddCircle(cc, rr, IM_COL32(255, 255, 255, 200), 0, 1.0f);
+                bool show_dest_brush = mouse_over_sprite && g_clone_brush > 1;
+                int mx = 0;
+                int my = 0;
+                if (show_dest_brush) {
+                    mx = (int)((mouse.x - img_pos.x) / sx);
+                    my = (int)((mouse.y - img_pos.y) / sy);
                 }
+                DrawCanvasCloneStampAids(dl, img_pos, sx, sy,
+                                         g_clone_src_x, g_clone_src_y,
+                                         show_dest_brush, mx, my,
+                                         g_clone_brush);
             }
 
             /* Start a new selection only on a fresh click that lands on the sprite
