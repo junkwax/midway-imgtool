@@ -1590,19 +1590,15 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     if (!WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, io.DeltaTime))
         return false;
 
-    float fit_x = avail.x / (float)g_world_state.w;
-    float fit_y = avail.y / (float)g_world_state.h;
-    float wscale = (fit_x < fit_y) ? fit_x : fit_y;
-    if (wscale < 1.0f) wscale = 1.0f;
-    wscale = (float)(int)wscale;
-    if (wscale < 1.0f) wscale = 1.0f;
-
-    float ww = (float)g_world_state.w * wscale;
-    float wh = (float)g_world_state.h * wscale;
-    ImVec2 wpos(img_pos.x + (avail.x - ww) * 0.5f,
-                img_pos.y + (avail.y - wh) * 0.5f);
-    float ox = wpos.x + g_world_state.origin_x * wscale;
-    float oy = wpos.y + g_world_state.origin_y * wscale;
+    WorldCanvasLayout layout =
+        ComputeWorldCanvasLayout(avail, img_pos, g_world_state.w, g_world_state.h,
+                                 g_world_state.origin_x, g_world_state.origin_y);
+    float wscale = layout.scale;
+    float ww = layout.width;
+    float wh = layout.height;
+    ImVec2 wpos = layout.pos;
+    float ox = layout.origin_x;
+    float oy = layout.origin_y;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),

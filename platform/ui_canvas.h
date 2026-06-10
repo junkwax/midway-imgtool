@@ -32,6 +32,15 @@ struct WorldViewState {
     bool onion = false; /* faintly draw prev frame underneath */
 };
 
+struct WorldCanvasLayout {
+    float scale = 1.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+    ImVec2 pos = ImVec2(0, 0);
+    float origin_x = 0.0f;
+    float origin_y = 0.0f;
+};
+
 struct WorldMarkedSequenceState {
     bool marked_play = false;
     float fps = 12.0f;
@@ -85,6 +94,10 @@ struct WorldMarkedLane {
 };
 
 WorldViewState &WorldView(void);
+WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
+                                           int world_w, int world_h,
+                                           int world_origin_x,
+                                           int world_origin_y);
 WorldMarkedSequenceState &WorldMarkedState(void);
 bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot);
 

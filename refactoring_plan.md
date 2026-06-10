@@ -8,8 +8,8 @@ tracks slice-by-slice progress.
 
 ## Current checkpoint - June 10, 2026
 
-Branch: `refactor/overlay-split` (49 commits ahead of `SDL-main`). Working tree
-clean. `imgui_overlay.cpp` is down to 19,772 lines; `ui_canvas.cpp` is now 830
+Branch: `refactor/overlay-split` (50 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is down to 19,769 lines; `ui_canvas.cpp` is now 846
 lines. Full app builds; all 7 `ctest` suites pass.
 
 **Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
@@ -29,7 +29,8 @@ World View config state, onion-skin texture cache, and marked World View
 constants, playback/sequence/mirror/dummy-decap/drag/ASM-popup state,
 string/model helpers, sequence tick/sync/edit helpers, and dummy-decap timing
 reset helpers, plus the marked-lane model, marked-frame collection, and
-source/dummy-decap lane builders and lane playback resolver. Supporting
+source/dummy-decap lane builders, lane playback resolver, and shared World View
+layout helper used by single and marked World View rendering. Supporting
 modules extracted along the way:
 `world_render` (sprite→texture), `anipoint` (pure predicates + sequence-name
 parsing), `anipoint_edit` (sequence-propagating setters), `img_util`
@@ -52,7 +53,7 @@ committed (`fc4edeb`).
 | `anipoint_edit.{h,cpp}` | sequence-propagating anipoint setters + undo coalescing | — |
 | `world_render.{h,cpp}` | `doc_get_img`, `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
 | `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
-| `ui_canvas.{h,cpp}` | single-sprite World View canvas, World View config state, onion texture cache, marked World View lane model/constants/playback+sequence+mirror+dummy-decap+drag+ASM-popup state/string/model helpers, marked-frame collection, source/dummy-decap lane builders, lane playback resolver | — |
+| `ui_canvas.{h,cpp}` | single-sprite World View canvas, World View config/layout state, onion texture cache, marked World View lane model/constants/playback+sequence+mirror+dummy-decap+drag+ASM-popup state/string/model helpers, marked-frame collection, source/dummy-decap lane builders, lane playback resolver | — |
 | `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |
 
 ### For the next agent — how to continue
@@ -155,7 +156,7 @@ foundation as you go:
       (predicates + sequence-name parsing + secondary mutators), `anipoint_edit`
       (sequence-propagating setters), `img_util` (name + word clamp).
 - [ ] `ui_canvas` — canvas render, pan/zoom, World View. **Started:** the
-      single-sprite World View canvas, World View config state, onion-skin
+      single-sprite World View canvas, World View config/layout state, onion-skin
       texture cache, marked World View constants,
       playback/sequence/mirror/dummy-decap/drag/ASM-popup state, string/model
       helpers, sequence tick/sync/edit helpers, and dummy-decap timing reset

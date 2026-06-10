@@ -28,6 +28,28 @@ WorldViewState &WorldView(void)
     return state;
 }
 
+WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
+                                           int world_w, int world_h,
+                                           int world_origin_x,
+                                           int world_origin_y)
+{
+    WorldCanvasLayout layout;
+    float fit_x = avail.x / (float)world_w;
+    float fit_y = avail.y / (float)world_h;
+    layout.scale = (fit_x < fit_y) ? fit_x : fit_y;
+    if (layout.scale < 1.0f) layout.scale = 1.0f;
+    layout.scale = (float)(int)layout.scale;
+    if (layout.scale < 1.0f) layout.scale = 1.0f;
+
+    layout.width = (float)world_w * layout.scale;
+    layout.height = (float)world_h * layout.scale;
+    layout.pos = ImVec2(img_pos.x + (avail.x - layout.width) * 0.5f,
+                        img_pos.y + (avail.y - layout.height) * 0.5f);
+    layout.origin_x = layout.pos.x + world_origin_x * layout.scale;
+    layout.origin_y = layout.pos.y + world_origin_y * layout.scale;
+    return layout;
+}
+
 WorldMarkedSequenceState &WorldMarkedState(void)
 {
     static WorldMarkedSequenceState state;
@@ -808,25 +830,20 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
     if (!img || !img_texture || world_w <= 0 || world_h <= 0)
         return false;
 
-    /* Auto-fit the world canvas inside the available area. */
-    float fit_x = avail.x / (float)world_w;
-    float fit_y = avail.y / (float)world_h;
-    float wscale = (fit_x < fit_y) ? fit_x : fit_y;
-    if (wscale < 1.0f) wscale = 1.0f;
-    wscale = (float)(int)wscale;
-    if (wscale < 1.0f) wscale = 1.0f;
-
-    float ww = (float)world_w * wscale;
-    float wh = (float)world_h * wscale;
-    ImVec2 wpos(img_pos.x + (avail.x - ww) * 0.5f,
-                img_pos.y + (avail.y - wh) * 0.5f);
+    WorldCanvasLayout layout =
+        ComputeWorldCanvasLayout(avail, img_pos, world_w, world_h,
+                                 world_origin_x, world_origin_y);
+    float wscale = layout.scale;
+    float ww = layout.width;
+    float wh = layout.height;
+    ImVec2 wpos = layout.pos;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),
                       IM_COL32(0, 0, 0, 255));
 
-    float ox = wpos.x + world_origin_x * wscale;
-    float oy = wpos.y + world_origin_y * wscale;
+    float ox = layout.origin_x;
+    float oy = layout.origin_y;
     dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy),
                 IM_COL32(120, 120, 120, 255));
     dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
