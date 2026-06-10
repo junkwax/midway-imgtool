@@ -148,6 +148,9 @@ float CanvasRotateTransformAngle(float start_angle_deg,
                                  ImVec2 mouse,
                                  ImVec2 center,
                                  bool snap_15_deg);
+void CanvasDragDeltaPixels(ImVec2 drag_start_mouse, ImVec2 mouse,
+                           float sx, float sy,
+                           int *dx, int *dy);
 CanvasContentBounds CanvasFindOpaqueBounds(const IMG *img);
 CanvasPasteSnapResult CanvasSnapPasteToContent(int x, int y, int w, int h,
                                                int target_w, int target_h,

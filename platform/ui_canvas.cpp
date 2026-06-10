@@ -484,6 +484,16 @@ float CanvasRotateTransformAngle(float start_angle_deg,
     return new_angle;
 }
 
+void CanvasDragDeltaPixels(ImVec2 drag_start_mouse, ImVec2 mouse,
+                           float sx, float sy,
+                           int *dx, int *dy)
+{
+    if (dx)
+        *dx = (int)((mouse.x - drag_start_mouse.x) / sx);
+    if (dy)
+        *dy = (int)((mouse.y - drag_start_mouse.y) / sy);
+}
+
 CanvasContentBounds CanvasFindOpaqueBounds(const IMG *img)
 {
     CanvasContentBounds bounds;

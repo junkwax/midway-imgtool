@@ -19479,8 +19479,10 @@ void imgui_overlay_render(void)
                     }
                     if (g_xform.handle != TransformHandle::None && mbdn) {
                         if (g_xform.handle == TransformHandle::Move) {
-                            int dx = (int)((mouse.x - g_xform.drag_mx) / sx);
-                            int dy = (int)((mouse.y - g_xform.drag_my) / sy);
+                            int dx = 0, dy = 0;
+                            CanvasDragDeltaPixels(
+                                ImVec2(g_xform.drag_mx, g_xform.drag_my),
+                                mouse, sx, sy, &dx, &dy);
                             g_xform.rx = g_xform.drag_rx + dx;
                             g_xform.ry = g_xform.drag_ry + dy;
                         } else if (g_xform.handle == TransformHandle::Rotate) {
@@ -19490,8 +19492,10 @@ void imgui_overlay_render(void)
                                 mouse, ImVec2(center_sx, center_sy),
                                 ImGui::GetIO().KeyShift);
                         } else {
-                            int dx = (int)((mouse.x - g_xform.drag_mx) / sx);
-                            int dy = (int)((mouse.y - g_xform.drag_my) / sy);
+                            int dx = 0, dy = 0;
+                            CanvasDragDeltaPixels(
+                                ImVec2(g_xform.drag_mx, g_xform.drag_my),
+                                mouse, sx, sy, &dx, &dy);
                             bool lock_now = g_xform.aspect_locked ^
                                 ImGui::GetIO().KeyShift;
                             CanvasResizeTransformRect(
@@ -19544,8 +19548,11 @@ void imgui_overlay_render(void)
 
                     /* Drag to move */
                     if (g_pasted.dragging && mbdn) {
-                        int dx = (int)((mouse.x - g_pasted.drag_start_mx) / sx);
-                        int dy = (int)((mouse.y - g_pasted.drag_start_my) / sy);
+                        int dx = 0, dy = 0;
+                        CanvasDragDeltaPixels(
+                            ImVec2(g_pasted.drag_start_mx,
+                                   g_pasted.drag_start_my),
+                            mouse, sx, sy, &dx, &dy);
                         int nx = g_pasted.drag_start_px + dx;
                         int ny = g_pasted.drag_start_py + dy;
 
