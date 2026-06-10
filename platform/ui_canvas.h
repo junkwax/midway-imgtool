@@ -23,6 +23,19 @@ enum {
     kWorldMarkedMaxTabs = 7        /* 4 tabs + dummy + 2 ASM lanes */
 };
 
+struct WorldMarkedSequenceState {
+    bool hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
+    std::vector<int> frame_delays[kWorldMarkedMaxTabs];
+    std::vector<int> local_dx[kWorldMarkedMaxTabs];
+    std::vector<int> local_dy[kWorldMarkedMaxTabs];
+    std::vector<int> visible_from[kWorldMarkedMaxTabs];
+    std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip (ASM ani_flip) */
+    std::vector<int> sequence_frames[kWorldMarkedMaxTabs];
+    std::vector<int> default_frames[kWorldMarkedMaxTabs];
+    Document *sequence_doc[kWorldMarkedMaxTabs] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    int sequence_doc_idx[kWorldMarkedMaxTabs] = {-1, -1, -1, -1, -1, -1, -1};
+};
+
 /* Pure string helpers used by the marked World View panel. */
 bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *prefix);
 bool WorldDecapBodyPieceInfo(const std::string &name, int *frame_no,

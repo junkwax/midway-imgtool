@@ -48,7 +48,7 @@ committed (`fc4edeb`).
 | `anipoint_edit.{h,cpp}` | sequence-propagating anipoint setters + undo coalescing | — |
 | `world_render.{h,cpp}` | `doc_get_img`, `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
 | `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
-| `ui_canvas.{h,cpp}` | single-sprite World View canvas, onion texture cache, marked World View constants/string/model helpers | — |
+| `ui_canvas.{h,cpp}` | single-sprite World View canvas, onion texture cache, marked World View constants/sequence state/string/model helpers | — |
 | `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |
 
 ### For the next agent — how to continue
