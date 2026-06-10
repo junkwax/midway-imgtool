@@ -18552,26 +18552,7 @@ void imgui_overlay_render(void)
             }
             if (any_kept && g_doc->ilselected >= 0) {
                 IMG *iimg = get_img(g_doc->ilselected);
-                if (iimg && iimg->data_p) {
-                    int iw = iimg->w, ih = iimg->h;
-                    int stride = (iw + 3) & ~3;
-                    unsigned char *idp = (unsigned char *)iimg->data_p;
-                    /* Muted indigo wash — visible against both dark and light
-                       sprite content, where pure-black ~67% alpha got lost in
-                       dark fighter sprites. Same alpha, just tinted. */
-                    ImU32 dim = IM_COL32(40, 30, 80, 180);
-                    for (int y = 0; y < ih; y++) {
-                        int x = 0;
-                        while (x < iw) {
-                            if (kept[idp[y * stride + x]]) { x++; continue; }
-                            int x0 = x;
-                            while (x < iw && !kept[idp[y * stride + x]]) x++;
-                            ImVec2 a(img_pos.x + x0 * sx, img_pos.y + y * sy);
-                            ImVec2 b(img_pos.x + x * sx,  img_pos.y + (y + 1) * sy);
-                            dl->AddRectFilled(a, b, dim);
-                        }
-                    }
-                }
+                DrawCanvasColorIsolationOverlay(dl, iimg, kept, img_pos, sx, sy);
             }
 
             if (g_show_dma_comp) {

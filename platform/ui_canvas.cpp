@@ -318,6 +318,35 @@ void DrawCanvasDmaCompressionOverlay(ImDrawList *dl, IMG *img,
     }
 }
 
+void DrawCanvasColorIsolationOverlay(ImDrawList *dl, IMG *img,
+                                     const bool kept[256],
+                                     ImVec2 img_pos, float sx, float sy)
+{
+    if (!dl || !img || !img->data_p || !kept)
+        return;
+
+    int iw = img->w;
+    int ih = img->h;
+    int stride = (iw + 3) & ~3;
+    unsigned char *idp = (unsigned char *)img->data_p;
+    ImU32 dim = IM_COL32(40, 30, 80, 180);
+    for (int y = 0; y < ih; y++) {
+        int x = 0;
+        while (x < iw) {
+            if (kept[idp[y * stride + x]]) {
+                x++;
+                continue;
+            }
+            int x0 = x;
+            while (x < iw && !kept[idp[y * stride + x]])
+                x++;
+            ImVec2 a(img_pos.x + x0 * sx, img_pos.y + y * sy);
+            ImVec2 b(img_pos.x + x * sx,  img_pos.y + (y + 1) * sy);
+            dl->AddRectFilled(a, b, dim);
+        }
+    }
+}
+
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,
