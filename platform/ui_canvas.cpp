@@ -28,6 +28,14 @@ WorldMarkedSequenceState &WorldMarkedState(void)
     return state;
 }
 
+bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot)
+{
+    if (slot == 0) return &state.mirror_active;
+    if (slot == 1) return &state.mirror_other;
+    if (slot >= 2 && slot < kWorldMarkedMaxTabs) return &state.mirror_extra[slot - 2];
+    return nullptr;
+}
+
 static bool WorldReadDecapFrameNo(const std::string &upper, size_t pos,
                                   int *frame_no, size_t *end_pos)
 {

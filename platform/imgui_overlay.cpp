@@ -1264,10 +1264,7 @@ static int   g_world_h = 254;       /* arcade playfield height */
 static int   g_world_origin_x = 200;/* anchor target inside world */
 static int   g_world_origin_y = 20; /* anchor target inside world (top-anchored) */
 static bool  g_world_onion = false; /* faintly draw prev frame underneath */
-static bool  g_world_mirror_active = false;
-static bool  g_world_mirror_other = false;
 /* Marked World View slot constants now live in ui_canvas.h. */
-static bool  g_world_mirror_extra[5] = {false, false, false, false, false};
 static WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
 static int   g_world_marked_drag_slot = -1;
 static int   g_world_marked_drag_frame = -1;
@@ -1341,14 +1338,6 @@ static bool         g_openimg_for_opp = false;        /* next OpenImg re-resolve
 static bool         g_request_asm_autoload = false;   /* deferred: open IMGs for the player anim */
 static bool         g_request_asm_opp_autoload = false; /* deferred: open IMGs for opponent anim */
 static void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc);
-
-static bool *WorldMarkedMirrorFlag(int slot)
-{
-    if (slot == 0) return &g_world_mirror_active;
-    if (slot == 1) return &g_world_mirror_other;
-    if (slot >= 2 && slot < kWorldMarkedMaxTabs) return &g_world_mirror_extra[slot - 2];
-    return NULL;
-}
 
 /* WorldMarkedRestart and StepWorldMarkedSequence now live in ui_canvas.{h,cpp}. */
 
@@ -1835,8 +1824,8 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
            way, so the victim/opponent mirrors relative to the attacker (lane 0).
            Anipoints still pin to the shared origin, so this only flips facing. */
         {
-            bool *pf = WorldMarkedMirrorFlag(0);
-            bool *df = WorldMarkedMirrorFlag(kWorldDummyDecapSlot);
+            bool *pf = WorldMarkedMirrorFlag(g_world_marked_state, 0);
+            bool *df = WorldMarkedMirrorFlag(g_world_marked_state, kWorldDummyDecapSlot);
             if (df) *df = pf ? !*pf : true;
         }
         WorldMarkedRestart(g_world_marked_state);
@@ -1919,7 +1908,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             lane.frame_pos < (int)g_world_marked_state.visible_from[state_slot].size() &&
             g_world_marked_state.frame < g_world_marked_state.visible_from[state_slot][lane.frame_pos])
             return;
-        bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
+        bool *mirror_flag = WorldMarkedMirrorFlag(g_world_marked_state, lane.delay_slot);
         bool mirror_x = mirror_flag ? *mirror_flag : false;
         /* Per-frame flip (ASM ani_flip) toggles on top of the lane's facing. */
         if (lane.frame_pos >= 0 &&
@@ -2015,7 +2004,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         const char *doc_name = !lane.label.empty()
                              ? lane.label.c_str()
                              : (lane.doc->fname_s[0] ? lane.doc->fname_s : "Untitled");
-        bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
+        bool *mirror_flag = WorldMarkedMirrorFlag(g_world_marked_state, lane.delay_slot);
         char part[224];
         snprintf(part, sizeof(part), "%s[%d] %s:%s %d/%d%s%s",
                  slot == 0 ? "" : " + ",
@@ -2151,7 +2140,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             if (lane.dummy_decap)
                 out += "; Stock decap body timing: stand, fall-to-knees, wobble, fall-to-ground.\n";
 
-            bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
+            bool *mirror_flag = WorldMarkedMirrorFlag(g_world_marked_state, lane.delay_slot);
             if (mirror_flag && *mirror_flag)
                 out += "; Preview mirror is enabled; spawn/draw this object mirrored in routine code.\n";
 
@@ -2332,7 +2321,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Restore stock decap timing: 48, 6/6, 10-tick wobble, 6-tick fall.");
             }
-            bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
+            bool *mirror_flag = WorldMarkedMirrorFlag(g_world_marked_state, lane.delay_slot);
             if (mirror_flag) {
                 ImGui::SameLine();
                 ImGui::Checkbox("Mirror##world_lane_mirror", mirror_flag);
@@ -14122,8 +14111,8 @@ static bool LoadAsmOpponent(const char *path)      /* fatality opponent */
     /* Default the opponent to face the player (mirror = opposite of the player
        ASM lane); only set here so the user can still flip it. */
     {
-        bool *pf = WorldMarkedMirrorFlag(kWorldAsmSlot);
-        bool *of = WorldMarkedMirrorFlag(kWorldAsmOpponentSlot);
+        bool *pf = WorldMarkedMirrorFlag(g_world_marked_state, kWorldAsmSlot);
+        bool *of = WorldMarkedMirrorFlag(g_world_marked_state, kWorldAsmOpponentSlot);
         if (of) *of = pf ? !*pf : true;
     }
 
@@ -15398,11 +15387,11 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
     g_world_marked_state.fps = g_mk2_fatality_preview_fps;
     g_play_speed = g_mk2_fatality_preview_fps;
     g_is_playing = true;
-    g_world_mirror_active = false;
-    g_world_mirror_other = true;
-    g_world_mirror_extra[0] = false;
-    g_world_mirror_extra[1] = false;
-    g_world_mirror_extra[2] = false;
+    g_world_marked_state.mirror_active = false;
+    g_world_marked_state.mirror_other = true;
+    g_world_marked_state.mirror_extra[0] = false;
+    g_world_marked_state.mirror_extra[1] = false;
+    g_world_marked_state.mirror_extra[2] = false;
     for (int i = 0; i < kWorldMarkedMaxTabs; i++)
         g_world_marked_state.hold_end[i] = false;
     g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
@@ -17282,8 +17271,8 @@ static float DrawDocumentTabBar(float y, float sw)
             if (marked_was_on != g_world_marked_state.marked_play) {
                 WorldMarkedRestart(g_world_marked_state);
             }
-            tab_toggle(g_world_mirror_active ? "Mirror 1: On" : "Mirror 1", &g_world_mirror_active);
-            tab_toggle(g_world_mirror_other ? "Mirror 2: On" : "Mirror 2", &g_world_mirror_other);
+            tab_toggle(g_world_marked_state.mirror_active ? "Mirror 1: On" : "Mirror 1", &g_world_marked_state.mirror_active);
+            tab_toggle(g_world_marked_state.mirror_other ? "Mirror 2: On" : "Mirror 2", &g_world_marked_state.mirror_other);
         }
 
         if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
@@ -17973,7 +17962,7 @@ void imgui_overlay_render(void)
                         if (ImGui::MenuItem(label, NULL, &g_world_marked_state.hold_end[slot])) {
                             WorldMarkedRestart(g_world_marked_state);
                         }
-                        bool *mirror = WorldMarkedMirrorFlag(slot);
+                        bool *mirror = WorldMarkedMirrorFlag(g_world_marked_state, slot);
                         if (mirror) {
                             if (slot == kWorldDummyDecapSlot)
                                 snprintf(label, sizeof(label), "Dummy Body Mirror");
@@ -19557,7 +19546,7 @@ void imgui_overlay_render(void)
                                           g_doc->ilselected, (int)g_doc->imgcnt,
                                           g_world_w, g_world_h,
                                           g_world_origin_x, g_world_origin_y,
-                                          g_world_onion, g_world_mirror_active);
+                                          g_world_onion, g_world_marked_state.mirror_active);
             }
         }
         else if ((timeline_composite_preview_active = DrawTimelineCompositePreview(avail, img_pos))) {

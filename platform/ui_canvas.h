@@ -29,6 +29,9 @@ struct WorldMarkedSequenceState {
     float timer = 0.0f;
     int frame = 0;
     bool paused = false;
+    bool mirror_active = false;
+    bool mirror_other = false;
+    bool mirror_extra[5] = {false, false, false, false, false};
     bool hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
     std::vector<int> frame_delays[kWorldMarkedMaxTabs];
     std::vector<int> local_dx[kWorldMarkedMaxTabs];
@@ -42,6 +45,7 @@ struct WorldMarkedSequenceState {
 };
 
 WorldMarkedSequenceState &WorldMarkedState(void);
+bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot);
 
 /* Pure string helpers used by the marked World View panel. */
 bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *prefix);
