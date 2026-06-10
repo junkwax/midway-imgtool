@@ -118,6 +118,14 @@ void DrawCanvasPasteHint(ImDrawList *dl, ImVec2 img_pos,
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked);
+void CanvasResizeTransformRect(TransformHandle handle,
+                               int drag_x, int drag_y,
+                               int drag_w, int drag_h,
+                               float ref_aspect,
+                               int dx, int dy,
+                               bool lock_aspect,
+                               int *out_x, int *out_y,
+                               int *out_w, int *out_h);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);

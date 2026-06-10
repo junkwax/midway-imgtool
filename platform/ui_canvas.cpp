@@ -387,6 +387,84 @@ CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     return out;
 }
 
+void CanvasResizeTransformRect(TransformHandle handle,
+                               int drag_x, int drag_y,
+                               int drag_w, int drag_h,
+                               float ref_aspect,
+                               int dx, int dy,
+                               bool lock_aspect,
+                               int *out_x, int *out_y,
+                               int *out_w, int *out_h)
+{
+    if (!out_x || !out_y || !out_w || !out_h)
+        return;
+
+    int rx = drag_x;
+    int ry = drag_y;
+    int rw = drag_w;
+    int rh = drag_h;
+
+    bool affects_left = (handle == TransformHandle::TL ||
+                         handle == TransformHandle::L ||
+                         handle == TransformHandle::BL);
+    bool affects_right = (handle == TransformHandle::TR ||
+                          handle == TransformHandle::R ||
+                          handle == TransformHandle::BR);
+    bool affects_top = (handle == TransformHandle::TL ||
+                        handle == TransformHandle::T ||
+                        handle == TransformHandle::TR);
+    bool affects_bottom = (handle == TransformHandle::BL ||
+                           handle == TransformHandle::B ||
+                           handle == TransformHandle::BR);
+
+    if (affects_left)   { rx += dx; rw -= dx; }
+    if (affects_right)  {           rw += dx; }
+    if (affects_top)    { ry += dy; rh -= dy; }
+    if (affects_bottom) {           rh += dy; }
+
+    bool is_corner = (handle == TransformHandle::TL ||
+                      handle == TransformHandle::TR ||
+                      handle == TransformHandle::BL ||
+                      handle == TransformHandle::BR);
+    if (lock_aspect && ref_aspect > 0.0f) {
+        if (is_corner) {
+            float scale_w = (float)rw / (float)drag_w;
+            float scale_h = (float)rh / (float)drag_h;
+            float scale = (fabsf(scale_w - 1.0f) > fabsf(scale_h - 1.0f))
+                ? scale_w : scale_h;
+            int new_w = (int)(drag_w * scale + 0.5f);
+            int new_h = (int)(new_w / ref_aspect + 0.5f);
+            if (new_w < 1) new_w = 1;
+            if (new_h < 1) new_h = 1;
+            if (affects_left) rx = (drag_x + drag_w) - new_w;
+            if (affects_top)  ry = (drag_y + drag_h) - new_h;
+            rw = new_w;
+            rh = new_h;
+        } else {
+            if (handle == TransformHandle::T || handle == TransformHandle::B) {
+                int new_w = (int)(rh * ref_aspect + 0.5f);
+                if (new_w < 1) new_w = 1;
+                int cx_old = drag_x + drag_w / 2;
+                rx = cx_old - new_w / 2;
+                rw = new_w;
+            } else {
+                int new_h = (int)(rw / ref_aspect + 0.5f);
+                if (new_h < 1) new_h = 1;
+                int cy_old = drag_y + drag_h / 2;
+                ry = cy_old - new_h / 2;
+                rh = new_h;
+            }
+        }
+    }
+
+    if (rw < 1) rw = 1;
+    if (rh < 1) rh = 1;
+    *out_x = rx;
+    *out_y = ry;
+    *out_w = rw;
+    *out_h = rh;
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])

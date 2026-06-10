@@ -19498,75 +19498,18 @@ void imgui_overlay_render(void)
                             }
                             g_xform.angle_deg = new_angle;
                         } else {
-                        /* Convert mouse delta from screen pixels back into
-                           image pixels via the sx/sy zoom factors. */
-                        int dx = (int)((mouse.x - g_xform.drag_mx) / sx);
-                        int dy = (int)((mouse.y - g_xform.drag_my) / sy);
-                        int rx = g_xform.drag_rx, ry = g_xform.drag_ry;
-                        int rw = g_xform.drag_rw, rh = g_xform.drag_rh;
-
-                        /* Apply the delta to the right edge(s) for the chosen
-                           handle. East/south edges move with positive delta,
-                           west/north edges move and shrink the rect. */
-                        TransformHandle h = g_xform.handle;
-                        bool affects_left   = (h == TransformHandle::TL || h == TransformHandle::L || h == TransformHandle::BL);
-                        bool affects_right  = (h == TransformHandle::TR || h == TransformHandle::R || h == TransformHandle::BR);
-                        bool affects_top    = (h == TransformHandle::TL || h == TransformHandle::T || h == TransformHandle::TR);
-                        bool affects_bottom = (h == TransformHandle::BL || h == TransformHandle::B || h == TransformHandle::BR);
-
-                        if (affects_left)   { rx += dx; rw -= dx; }
-                        if (affects_right)  {           rw += dx; }
-                        if (affects_top)    { ry += dy; rh -= dy; }
-                        if (affects_bottom) {           rh += dy; }
-
-                        /* Aspect handling. Adobe convention:
-                            - Corner handles: respect lock (Shift inverts).
-                            - Edge handles: ALWAYS free in Photoshop's classic
-                              behavior, but with the chain locked the user
-                              expects edges to also scale proportionally —
-                              honor the lock there too. Shift still inverts. */
-                        bool is_corner = (h == TransformHandle::TL || h == TransformHandle::TR ||
-                                          h == TransformHandle::BL || h == TransformHandle::BR);
-                        bool shift_inverts = ImGui::GetIO().KeyShift;
-                        bool lock_now = g_xform.aspect_locked ^ shift_inverts;
-
-                        if (lock_now && g_xform.ref_aspect > 0.0f) {
-                            if (is_corner) {
-                                /* Use the dominant axis to drive the other. */
-                                float scale_w = (float)rw / (float)g_xform.drag_rw;
-                                float scale_h = (float)rh / (float)g_xform.drag_rh;
-                                float scale   = (fabsf(scale_w - 1.0f) > fabsf(scale_h - 1.0f)) ? scale_w : scale_h;
-                                int new_w = (int)(g_xform.drag_rw * scale + 0.5f);
-                                int new_h = (int)(new_w / g_xform.ref_aspect + 0.5f);
-                                if (new_w < 1) new_w = 1;
-                                if (new_h < 1) new_h = 1;
-                                if (affects_left)  rx = (g_xform.drag_rx + g_xform.drag_rw) - new_w;
-                                if (affects_top)   ry = (g_xform.drag_ry + g_xform.drag_rh) - new_h;
-                                rw = new_w; rh = new_h;
-                            } else {
-                                /* Edge handle with lock: drive the OTHER axis
-                                   from this one, anchored at the center of the
-                                   non-moving axis. */
-                                if (h == TransformHandle::T || h == TransformHandle::B) {
-                                    int new_w = (int)(rh * g_xform.ref_aspect + 0.5f);
-                                    if (new_w < 1) new_w = 1;
-                                    int cx_old = g_xform.drag_rx + g_xform.drag_rw / 2;
-                                    rx = cx_old - new_w / 2;
-                                    rw = new_w;
-                                } else {
-                                    int new_h = (int)(rw / g_xform.ref_aspect + 0.5f);
-                                    if (new_h < 1) new_h = 1;
-                                    int cy_old = g_xform.drag_ry + g_xform.drag_rh / 2;
-                                    ry = cy_old - new_h / 2;
-                                    rh = new_h;
-                                }
-                            }
-                        }
-
-                        if (rw < 1) rw = 1;
-                        if (rh < 1) rh = 1;
-                        g_xform.rx = rx; g_xform.ry = ry;
-                        g_xform.rw = rw; g_xform.rh = rh;
+                            int dx = (int)((mouse.x - g_xform.drag_mx) / sx);
+                            int dy = (int)((mouse.y - g_xform.drag_my) / sy);
+                            bool lock_now = g_xform.aspect_locked ^
+                                ImGui::GetIO().KeyShift;
+                            CanvasResizeTransformRect(
+                                g_xform.handle,
+                                g_xform.drag_rx, g_xform.drag_ry,
+                                g_xform.drag_rw, g_xform.drag_rh,
+                                g_xform.ref_aspect,
+                                dx, dy, lock_now,
+                                &g_xform.rx, &g_xform.ry,
+                                &g_xform.rw, &g_xform.rh);
                         }
                     }
                     if (g_xform.handle != TransformHandle::None && !mbdn) {
