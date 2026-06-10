@@ -171,6 +171,81 @@ bool CanvasPointInRect(ImVec2 p, ImVec2 mn, ImVec2 mx)
     return p.x >= mn.x && p.x < mx.x && p.y >= mn.y && p.y < mx.y;
 }
 
+CanvasTransform2D CanvasMakeTransform(ImVec2 img_pos, float sx, float sy,
+                                      int rect_x, int rect_y,
+                                      int rect_w, int rect_h,
+                                      float angle_deg)
+{
+    const float pi = 3.14159265358979323846f;
+    float angle_rad = angle_deg * pi / 180.0f;
+
+    CanvasTransform2D xf;
+    xf.img_pos = img_pos;
+    xf.sx = sx;
+    xf.sy = sy;
+    xf.cx_img = (float)rect_x + (float)rect_w * 0.5f;
+    xf.cy_img = (float)rect_y + (float)rect_h * 0.5f;
+    xf.ca = cosf(angle_rad);
+    xf.sa = sinf(angle_rad);
+    return xf;
+}
+
+ImVec2 CanvasTransformPointScreen(const CanvasTransform2D &xf,
+                                  float image_x, float image_y)
+{
+    float dxp = image_x - xf.cx_img;
+    float dyp = image_y - xf.cy_img;
+    float rxp = xf.cx_img + dxp * xf.ca - dyp * xf.sa;
+    float ryp = xf.cy_img + dxp * xf.sa + dyp * xf.ca;
+    return ImVec2(xf.img_pos.x + rxp * xf.sx,
+                  xf.img_pos.y + ryp * xf.sy);
+}
+
+ImVec2 CanvasTransformPointImage(const CanvasTransform2D &xf,
+                                 float image_x, float image_y)
+{
+    float dxp = image_x - xf.cx_img;
+    float dyp = image_y - xf.cy_img;
+    return ImVec2(xf.cx_img + dxp * xf.ca - dyp * xf.sa,
+                  xf.cy_img + dxp * xf.sa + dyp * xf.ca);
+}
+
+void CanvasTransformRectCorners(const CanvasTransform2D &xf,
+                                int rect_x, int rect_y,
+                                int rect_w, int rect_h,
+                                ImVec2 corners[4])
+{
+    if (!corners)
+        return;
+
+    corners[0] = CanvasTransformPointScreen(xf, (float)rect_x,
+                                            (float)rect_y);
+    corners[1] = CanvasTransformPointScreen(xf, (float)rect_x + rect_w,
+                                            (float)rect_y);
+    corners[2] = CanvasTransformPointScreen(xf, (float)rect_x + rect_w,
+                                            (float)rect_y + rect_h);
+    corners[3] = CanvasTransformPointScreen(xf, (float)rect_x,
+                                            (float)rect_y + rect_h);
+}
+
+void CanvasQuadBounds(const ImVec2 corners[4], ImVec2 *out_min,
+                      ImVec2 *out_max)
+{
+    if (!corners || !out_min || !out_max)
+        return;
+
+    ImVec2 mn = corners[0];
+    ImVec2 mx = corners[0];
+    for (int i = 1; i < 4; i++) {
+        if (corners[i].x < mn.x) mn.x = corners[i].x;
+        if (corners[i].y < mn.y) mn.y = corners[i].y;
+        if (corners[i].x > mx.x) mx.x = corners[i].x;
+        if (corners[i].y > mx.y) mx.y = corners[i].y;
+    }
+    *out_min = mn;
+    *out_max = mx;
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])

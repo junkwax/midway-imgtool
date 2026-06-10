@@ -48,6 +48,16 @@ struct WorldMarkedPanelLayout {
     float height = 0.0f;
 };
 
+struct CanvasTransform2D {
+    ImVec2 img_pos = ImVec2(0, 0);
+    float sx = 1.0f;
+    float sy = 1.0f;
+    float cx_img = 0.0f;
+    float cy_img = 0.0f;
+    float ca = 1.0f;
+    float sa = 0.0f;
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -63,6 +73,20 @@ bool ApplyZoomScale(float old_scale, float new_scale,
                     const ImVec2 &anchor, const ImVec2 &old_pos,
                     const ImVec2 &old_size, const ImVec2 &avail);
 bool CanvasPointInRect(ImVec2 p, ImVec2 mn, ImVec2 mx);
+CanvasTransform2D CanvasMakeTransform(ImVec2 img_pos, float sx, float sy,
+                                      int rect_x, int rect_y,
+                                      int rect_w, int rect_h,
+                                      float angle_deg);
+ImVec2 CanvasTransformPointScreen(const CanvasTransform2D &xf,
+                                  float image_x, float image_y);
+ImVec2 CanvasTransformPointImage(const CanvasTransform2D &xf,
+                                 float image_x, float image_y);
+void CanvasTransformRectCorners(const CanvasTransform2D &xf,
+                                int rect_x, int rect_y,
+                                int rect_w, int rect_h,
+                                ImVec2 corners[4]);
+void CanvasQuadBounds(const ImVec2 corners[4], ImVec2 *out_min,
+                      ImVec2 *out_max);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);

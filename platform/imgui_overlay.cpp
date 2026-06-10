@@ -19312,47 +19312,20 @@ void imgui_overlay_render(void)
                 }
                 unsigned short cs = g_clipboard.stride;
 
-                ImVec2 p1(img_pos.x + px * sx, img_pos.y + py * sy);
-                ImVec2 p2(img_pos.x + (px + pw) * sx, img_pos.y + (py + ph) * sy);
                 float angle_deg = g_xform.active ? g_xform.angle_deg : 0.0f;
-                const float PI_F = 3.14159265358979323846f;
-                float angle_rad = angle_deg * PI_F / 180.0f;
-                float ca = cosf(angle_rad);
-                float sa = sinf(angle_rad);
-                float cx_img = (float)px + (float)pw * 0.5f;
-                float cy_img = (float)py + (float)ph * 0.5f;
-                auto xform_point_screen = [&](float ix, float iy) -> ImVec2 {
-                    float dxp = ix - cx_img;
-                    float dyp = iy - cy_img;
-                    float rxp = cx_img + dxp * ca - dyp * sa;
-                    float ryp = cy_img + dxp * sa + dyp * ca;
-                    return ImVec2(img_pos.x + rxp * sx, img_pos.y + ryp * sy);
-                };
-                auto xform_point_image = [&](float ix, float iy) -> ImVec2 {
-                    float dxp = ix - cx_img;
-                    float dyp = iy - cy_img;
-                    return ImVec2(cx_img + dxp * ca - dyp * sa,
-                                  cy_img + dxp * sa + dyp * ca);
-                };
+                CanvasTransform2D paste_xf =
+                    CanvasMakeTransform(img_pos, sx, sy, px, py, pw, ph,
+                                        angle_deg);
                 ImVec2 paste_controls_min(canvas_origin.x + 10.0f, canvas_origin.y + 10.0f);
                 ImVec2 paste_controls_max(paste_controls_min.x + 276.0f,
                                            paste_controls_min.y + 62.0f);
                 bool paste_controls_block =
                     mouse.x >= paste_controls_min.x && mouse.x < paste_controls_max.x &&
                     mouse.y >= paste_controls_min.y && mouse.y < paste_controls_max.y;
-                ImVec2 rc[4] = {
-                    xform_point_screen((float)px,      (float)py),
-                    xform_point_screen((float)px + pw, (float)py),
-                    xform_point_screen((float)px + pw, (float)py + ph),
-                    xform_point_screen((float)px,      (float)py + ph),
-                };
-                ImVec2 rb_min = rc[0], rb_max = rc[0];
-                for (int i = 1; i < 4; i++) {
-                    if (rc[i].x < rb_min.x) rb_min.x = rc[i].x;
-                    if (rc[i].y < rb_min.y) rb_min.y = rc[i].y;
-                    if (rc[i].x > rb_max.x) rb_max.x = rc[i].x;
-                    if (rc[i].y > rb_max.y) rb_max.y = rc[i].y;
-                }
+                ImVec2 rc[4];
+                CanvasTransformRectCorners(paste_xf, px, py, pw, ph, rc);
+                ImVec2 rb_min, rb_max;
+                CanvasQuadBounds(rc, &rb_min, &rb_max);
                 bool hovering = mouse.x >= rb_min.x && mouse.x < rb_max.x && mouse.y >= rb_min.y && mouse.y < rb_max.y;
                 bool over_sprite = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
                                    mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
@@ -19378,8 +19351,9 @@ void imgui_overlay_render(void)
                         float iy0 = (float)py + ((float)y * (float)ph / (float)ch);
                         float ix1 = (float)px + ((float)(x + 1) * (float)pw / (float)cw);
                         float iy1 = (float)py + ((float)(y + 1) * (float)ph / (float)ch);
-                        ImVec2 mid = xform_point_image((ix0 + ix1) * 0.5f,
-                                                       (iy0 + iy1) * 0.5f);
+                        ImVec2 mid = CanvasTransformPointImage(
+                            paste_xf, (ix0 + ix1) * 0.5f,
+                            (iy0 + iy1) * 0.5f);
                         int dxp = (int)floorf(mid.x);
                         int dyp = (int)floorf(mid.y);
                         unsigned char dst_ci = 0;
@@ -19395,10 +19369,10 @@ void imgui_overlay_render(void)
                                              (unsigned char)gg,
                                              (unsigned char)bb,
                                              (unsigned char)aa);
-                        ImVec2 q0 = xform_point_screen(ix0, iy0);
-                        ImVec2 q1 = xform_point_screen(ix1, iy0);
-                        ImVec2 q2 = xform_point_screen(ix1, iy1);
-                        ImVec2 q3 = xform_point_screen(ix0, iy1);
+                        ImVec2 q0 = CanvasTransformPointScreen(paste_xf, ix0, iy0);
+                        ImVec2 q1 = CanvasTransformPointScreen(paste_xf, ix1, iy0);
+                        ImVec2 q2 = CanvasTransformPointScreen(paste_xf, ix1, iy1);
+                        ImVec2 q3 = CanvasTransformPointScreen(paste_xf, ix0, iy1);
                         dl->AddQuadFilled(q0, q1, q2, q3, col);
                     }
                 }
@@ -19592,6 +19566,7 @@ void imgui_overlay_render(void)
                             g_xform.rx = g_xform.drag_rx + dx;
                             g_xform.ry = g_xform.drag_ry + dy;
                         } else if (g_xform.handle == TransformHandle::Rotate) {
+                            const float PI_F = 3.14159265358979323846f;
                             float a0 = atan2f(g_xform.drag_my - center_sy,
                                               g_xform.drag_mx - center_sx);
                             float a1 = atan2f(mouse.y - center_sy,
