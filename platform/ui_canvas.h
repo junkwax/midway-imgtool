@@ -11,6 +11,7 @@
 #include <SDL.h>
 #include <imgui.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include "document.h"    /* Document */
 #include "img_format.h"  /* IMG */
@@ -91,6 +92,14 @@ void DrawCanvasCloneStampAids(ImDrawList *dl, ImVec2 img_pos,
                               bool show_dest_brush,
                               int dest_x, int dest_y,
                               int brush);
+void DrawCanvasLassoPath(ImDrawList *dl, ImVec2 img_pos,
+                         float sx, float sy,
+                         const std::vector<std::pair<int, int>> &points);
+void DrawCanvasSelectionOverlay(ImDrawList *dl, ImVec2 img_pos,
+                                float sx, float sy,
+                                int x1, int y1, int x2, int y2,
+                                bool is_mask, int mask_w,
+                                const std::vector<bool> *pixel_mask);
 void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
                                  float len, float thick);
 bool CanvasAnipointHitTest(const IMG *img, ImVec2 img_pos,

@@ -19273,46 +19273,16 @@ void imgui_overlay_render(void)
                code path leaves g_grid_sel.active=true with the tool off. */
             /* Live lasso path while drawing */
             if (g_active_tool == ActiveTool::Lasso && g_grid_sel.dragging && g_lasso_points.size() >= 2) {
-                std::vector<ImVec2> screen_pts;
-                screen_pts.reserve(g_lasso_points.size() + 1);
-                for (auto &p : g_lasso_points) {
-                    screen_pts.push_back(ImVec2(img_pos.x + (p.first + 0.5f) * sx,
-                                                img_pos.y + (p.second + 0.5f) * sy));
-                }
-                /* Show closing edge as a dashed-ish thin line */
-                dl->AddPolyline(screen_pts.data(), (int)screen_pts.size(),
-                                IM_COL32(255, 0, 255, 220), 0, 1.5f);
-                if (screen_pts.size() >= 2) {
-                    dl->AddLine(screen_pts.back(), screen_pts.front(),
-                                IM_COL32(255, 0, 255, 110), 1.0f);
-                }
+                DrawCanvasLassoPath(dl, img_pos, sx, sy, g_lasso_points);
             }
 
             if (g_grid_sel.active && (g_active_tool == ActiveTool::Marquee || g_active_tool == ActiveTool::MagicWand || g_active_tool == ActiveTool::Lasso)) {
-                int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
-                int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
-                if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-                if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-                
-                if (g_grid_sel.is_mask) {
-                    for (int y = y1; y <= y2; y++) {
-                        for (int x = x1; x <= x2; x++) {
-                            if (g_grid_sel.pixel_mask[y * g_grid_sel.mask_w + x]) {
-                                ImVec2 r1(img_pos.x + x * sx, img_pos.y + y * sy);
-                                ImVec2 r2(img_pos.x + (x + 1) * sx, img_pos.y + (y + 1) * sy);
-                                dl->AddRectFilled(r1, r2, IM_COL32(255, 0, 255, 80), 0.0f);
-                            }
-                        }
-                    }
-                    ImVec2 br1(img_pos.x + x1 * sx, img_pos.y + y1 * sy);
-                    ImVec2 br2(img_pos.x + (x2 + 1) * sx, img_pos.y + (y2 + 1) * sy);
-                    dl->AddRect(br1, br2, IM_COL32(255, 0, 255, 255), 0.0f, 0, 1.0f);
-                } else {
-                    ImVec2 r1(img_pos.x + x1 * sx, img_pos.y + y1 * sy);
-                    ImVec2 r2(img_pos.x + (x2 + 1) * sx, img_pos.y + (y2 + 1) * sy);
-                    dl->AddRect(r1, r2, IM_COL32(0, 255, 0, 255), 0.0f, 0, 2.0f);
-                    dl->AddRectFilled(r1, r2, IM_COL32(0, 255, 0, 30), 0.0f);
-                }
+                DrawCanvasSelectionOverlay(dl, img_pos, sx, sy,
+                                           g_grid_sel.x1, g_grid_sel.y1,
+                                           g_grid_sel.x2, g_grid_sel.y2,
+                                           g_grid_sel.is_mask,
+                                           g_grid_sel.mask_w,
+                                           &g_grid_sel.pixel_mask);
             }
 
             /* Defensive: transform mode can't exist without a floating paste.

@@ -430,6 +430,67 @@ void DrawCanvasCloneStampAids(ImDrawList *dl, ImVec2 img_pos,
     }
 }
 
+void DrawCanvasLassoPath(ImDrawList *dl, ImVec2 img_pos,
+                         float sx, float sy,
+                         const std::vector<std::pair<int, int>> &points)
+{
+    if (!dl || points.size() < 2)
+        return;
+
+    std::vector<ImVec2> screen_pts;
+    screen_pts.reserve(points.size() + 1);
+    for (const auto &p : points) {
+        screen_pts.push_back(ImVec2(img_pos.x + (p.first + 0.5f) * sx,
+                                    img_pos.y + (p.second + 0.5f) * sy));
+    }
+    dl->AddPolyline(screen_pts.data(), (int)screen_pts.size(),
+                    IM_COL32(255, 0, 255, 220), 0, 1.5f);
+    if (screen_pts.size() >= 2) {
+        dl->AddLine(screen_pts.back(), screen_pts.front(),
+                    IM_COL32(255, 0, 255, 110), 1.0f);
+    }
+}
+
+void DrawCanvasSelectionOverlay(ImDrawList *dl, ImVec2 img_pos,
+                                float sx, float sy,
+                                int x1, int y1, int x2, int y2,
+                                bool is_mask, int mask_w,
+                                const std::vector<bool> *pixel_mask)
+{
+    if (!dl)
+        return;
+
+    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+
+    if (is_mask) {
+        if (!pixel_mask || mask_w <= 0)
+            return;
+        for (int y = y1; y <= y2; y++) {
+            for (int x = x1; x <= x2; x++) {
+                if ((*pixel_mask)[y * mask_w + x]) {
+                    ImVec2 r1(img_pos.x + x * sx, img_pos.y + y * sy);
+                    ImVec2 r2(img_pos.x + (x + 1) * sx,
+                              img_pos.y + (y + 1) * sy);
+                    dl->AddRectFilled(r1, r2,
+                                      IM_COL32(255, 0, 255, 80), 0.0f);
+                }
+            }
+        }
+        ImVec2 br1(img_pos.x + x1 * sx, img_pos.y + y1 * sy);
+        ImVec2 br2(img_pos.x + (x2 + 1) * sx,
+                   img_pos.y + (y2 + 1) * sy);
+        dl->AddRect(br1, br2, IM_COL32(255, 0, 255, 255),
+                    0.0f, 0, 1.0f);
+    } else {
+        ImVec2 r1(img_pos.x + x1 * sx, img_pos.y + y1 * sy);
+        ImVec2 r2(img_pos.x + (x2 + 1) * sx,
+                  img_pos.y + (y2 + 1) * sy);
+        dl->AddRect(r1, r2, IM_COL32(0, 255, 0, 255), 0.0f, 0, 2.0f);
+        dl->AddRectFilled(r1, r2, IM_COL32(0, 255, 0, 30), 0.0f);
+    }
+}
+
 void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
                                  float len, float thick)
 {
