@@ -87,6 +87,16 @@ void CanvasTransformRectCorners(const CanvasTransform2D &xf,
                                 ImVec2 corners[4]);
 void CanvasQuadBounds(const ImVec2 corners[4], ImVec2 *out_min,
                       ImVec2 *out_max);
+void DrawCanvasPasteBorder(ImDrawList *dl, const ImVec2 corners[4],
+                           bool transform_active, bool hovering);
+void DrawCanvasPasteSnapGuides(ImDrawList *dl, ImVec2 img_pos,
+                               float sx, float sy,
+                               int tex_w, int tex_h,
+                               bool dragging,
+                               bool hit_x, int guide_x,
+                               bool hit_y, int guide_y);
+void DrawCanvasPasteHint(ImDrawList *dl, ImVec2 img_pos,
+                         const char *hint, ImU32 color);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);

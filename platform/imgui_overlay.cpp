@@ -19377,38 +19377,32 @@ void imgui_overlay_render(void)
                     }
                 }
 
-                /* Border — cyan when transforming, gold when hovering, yellow otherwise */
-                ImU32 border_col = g_xform.active ? IM_COL32(0, 220, 255, 255)
-                                                  : (hovering ? IM_COL32(255, 200, 0, 255)
-                                                              : IM_COL32(255, 255, 0, 255));
-                dl->AddPolyline(rc, 4, border_col, ImDrawFlags_Closed, 2.0f);
+                DrawCanvasPasteBorder(dl, rc, g_xform.active, hovering);
 
                 /* Snap guides — drawn while a snap is active this frame so
                    the user sees exactly which edge their paste locked onto. */
-                if (g_pasted.dragging && g_snap_hit_x) {
-                    float gx = img_pos.x + g_snap_guide_x * sx;
-                    dl->AddLine(ImVec2(gx, img_pos.y),
-                                ImVec2(gx, img_pos.y + g_img_tex_h * sy),
-                                IM_COL32(255, 0, 255, 220), 1.5f);
-                }
-                if (g_pasted.dragging && g_snap_hit_y) {
-                    float gy = img_pos.y + g_snap_guide_y * sy;
-                    dl->AddLine(ImVec2(img_pos.x, gy),
-                                ImVec2(img_pos.x + g_img_tex_w * sx, gy),
-                                IM_COL32(255, 0, 255, 220), 1.5f);
-                }
+                DrawCanvasPasteSnapGuides(dl, img_pos, sx, sy,
+                                          g_img_tex_w, g_img_tex_h,
+                                          g_pasted.dragging,
+                                          g_snap_hit_x, g_snap_guide_x,
+                                          g_snap_hit_y, g_snap_guide_y);
 
                 /* Instruction text */
+                const char *paste_hint = NULL;
+                ImU32 paste_hint_col = IM_COL32(255, 255, 0, 255);
                 if (g_xform.active) {
-                    const char *hint = (g_xform.handle != TransformHandle::None)
+                    paste_hint = (g_xform.handle != TransformHandle::None)
                         ? (g_xform.handle == TransformHandle::Rotate ? "Rotating..."
                            : (g_xform.handle == TransformHandle::Move ? "Moving..." : "Scaling..."))
                         : "Drag inside to move | handles scale | top dot rotates | Enter commits";
-                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(0, 220, 255, 255), hint);
-                } else if (g_pasted.dragging)
-                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 200, 0, 255), "Moving...");
-                else
-                    dl->AddText(ImVec2(img_pos.x + 6, img_pos.y + 6), IM_COL32(255, 255, 0, 255), "Drag to move | H/V flip | L to layer | Ctrl+T transform | Click outside to place | Esc cancel");
+                    paste_hint_col = IM_COL32(0, 220, 255, 255);
+                } else if (g_pasted.dragging) {
+                    paste_hint = "Moving...";
+                    paste_hint_col = IM_COL32(255, 200, 0, 255);
+                } else {
+                    paste_hint = "Drag to move | H/V flip | L to layer | Ctrl+T transform | Click outside to place | Esc cancel";
+                }
+                DrawCanvasPasteHint(dl, img_pos, paste_hint, paste_hint_col);
 
                 dl->AddRectFilled(paste_controls_min, paste_controls_max,
                                   IM_COL32(18, 20, 24, 230), 4.0f);

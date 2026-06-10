@@ -246,6 +246,52 @@ void CanvasQuadBounds(const ImVec2 corners[4], ImVec2 *out_min,
     *out_max = mx;
 }
 
+void DrawCanvasPasteBorder(ImDrawList *dl, const ImVec2 corners[4],
+                           bool transform_active, bool hovering)
+{
+    if (!dl || !corners)
+        return;
+
+    ImU32 border_col = transform_active ? IM_COL32(0, 220, 255, 255)
+                         : (hovering ? IM_COL32(255, 200, 0, 255)
+                                     : IM_COL32(255, 255, 0, 255));
+    dl->AddPolyline(corners, 4, border_col, ImDrawFlags_Closed, 2.0f);
+}
+
+void DrawCanvasPasteSnapGuides(ImDrawList *dl, ImVec2 img_pos,
+                               float sx, float sy,
+                               int tex_w, int tex_h,
+                               bool dragging,
+                               bool hit_x, int guide_x,
+                               bool hit_y, int guide_y)
+{
+    if (!dl || !dragging)
+        return;
+
+    if (hit_x) {
+        float gx = img_pos.x + guide_x * sx;
+        dl->AddLine(ImVec2(gx, img_pos.y),
+                    ImVec2(gx, img_pos.y + tex_h * sy),
+                    IM_COL32(255, 0, 255, 220), 1.5f);
+    }
+    if (hit_y) {
+        float gy = img_pos.y + guide_y * sy;
+        dl->AddLine(ImVec2(img_pos.x, gy),
+                    ImVec2(img_pos.x + tex_w * sx, gy),
+                    IM_COL32(255, 0, 255, 220), 1.5f);
+    }
+}
+
+void DrawCanvasPasteHint(ImDrawList *dl, ImVec2 img_pos,
+                         const char *hint, ImU32 color)
+{
+    if (!dl || !hint || !hint[0])
+        return;
+
+    dl->AddText(ImVec2(img_pos.x + 6.0f, img_pos.y + 6.0f),
+                color, hint);
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])
