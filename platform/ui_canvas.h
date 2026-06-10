@@ -23,6 +23,15 @@ enum {
     kWorldMarkedMaxTabs = 7        /* 4 tabs + dummy + 2 ASM lanes */
 };
 
+struct WorldViewState {
+    bool enabled = false;
+    int w = 400;        /* arcade playfield width */
+    int h = 254;        /* arcade playfield height */
+    int origin_x = 200; /* anchor target inside world */
+    int origin_y = 20;  /* anchor target inside world (top-anchored) */
+    bool onion = false; /* faintly draw prev frame underneath */
+};
+
 struct WorldMarkedSequenceState {
     bool marked_play = false;
     float fps = 12.0f;
@@ -57,6 +66,7 @@ struct WorldMarkedSequenceState {
     int sequence_doc_idx[kWorldMarkedMaxTabs] = {-1, -1, -1, -1, -1, -1, -1};
 };
 
+WorldViewState &WorldView(void);
 WorldMarkedSequenceState &WorldMarkedState(void);
 bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot);
 

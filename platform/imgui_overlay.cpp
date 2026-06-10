@@ -1258,12 +1258,7 @@ static void Mk2SelectRecord(int rec_idx) {
  * which means anix/aniy DECREASE as you drag right/down). Use up/down
  * arrows to flick through frames — origin stays put so you can
  * eyeball whether anipoints line up across frames. */
-static bool  g_world_view = false;
-static int   g_world_w = 400;       /* arcade playfield width */
-static int   g_world_h = 254;       /* arcade playfield height */
-static int   g_world_origin_x = 200;/* anchor target inside world */
-static int   g_world_origin_y = 20; /* anchor target inside world (top-anchored) */
-static bool  g_world_onion = false; /* faintly draw prev frame underneath */
+static WorldViewState &g_world_state = WorldView();
 /* Marked World View slot constants now live in ui_canvas.h. */
 static WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
 /* g_world_temp_textures + ClearWorldTempTextures + BuildWorldSpriteTexture +
@@ -1824,19 +1819,19 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     }
     if (!have_image) return false;
 
-    float fit_x = avail.x / (float)g_world_w;
-    float fit_y = avail.y / (float)g_world_h;
+    float fit_x = avail.x / (float)g_world_state.w;
+    float fit_y = avail.y / (float)g_world_state.h;
     float wscale = (fit_x < fit_y) ? fit_x : fit_y;
     if (wscale < 1.0f) wscale = 1.0f;
     wscale = (float)(int)wscale;
     if (wscale < 1.0f) wscale = 1.0f;
 
-    float ww = (float)g_world_w * wscale;
-    float wh = (float)g_world_h * wscale;
+    float ww = (float)g_world_state.w * wscale;
+    float wh = (float)g_world_state.h * wscale;
     ImVec2 wpos(img_pos.x + (avail.x - ww) * 0.5f,
                 img_pos.y + (avail.y - wh) * 0.5f);
-    float ox = wpos.x + g_world_origin_x * wscale;
-    float oy = wpos.y + g_world_origin_y * wscale;
+    float ox = wpos.x + g_world_state.origin_x * wscale;
+    float oy = wpos.y + g_world_state.origin_y * wscale;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),
@@ -14257,7 +14252,7 @@ static void DrawAsmAnimWindow(void)
     AsmAnim &a = g_asm_anims[g_asm_anim_sel];
 
     if (ImGui::Checkbox("Play in World View lane", &g_asm_lane_enabled) && g_asm_lane_enabled) {
-        g_world_view = true;
+        g_world_state.enabled = true;
         g_world_marked_state.marked_play = true;
         WorldMarkedRestart(g_world_marked_state);
     }
@@ -14340,7 +14335,7 @@ static void DrawAsmAnimWindow(void)
         ImGui::Checkbox("Play opponent in World View lane", &g_asm_opp_enabled);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Draw the opponent animation in its own lane, facing the player.");
-        if (g_asm_opp_enabled) { g_world_view = true; g_world_marked_state.marked_play = true; }
+        if (g_asm_opp_enabled) { g_world_state.enabled = true; g_world_marked_state.marked_play = true; }
 
         const char *ocur = (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
                          ? g_asm_opp_anims[g_asm_opp_sel].name.c_str() : "(none)";
@@ -15345,7 +15340,7 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
     if (!g_timeline_frames.empty())
         g_doc->ilselected = g_timeline_frames[0];
 
-    g_world_view = true;
+    g_world_state.enabled = true;
     g_world_marked_state.marked_play = true;
     g_world_marked_state.fps = g_mk2_fatality_preview_fps;
     g_play_speed = g_mk2_fatality_preview_fps;
@@ -17216,7 +17211,7 @@ static float DrawDocumentTabBar(float y, float sw)
                 close_idx = i;
         }
 
-        if (g_world_view) {
+        if (g_world_state.enabled) {
             auto tab_toggle = [](const char *label, bool *value) {
                 bool was_on = *value;
                 if (was_on) {
@@ -17228,7 +17223,7 @@ static float DrawDocumentTabBar(float y, float sw)
                     *value = !*value;
                 if (was_on) ImGui::PopStyleColor(3);
             };
-            tab_toggle(g_world_onion ? "Onion: On" : "Onion", &g_world_onion);
+            tab_toggle(g_world_state.onion ? "Onion: On" : "Onion", &g_world_state.onion);
             bool marked_was_on = g_world_marked_state.marked_play;
             tab_toggle(g_world_marked_state.marked_play ? "Marked: On" : "Marked", &g_world_marked_state.marked_play);
             if (marked_was_on != g_world_marked_state.marked_play) {
@@ -17479,11 +17474,11 @@ void imgui_overlay_render(void)
     bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() || ImGui::IsAnyItemFocused() || io.WantTextInput;
     if (!widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
         if (ImGui::Shortcut(ImGuiKey_LeftArrow, route)) {
-            if (g_world_view && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, -1);
+            if (g_world_state.enabled && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, -1);
             else StepTimelinePlayhead(-1);
         }
         if (ImGui::Shortcut(ImGuiKey_RightArrow, route)) {
-            if (g_world_view && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, 1);
+            if (g_world_state.enabled && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, 1);
             else StepTimelinePlayhead(1);
         }
     }
@@ -17533,7 +17528,7 @@ void imgui_overlay_render(void)
     }
     /* Tab toggles World View mode (anipoint alignment workspace). */
     if (ImGui::Shortcut(ImGuiKey_Tab, route)) {
-        g_world_view = !g_world_view;
+        g_world_state.enabled = !g_world_state.enabled;
     }
 
     /* ---- Menu bar ---- */
@@ -17901,8 +17896,8 @@ void imgui_overlay_render(void)
             ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
             ImGui::MenuItem("DMA Compression", NULL, &g_show_dma_comp);
             ImGui::Separator();
-            ImGui::MenuItem("World View",      NULL,   &g_world_view);
-            if (g_world_view) {
+            ImGui::MenuItem("World View",      NULL,   &g_world_state.enabled);
+            if (g_world_state.enabled) {
                 if (ImGui::MenuItem("Marked Tab Playback", NULL, &g_world_marked_state.marked_play)) {
                     WorldMarkedRestart(g_world_marked_state);
                 }
@@ -17939,13 +17934,13 @@ void imgui_overlay_render(void)
                     ImGui::EndMenu();
                 }
                 ImGui::SetNextItemWidth(80);
-                ImGui::InputInt("World W",      &g_world_w, 0, 0);
+                ImGui::InputInt("World W",      &g_world_state.w, 0, 0);
                 ImGui::SetNextItemWidth(80);
-                ImGui::InputInt("World H",      &g_world_h, 0, 0);
+                ImGui::InputInt("World H",      &g_world_state.h, 0, 0);
                 ImGui::SetNextItemWidth(80);
-                ImGui::InputInt("Origin X",     &g_world_origin_x, 0, 0);
+                ImGui::InputInt("Origin X",     &g_world_state.origin_x, 0, 0);
                 ImGui::SetNextItemWidth(80);
-                ImGui::InputInt("Origin Y",     &g_world_origin_y, 0, 0);
+                ImGui::InputInt("Origin Y",     &g_world_state.origin_y, 0, 0);
             }
             ImGui::PopStyleVar();
             ImGui::EndMenu();
@@ -19494,12 +19489,12 @@ void imgui_overlay_render(void)
 
         /* ---- World View mode (DOS-style anipoint alignment workspace) ----
          * Renders the sprite inside a fixed black canvas, sprite anchored at
-         * (g_world_origin - sprite.anipoint). Left-drag adjusts anix/aniy.
+         * (world origin - sprite.anipoint). Left-drag adjusts anix/aniy.
          * Up/Down (handled in the global shortcut block) flicks frames.
          * When this branch runs, the rest of the canvas pipeline (pixel
          * paint, marquee, anim-point handles, hitboxes, DMA overlay,
          * grid-selection) is skipped. */
-        if (g_world_view) {
+        if (g_world_state.enabled) {
             bool drew_dual_marked = DrawWorldMarkedTabs(avail, img_pos, io);
             if (!drew_dual_marked && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
                 IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -19508,9 +19503,9 @@ void imgui_overlay_render(void)
                 DrawWorldViewSingleSprite(avail, img_pos, io,
                                           cimg, g_img_texture,
                                           g_doc->ilselected, (int)g_doc->imgcnt,
-                                          g_world_w, g_world_h,
-                                          g_world_origin_x, g_world_origin_y,
-                                          g_world_onion, g_world_marked_state.mirror_active);
+                                          g_world_state.w, g_world_state.h,
+                                          g_world_state.origin_x, g_world_state.origin_y,
+                                          g_world_state.onion, g_world_marked_state.mirror_active);
             }
         }
         else if ((timeline_composite_preview_active = DrawTimelineCompositePreview(avail, img_pos))) {
@@ -20086,7 +20081,7 @@ void imgui_overlay_render(void)
            wrong spot, and the IMG hitbox box would visually float
            detached from the playfield rectangle. Both stay reachable
            via their normal modes when World View is off. */
-        if (g_show_points && !canvas_input_blocked && !g_world_view && !timeline_composite_preview_active) {
+        if (g_show_points && !canvas_input_blocked && !g_world_state.enabled && !timeline_composite_preview_active) {
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img && img->w > 0) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -20161,7 +20156,7 @@ void imgui_overlay_render(void)
            Suppressed when the MK2 strike-table overlay is showing a move,
            so the two hitbox systems don't pile on top of each other. */
         bool mk2_overlay_active = g_show_mk2 && Mk2CurrentRecord() >= 0;
-        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active && !g_world_view && !timeline_composite_preview_active) {
+        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active && !g_world_state.enabled && !timeline_composite_preview_active) {
             ImDrawList *dl = ImGui::GetWindowDrawList();
             ImVec2 tl(img_pos.x + g_hitbox_x * sx, img_pos.y + g_hitbox_y * sy);
             ImVec2 br(img_pos.x + (g_hitbox_x + g_hitbox_w) * sx,
@@ -20210,7 +20205,7 @@ void imgui_overlay_render(void)
            Drawing always runs whenever a move is selected — the editor
            panel can hold focus (which sets canvas_input_blocked) without
            hiding the box. Only the corner-drag interaction is gated. */
-        int mk2_rec = (g_show_mk2 && !g_world_view && !timeline_composite_preview_active) ? Mk2CurrentRecord() : -1;
+        int mk2_rec = (g_show_mk2 && !g_world_state.enabled && !timeline_composite_preview_active) ? Mk2CurrentRecord() : -1;
         if (mk2_rec >= 0) {
             const mk2::StrikeRecord &rec = g_mk2_doc.records[mk2_rec];
             int hx = rec.fields[mk2::F_X_OFFSET].has_value ? (int)rec.fields[mk2::F_X_OFFSET].value : 0;

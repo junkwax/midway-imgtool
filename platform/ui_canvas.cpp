@@ -22,6 +22,12 @@ static int s_world_onion_tex_w = 0;
 static int s_world_onion_tex_h = 0;
 static int s_world_onion_idx = -1;
 
+WorldViewState &WorldView(void)
+{
+    static WorldViewState state;
+    return state;
+}
+
 WorldMarkedSequenceState &WorldMarkedState(void)
 {
     static WorldMarkedSequenceState state;
