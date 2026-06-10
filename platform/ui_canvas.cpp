@@ -6,8 +6,10 @@
 
 #include "anipoint_edit.h"  /* set_primary_anipoint_with_sequence */
 #include "img_format.h"     /* get_img */
+#include "img_util.h"       /* img_name_string */
 #include "shim_vid.h"       /* g_palette */
 #include "ui_internal.h"    /* g_imgui_renderer */
+#include "world_render.h"   /* doc_get_img */
 
 #include <cctype>
 #include <cstdint>
@@ -135,6 +137,34 @@ std::string WorldMarkedAsmLabelPart(const char *raw, int slot)
     if (std::isdigit((unsigned char)out[0]))
         out.insert(out.begin(), '_');
     return out;
+}
+
+int ClampWorldMarkedAniptDelta(int value)
+{
+    if (value < -32768) return -32768;
+    if (value >  32767) return  32767;
+    return value;
+}
+
+int ClampWorldMarkedVisibleFrom(int value)
+{
+    if (value < 0) return 0;
+    if (value > 99999) return 99999;
+    return value;
+}
+
+void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
+                                     std::vector<std::vector<int>> &frame_pieces,
+                                     std::vector<std::string> &frame_labels)
+{
+    frame_pieces.clear();
+    frame_labels.clear();
+    frame_pieces.reserve(frames.size());
+    frame_labels.reserve(frames.size());
+    for (int idx : frames) {
+        frame_pieces.push_back(std::vector<int>(1, idx));
+        frame_labels.push_back(img_name_string(doc_get_img(doc, idx)));
+    }
 }
 
 static void rebuild_world_onion_texture(IMG *img, int image_idx)

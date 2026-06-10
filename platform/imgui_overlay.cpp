@@ -1383,19 +1383,7 @@ static void StepWorldMarkedSequence(int delta)
         g_world_dual_frame = 0;
 }
 
-static int ClampWorldMarkedAniptDelta(int value)
-{
-    if (value < -32768) return -32768;
-    if (value >  32767) return  32767;
-    return value;
-}
-
-static int ClampWorldMarkedVisibleFrom(int value)
-{
-    if (value < 0) return 0;
-    if (value > 99999) return 99999;
-    return value;
-}
+/* World marked clamp helpers now live in ui_canvas.{h,cpp}. */
 
 static void EnsureWorldMarkedFrameDelays(int slot, int frame_count)
 {
@@ -1513,19 +1501,7 @@ static void WorldResetDummyDecapDelays(int frame_count)
 
 /* img_name_string now lives in img_util.{h,cpp}. */
 
-static void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
-                                            std::vector<std::vector<int>> &frame_pieces,
-                                            std::vector<std::string> &frame_labels)
-{
-    frame_pieces.clear();
-    frame_labels.clear();
-    frame_pieces.reserve(frames.size());
-    frame_labels.reserve(frames.size());
-    for (int idx : frames) {
-        frame_pieces.push_back(std::vector<int>(1, idx));
-        frame_labels.push_back(img_name_string(doc_get_img(doc, idx)));
-    }
-}
+/* WorldMarkedBuildSingleFrameLane now lives in ui_canvas.{h,cpp}. */
 
 static void WorldMarkedClearSequenceState(int slot)
 {

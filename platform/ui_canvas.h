@@ -11,6 +11,8 @@
 #include <SDL.h>
 #include <imgui.h>
 #include <string>
+#include <vector>
+#include "document.h"    /* Document */
 #include "img_format.h"  /* IMG */
 
 /* Pure string helpers used by the marked World View panel. */
@@ -20,6 +22,11 @@ bool WorldDecapBodyPieceInfo(const std::string &name, int *frame_no,
 bool WorldDecapPrefixFromName(const std::string &name, std::string *prefix);
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
+int ClampWorldMarkedAniptDelta(int value);
+int ClampWorldMarkedVisibleFrom(int value);
+void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
+                                     std::vector<std::vector<int>> &frame_pieces,
+                                     std::vector<std::string> &frame_labels);
 
 /* Draw the single-sprite World View canvas into the current ImGui window.
    Returns true when it consumed/reserved the canvas area. */
