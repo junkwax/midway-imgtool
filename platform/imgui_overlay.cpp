@@ -1608,89 +1608,8 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
                 IM_COL32(120, 120, 120, 255));
 
-    const unsigned char alpha_by_slot[kWorldMarkedMaxTabs] = {255, 185, 170, 155, 205, 255, 235};
-    const ImU32 outline_by_slot[kWorldMarkedMaxTabs] = {
-        IM_COL32(120, 190, 255, 230),
-        IM_COL32(255, 190, 90, 230),
-        IM_COL32(120, 230, 150, 230),
-        IM_COL32(230, 130, 230, 230),
-        IM_COL32(240, 80, 80, 230),
-        IM_COL32(120, 190, 255, 230),   /* ASM player lane */
-        IM_COL32(240, 80, 80, 230)      /* ASM opponent lane */
-    };
-    bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
-    bool lane_mirror_x[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
-    ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
-    ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
-
-    auto draw_sprite = [&](int slot) {
-        if (slot < 0 || slot >= (int)lanes.size()) return;
-        WorldMarkedLane &lane = lanes[slot];
-        int state_slot = lane.delay_slot;
-        EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
-        if (lane.frame_pos >= 0 &&
-            lane.frame_pos < (int)g_world_marked_state.visible_from[state_slot].size() &&
-            g_world_marked_state.frame < g_world_marked_state.visible_from[state_slot][lane.frame_pos])
-            return;
-        bool *mirror_flag = WorldMarkedMirrorFlag(g_world_marked_state, lane.delay_slot);
-        bool mirror_x = mirror_flag ? *mirror_flag : false;
-        /* Per-frame flip (ASM ani_flip) toggles on top of the lane's facing. */
-        if (lane.frame_pos >= 0 &&
-            lane.frame_pos < (int)g_world_marked_state.frame_mirror[state_slot].size() &&
-            g_world_marked_state.frame_mirror[state_slot][lane.frame_pos])
-            mirror_x = !mirror_x;
-        lane_mirror_x[slot] = mirror_x;
-        const std::vector<int> *pieces = NULL;
-        const std::vector<Document*> *piece_docs = NULL;
-        if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frame_pieces.size())
-            pieces = &lane.frame_pieces[lane.frame_pos];
-        if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frame_piece_docs.size())
-            piece_docs = &lane.frame_piece_docs[lane.frame_pos];
-        std::vector<int> fallback_piece;
-        if (!pieces || pieces->empty()) {
-            if (!lane.img) return;
-            fallback_piece.push_back(lane.frames[lane.frame_pos]);
-            pieces = &fallback_piece;
-            piece_docs = NULL;
-        }
-        for (size_t pi = 0; pi < pieces->size(); pi++) {
-            int piece_idx = (*pieces)[pi];
-            Document *pdoc = (piece_docs && pi < piece_docs->size() && (*piece_docs)[pi])
-                           ? (*piece_docs)[pi] : lane.doc;
-            IMG *img = doc_get_img(pdoc, piece_idx);
-            if (!img) continue;
-            SDL_Texture *tex = BuildWorldSpriteTexture(pdoc, img, alpha_by_slot[slot]);
-            if (!tex) continue;
-            int ax = (int)(short)img->anix + g_world_marked_state.local_dx[state_slot][lane.frame_pos];
-            int ay = (int)(short)img->aniy + g_world_marked_state.local_dy[state_slot][lane.frame_pos];
-            float spw = img->w * wscale;
-            float sph = img->h * wscale;
-            float left = mirror_x ? (ox - ((int)img->w - ax) * wscale)
-                                  : (ox - ax * wscale);
-            ImVec2 spos(left, oy - ay * wscale);
-            ImVec2 uv0 = mirror_x ? ImVec2(1, 0) : ImVec2(0, 0);
-            ImVec2 uv1 = mirror_x ? ImVec2(0, 1) : ImVec2(1, 1);
-            dl->AddImage((ImTextureID)(intptr_t)tex,
-                         spos, ImVec2(spos.x + spw, spos.y + sph), uv0, uv1);
-            dl->AddRect(spos, ImVec2(spos.x + spw, spos.y + sph),
-                        outline_by_slot[slot], 0.0f, 0, 1.0f);
-            ImVec2 rmax(spos.x + spw, spos.y + sph);
-            if (!lane_rect_valid[slot]) {
-                lane_rect_valid[slot] = true;
-                lane_rect_min[slot] = spos;
-                lane_rect_max[slot] = rmax;
-            } else {
-                if (spos.x < lane_rect_min[slot].x) lane_rect_min[slot].x = spos.x;
-                if (spos.y < lane_rect_min[slot].y) lane_rect_min[slot].y = spos.y;
-                if (rmax.x > lane_rect_max[slot].x) lane_rect_max[slot].x = rmax.x;
-                if (rmax.y > lane_rect_max[slot].y) lane_rect_max[slot].y = rmax.y;
-            }
-        }
-    };
-
-    for (int slot = (int)lanes.size() - 1; slot >= 1; slot--)
-        draw_sprite(slot);
-    draw_sprite(0);
+    WorldMarkedLaneRenderInfo render_info;
+    WorldDrawMarkedLaneSprites(dl, g_world_marked_state, lanes, layout, render_info);
 
     dl->AddCircle(ImVec2(ox, oy), 4.0f,
                   IM_COL32(255, 200, 0, 255), 0, 1.5f);
@@ -1698,7 +1617,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     /* Tag each sprite in the canvas with its source file and current frame name
        so it is clear which marked tab/frame each on-screen sprite came from. */
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
-        if (!lane_rect_valid[slot]) continue;
+        if (!render_info.lane_rect_valid[slot]) continue;
         WorldMarkedLane &lane = lanes[slot];
         const char *doc_name = !lane.label.empty()
                              ? lane.label.c_str()
@@ -1712,13 +1631,13 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         char tag[256];
         snprintf(tag, sizeof(tag), "%s:%s", doc_name, frame_name.c_str());
         ImVec2 tag_sz = ImGui::CalcTextSize(tag);
-        ImVec2 tag_pos(lane_rect_min[slot].x,
-                       lane_rect_min[slot].y - tag_sz.y - 3.0f);
+        ImVec2 tag_pos(render_info.lane_rect_min[slot].x,
+                       render_info.lane_rect_min[slot].y - tag_sz.y - 3.0f);
         if (tag_pos.y < wpos.y + 1.0f) tag_pos.y = wpos.y + 1.0f;
         dl->AddRectFilled(ImVec2(tag_pos.x - 2.0f, tag_pos.y - 1.0f),
                           ImVec2(tag_pos.x + tag_sz.x + 2.0f, tag_pos.y + tag_sz.y + 1.0f),
                           IM_COL32(0, 0, 0, 190));
-        dl->AddText(tag_pos, outline_by_slot[slot], tag);
+        dl->AddText(tag_pos, WorldMarkedLaneOutlineColor(slot), tag);
     }
 
     std::string label = "Marked tabs: ";
@@ -1776,16 +1695,19 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     int hover_slot = -1;
     if (over_world && !over_panel) {
         for (int slot = 0; slot < (int)lanes.size(); slot++) {
-            if (!lane_rect_valid[slot]) continue;
-            if (mouse.x >= lane_rect_min[slot].x && mouse.x <= lane_rect_max[slot].x &&
-                mouse.y >= lane_rect_min[slot].y && mouse.y <= lane_rect_max[slot].y) {
+            if (!render_info.lane_rect_valid[slot]) continue;
+            if (mouse.x >= render_info.lane_rect_min[slot].x &&
+                mouse.x <= render_info.lane_rect_max[slot].x &&
+                mouse.y >= render_info.lane_rect_min[slot].y &&
+                mouse.y <= render_info.lane_rect_max[slot].y) {
                 hover_slot = slot;
                 break;
             }
         }
     }
     if (hover_slot >= 0) {
-        dl->AddRect(lane_rect_min[hover_slot], lane_rect_max[hover_slot],
+        dl->AddRect(render_info.lane_rect_min[hover_slot],
+                    render_info.lane_rect_max[hover_slot],
                     IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     }
@@ -1801,7 +1723,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             g_world_marked_state.drag_mouse = mouse;
             g_world_marked_state.drag_dx = g_world_marked_state.local_dx[state_slot][lane.frame_pos];
             g_world_marked_state.drag_dy = g_world_marked_state.local_dy[state_slot][lane.frame_pos];
-            g_world_marked_state.drag_mirror = lane_mirror_x[hover_slot];
+            g_world_marked_state.drag_mirror = render_info.lane_mirror_x[hover_slot];
         }
     }
     if (g_world_marked_state.drag_slot >= 0) {

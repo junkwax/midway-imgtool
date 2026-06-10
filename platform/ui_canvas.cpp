@@ -430,6 +430,120 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
     return have_image;
 }
 
+static unsigned char WorldMarkedLaneAlpha(int slot)
+{
+    static const unsigned char kAlpha[kWorldMarkedMaxTabs] =
+        {255, 185, 170, 155, 205, 255, 235};
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return 255;
+    return kAlpha[slot];
+}
+
+ImU32 WorldMarkedLaneOutlineColor(int slot)
+{
+    static const ImU32 kOutline[kWorldMarkedMaxTabs] = {
+        IM_COL32(120, 190, 255, 230),
+        IM_COL32(255, 190, 90, 230),
+        IM_COL32(120, 230, 150, 230),
+        IM_COL32(230, 130, 230, 230),
+        IM_COL32(240, 80, 80, 230),
+        IM_COL32(120, 190, 255, 230),
+        IM_COL32(240, 80, 80, 230)
+    };
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs)
+        return IM_COL32(220, 220, 220, 230);
+    return kOutline[slot];
+}
+
+void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
+                                const std::vector<WorldMarkedLane> &lanes,
+                                const WorldCanvasLayout &layout,
+                                WorldMarkedLaneRenderInfo &render_info)
+{
+    if (!dl) return;
+
+    auto draw_slot = [&](int slot) {
+        if (slot < 0 || slot >= (int)lanes.size()) return;
+        const WorldMarkedLane &lane = lanes[slot];
+        int state_slot = lane.delay_slot;
+        EnsureWorldMarkedFrameDelays(state, state_slot, (int)lane.frames.size());
+        if (lane.frame_pos >= 0 &&
+            lane.frame_pos < (int)state.visible_from[state_slot].size() &&
+            state.frame < state.visible_from[state_slot][lane.frame_pos])
+            return;
+
+        bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
+        bool mirror_x = mirror_flag ? *mirror_flag : false;
+        if (lane.frame_pos >= 0 &&
+            lane.frame_pos < (int)state.frame_mirror[state_slot].size() &&
+            state.frame_mirror[state_slot][lane.frame_pos])
+            mirror_x = !mirror_x;
+        render_info.lane_mirror_x[slot] = mirror_x;
+
+        const std::vector<int> *pieces = NULL;
+        const std::vector<Document*> *piece_docs = NULL;
+        if (lane.frame_pos >= 0 &&
+            lane.frame_pos < (int)lane.frame_pieces.size())
+            pieces = &lane.frame_pieces[lane.frame_pos];
+        if (lane.frame_pos >= 0 &&
+            lane.frame_pos < (int)lane.frame_piece_docs.size())
+            piece_docs = &lane.frame_piece_docs[lane.frame_pos];
+
+        std::vector<int> fallback_piece;
+        if (!pieces || pieces->empty()) {
+            if (!lane.img) return;
+            fallback_piece.push_back(lane.frames[lane.frame_pos]);
+            pieces = &fallback_piece;
+            piece_docs = NULL;
+        }
+
+        for (size_t pi = 0; pi < pieces->size(); pi++) {
+            int piece_idx = (*pieces)[pi];
+            Document *pdoc = (piece_docs && pi < piece_docs->size() && (*piece_docs)[pi])
+                           ? (*piece_docs)[pi] : lane.doc;
+            IMG *img = doc_get_img(pdoc, piece_idx);
+            if (!img) continue;
+            SDL_Texture *tex = BuildWorldSpriteTexture(pdoc, img,
+                                                       WorldMarkedLaneAlpha(slot));
+            if (!tex) continue;
+
+            int ax = (int)(short)img->anix + state.local_dx[state_slot][lane.frame_pos];
+            int ay = (int)(short)img->aniy + state.local_dy[state_slot][lane.frame_pos];
+            float spw = img->w * layout.scale;
+            float sph = img->h * layout.scale;
+            float left = mirror_x
+                ? (layout.origin_x - ((int)img->w - ax) * layout.scale)
+                : (layout.origin_x - ax * layout.scale);
+            ImVec2 spos(left, layout.origin_y - ay * layout.scale);
+            ImVec2 uv0 = mirror_x ? ImVec2(1, 0) : ImVec2(0, 0);
+            ImVec2 uv1 = mirror_x ? ImVec2(0, 1) : ImVec2(1, 1);
+            dl->AddImage((ImTextureID)(intptr_t)tex,
+                         spos, ImVec2(spos.x + spw, spos.y + sph), uv0, uv1);
+            dl->AddRect(spos, ImVec2(spos.x + spw, spos.y + sph),
+                        WorldMarkedLaneOutlineColor(slot), 0.0f, 0, 1.0f);
+
+            ImVec2 rmax(spos.x + spw, spos.y + sph);
+            if (!render_info.lane_rect_valid[slot]) {
+                render_info.lane_rect_valid[slot] = true;
+                render_info.lane_rect_min[slot] = spos;
+                render_info.lane_rect_max[slot] = rmax;
+            } else {
+                if (spos.x < render_info.lane_rect_min[slot].x)
+                    render_info.lane_rect_min[slot].x = spos.x;
+                if (spos.y < render_info.lane_rect_min[slot].y)
+                    render_info.lane_rect_min[slot].y = spos.y;
+                if (rmax.x > render_info.lane_rect_max[slot].x)
+                    render_info.lane_rect_max[slot].x = rmax.x;
+                if (rmax.y > render_info.lane_rect_max[slot].y)
+                    render_info.lane_rect_max[slot].y = rmax.y;
+            }
+        }
+    };
+
+    for (int slot = (int)lanes.size() - 1; slot >= 1; slot--)
+        draw_slot(slot);
+    draw_slot(0);
+}
+
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
 {
     std::string out;

@@ -93,6 +93,13 @@ struct WorldMarkedLane {
     std::string asm_label_part;
 };
 
+struct WorldMarkedLaneRenderInfo {
+    bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
+    bool lane_mirror_x[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
+    ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
+    ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
+};
+
 WorldViewState &WorldView(void);
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
@@ -117,6 +124,11 @@ bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
 bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                                    std::vector<WorldMarkedLane> &lanes,
                                    float delta_time);
+ImU32 WorldMarkedLaneOutlineColor(int slot);
+void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
+                                const std::vector<WorldMarkedLane> &lanes,
+                                const WorldCanvasLayout &layout,
+                                WorldMarkedLaneRenderInfo &render_info);
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);
