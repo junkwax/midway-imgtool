@@ -93,6 +93,15 @@ struct CanvasPasteSnapResult {
     int guide_y = 0;
 };
 
+struct CanvasPasteDragResult {
+    int x = 0;
+    int y = 0;
+    bool hit_x = false;
+    bool hit_y = false;
+    int guide_x = 0;
+    int guide_y = 0;
+};
+
 struct CanvasPasteHint {
     const char *text = "";
     ImU32 color = IM_COL32(255, 255, 0, 255);
@@ -195,6 +204,16 @@ CanvasPasteSnapResult CanvasPasteCenterGuide(int x, int y, int w, int h,
 void CanvasClampPasteRect(int canvas_w, int canvas_h,
                           int rect_w, int rect_h,
                           int *x, int *y);
+CanvasPasteDragResult CanvasResolvePasteDrag(ImVec2 drag_start_mouse,
+                                             ImVec2 mouse,
+                                             float sx, float sy,
+                                             int start_x, int start_y,
+                                             int rect_w, int rect_h,
+                                             int canvas_w, int canvas_h,
+                                             int target_w, int target_h,
+                                             bool snap_to_content,
+                                             const CanvasContentBounds &bounds,
+                                             bool show_center_guides);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);

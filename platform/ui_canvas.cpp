@@ -710,6 +710,56 @@ void CanvasClampPasteRect(int canvas_w, int canvas_h,
     if (*y + rect_h > canvas_h) *y = canvas_h - rect_h;
 }
 
+CanvasPasteDragResult CanvasResolvePasteDrag(ImVec2 drag_start_mouse,
+                                             ImVec2 mouse,
+                                             float sx, float sy,
+                                             int start_x, int start_y,
+                                             int rect_w, int rect_h,
+                                             int canvas_w, int canvas_h,
+                                             int target_w, int target_h,
+                                             bool snap_to_content,
+                                             const CanvasContentBounds &bounds,
+                                             bool show_center_guides)
+{
+    int dx = 0;
+    int dy = 0;
+    CanvasDragDeltaPixels(drag_start_mouse, mouse, sx, sy, &dx, &dy);
+
+    CanvasPasteDragResult result;
+    result.x = start_x + dx;
+    result.y = start_y + dy;
+
+    if (snap_to_content && bounds.valid) {
+        CanvasPasteSnapResult snap =
+            CanvasSnapPasteToContent(result.x, result.y, rect_w, rect_h,
+                                     target_w, target_h, bounds, sx, sy);
+        result.x = snap.x;
+        result.y = snap.y;
+        result.hit_x = snap.hit_x;
+        result.hit_y = snap.hit_y;
+        result.guide_x = snap.guide_x;
+        result.guide_y = snap.guide_y;
+    }
+
+    if (show_center_guides) {
+        CanvasPasteSnapResult guide =
+            CanvasPasteCenterGuide(result.x, result.y, rect_w, rect_h,
+                                   target_w, target_h,
+                                   result.hit_x, result.hit_y,
+                                   result.guide_x, result.guide_y);
+        result.x = guide.x;
+        result.y = guide.y;
+        result.hit_x = guide.hit_x;
+        result.hit_y = guide.hit_y;
+        result.guide_x = guide.guide_x;
+        result.guide_y = guide.guide_y;
+    }
+
+    CanvasClampPasteRect(canvas_w, canvas_h, rect_w, rect_h,
+                         &result.x, &result.y);
+    return result;
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])

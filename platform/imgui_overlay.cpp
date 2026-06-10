@@ -19529,17 +19529,10 @@ void imgui_overlay_render(void)
 
                     /* Drag to move */
                     if (g_pasted.dragging && mbdn) {
-                        int dx = 0, dy = 0;
-                        CanvasDragDeltaPixels(
-                            ImVec2(g_pasted.drag_start_mx,
-                                   g_pasted.drag_start_my),
-                            mouse, sx, sy, &dx, &dy);
-                        int nx = g_pasted.drag_start_px + dx;
-                        int ny = g_pasted.drag_start_py + dy;
-
-                        g_snap_hit_x = g_snap_hit_y = false;
                         IMG *snap_img = (g_doc->ilselected >= 0)
                             ? get_img(g_doc->ilselected) : NULL;
+                        CanvasContentBounds snap_bounds;
+                        bool snap_to_content = false;
                         if (ImGui::GetIO().KeyShift && g_doc->ilselected >= 0) {
                             /* Cache the content bbox of the underlying sprite
                                on the first frame Shift is held during this
@@ -19553,23 +19546,12 @@ void imgui_overlay_render(void)
                                 }
                             }
                             if (g_snap_bbox.valid && snap_img) {
-                                CanvasContentBounds bounds;
-                                bounds.valid = true;
-                                bounds.min_x = g_snap_bbox.min_x;
-                                bounds.min_y = g_snap_bbox.min_y;
-                                bounds.max_x = g_snap_bbox.max_x;
-                                bounds.max_y = g_snap_bbox.max_y;
-                                CanvasPasteSnapResult snap =
-                                    CanvasSnapPasteToContent(
-                                        nx, ny, pw, ph,
-                                        snap_img->w, snap_img->h,
-                                        bounds, sx, sy);
-                                nx = snap.x;
-                                ny = snap.y;
-                                g_snap_hit_x = snap.hit_x;
-                                g_snap_hit_y = snap.hit_y;
-                                g_snap_guide_x = snap.guide_x;
-                                g_snap_guide_y = snap.guide_y;
+                                snap_bounds.valid = true;
+                                snap_bounds.min_x = g_snap_bbox.min_x;
+                                snap_bounds.min_y = g_snap_bbox.min_y;
+                                snap_bounds.max_x = g_snap_bbox.max_x;
+                                snap_bounds.max_y = g_snap_bbox.max_y;
+                                snap_to_content = true;
                             }
                         } else {
                             g_snap_bbox.valid = false;
@@ -19579,21 +19561,23 @@ void imgui_overlay_render(void)
                            magenta center line when the paste rect's center
                            lands exactly on the sprite's center axis. Lets the
                            user see "I'm centered" without engaging snap. */
-                        if (snap_img) {
-                            CanvasPasteSnapResult guide = CanvasPasteCenterGuide(
-                                nx, ny, pw, ph, snap_img->w, snap_img->h,
-                                g_snap_hit_x, g_snap_hit_y,
-                                g_snap_guide_x, g_snap_guide_y);
-                            g_snap_hit_x = guide.hit_x;
-                            g_snap_hit_y = guide.hit_y;
-                            g_snap_guide_x = guide.guide_x;
-                            g_snap_guide_y = guide.guide_y;
-                        }
-
-                        CanvasClampPasteRect(g_img_tex_w, g_img_tex_h,
-                                             pw, ph, &nx, &ny);
-                        g_pasted.paste_x = nx;
-                        g_pasted.paste_y = ny;
+                        CanvasPasteDragResult drag = CanvasResolvePasteDrag(
+                            ImVec2(g_pasted.drag_start_mx,
+                                   g_pasted.drag_start_my),
+                            mouse, sx, sy,
+                            g_pasted.drag_start_px,
+                            g_pasted.drag_start_py,
+                            pw, ph,
+                            g_img_tex_w, g_img_tex_h,
+                            snap_img ? snap_img->w : 0,
+                            snap_img ? snap_img->h : 0,
+                            snap_to_content, snap_bounds, snap_img != NULL);
+                        g_snap_hit_x = drag.hit_x;
+                        g_snap_hit_y = drag.hit_y;
+                        g_snap_guide_x = drag.guide_x;
+                        g_snap_guide_y = drag.guide_y;
+                        g_pasted.paste_x = drag.x;
+                        g_pasted.paste_y = drag.y;
                     }
 
                     /* Stop drag on release — keep floating */
