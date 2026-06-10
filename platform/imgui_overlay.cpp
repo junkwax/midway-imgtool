@@ -1553,36 +1553,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     add_asm_lane(g_asm_opp_anims, g_asm_opp_enabled, g_asm_opp_sel,
                  kWorldAsmOpponentSlot, g_asm_opp_doc, g_asm_opp_doc_idx);
 
-    auto assign_selected_dummy_decap = [&]() {
-        IMG *sel = get_img(g_doc ? g_doc->ilselected : -1);
-        std::string prefix;
-        if (!sel || !WorldDecapPrefixFromName(img_name_string(sel), &prefix)) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Select a DECAP body frame/piece first.");
-            g_restore_msg_timer = 4.0f;
-            return;
-        }
-        g_world_marked_state.dummy_decap_body = true;
-        g_world_marked_state.dummy_decap_manual = true;
-        g_world_marked_state.dummy_decap_doc_idx = document_active_index();
-        g_world_marked_state.dummy_decap_prefix = prefix;
-        g_world_marked_state.dummy_decap_reset = true;
-        g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
-        /* Default the dummy to FACE the player: sprites are authored facing one
-           way, so the victim/opponent mirrors relative to the attacker (lane 0).
-           Anipoints still pin to the shared origin, so this only flips facing. */
-        {
-            bool *pf = WorldMarkedMirrorFlag(g_world_marked_state, 0);
-            bool *df = WorldMarkedMirrorFlag(g_world_marked_state, kWorldDummyDecapSlot);
-            if (df) *df = pf ? !*pf : true;
-        }
-        WorldMarkedRestart(g_world_marked_state);
-        snprintf(g_restore_msg, sizeof(g_restore_msg),
-                 "Assigned dummy body to [%d] %sDECAP.",
-                 g_world_marked_state.dummy_decap_doc_idx,
-                 g_world_marked_state.dummy_decap_prefix.c_str());
-        g_restore_msg_timer = 4.0f;
-    };
+    /* WorldAssignSelectedDummyDecap now lives in ui_canvas.{h,cpp}. */
 
     if (lanes.empty()) return false;
     if (lanes.size() < 2 && !asm_present) return false;
@@ -1700,7 +1671,18 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             ImGui::SetTooltip("Adds the stock fatality decap body as its own sync lane using *DECAP1-7 frames from open tabs.");
         ImGui::SameLine();
         if (ImGui::SmallButton("Use Selected##world_dummy_assign")) {
-            assign_selected_dummy_decap();
+            IMG *sel = get_img(g_doc ? g_doc->ilselected : -1);
+            if (WorldAssignSelectedDummyDecap(g_world_marked_state, sel,
+                                              document_active_index())) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Assigned dummy body to [%d] %sDECAP.",
+                         g_world_marked_state.dummy_decap_doc_idx,
+                         g_world_marked_state.dummy_decap_prefix.c_str());
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Select a DECAP body frame/piece first.");
+            }
+            g_restore_msg_timer = 4.0f;
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Assign the dummy body from the selected *DECAP frame, *DECAPLEG piece, or *DECAPTORSO piece.");

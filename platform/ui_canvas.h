@@ -125,6 +125,9 @@ bool WorldDecapPrefixFromName(const std::string &name, std::string *prefix);
 int WorldDummyDecapFrameCount(void);
 int WorldDummyDecapFrameNo(int index);
 void WorldResetDummyDecapDelays(WorldMarkedSequenceState &state, int frame_count);
+bool WorldAssignSelectedDummyDecap(WorldMarkedSequenceState &state,
+                                   IMG *selected_img,
+                                   int active_doc_idx);
 void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out);
 WorldMarkedLane WorldBuildDummyDecapLane(WorldMarkedSequenceState &state,
                                          int active_doc_idx);

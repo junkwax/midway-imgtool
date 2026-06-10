@@ -202,6 +202,31 @@ void WorldResetDummyDecapDelays(WorldMarkedSequenceState &state, int frame_count
     state.dummy_decap_reset = false;
 }
 
+bool WorldAssignSelectedDummyDecap(WorldMarkedSequenceState &state,
+                                   IMG *selected_img,
+                                   int active_doc_idx)
+{
+    std::string prefix;
+    if (!selected_img || !WorldDecapPrefixFromName(img_name_string(selected_img), &prefix))
+        return false;
+
+    state.dummy_decap_body = true;
+    state.dummy_decap_manual = true;
+    state.dummy_decap_doc_idx = active_doc_idx;
+    state.dummy_decap_prefix = prefix;
+    state.dummy_decap_reset = true;
+    state.hold_end[kWorldDummyDecapSlot] = true;
+
+    /* Default the dummy to face the player. Anipoints still pin to the shared
+       origin, so this only flips facing relative to lane 0. */
+    bool *player_mirror = WorldMarkedMirrorFlag(state, 0);
+    bool *dummy_mirror = WorldMarkedMirrorFlag(state, kWorldDummyDecapSlot);
+    if (dummy_mirror) *dummy_mirror = player_mirror ? !*player_mirror : true;
+
+    WorldMarkedRestart(state);
+    return true;
+}
+
 void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out)
 {
     out.clear();
