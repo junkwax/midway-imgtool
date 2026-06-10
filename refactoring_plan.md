@@ -8,31 +8,68 @@ tracks slice-by-slice progress.
 
 ## Current checkpoint - June 9, 2026
 
-Branch: `refactor/overlay-split`.
+Branch: `refactor/overlay-split` (25 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is down to ~22,400 lines; ~1,550 lines now live in
+focused modules. Full app builds; all 7 `ctest` suites pass.
 
-Phase A (pure-logic extraction) is complete and unit-tested:
-`palette_math`, `sprite_resize_ops`, `color_ops`, and `image_ops` (edge/stroke
-helpers) all moved out of `imgui_overlay.cpp`, each with a `ctest` suite.
+**Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
+`sprite_resize_ops`, `color_ops` (HSL core), `image_ops` (edge/stroke).
+
+**Phase B (globals foundation): in place, demand-driven** — `ui_internal.h`
+(shared extern decls + the `ICON_*` glyphs, `ZOOM_MAX`, and the shared
+`mark_dirty()` service) + `ui_state.cpp` (definitions home). Globals migrate
+only when a function move needs them across TUs — *not* in a big up-front sweep
+(the ~1000-line "Editor state" block is intentionally left in place).
+
+**Phase C (UI subsystems): first subsystem complete** — `ui_timeline` now owns
+the whole timeline (frame model, thumbnail cache, composite selection/playback,
+and all timeline rendering incl. the composite preview). Supporting modules
+extracted along the way: `world_render` (sprite→texture), `anipoint` (pure
+predicates + sequence-name parsing), `anipoint_edit` (sequence-propagating
+setters), `img_util` (`img_name_string`, `signed_to_img_word`).
 
 The accumulated user feature work (bulk resize, smarter subframe cuts, anim
 propagation, mirrored World View fix, session restore, RGB-slider de-dup) is
 committed (`fc4edeb`).
 
-Phase B (globals foundation) has begun: `ui_internal.h` (shared extern decls)
-and `ui_state.cpp` (definitions home) exist, with the SDL/zoom/pan group and the
-undo-snapshot group migrated.
+### Module inventory (platform/)
 
-**Strategy decision: the rest of Phase B is demand-driven.** Rather than bulk-
-migrating the remaining ~300 globals up front (high churn, no consumer until UI
-code moves, and the ~1000-line "Editor state" block is risky), each global is
-moved to `ui_state.cpp` only when a Phase C function move actually needs it
-across translation units. The foundation is in place; migration rides along with
-Phase C.
+| Module | What it owns | Tested |
+|--------|--------------|--------|
+| `palette_math.{h,cpp}` | 15-bit palette-word math, color distance, nearest-slot | ✅ |
+| `color_ops.{h,cpp}` | HSL palette adjustment (raw buffers) | ✅ |
+| `image_ops.{h,cpp}` | edge/stroke pixel analysis | ✅ |
+| `sprite_resize_ops.{h,cpp}` | nearest/quality resize resampling | ✅ |
+| `img_util.{h,cpp}` | `img_name_string`, `signed_to_img_word` | ✅ |
+| `anipoint.{h,cpp}` | secondary-anipoint predicates/mutators, seq-name parsing | ✅ |
+| `anipoint_edit.{h,cpp}` | sequence-propagating anipoint setters + undo coalescing | — |
+| `world_render.{h,cpp}` | `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
+| `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
+| `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |
+
+### For the next agent — how to continue
+
+1. **Build/verify each slice**: `.\build.ps1 -BuildRoot C:\tmp\imgtool-build-<name>`
+   then run `ctest` against `<BuildRoot>\build` with `-C Release`. Keep every
+   commit green. One cohesive slice per commit.
+2. **Per-slice loop**: survey a function's deps with `grep` (collisions across
+   TUs? forward decls? which callers are outside the cluster?), move it to a
+   module, un-`static` + declare in the header, drop a `/* now lives in ... */`
+   breadcrumb in `imgui_overlay.cpp`, add to `CMakeLists.txt`, build, commit.
+3. **Demand-driven globals**: only share a global (extern in a header, def in
+   `ui_state.cpp`, or migrate into the owning module) when a moved function needs
+   it across TUs. Keep compile-time constants as header constants, not `extern`.
+4. **Don't force coupling**: if a function depends on still-overlay-private
+   helpers, extract *those* first as their own slices rather than dragging them
+   along (this is how the timeline composite preview was eventually unblocked).
+5. **Next subsystems** (each multi-slice): `ui_palette` (palette editor),
+   World-View panel (its `world_render` leaf already exists), `ui_tools`.
 
 Environment notes (noisy but nonblocking): git commands may warn about
 `C:\Users\xbx\.config\git\ignore` permission; `build.ps1` may print
 `'vswhere.exe' is not recognized...` after its success banner, yet binaries are
-produced and tests pass.
+produced and tests pass. Unit tests for self-contained modules plug into the
+`foreach(pure_test ...)` list in `CMakeLists.txt`.
 
 ## Guiding principles (learned the hard way)
 
@@ -88,6 +125,8 @@ declare in header → include from `imgui_overlay.cpp` → add to `CMakeLists.tx
       `platform/ui_state.cpp` (definitions home). Foundation in place.
 - [x] Migrate SDL/zoom-pan scalar group and the undo-snapshot group (proves both
       the scalar and struct-backed patterns).
+- [x] Promote shared services to the foundation as needed: `mark_dirty()`,
+      `ZOOM_MAX`, and the `ICON_*` glyph vocabulary now live in `ui_internal.h`.
 - [ ] **Remaining globals: demand-driven.** Move each global to `ui_state.cpp`
       (its type to `ui_internal.h` if struct-backed) only when a Phase C function
       move needs it across translation units — not in a big up-front sweep.
@@ -100,9 +139,16 @@ Split along the existing `/* ---- section ---- */ ` markers, one module at a
 time, building green after each; pull each function's required globals into the
 foundation as you go:
 
-- [ ] `ui_canvas` — canvas render, pan/zoom, World View.
+- [x] `ui_timeline` — animation timeline: frame model, thumbnail cache,
+      composite selection/playback, and all timeline rendering (composite
+      preview + lock toggle). **Complete.**
+- [x] Supporting leaf modules extracted while doing the above:
+      `world_render` (sprite→SDL texture + temp-texture pool), `anipoint`
+      (predicates + sequence-name parsing + secondary mutators), `anipoint_edit`
+      (sequence-propagating setters), `img_util` (name + word clamp).
+- [ ] `ui_canvas` — canvas render, pan/zoom, World View (its `world_render`
+      sprite-texture leaf is already extracted).
 - [ ] `ui_palette` — palette editor, HSL sliders, histogram, color picking.
-- [ ] `ui_timeline` — animation timeline, thumbnails, playback.
 - [ ] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso,
       free transform, clone, smart remap).
 - [ ] `ui_modals` — export/import dialogs and confirmation prompts.
