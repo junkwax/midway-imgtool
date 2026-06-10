@@ -9,6 +9,7 @@
 #include "img_util.h"       /* img_name_string */
 #include "shim_vid.h"       /* g_palette */
 #include "ui_internal.h"    /* g_imgui_renderer */
+#include "ui_timeline.h"    /* ClampTimelineHold */
 #include "world_render.h"   /* doc_get_img */
 
 #include <cctype>
@@ -151,6 +152,89 @@ int ClampWorldMarkedVisibleFrom(int value)
     if (value < 0) return 0;
     if (value > 99999) return 99999;
     return value;
+}
+
+void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    if (frame_count < 0) frame_count = 0;
+
+    std::vector<int> &delays = state.frame_delays[slot];
+    if ((int)delays.size() < frame_count)
+        delays.resize((size_t)frame_count, 1);
+    else if ((int)delays.size() > frame_count)
+        delays.resize((size_t)frame_count);
+    for (int &delay : delays)
+        delay = ClampTimelineHold(delay);
+
+    std::vector<int> &local_dx = state.local_dx[slot];
+    std::vector<int> &local_dy = state.local_dy[slot];
+    std::vector<int> &visible_from = state.visible_from[slot];
+    if ((int)local_dx.size() < frame_count)
+        local_dx.resize((size_t)frame_count, 0);
+    else if ((int)local_dx.size() > frame_count)
+        local_dx.resize((size_t)frame_count);
+    if ((int)local_dy.size() < frame_count)
+        local_dy.resize((size_t)frame_count, 0);
+    else if ((int)local_dy.size() > frame_count)
+        local_dy.resize((size_t)frame_count);
+    if ((int)visible_from.size() < frame_count)
+        visible_from.resize((size_t)frame_count, 0);
+    else if ((int)visible_from.size() > frame_count)
+        visible_from.resize((size_t)frame_count);
+    for (int &dx : local_dx)
+        dx = ClampWorldMarkedAniptDelta(dx);
+    for (int &dy : local_dy)
+        dy = ClampWorldMarkedAniptDelta(dy);
+    for (int &show_tick : visible_from)
+        show_tick = ClampWorldMarkedVisibleFrom(show_tick);
+
+    std::vector<int> &fmir = state.frame_mirror[slot];
+    if ((int)fmir.size() < frame_count)
+        fmir.resize((size_t)frame_count, 0);
+    else if ((int)fmir.size() > frame_count)
+        fmir.resize((size_t)frame_count);
+}
+
+int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
+                            int frame_count, int frame_idx)
+{
+    EnsureWorldMarkedFrameDelays(state, slot, frame_count);
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 0;
+    if (frame_idx < 0) frame_idx = 0;
+    if (frame_idx >= frame_count) frame_idx = frame_count - 1;
+    int tick = 0;
+    for (int i = 0; i < frame_idx; i++)
+        tick += ClampTimelineHold(state.frame_delays[slot][i]);
+    return tick;
+}
+
+int WorldMarkedSequenceTicks(WorldMarkedSequenceState &state, int slot, int frame_count)
+{
+    EnsureWorldMarkedFrameDelays(state, slot, frame_count);
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 1;
+    int ticks = 0;
+    for (int i = 0; i < frame_count; i++)
+        ticks += ClampTimelineHold(state.frame_delays[slot][i]);
+    return ticks > 0 ? ticks : 1;
+}
+
+int WorldMarkedFrameForTick(WorldMarkedSequenceState &state, int slot,
+                            int frame_count, int tick, bool hold_final)
+{
+    EnsureWorldMarkedFrameDelays(state, slot, frame_count);
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 0;
+    int cycle_ticks = WorldMarkedSequenceTicks(state, slot, frame_count);
+    if (hold_final && tick >= cycle_ticks) return frame_count - 1;
+
+    int t = tick % cycle_ticks;
+    if (t < 0) t += cycle_ticks;
+    for (int i = 0; i < frame_count; i++) {
+        int delay = ClampTimelineHold(state.frame_delays[slot][i]);
+        if (t < delay) return i;
+        t -= delay;
+    }
+    return frame_count - 1;
 }
 
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,

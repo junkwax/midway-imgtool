@@ -45,6 +45,12 @@ std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);
 int ClampWorldMarkedVisibleFrom(int value);
+void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count);
+int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
+                            int frame_count, int frame_idx);
+int WorldMarkedSequenceTicks(WorldMarkedSequenceState &state, int slot, int frame_count);
+int WorldMarkedFrameForTick(WorldMarkedSequenceState &state, int slot,
+                            int frame_count, int tick, bool hold_final);
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
                                      std::vector<std::string> &frame_labels);

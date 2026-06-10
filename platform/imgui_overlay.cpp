@@ -1370,88 +1370,7 @@ static void StepWorldMarkedSequence(int delta)
         g_world_dual_frame = 0;
 }
 
-/* World marked clamp helpers now live in ui_canvas.{h,cpp}. */
-
-static void EnsureWorldMarkedFrameDelays(int slot, int frame_count)
-{
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
-    if (frame_count < 0) frame_count = 0;
-
-    std::vector<int> &delays = g_world_marked_state.frame_delays[slot];
-    if ((int)delays.size() < frame_count)
-        delays.resize((size_t)frame_count, 1);
-    else if ((int)delays.size() > frame_count)
-        delays.resize((size_t)frame_count);
-    for (int &delay : delays)
-        delay = ClampTimelineHold(delay);
-
-    std::vector<int> &local_dx = g_world_marked_state.local_dx[slot];
-    std::vector<int> &local_dy = g_world_marked_state.local_dy[slot];
-    std::vector<int> &visible_from = g_world_marked_state.visible_from[slot];
-    if ((int)local_dx.size() < frame_count)
-        local_dx.resize((size_t)frame_count, 0);
-    else if ((int)local_dx.size() > frame_count)
-        local_dx.resize((size_t)frame_count);
-    if ((int)local_dy.size() < frame_count)
-        local_dy.resize((size_t)frame_count, 0);
-    else if ((int)local_dy.size() > frame_count)
-        local_dy.resize((size_t)frame_count);
-    if ((int)visible_from.size() < frame_count)
-        visible_from.resize((size_t)frame_count, 0);
-    else if ((int)visible_from.size() > frame_count)
-        visible_from.resize((size_t)frame_count);
-    for (int &dx : local_dx)
-        dx = ClampWorldMarkedAniptDelta(dx);
-    for (int &dy : local_dy)
-        dy = ClampWorldMarkedAniptDelta(dy);
-    for (int &show_tick : visible_from)
-        show_tick = ClampWorldMarkedVisibleFrom(show_tick);
-
-    std::vector<int> &fmir = g_world_marked_state.frame_mirror[slot];
-    if ((int)fmir.size() < frame_count)
-        fmir.resize((size_t)frame_count, 0);
-    else if ((int)fmir.size() > frame_count)
-        fmir.resize((size_t)frame_count);
-}
-
-static int WorldMarkedTickForFrame(int slot, int frame_count, int frame_idx)
-{
-    EnsureWorldMarkedFrameDelays(slot, frame_count);
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 0;
-    if (frame_idx < 0) frame_idx = 0;
-    if (frame_idx >= frame_count) frame_idx = frame_count - 1;
-    int tick = 0;
-    for (int i = 0; i < frame_idx; i++)
-        tick += ClampTimelineHold(g_world_marked_state.frame_delays[slot][i]);
-    return tick;
-}
-
-static int WorldMarkedSequenceTicks(int slot, int frame_count)
-{
-    EnsureWorldMarkedFrameDelays(slot, frame_count);
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 1;
-    int ticks = 0;
-    for (int i = 0; i < frame_count; i++)
-        ticks += ClampTimelineHold(g_world_marked_state.frame_delays[slot][i]);
-    return ticks > 0 ? ticks : 1;
-}
-
-static int WorldMarkedFrameForTick(int slot, int frame_count, int tick, bool hold_final)
-{
-    EnsureWorldMarkedFrameDelays(slot, frame_count);
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 0;
-    int cycle_ticks = WorldMarkedSequenceTicks(slot, frame_count);
-    if (hold_final && tick >= cycle_ticks) return frame_count - 1;
-
-    int t = tick % cycle_ticks;
-    if (t < 0) t += cycle_ticks;
-    for (int i = 0; i < frame_count; i++) {
-        int delay = ClampTimelineHold(g_world_marked_state.frame_delays[slot][i]);
-        if (t < delay) return i;
-        t -= delay;
-    }
-    return frame_count - 1;
-}
+/* World marked clamp and tick helpers now live in ui_canvas.{h,cpp}. */
 
 static const int kWorldDummyDecapOrder[] = {
     1, 2, 3,
@@ -1530,7 +1449,7 @@ static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx
         g_world_marked_state.default_frames[slot] = defaults;
         g_world_marked_state.sequence_frames[slot] = defaults;
         WorldMarkedClearSequenceState(slot);
-        EnsureWorldMarkedFrameDelays(slot, (int)defaults.size());
+        EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)defaults.size());
     } else if (defaults_changed || stale_entry) {
         /* Same sprite, but the marked SET changed (the user marked another
            frame/sprite) or a referenced frame was deleted. Reconcile in place
@@ -1540,7 +1459,7 @@ static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx
            frames at the end. Previously any marked-set change rebuilt the whole
            sequence from defaults, discarding the user's ordering, duplicated
            entries, and per-frame edits. */
-        EnsureWorldMarkedFrameDelays(slot,
+        EnsureWorldMarkedFrameDelays(g_world_marked_state, slot,
             (int)g_world_marked_state.sequence_frames[slot].size());
 
         std::vector<int> prev_defaults = g_world_marked_state.default_frames[slot];
@@ -1588,12 +1507,12 @@ static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx
         g_world_marked_state.local_dy[slot]        = new_dy;
         g_world_marked_state.visible_from[slot]    = new_vis;
         g_world_marked_state.frame_mirror[slot]    = new_mir;
-        EnsureWorldMarkedFrameDelays(slot, (int)new_seq.size());
+        EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)new_seq.size());
     }
 
     frames = g_world_marked_state.sequence_frames[slot];
     WorldMarkedBuildSingleFrameLane(doc, frames, frame_pieces, frame_labels);
-    EnsureWorldMarkedFrameDelays(slot, (int)frames.size());
+    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)frames.size());
 }
 
 static void WorldMarkedResetSequenceToDefaults(int slot)
@@ -1601,7 +1520,7 @@ static void WorldMarkedResetSequenceToDefaults(int slot)
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     g_world_marked_state.sequence_frames[slot] = g_world_marked_state.default_frames[slot];
     WorldMarkedClearSequenceState(slot);
-    EnsureWorldMarkedFrameDelays(slot, (int)g_world_marked_state.sequence_frames[slot].size());
+    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)g_world_marked_state.sequence_frames[slot].size());
     WorldMarkedRestart();
 }
 
@@ -1610,7 +1529,7 @@ static void WorldMarkedDuplicateSequenceEntry(int slot, int frame_idx)
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     std::vector<int> &frames = g_world_marked_state.sequence_frames[slot];
     if (frame_idx < 0 || frame_idx >= (int)frames.size()) return;
-    EnsureWorldMarkedFrameDelays(slot, (int)frames.size());
+    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)frames.size());
 
     int insert_at = frame_idx + 1;
     frames.insert(frames.begin() + insert_at, frames[frame_idx]);
@@ -1624,7 +1543,7 @@ static void WorldMarkedDuplicateSequenceEntry(int slot, int frame_idx)
                                              g_world_marked_state.visible_from[slot][frame_idx]);
     g_world_marked_paused = true;
     g_world_dual_timer = 0.0f;
-    g_world_dual_frame = WorldMarkedTickForFrame(slot, (int)frames.size(), insert_at);
+    g_world_dual_frame = WorldMarkedTickForFrame(g_world_marked_state, slot, (int)frames.size(), insert_at);
 }
 
 /* Reorder: swap a sequence entry with its neighbor (dir -1 = earlier, +1 =
@@ -1636,7 +1555,7 @@ static void WorldMarkedMoveSequenceEntry(int slot, int frame_idx, int dir)
     int n = (int)frames.size();
     int j = frame_idx + dir;
     if (frame_idx < 0 || frame_idx >= n || j < 0 || j >= n) return;
-    EnsureWorldMarkedFrameDelays(slot, n);
+    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, n);
 
     std::swap(frames[frame_idx], frames[j]);
     std::swap(g_world_marked_state.frame_delays[slot][frame_idx], g_world_marked_state.frame_delays[slot][j]);
@@ -1646,7 +1565,7 @@ static void WorldMarkedMoveSequenceEntry(int slot, int frame_idx, int dir)
 
     g_world_marked_paused = true;
     g_world_dual_timer = 0.0f;
-    g_world_dual_frame = WorldMarkedTickForFrame(slot, n, j);
+    g_world_dual_frame = WorldMarkedTickForFrame(g_world_marked_state, slot, n, j);
 }
 
 static void WorldMarkedDeleteSequenceEntry(int slot, int frame_idx)
@@ -1654,7 +1573,7 @@ static void WorldMarkedDeleteSequenceEntry(int slot, int frame_idx)
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     std::vector<int> &frames = g_world_marked_state.sequence_frames[slot];
     if ((int)frames.size() <= 1 || frame_idx < 0 || frame_idx >= (int)frames.size()) return;
-    EnsureWorldMarkedFrameDelays(slot, (int)frames.size());
+    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)frames.size());
 
     frames.erase(frames.begin() + frame_idx);
     g_world_marked_state.frame_delays[slot].erase(g_world_marked_state.frame_delays[slot].begin() + frame_idx);
@@ -1665,7 +1584,7 @@ static void WorldMarkedDeleteSequenceEntry(int slot, int frame_idx)
         frame_idx = (int)frames.size() - 1;
     g_world_marked_paused = true;
     g_world_dual_timer = 0.0f;
-    g_world_dual_frame = WorldMarkedTickForFrame(slot, (int)frames.size(), frame_idx);
+    g_world_dual_frame = WorldMarkedTickForFrame(g_world_marked_state, slot, (int)frames.size(), frame_idx);
 }
 
 static std::string regex_escape(const std::string &s)
@@ -1992,7 +1911,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             g_world_dummy_decap_prefix = cand.prefix;
             WorldResetDummyDecapDelays((int)lane.frames.size());
         }
-        EnsureWorldMarkedFrameDelays(kWorldDummyDecapSlot, (int)lane.frames.size());
+        EnsureWorldMarkedFrameDelays(g_world_marked_state, kWorldDummyDecapSlot, (int)lane.frames.size());
         return lane;
     };
 
@@ -2072,7 +1991,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
            IMGs other than the one that was active when the ASM was selected. */
         if (rep_doc) lane.doc = rep_doc;
         int n = (int)lane.frames.size();
-        EnsureWorldMarkedFrameDelays(slot_id, n);
+        EnsureWorldMarkedFrameDelays(g_world_marked_state, slot_id, n);
         for (int k = 0; k < n; k++) {
             g_world_marked_state.frame_delays[slot_id][k] = 1;
             g_world_marked_state.local_dx[slot_id][k] = a.frames[k].dx;
@@ -2136,7 +2055,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         MarkedLane &lane = lanes[slot];
         int n = (int)lane.frames.size();
         if (n <= 0) continue;
-        lane.frame_pos = WorldMarkedFrameForTick(lane.delay_slot, n, g_world_dual_frame,
+        lane.frame_pos = WorldMarkedFrameForTick(g_world_marked_state, lane.delay_slot, n, g_world_dual_frame,
                                                  g_world_marked_state.hold_end[lane.delay_slot]);
         Document *fdoc = (lane.frame_pos < (int)lane.frame_docs.size() && lane.frame_docs[lane.frame_pos])
                        ? lane.frame_docs[lane.frame_pos] : lane.doc;
@@ -2186,7 +2105,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         if (slot < 0 || slot >= (int)lanes.size()) return;
         MarkedLane &lane = lanes[slot];
         int state_slot = lane.delay_slot;
-        EnsureWorldMarkedFrameDelays(state_slot, (int)lane.frames.size());
+        EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
         if (lane.frame_pos >= 0 &&
             lane.frame_pos < (int)g_world_marked_state.visible_from[state_slot].size() &&
             g_world_dual_frame < g_world_marked_state.visible_from[state_slot][lane.frame_pos])
@@ -2352,7 +2271,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         MarkedLane &lane = lanes[hover_slot];
         int state_slot = lane.delay_slot;
-        EnsureWorldMarkedFrameDelays(state_slot, (int)lane.frames.size());
+        EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
         if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size()) {
             g_world_marked_paused = true;
             g_world_marked_drag_slot = state_slot;
@@ -2429,7 +2348,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 
             out += anim_label;
             out += "\n";
-            EnsureWorldMarkedFrameDelays(lane.delay_slot, (int)lane.frames.size());
+            EnsureWorldMarkedFrameDelays(g_world_marked_state, lane.delay_slot, (int)lane.frames.size());
             std::string local_table;
             local_table += anim_label;
             local_table += "_local_anipts\n";
@@ -2610,7 +2529,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 ImGui::Checkbox("Mirror##world_lane_mirror", mirror_flag);
             }
 
-            EnsureWorldMarkedFrameDelays(lane.delay_slot, (int)lane.frames.size());
+            EnsureWorldMarkedFrameDelays(g_world_marked_state, lane.delay_slot, (int)lane.frames.size());
             int edit_fi = lane.frame_pos;
             if (edit_fi < 0) edit_fi = 0;
             if (edit_fi >= (int)lane.frames.size()) edit_fi = (int)lane.frames.size() - 1;
@@ -2621,8 +2540,8 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                     WorldMarkedBuildSingleFrameLane(lane.doc, lane.frames,
                                                     lane.frame_pieces, lane.frame_labels);
                 }
-                EnsureWorldMarkedFrameDelays(lane.delay_slot, (int)lane.frames.size());
-                lane.frame_pos = WorldMarkedFrameForTick(lane.delay_slot, (int)lane.frames.size(),
+                EnsureWorldMarkedFrameDelays(g_world_marked_state, lane.delay_slot, (int)lane.frames.size());
+                lane.frame_pos = WorldMarkedFrameForTick(g_world_marked_state, lane.delay_slot, (int)lane.frames.size(),
                                                          g_world_dual_frame,
                                                          g_world_marked_state.hold_end[lane.delay_slot]);
                 if (lane.frame_pos < 0) lane.frame_pos = 0;
@@ -2754,7 +2673,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 if (clicked) {
                     g_world_marked_paused = true;
                     g_world_dual_timer = 0.0f;
-                    g_world_dual_frame = WorldMarkedTickForFrame(lane.delay_slot,
+                    g_world_dual_frame = WorldMarkedTickForFrame(g_world_marked_state, lane.delay_slot,
                                                                  (int)lane.frames.size(), fi);
                     lane.frame_pos = fi;
                     if (lane.doc_idx != document_active_index()) {
