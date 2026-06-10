@@ -8,8 +8,8 @@ tracks slice-by-slice progress.
 
 ## Current checkpoint - June 10, 2026
 
-Branch: `refactor/overlay-split` (39 commits ahead of `SDL-main`). Working tree
-clean. `imgui_overlay.cpp` is down to 21,842 lines; `ui_canvas.cpp` is now 618
+Branch: `refactor/overlay-split` (41 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is down to 20,003 lines; `ui_canvas.cpp` is now 595
 lines. Full app builds; all 7 `ctest` suites pass.
 
 **Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
@@ -25,8 +25,9 @@ only when a function move needs them across TUs — *not* in a big up-front swee
 `ui_timeline` now owns the whole timeline (frame model, thumbnail cache,
 composite selection/playback, and all timeline rendering incl. the composite
 preview). `ui_canvas` has started with the single-sprite World View canvas, its
-onion-skin texture cache, and marked World View constants, playback/sequence
-state, string/model helpers, sequence tick/sync/edit helpers. Supporting
+onion-skin texture cache, and marked World View constants, playback/sequence/
+mirror/dummy-decap state, string/model helpers, sequence tick/sync/edit helpers,
+and dummy-decap timing reset helpers. Supporting
 modules extracted along the way:
 `world_render` (sprite→texture), `anipoint` (pure predicates + sequence-name
 parsing), `anipoint_edit` (sequence-propagating setters), `img_util`
@@ -49,7 +50,7 @@ committed (`fc4edeb`).
 | `anipoint_edit.{h,cpp}` | sequence-propagating anipoint setters + undo coalescing | — |
 | `world_render.{h,cpp}` | `doc_get_img`, `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
 | `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
-| `ui_canvas.{h,cpp}` | single-sprite World View canvas, onion texture cache, marked World View constants/playback+sequence+mirror state/string/model helpers | — |
+| `ui_canvas.{h,cpp}` | single-sprite World View canvas, onion texture cache, marked World View constants/playback+sequence+mirror+dummy-decap state/string/model helpers | — |
 | `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |
 
 ### For the next agent — how to continue
@@ -153,10 +154,11 @@ foundation as you go:
       (sequence-propagating setters), `img_util` (name + word clamp).
 - [ ] `ui_canvas` — canvas render, pan/zoom, World View. **Started:** the
       single-sprite World View canvas, onion-skin texture cache, marked World
-      View constants, playback/sequence state, string/model helpers, and
-      sequence tick/sync/edit helpers now live in `ui_canvas`; marked-tab
-      drawing, dummy-decap detection, mirror flags, ASM export popup state, and
-      the regular edit canvas remain in `imgui_overlay.cpp`.
+      View constants, playback/sequence/mirror/dummy-decap state,
+      string/model helpers, sequence tick/sync/edit helpers, and dummy-decap
+      timing reset helpers now live in `ui_canvas`; marked-tab drawing,
+      dummy-decap detection, ASM export popup state, and the regular edit
+      canvas remain in `imgui_overlay.cpp`.
 - [ ] `ui_palette` — palette editor, HSL sliders, histogram, color picking.
 - [ ] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso,
       free transform, clone, smart remap).

@@ -36,6 +36,18 @@ bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot)
     return nullptr;
 }
 
+static const int kWorldDummyDecapOrder[] = {
+    1, 2, 3,
+    4, 3, 4, 3, 4, 3,
+    4, 5, 6, 7
+};
+
+static const int kWorldDummyDecapDefaultDelays[] = {
+    48, 6, 6,
+    10, 10, 10, 10, 10, 10,
+    6, 6, 6, 6
+};
+
 static bool WorldReadDecapFrameNo(const std::string &upper, size_t pos,
                                   int *frame_no, size_t *end_pos)
 {
@@ -113,6 +125,34 @@ bool WorldDecapPrefixFromName(const std::string &name, std::string *prefix)
     int kind = 0;
     if (WorldDecapBodyPieceInfo(name, &frame_no, prefix, &kind)) return true;
     return false;
+}
+
+int WorldDummyDecapFrameCount(void)
+{
+    return (int)(sizeof(kWorldDummyDecapOrder) / sizeof(kWorldDummyDecapOrder[0]));
+}
+
+int WorldDummyDecapFrameNo(int index)
+{
+    int n = WorldDummyDecapFrameCount();
+    if (index < 0 || index >= n) return 1;
+    return kWorldDummyDecapOrder[index];
+}
+
+void WorldResetDummyDecapDelays(WorldMarkedSequenceState &state, int frame_count)
+{
+    if (frame_count < 0) frame_count = 0;
+    std::vector<int> &delays = state.frame_delays[kWorldDummyDecapSlot];
+    delays.assign((size_t)frame_count, 1);
+    state.local_dx[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    state.local_dy[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    state.visible_from[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    int n = (int)(sizeof(kWorldDummyDecapDefaultDelays) /
+                  sizeof(kWorldDummyDecapDefaultDelays[0]));
+    if (frame_count < n) n = frame_count;
+    for (int i = 0; i < n; i++)
+        delays[i] = ClampTimelineHold(kWorldDummyDecapDefaultDelays[i]);
+    state.dummy_decap_reset = false;
 }
 
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)

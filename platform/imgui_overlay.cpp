@@ -1272,11 +1272,6 @@ static ImVec2 g_world_marked_drag_mouse = ImVec2(0, 0);
 static int   g_world_marked_drag_dx = 0;
 static int   g_world_marked_drag_dy = 0;
 static bool  g_world_marked_drag_mirror = false;
-static bool  g_world_dummy_decap_body = false;
-static bool  g_world_dummy_decap_reset = true;
-static bool  g_world_dummy_decap_manual = false;
-static int   g_world_dummy_decap_doc_idx = -1;
-static std::string g_world_dummy_decap_prefix;
 static bool  g_world_marked_show_asm = false;
 static std::string g_world_marked_generated_asm;
 /* g_world_temp_textures + ClearWorldTempTextures + BuildWorldSpriteTexture +
@@ -1343,34 +1338,8 @@ static void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc);
 
 /* World marked clamp and tick helpers now live in ui_canvas.{h,cpp}. */
 
-static const int kWorldDummyDecapOrder[] = {
-    1, 2, 3,
-    4, 3, 4, 3, 4, 3,
-    4, 5, 6, 7
-};
-
-static const int kWorldDummyDecapDefaultDelays[] = {
-    48, 6, 6,
-    10, 10, 10, 10, 10, 10,
-    6, 6, 6, 6
-};
-
 /* World decap-name parsing now lives in ui_canvas.{h,cpp}. */
-
-static void WorldResetDummyDecapDelays(int frame_count)
-{
-    if (frame_count < 0) frame_count = 0;
-    std::vector<int> &delays = g_world_marked_state.frame_delays[kWorldDummyDecapSlot];
-    delays.assign((size_t)frame_count, 1);
-    g_world_marked_state.local_dx[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
-    g_world_marked_state.local_dy[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
-    g_world_marked_state.visible_from[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
-    int n = (int)(sizeof(kWorldDummyDecapDefaultDelays) / sizeof(kWorldDummyDecapDefaultDelays[0]));
-    if (frame_count < n) n = frame_count;
-    for (int i = 0; i < n; i++)
-        delays[i] = ClampTimelineHold(kWorldDummyDecapDefaultDelays[i]);
-    g_world_dummy_decap_reset = false;
-}
+/* World dummy-decap order/reset helpers now live in ui_canvas.{h,cpp}. */
 
 /* World marked ASM string helpers now live in ui_canvas.{h,cpp}. */
 
@@ -1630,9 +1599,9 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         int best = -1;
         for (int i = 0; i < (int)candidates.size(); i++) {
             if (!candidate_complete(candidates[i])) continue;
-            if (g_world_dummy_decap_manual) {
-                if (candidates[i].doc_idx != g_world_dummy_decap_doc_idx ||
-                    candidates[i].prefix != g_world_dummy_decap_prefix)
+            if (g_world_marked_state.dummy_decap_manual) {
+                if (candidates[i].doc_idx != g_world_marked_state.dummy_decap_doc_idx ||
+                    candidates[i].prefix != g_world_marked_state.dummy_decap_prefix)
                     continue;
                 best = i;
                 break;
@@ -1669,12 +1638,12 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         snprintf(label_buf, sizeof(label_buf), "Dummy Decap Body [%s]", cand.prefix.c_str());
         lane.label = label_buf;
 
-        int n = (int)(sizeof(kWorldDummyDecapOrder) / sizeof(kWorldDummyDecapOrder[0]));
+        int n = WorldDummyDecapFrameCount();
         lane.frames.reserve((size_t)n);
         lane.frame_pieces.reserve((size_t)n);
         lane.frame_labels.reserve((size_t)n);
         for (int i = 0; i < n; i++) {
-            int frame_no = kWorldDummyDecapOrder[i];
+            int frame_no = WorldDummyDecapFrameNo(i);
             char frame_label[96];
             snprintf(frame_label, sizeof(frame_label), "%sDECAP%d",
                      cand.prefix.c_str(), frame_no);
@@ -1701,13 +1670,13 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             lane.frame_pieces.push_back(pieces);
         }
 
-        if (g_world_dummy_decap_reset ||
-            g_world_dummy_decap_doc_idx != cand.doc_idx ||
-            g_world_dummy_decap_prefix != cand.prefix ||
+        if (g_world_marked_state.dummy_decap_reset ||
+            g_world_marked_state.dummy_decap_doc_idx != cand.doc_idx ||
+            g_world_marked_state.dummy_decap_prefix != cand.prefix ||
             (int)g_world_marked_state.frame_delays[kWorldDummyDecapSlot].size() != (int)lane.frames.size()) {
-            g_world_dummy_decap_doc_idx = cand.doc_idx;
-            g_world_dummy_decap_prefix = cand.prefix;
-            WorldResetDummyDecapDelays((int)lane.frames.size());
+            g_world_marked_state.dummy_decap_doc_idx = cand.doc_idx;
+            g_world_marked_state.dummy_decap_prefix = cand.prefix;
+            WorldResetDummyDecapDelays(g_world_marked_state, (int)lane.frames.size());
         }
         EnsureWorldMarkedFrameDelays(g_world_marked_state, kWorldDummyDecapSlot, (int)lane.frames.size());
         return lane;
@@ -1741,7 +1710,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     }
 
     bool dummy_decap_missing = false;
-    if (g_world_dummy_decap_body) {
+    if (g_world_marked_state.dummy_decap_body) {
         MarkedLane dummy = find_dummy_decap();
         if (dummy.doc && !dummy.frames.empty())
             lanes.push_back(dummy);
@@ -1814,11 +1783,11 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             g_restore_msg_timer = 4.0f;
             return;
         }
-        g_world_dummy_decap_body = true;
-        g_world_dummy_decap_manual = true;
-        g_world_dummy_decap_doc_idx = document_active_index();
-        g_world_dummy_decap_prefix = prefix;
-        g_world_dummy_decap_reset = true;
+        g_world_marked_state.dummy_decap_body = true;
+        g_world_marked_state.dummy_decap_manual = true;
+        g_world_marked_state.dummy_decap_doc_idx = document_active_index();
+        g_world_marked_state.dummy_decap_prefix = prefix;
+        g_world_marked_state.dummy_decap_reset = true;
         g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
         /* Default the dummy to FACE the player: sprites are authored facing one
            way, so the victim/opponent mirrors relative to the attacker (lane 0).
@@ -1831,7 +1800,8 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         WorldMarkedRestart(g_world_marked_state);
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Assigned dummy body to [%d] %sDECAP.",
-                 g_world_dummy_decap_doc_idx, g_world_dummy_decap_prefix.c_str());
+                 g_world_marked_state.dummy_decap_doc_idx,
+                 g_world_marked_state.dummy_decap_prefix.c_str());
         g_restore_msg_timer = 4.0f;
     };
 
@@ -2270,8 +2240,9 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
                               "The sprite IMGs it references are opened automatically.");
         ImGui::SameLine();
-        if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body", &g_world_dummy_decap_body)) {
-            g_world_dummy_decap_reset = true;
+        if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body",
+                            &g_world_marked_state.dummy_decap_body)) {
+            g_world_marked_state.dummy_decap_reset = true;
             g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
             WorldMarkedRestart(g_world_marked_state);
         }
@@ -2283,21 +2254,21 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Assign the dummy body from the selected *DECAP frame, *DECAPLEG piece, or *DECAPTORSO piece.");
-        if (g_world_dummy_decap_manual) {
+        if (g_world_marked_state.dummy_decap_manual) {
             ImGui::SameLine();
             ImGui::TextDisabled("[%d] %sDECAP",
-                                g_world_dummy_decap_doc_idx,
-                                g_world_dummy_decap_prefix.c_str());
+                                g_world_marked_state.dummy_decap_doc_idx,
+                                g_world_marked_state.dummy_decap_prefix.c_str());
             ImGui::SameLine();
             if (ImGui::SmallButton("Auto##world_dummy_auto")) {
-                g_world_dummy_decap_manual = false;
-                g_world_dummy_decap_reset = true;
+                g_world_marked_state.dummy_decap_manual = false;
+                g_world_marked_state.dummy_decap_reset = true;
                 WorldMarkedRestart(g_world_marked_state);
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Return to automatic dummy body selection.");
         }
-        if (g_world_dummy_decap_body && dummy_decap_missing) {
+        if (g_world_marked_state.dummy_decap_body && dummy_decap_missing) {
             ImGui::SameLine();
             ImGui::TextDisabled("No assigned *DECAP body found");
         }
@@ -2315,7 +2286,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             if (lane.dummy_decap) {
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Reset Body##world_dummy_decap_reset")) {
-                    WorldResetDummyDecapDelays((int)lane.frames.size());
+                    WorldResetDummyDecapDelays(g_world_marked_state, (int)lane.frames.size());
                     WorldMarkedRestart(g_world_marked_state);
                 }
                 if (ImGui::IsItemHovered())
@@ -15395,11 +15366,11 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
     for (int i = 0; i < kWorldMarkedMaxTabs; i++)
         g_world_marked_state.hold_end[i] = false;
     g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
-    g_world_dummy_decap_body = false;
-    g_world_dummy_decap_reset = true;
-    g_world_dummy_decap_manual = false;
-    g_world_dummy_decap_doc_idx = -1;
-    g_world_dummy_decap_prefix.clear();
+    g_world_marked_state.dummy_decap_body = false;
+    g_world_marked_state.dummy_decap_reset = true;
+    g_world_marked_state.dummy_decap_manual = false;
+    g_world_marked_state.dummy_decap_doc_idx = -1;
+    g_world_marked_state.dummy_decap_prefix.clear();
     g_world_marked_state.paused = false;
     WorldMarkedRestart(g_world_marked_state);
     g_zoom_reset = true;
@@ -17946,8 +17917,9 @@ void imgui_overlay_render(void)
                 ImGui::MenuItem("Marked Playback Paused", NULL, &g_world_marked_state.paused);
                 ImGui::SetNextItemWidth(80);
                 ImGui::SliderFloat("Marked FPS", &g_world_marked_state.fps, 1.0f, 60.0f, "%.1f");
-                if (ImGui::MenuItem("Dummy Decap Body", NULL, &g_world_dummy_decap_body)) {
-                    g_world_dummy_decap_reset = true;
+                if (ImGui::MenuItem("Dummy Decap Body", NULL,
+                                    &g_world_marked_state.dummy_decap_body)) {
+                    g_world_marked_state.dummy_decap_reset = true;
                     g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
                     WorldMarkedRestart(g_world_marked_state);
                 }

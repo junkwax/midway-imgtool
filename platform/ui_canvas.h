@@ -32,6 +32,11 @@ struct WorldMarkedSequenceState {
     bool mirror_active = false;
     bool mirror_other = false;
     bool mirror_extra[5] = {false, false, false, false, false};
+    bool dummy_decap_body = false;
+    bool dummy_decap_reset = true;
+    bool dummy_decap_manual = false;
+    int dummy_decap_doc_idx = -1;
+    std::string dummy_decap_prefix;
     bool hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
     std::vector<int> frame_delays[kWorldMarkedMaxTabs];
     std::vector<int> local_dx[kWorldMarkedMaxTabs];
@@ -52,6 +57,9 @@ bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *
 bool WorldDecapBodyPieceInfo(const std::string &name, int *frame_no,
                              std::string *prefix, int *kind);
 bool WorldDecapPrefixFromName(const std::string &name, std::string *prefix);
+int WorldDummyDecapFrameCount(void);
+int WorldDummyDecapFrameNo(int index);
+void WorldResetDummyDecapDelays(WorldMarkedSequenceState &state, int frame_count);
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);
