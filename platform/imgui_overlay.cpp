@@ -1532,40 +1532,12 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     if (!WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, io.DeltaTime))
         return false;
 
-    WorldCanvasLayout layout =
-        ComputeWorldCanvasLayout(avail, img_pos, g_world_state.w, g_world_state.h,
-                                 g_world_state.origin_x, g_world_state.origin_y);
-    float ww = layout.width;
-    float wh = layout.height;
-    ImVec2 wpos = layout.pos;
-    float ox = layout.origin_x;
-    float oy = layout.origin_y;
-
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),
-                      IM_COL32(0, 0, 0, 255));
-    dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy),
-                IM_COL32(120, 120, 120, 255));
-    dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
-                IM_COL32(120, 120, 120, 255));
-
-    WorldMarkedLaneRenderInfo render_info;
-    WorldDrawMarkedLaneSprites(dl, g_world_marked_state, lanes, layout, render_info);
-
-    dl->AddCircle(ImVec2(ox, oy), 4.0f,
-                  IM_COL32(255, 200, 0, 255), 0, 1.5f);
-
-    WorldDrawMarkedLaneTags(dl, lanes, render_info, wpos);
-
-    WorldDrawMarkedLaneStatus(dl, g_world_marked_state, lanes, wpos, ww);
-
-    WorldMarkedPanelLayout panel_layout =
-        ComputeWorldMarkedPanelLayout(avail, img_pos, (int)lanes.size());
-    float panel_w = panel_layout.width;
-    float panel_h = panel_layout.height;
-    ImVec2 panel_pos = panel_layout.pos;
-    WorldHandleMarkedLaneDrag(dl, g_world_marked_state, lanes, render_info,
-                              layout, panel_layout);
+    WorldMarkedSceneResult scene =
+        WorldDrawMarkedScene(g_world_marked_state, g_world_state, lanes,
+                             avail, img_pos);
+    float panel_w = scene.panel_layout.width;
+    float panel_h = scene.panel_layout.height;
+    ImVec2 panel_pos = scene.panel_layout.pos;
 
     ImGui::SetCursorScreenPos(img_pos);
     ImGui::Dummy(ImVec2(avail.x, avail.y));

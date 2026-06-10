@@ -719,6 +719,49 @@ void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
     dl->PopClipRect();
 }
 
+WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
+                                            const WorldViewState &world,
+                                            const std::vector<WorldMarkedLane> &lanes,
+                                            ImVec2 avail,
+                                            ImVec2 img_pos)
+{
+    WorldMarkedSceneResult result = {};
+    result.layout =
+        ComputeWorldCanvasLayout(avail, img_pos, world.w, world.h,
+                                 world.origin_x, world.origin_y);
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 world_pos = result.layout.pos;
+    float world_width = result.layout.width;
+    float world_height = result.layout.height;
+    float origin_x = result.layout.origin_x;
+    float origin_y = result.layout.origin_y;
+
+    dl->AddRectFilled(world_pos,
+                      ImVec2(world_pos.x + world_width,
+                             world_pos.y + world_height),
+                      IM_COL32(0, 0, 0, 255));
+    dl->AddLine(ImVec2(origin_x - 8, origin_y),
+                ImVec2(origin_x + 8, origin_y),
+                IM_COL32(120, 120, 120, 255));
+    dl->AddLine(ImVec2(origin_x, origin_y - 8),
+                ImVec2(origin_x, origin_y + 8),
+                IM_COL32(120, 120, 120, 255));
+
+    WorldDrawMarkedLaneSprites(dl, state, lanes, result.layout,
+                               result.render_info);
+    dl->AddCircle(ImVec2(origin_x, origin_y), 4.0f,
+                  IM_COL32(255, 200, 0, 255), 0, 1.5f);
+    WorldDrawMarkedLaneTags(dl, lanes, result.render_info, world_pos);
+    WorldDrawMarkedLaneStatus(dl, state, lanes, world_pos, world_width);
+
+    result.panel_layout =
+        ComputeWorldMarkedPanelLayout(avail, img_pos, (int)lanes.size());
+    WorldHandleMarkedLaneDrag(dl, state, lanes, result.render_info,
+                              result.layout, result.panel_layout);
+    return result;
+}
+
 WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &state,
                                                   const std::vector<WorldMarkedLane> &lanes,
                                                   bool dummy_decap_missing,

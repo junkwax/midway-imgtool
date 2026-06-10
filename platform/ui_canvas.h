@@ -129,6 +129,12 @@ struct WorldMarkedLaneRenderInfo {
     ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
 };
 
+struct WorldMarkedSceneResult {
+    WorldCanvasLayout layout;
+    WorldMarkedPanelLayout panel_layout;
+    WorldMarkedLaneRenderInfo render_info;
+};
+
 WorldViewState &WorldView(void);
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
@@ -168,6 +174,11 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes,
                                 const WorldCanvasLayout &layout,
                                 WorldMarkedLaneRenderInfo &render_info);
+WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
+                                            const WorldViewState &world,
+                                            const std::vector<WorldMarkedLane> &lanes,
+                                            ImVec2 avail,
+                                            ImVec2 img_pos);
 void WorldDrawMarkedLaneTags(ImDrawList *dl,
                              const std::vector<WorldMarkedLane> &lanes,
                              const WorldMarkedLaneRenderInfo &render_info,
