@@ -8,9 +8,10 @@ tracks slice-by-slice progress.
 
 ## Current checkpoint - June 10, 2026
 
-Branch: `refactor/overlay-split` (97 commits ahead of `SDL-main`). Working tree
-clean. `imgui_overlay.cpp` is at 20,168 lines; `ui_canvas.cpp` is now 3,246
-lines. Full app builds; all 7 `ctest` suites pass.
+Branch: `refactor/overlay-split` (102 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is at 16,782 lines; `ui_canvas.cpp` is 3,246
+lines; `ui_palette.cpp` is 3,004 lines; `ui_tools.cpp` is 190 lines.
+Full app builds; all 8 `ctest` suites pass.
 
 **Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
 `sprite_resize_ops`, `color_ops` (HSL core), `image_ops` (edge/stroke).
@@ -21,22 +22,13 @@ lines. Full app builds; all 7 `ctest` suites pass.
 only when a function move needs them across TUs — *not* in a big up-front sweep
 (the ~1000-line "Editor state" block is intentionally left in place).
 
-**Phase C (UI subsystems): first subsystem complete, second started** —
-`ui_timeline` now owns the whole timeline (frame model, thumbnail cache,
+**Phase C (UI subsystems): timeline, canvas, palette, and tools extracted** —
+`ui_timeline` owns the whole timeline (frame model, thumbnail cache,
 composite selection/playback, and all timeline rendering incl. the composite
-preview). `ui_canvas` has started with zoom/pan helpers, canvas rotate-button layout/draw helpers, canvas chrome drawing (checkerboard, pixel grid, zoom badge, pixel hover highlight, pencil cursor drawing, clone-stamp visual aids, lasso path and selection overlay drawing, paste border/snap-guide/hint chrome, paste controls layout, transform handle overlay), paste/free-transform geometry helpers including drag-delta conversion, proportional resize/rotate math, opaque content bounds, paste snap/center-guide math, paste clamp geometry, paste hint-state selection, paste hover/sprite hit-testing, paste drag resolution, transform drag resolution, paste preview-cell geometry, and paste overlay geometry setup, anipoint hit-testing/overlay drawing, IMG hitbox and MK2 strike-box overlay drawing, shared corner-resize geometry, DMA compression and color-isolation overlay drawing, the single-sprite
-World View canvas, World View config state, onion-skin texture cache, and marked World View
-constants, playback/sequence/mirror/dummy-decap/drag/ASM-popup state,
-string/model helpers, sequence tick/sync/edit helpers, and dummy-decap timing
-reset helpers, plus the marked-lane model, marked-frame collection, and
-source/dummy-decap lane collection/builders, lane playback resolver, and shared World View
-layout helper used by single and marked World View rendering. It also owns
-marked World View orchestration/scene drawing, marked-lane panel wrapper/layout/header controls, per-lane edit controls, thumbnail strip, drag handling, sprite/tag/status drawing, and
-render-rect bookkeeping, the marked World View ASM text generator/preview popup,
-selected dummy-decap body assignment, and ASM-driven marked-lane construction.
-It also owns marked-lane sequence refresh after order/duplicate/delete/reset edits.
-Supporting
-modules extracted along the way:
+preview). `ui_canvas` owns zoom/pan, canvas rendering helpers, and layout helpers (single and marked World View).
+`ui_palette` owns the palette editor, HSL sliders, histogram, and color picking.
+`ui_tools` owns the Left Toolbar and tool properties/state.
+Supporting modules extracted along the way:
 `world_render` (sprite→texture), `anipoint` (pure predicates + sequence-name
 parsing), `anipoint_edit` (sequence-propagating setters), `img_util`
 (`img_name_string`, `signed_to_img_word`).
@@ -59,6 +51,8 @@ committed (`fc4edeb`).
 | `world_render.{h,cpp}` | `doc_get_img`, `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
 | `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
 | `ui_canvas.{h,cpp}` | zoom/pan helpers, canvas rotate-button geometry/drawing, canvas chrome drawing (checkerboard, pixel grid, zoom badge, pixel hover highlight, pencil cursor drawing, clone-stamp visual aids, lasso path and selection overlay drawing, paste border/snap-guide/hint chrome, paste controls layout, transform handle overlay), paste/free-transform geometry helpers incl. drag-delta conversion, proportional resize/rotate math, opaque content bounds, paste snap/center-guide math, paste clamp geometry, paste hint-state selection, paste hover/sprite hit-testing, paste drag resolution, transform drag resolution, paste preview-cell geometry, and paste overlay geometry setup, anipoint hit-testing/overlay drawing, IMG hitbox and MK2 strike-box overlay drawing, shared corner-resize geometry, DMA compression and color-isolation overlay drawing, single-sprite World View canvas, World View config/layout state, onion texture cache, marked World View orchestration/scene drawing, marked World View lane model/constants/playback+sequence+mirror+dummy-decap+drag+ASM-popup state/string/model helpers, marked-frame collection, source/dummy-decap lane collection/builders, ASM lane builder, lane playback resolver/sequence refresh, selected dummy-decap assignment, panel wrapper/layout/header controls, per-lane edit controls, thumbnail strip, drag, sprite/tag/status drawing, render rects + ASM generation/preview | — |
+| `ui_palette.{h,cpp}` | palette editor window, HSL sliders, histogram, color picking, palette utilities | — |
+| `ui_tools.{h,cpp}` | left toolbar drawing, tool-selection buttons, tool configurations/state | — |
 | `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |
 
 ### For the next agent — how to continue
@@ -77,7 +71,7 @@ committed (`fc4edeb`).
    helpers, extract *those* first as their own slices rather than dragging them
    along (this is how the timeline composite preview was eventually unblocked).
 5. **Next subsystems** (each multi-slice): keep shaving regular edit-canvas
-   helpers into `ui_canvas`; then `ui_palette` (palette editor) and `ui_tools`.
+   helpers into `ui_canvas`; then `ui_modals` (export/import dialogs and confirmation prompts) and `ui_main` (frame layout, menu bar, etc.).
 
 Environment notes (noisy but nonblocking): git commands may warn about
 `C:\Users\xbx\.config\git\ignore` permission; `build.ps1` may print
@@ -161,7 +155,7 @@ foundation as you go:
       (predicates + sequence-name parsing + secondary mutators), `anipoint_edit`
       (sequence-propagating setters), `img_util` (name + word clamp).
 - [ ] `ui_canvas` — canvas render, pan/zoom, World View. **Started:** the
-      zoom/pan helpers, canvas rotate-button layout/draw helpers, canvas chrome
+      zoom/pan helpers, canvas rotate-button geometry/drawing, canvas chrome
       drawing (checkerboard, pixel grid, zoom badge, pixel hover highlight,
       pencil cursor drawing, clone-stamp visual aids, lasso path and selection
       overlay drawing, paste border/snap-guide/hint chrome, paste controls
@@ -179,15 +173,13 @@ foundation as you go:
       playback/sequence/mirror/dummy-decap/drag/ASM-popup state, string/model
       helpers, sequence tick/sync/edit helpers, and dummy-decap timing reset
       helpers, plus the marked-lane model, marked-frame collection, and
-      source/dummy-decap lane collection/builders, ASM lane builder, lane playback resolver/sequence
-      refresh, selected dummy-decap assignment, per-lane edit controls, thumbnail
+      source/dummy-decap lane collection/builders, ASM lane builder, lane playback resolver/sequence refresh, selected dummy-decap assignment, per-lane edit controls, thumbnail
       strip, marked World View orchestration/scene drawing, and sprite panel wrapper/layout/header controls/drag handling, tag/status
       drawing, render rect bookkeeping, and ASM export text generation/preview
       now live in `ui_canvas`; most regular edit-canvas interaction/rendering
       remains in `imgui_overlay.cpp`.
-- [ ] `ui_palette` — palette editor, HSL sliders, histogram, color picking.
-- [ ] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso,
-      free transform, clone, smart remap).
+- [x] `ui_palette` — palette editor, HSL sliders, histogram, color picking. **Complete.**
+- [x] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso, free transform, clone, smart remap). **Complete.**
 - [ ] `ui_modals` — export/import dialogs and confirmation prompts.
 - [ ] `ui_main` — frame layout, dockspace, menu bar (whatever remains).
 
