@@ -19556,25 +19556,11 @@ void imgui_overlay_render(void)
                                drag; recompute only on image change. */
                             if (!g_snap_bbox.valid || g_snap_bbox.img_idx != g_doc->ilselected) {
                                 IMG *cimg = get_img(g_doc->ilselected);
-                                if (cimg && cimg->data_p) {
-                                    int min_x = cimg->w, min_y = cimg->h, max_x = 0, max_y = 0;
-                                    unsigned short cw = (cimg->w + 3) & ~3;
-                                    bool found = false;
-                                    unsigned char *dp = (unsigned char *)cimg->data_p;
-                                    for (int y = 0; y < cimg->h; y++) {
-                                        for (int x = 0; x < cimg->w; x++) {
-                                            if (dp[y * cw + x] != 0) {
-                                                if (x < min_x) min_x = x;
-                                                if (x > max_x) max_x = x;
-                                                if (y < min_y) min_y = y;
-                                                if (y > max_y) max_y = y;
-                                                found = true;
-                                            }
-                                        }
-                                    }
-                                    if (found) {
-                                        g_snap_bbox = {true, min_x, min_y, max_x, max_y, g_doc->ilselected};
-                                    }
+                                CanvasContentBounds bounds = CanvasFindOpaqueBounds(cimg);
+                                if (bounds.valid) {
+                                    g_snap_bbox = {true, bounds.min_x, bounds.min_y,
+                                                   bounds.max_x, bounds.max_y,
+                                                   g_doc->ilselected};
                                 }
                             }
                             if (g_snap_bbox.valid) {

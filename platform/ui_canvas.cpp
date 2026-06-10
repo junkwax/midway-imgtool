@@ -484,6 +484,39 @@ float CanvasRotateTransformAngle(float start_angle_deg,
     return new_angle;
 }
 
+CanvasContentBounds CanvasFindOpaqueBounds(const IMG *img)
+{
+    CanvasContentBounds bounds;
+    if (!img || !img->data_p)
+        return bounds;
+
+    int min_x = img->w;
+    int min_y = img->h;
+    int max_x = 0;
+    int max_y = 0;
+    unsigned short stride = (img->w + 3) & ~3;
+    const unsigned char *dp = (const unsigned char *)img->data_p;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            if (dp[y * stride + x] != 0) {
+                if (x < min_x) min_x = x;
+                if (x > max_x) max_x = x;
+                if (y < min_y) min_y = y;
+                if (y > max_y) max_y = y;
+                bounds.valid = true;
+            }
+        }
+    }
+
+    if (bounds.valid) {
+        bounds.min_x = min_x;
+        bounds.min_y = min_y;
+        bounds.max_x = max_x;
+        bounds.max_y = max_y;
+    }
+    return bounds;
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])

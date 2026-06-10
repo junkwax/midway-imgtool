@@ -76,6 +76,14 @@ struct CanvasTransformHandleOverlay {
     ImVec2 chain_max = ImVec2(0, 0);
 };
 
+struct CanvasContentBounds {
+    bool valid = false;
+    int min_x = 0;
+    int min_y = 0;
+    int max_x = 0;
+    int max_y = 0;
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -131,6 +139,7 @@ float CanvasRotateTransformAngle(float start_angle_deg,
                                  ImVec2 mouse,
                                  ImVec2 center,
                                  bool snap_15_deg);
+CanvasContentBounds CanvasFindOpaqueBounds(const IMG *img);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);
