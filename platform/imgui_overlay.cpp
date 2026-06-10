@@ -18669,14 +18669,9 @@ void imgui_overlay_render(void)
                        need to also detect "about to start dragging" via a fresh hover test. */
                     bool over_anipoint = false;
                     if (g_show_points && cimg) {
-                        ImVec2 a1(img_pos.x + (short)cimg->anix * sx, img_pos.y + (short)cimg->aniy * sy);
-                        ImVec2 da1 = mouse - a1;
-                        if (da1.x*da1.x + da1.y*da1.y < 10*10) over_anipoint = true;
-                        if (!over_anipoint && secondary_anipoint_in_use(cimg)) {
-                            ImVec2 a2(img_pos.x + (short)cimg->anix2 * sx, img_pos.y + (short)cimg->aniy2 * sy);
-                            ImVec2 da2 = mouse - a2;
-                            if (da2.x*da2.x + da2.y*da2.y < 10*10) over_anipoint = true;
-                        }
+                        over_anipoint =
+                            CanvasAnipointHitTest(cimg, img_pos, sx, sy,
+                                                  mouse, NULL, NULL);
                     }
                     if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 &&
                         g_hitbox_drag_corner < 0 && g_active_tool == ActiveTool::None &&
@@ -18892,8 +18887,9 @@ void imgui_overlay_render(void)
                 }
 
                 ImVec2 s1(img_pos.x + (short)img->anix * sx, img_pos.y + (short)img->aniy * sy);
-                ImVec2 d1 = mouse - s1;
-                bool h1 = (d1.x*d1.x + d1.y*d1.y) < 10*10;
+                bool h1 = false;
+                bool h2 = false;
+                CanvasAnipointHitTest(img, img_pos, sx, sy, mouse, &h1, &h2);
                 /* Primary anipoint: white crosshair, brightens on hover. */
                 ImU32 col1 = h1 ? IM_COL32(255, 220, 60, 255) : IM_COL32(255, 255, 255, 255);
                 DrawCanvasAnipointCrosshair(dl, s1, col1, 14.f, h1 ? 2.f : 1.5f);
@@ -18910,8 +18906,6 @@ void imgui_overlay_render(void)
                    (-1, -1) doesn't read as 0xFFFF and emit a phantom line. */
                 if (secondary_anipoint_in_use(img)) {
                     ImVec2 s2(img_pos.x + (short)img->anix2 * sx, img_pos.y + (short)img->aniy2 * sy);
-                    ImVec2 d2 = mouse - s2;
-                    bool h2 = (d2.x*d2.x + d2.y*d2.y) < 10*10;
                     /* Secondary anipoint: cyan crosshair (distinct from primary). */
                     ImU32 col2 = h2 ? IM_COL32(120, 255, 255, 255) : IM_COL32(60, 200, 220, 255);
                     DrawCanvasAnipointCrosshair(dl, s2, col2, 10.f, h2 ? 2.f : 1.5f);

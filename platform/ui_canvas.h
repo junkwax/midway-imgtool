@@ -83,6 +83,9 @@ void DrawCanvasPixelHoverHighlight(ImDrawList *dl, ImVec2 mouse,
                                    bool suppress);
 void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
                                  float len, float thick);
+bool CanvasAnipointHitTest(const IMG *img, ImVec2 img_pos,
+                           float sx, float sy, ImVec2 mouse,
+                           bool *primary_hover, bool *secondary_hover);
 void DrawCanvasHitboxOverlay(ImDrawList *dl, ImVec2 img_pos,
                              float sx, float sy,
                              int x, int y, int w, int h,

@@ -4,6 +4,7 @@
  *************************************************************/
 #include "ui_canvas.h"
 
+#include "anipoint.h"       /* secondary_anipoint_in_use */
 #include "anipoint_edit.h"  /* set_primary_anipoint_with_sequence */
 #include "img_format.h"     /* get_img */
 #include "img_util.h"       /* img_name_string */
@@ -376,6 +377,32 @@ void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
     dl->AddLine(ImVec2(p.x - len, p.y), ImVec2(p.x + len, p.y), col, thick);
     dl->AddLine(ImVec2(p.x, p.y - len), ImVec2(p.x, p.y + len), col, thick);
     dl->AddCircleFilled(p, 1.5f, col);
+}
+
+bool CanvasAnipointHitTest(const IMG *img, ImVec2 img_pos,
+                           float sx, float sy, ImVec2 mouse,
+                           bool *primary_hover, bool *secondary_hover)
+{
+    bool h1 = false;
+    bool h2 = false;
+    if (img) {
+        ImVec2 a1(img_pos.x + (short)img->anix * sx,
+                  img_pos.y + (short)img->aniy * sy);
+        float dx1 = mouse.x - a1.x;
+        float dy1 = mouse.y - a1.y;
+        h1 = (dx1 * dx1 + dy1 * dy1) < 10.0f * 10.0f;
+
+        if (secondary_anipoint_in_use(img)) {
+            ImVec2 a2(img_pos.x + (short)img->anix2 * sx,
+                      img_pos.y + (short)img->aniy2 * sy);
+            float dx2 = mouse.x - a2.x;
+            float dy2 = mouse.y - a2.y;
+            h2 = (dx2 * dx2 + dy2 * dy2) < 10.0f * 10.0f;
+        }
+    }
+    if (primary_hover) *primary_hover = h1;
+    if (secondary_hover) *secondary_hover = h2;
+    return h1 || h2;
 }
 
 void DrawCanvasHitboxOverlay(ImDrawList *dl, ImVec2 img_pos,
