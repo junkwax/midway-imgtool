@@ -8,9 +8,9 @@ tracks slice-by-slice progress.
 
 ## Current checkpoint - June 10, 2026
 
-Branch: `refactor/overlay-split` (102 commits ahead of `SDL-main`). Working tree
-clean. `imgui_overlay.cpp` is at 16,782 lines; `ui_canvas.cpp` is 3,246
-lines; `ui_palette.cpp` is 3,004 lines; `ui_tools.cpp` is 190 lines.
+Branch: `refactor/overlay-split` (100 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is at 15,262 lines; `ui_modals.cpp` is 1,564 lines;
+`ui_canvas.cpp` is 3,246 lines; `ui_palette.cpp` is 3,004 lines; `ui_tools.cpp` is 190 lines.
 Full app builds; all 8 `ctest` suites pass.
 
 **Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
@@ -180,7 +180,7 @@ foundation as you go:
       remains in `imgui_overlay.cpp`.
 - [x] `ui_palette` — palette editor, HSL sliders, histogram, color picking. **Complete.**
 - [x] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso, free transform, clone, smart remap). **Complete.**
-- [ ] `ui_modals` — export/import dialogs and confirmation prompts.
+- [x] `ui_modals` — export/import dialogs and confirmation prompts. **Complete.**
 - [ ] `ui_main` — frame layout, dockspace, menu bar (whatever remains).
 
 ## Later phases (after the split)
