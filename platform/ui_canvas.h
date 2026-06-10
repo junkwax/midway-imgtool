@@ -24,6 +24,11 @@ enum {
 };
 
 struct WorldMarkedSequenceState {
+    bool marked_play = false;
+    float fps = 12.0f;
+    float timer = 0.0f;
+    int frame = 0;
+    bool paused = false;
     bool hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
     std::vector<int> frame_delays[kWorldMarkedMaxTabs];
     std::vector<int> local_dx[kWorldMarkedMaxTabs];

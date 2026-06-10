@@ -1264,16 +1264,11 @@ static int   g_world_h = 254;       /* arcade playfield height */
 static int   g_world_origin_x = 200;/* anchor target inside world */
 static int   g_world_origin_y = 20; /* anchor target inside world (top-anchored) */
 static bool  g_world_onion = false; /* faintly draw prev frame underneath */
-static bool  g_world_dual_marked_play = false;
-static float g_world_dual_fps = 12.0f;
-static float g_world_dual_timer = 0.0f;
-static int   g_world_dual_frame = 0;
 static bool  g_world_mirror_active = false;
 static bool  g_world_mirror_other = false;
 /* Marked World View slot constants now live in ui_canvas.h. */
 static bool  g_world_mirror_extra[5] = {false, false, false, false, false};
 static WorldMarkedSequenceState g_world_marked_state;
-static bool  g_world_marked_paused = false;
 static int   g_world_marked_drag_slot = -1;
 static int   g_world_marked_drag_frame = -1;
 static ImVec2 g_world_marked_drag_mouse = ImVec2(0, 0);
@@ -1357,17 +1352,17 @@ static bool *WorldMarkedMirrorFlag(int slot)
 
 static void WorldMarkedRestart(void)
 {
-    g_world_dual_timer = 0.0f;
-    g_world_dual_frame = 0;
+    g_world_marked_state.timer = 0.0f;
+    g_world_marked_state.frame = 0;
 }
 
 static void StepWorldMarkedSequence(int delta)
 {
-    g_world_marked_paused = true;
-    g_world_dual_timer = 0.0f;
-    g_world_dual_frame += delta;
-    if (g_world_dual_frame < 0)
-        g_world_dual_frame = 0;
+    g_world_marked_state.paused = true;
+    g_world_marked_state.timer = 0.0f;
+    g_world_marked_state.frame += delta;
+    if (g_world_marked_state.frame < 0)
+        g_world_marked_state.frame = 0;
 }
 
 /* World marked clamp and tick helpers now live in ui_canvas.{h,cpp}. */
@@ -1438,9 +1433,9 @@ static void WorldMarkedDuplicateSequenceEntry(int slot, int frame_idx)
                                          g_world_marked_state.local_dy[slot][frame_idx]);
     g_world_marked_state.visible_from[slot].insert(g_world_marked_state.visible_from[slot].begin() + insert_at,
                                              g_world_marked_state.visible_from[slot][frame_idx]);
-    g_world_marked_paused = true;
-    g_world_dual_timer = 0.0f;
-    g_world_dual_frame = WorldMarkedTickForFrame(g_world_marked_state, slot, (int)frames.size(), insert_at);
+    g_world_marked_state.paused = true;
+    g_world_marked_state.timer = 0.0f;
+    g_world_marked_state.frame = WorldMarkedTickForFrame(g_world_marked_state, slot, (int)frames.size(), insert_at);
 }
 
 /* Reorder: swap a sequence entry with its neighbor (dir -1 = earlier, +1 =
@@ -1460,9 +1455,9 @@ static void WorldMarkedMoveSequenceEntry(int slot, int frame_idx, int dir)
     std::swap(g_world_marked_state.local_dy[slot][frame_idx],     g_world_marked_state.local_dy[slot][j]);
     std::swap(g_world_marked_state.visible_from[slot][frame_idx], g_world_marked_state.visible_from[slot][j]);
 
-    g_world_marked_paused = true;
-    g_world_dual_timer = 0.0f;
-    g_world_dual_frame = WorldMarkedTickForFrame(g_world_marked_state, slot, n, j);
+    g_world_marked_state.paused = true;
+    g_world_marked_state.timer = 0.0f;
+    g_world_marked_state.frame = WorldMarkedTickForFrame(g_world_marked_state, slot, n, j);
 }
 
 static void WorldMarkedDeleteSequenceEntry(int slot, int frame_idx)
@@ -1479,9 +1474,9 @@ static void WorldMarkedDeleteSequenceEntry(int slot, int frame_idx)
     g_world_marked_state.visible_from[slot].erase(g_world_marked_state.visible_from[slot].begin() + frame_idx);
     if (frame_idx >= (int)frames.size())
         frame_idx = (int)frames.size() - 1;
-    g_world_marked_paused = true;
-    g_world_dual_timer = 0.0f;
-    g_world_dual_frame = WorldMarkedTickForFrame(g_world_marked_state, slot, (int)frames.size(), frame_idx);
+    g_world_marked_state.paused = true;
+    g_world_marked_state.timer = 0.0f;
+    g_world_marked_state.frame = WorldMarkedTickForFrame(g_world_marked_state, slot, (int)frames.size(), frame_idx);
 }
 
 static std::string regex_escape(const std::string &s)
@@ -1623,7 +1618,7 @@ static void collect_marked_frames(Document *doc, std::vector<int> &out)
 
 static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 {
-    if (!g_world_dual_marked_play)
+    if (!g_world_marked_state.marked_play)
         return false;
 
     struct MarkedLane {
@@ -1937,14 +1932,14 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     if (lanes.empty()) return false;
     if (lanes.size() < 2 && !asm_present) return false;
 
-    if (g_world_dual_fps < 1.0f) g_world_dual_fps = 1.0f;
-    if (g_world_dual_fps > 60.0f) g_world_dual_fps = 60.0f;
-    if (!g_world_marked_paused)
-        g_world_dual_timer += io.DeltaTime;
-    float step = 1.0f / g_world_dual_fps;
-    while (g_world_dual_timer >= step) {
-        g_world_dual_timer -= step;
-        g_world_dual_frame++;
+    if (g_world_marked_state.fps < 1.0f) g_world_marked_state.fps = 1.0f;
+    if (g_world_marked_state.fps > 60.0f) g_world_marked_state.fps = 60.0f;
+    if (!g_world_marked_state.paused)
+        g_world_marked_state.timer += io.DeltaTime;
+    float step = 1.0f / g_world_marked_state.fps;
+    while (g_world_marked_state.timer >= step) {
+        g_world_marked_state.timer -= step;
+        g_world_marked_state.frame++;
     }
 
     bool have_image = false;
@@ -1952,7 +1947,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         MarkedLane &lane = lanes[slot];
         int n = (int)lane.frames.size();
         if (n <= 0) continue;
-        lane.frame_pos = WorldMarkedFrameForTick(g_world_marked_state, lane.delay_slot, n, g_world_dual_frame,
+        lane.frame_pos = WorldMarkedFrameForTick(g_world_marked_state, lane.delay_slot, n, g_world_marked_state.frame,
                                                  g_world_marked_state.hold_end[lane.delay_slot]);
         Document *fdoc = (lane.frame_pos < (int)lane.frame_docs.size() && lane.frame_docs[lane.frame_pos])
                        ? lane.frame_docs[lane.frame_pos] : lane.doc;
@@ -2005,7 +2000,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
         if (lane.frame_pos >= 0 &&
             lane.frame_pos < (int)g_world_marked_state.visible_from[state_slot].size() &&
-            g_world_dual_frame < g_world_marked_state.visible_from[state_slot][lane.frame_pos])
+            g_world_marked_state.frame < g_world_marked_state.visible_from[state_slot][lane.frame_pos])
             return;
         bool *mirror_flag = WorldMarkedMirrorFlag(lane.delay_slot);
         bool mirror_x = mirror_flag ? *mirror_flag : false;
@@ -2114,7 +2109,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         label += part;
     }
     char fps_buf[32];
-    snprintf(fps_buf, sizeof(fps_buf), "   fps=%.1f", g_world_dual_fps);
+    snprintf(fps_buf, sizeof(fps_buf), "   fps=%.1f", g_world_marked_state.fps);
     label += fps_buf;
     ImVec2 label_sz = ImGui::CalcTextSize(label.c_str());
     float label_w = label_sz.x + 8.0f;
@@ -2170,7 +2165,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         int state_slot = lane.delay_slot;
         EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
         if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size()) {
-            g_world_marked_paused = true;
+            g_world_marked_state.paused = true;
             g_world_marked_drag_slot = state_slot;
             g_world_marked_drag_frame = lane.frame_pos;
             g_world_marked_drag_mouse = mouse;
@@ -2321,9 +2316,9 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                           ImGuiWindowFlags_HorizontalScrollbar)) {
         ImGui::Text("Frame Sequence");
         ImGui::SameLine();
-        if (ImGui::SmallButton(g_world_marked_paused ? "Play##world_marked_pause"
+        if (ImGui::SmallButton(g_world_marked_state.paused ? "Play##world_marked_pause"
                                                      : "Pause##world_marked_pause")) {
-            g_world_marked_paused = !g_world_marked_paused;
+            g_world_marked_state.paused = !g_world_marked_state.paused;
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("Refresh##world_marked_restart"))
@@ -2332,9 +2327,9 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             ImGui::SetTooltip("Restart every marked tab sequence from frame 1.");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(105.0f);
-        ImGui::SliderFloat("FPS##world_marked_panel_fps", &g_world_dual_fps, 1.0f, 60.0f, "%.1f");
+        ImGui::SliderFloat("FPS##world_marked_panel_fps", &g_world_marked_state.fps, 1.0f, 60.0f, "%.1f");
         ImGui::SameLine();
-        ImGui::TextDisabled("Tick %d", g_world_dual_frame);
+        ImGui::TextDisabled("Tick %d", g_world_marked_state.frame);
         ImGui::SameLine();
         if (ImGui::SmallButton("Copy ASM##world_marked_copy_asm")) {
             g_world_marked_generated_asm = build_world_marked_asm();
@@ -2439,7 +2434,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 }
                 EnsureWorldMarkedFrameDelays(g_world_marked_state, lane.delay_slot, (int)lane.frames.size());
                 lane.frame_pos = WorldMarkedFrameForTick(g_world_marked_state, lane.delay_slot, (int)lane.frames.size(),
-                                                         g_world_dual_frame,
+                                                         g_world_marked_state.frame,
                                                          g_world_marked_state.hold_end[lane.delay_slot]);
                 if (lane.frame_pos < 0) lane.frame_pos = 0;
                 if (lane.frame_pos >= (int)lane.frames.size())
@@ -2568,9 +2563,9 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 if (current)
                     ImGui::PopStyleColor();
                 if (clicked) {
-                    g_world_marked_paused = true;
-                    g_world_dual_timer = 0.0f;
-                    g_world_dual_frame = WorldMarkedTickForFrame(g_world_marked_state, lane.delay_slot,
+                    g_world_marked_state.paused = true;
+                    g_world_marked_state.timer = 0.0f;
+                    g_world_marked_state.frame = WorldMarkedTickForFrame(g_world_marked_state, lane.delay_slot,
                                                                  (int)lane.frames.size(), fi);
                     lane.frame_pos = fi;
                     if (lane.doc_idx != document_active_index()) {
@@ -14394,7 +14389,7 @@ static void DrawAsmAnimWindow(void)
 
     if (ImGui::Checkbox("Play in World View lane", &g_asm_lane_enabled) && g_asm_lane_enabled) {
         g_world_view = true;
-        g_world_dual_marked_play = true;
+        g_world_marked_state.marked_play = true;
         WorldMarkedRestart();
     }
     if (ImGui::IsItemHovered())
@@ -14476,7 +14471,7 @@ static void DrawAsmAnimWindow(void)
         ImGui::Checkbox("Play opponent in World View lane", &g_asm_opp_enabled);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Draw the opponent animation in its own lane, facing the player.");
-        if (g_asm_opp_enabled) { g_world_view = true; g_world_dual_marked_play = true; }
+        if (g_asm_opp_enabled) { g_world_view = true; g_world_marked_state.marked_play = true; }
 
         const char *ocur = (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
                          ? g_asm_opp_anims[g_asm_opp_sel].name.c_str() : "(none)";
@@ -15482,8 +15477,8 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
         g_doc->ilselected = g_timeline_frames[0];
 
     g_world_view = true;
-    g_world_dual_marked_play = true;
-    g_world_dual_fps = g_mk2_fatality_preview_fps;
+    g_world_marked_state.marked_play = true;
+    g_world_marked_state.fps = g_mk2_fatality_preview_fps;
     g_play_speed = g_mk2_fatality_preview_fps;
     g_is_playing = true;
     g_world_mirror_active = false;
@@ -15499,7 +15494,7 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
     g_world_dummy_decap_manual = false;
     g_world_dummy_decap_doc_idx = -1;
     g_world_dummy_decap_prefix.clear();
-    g_world_marked_paused = false;
+    g_world_marked_state.paused = false;
     WorldMarkedRestart();
     g_zoom_reset = true;
 
@@ -15798,7 +15793,7 @@ static void DrawMk2FatalityWindow(void)
     if (ImGui::InputFloat("FPS##mk2fatal_fps", &g_mk2_fatality_preview_fps, 1.0f, 4.0f, "%.1f")) {
         if (g_mk2_fatality_preview_fps < 1.0f) g_mk2_fatality_preview_fps = 1.0f;
         if (g_mk2_fatality_preview_fps > 30.0f) g_mk2_fatality_preview_fps = 30.0f;
-        g_world_dual_fps = g_mk2_fatality_preview_fps;
+        g_world_marked_state.fps = g_mk2_fatality_preview_fps;
         g_play_speed = g_mk2_fatality_preview_fps;
     }
 
@@ -17365,9 +17360,9 @@ static float DrawDocumentTabBar(float y, float sw)
                 if (was_on) ImGui::PopStyleColor(3);
             };
             tab_toggle(g_world_onion ? "Onion: On" : "Onion", &g_world_onion);
-            bool marked_was_on = g_world_dual_marked_play;
-            tab_toggle(g_world_dual_marked_play ? "Marked: On" : "Marked", &g_world_dual_marked_play);
-            if (marked_was_on != g_world_dual_marked_play) {
+            bool marked_was_on = g_world_marked_state.marked_play;
+            tab_toggle(g_world_marked_state.marked_play ? "Marked: On" : "Marked", &g_world_marked_state.marked_play);
+            if (marked_was_on != g_world_marked_state.marked_play) {
                 WorldMarkedRestart();
             }
             tab_toggle(g_world_mirror_active ? "Mirror 1: On" : "Mirror 1", &g_world_mirror_active);
@@ -17615,11 +17610,11 @@ void imgui_overlay_render(void)
     bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() || ImGui::IsAnyItemFocused() || io.WantTextInput;
     if (!widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
         if (ImGui::Shortcut(ImGuiKey_LeftArrow, route)) {
-            if (g_world_view && g_world_dual_marked_play) StepWorldMarkedSequence(-1);
+            if (g_world_view && g_world_marked_state.marked_play) StepWorldMarkedSequence(-1);
             else StepTimelinePlayhead(-1);
         }
         if (ImGui::Shortcut(ImGuiKey_RightArrow, route)) {
-            if (g_world_view && g_world_dual_marked_play) StepWorldMarkedSequence(1);
+            if (g_world_view && g_world_marked_state.marked_play) StepWorldMarkedSequence(1);
             else StepTimelinePlayhead(1);
         }
     }
@@ -18039,12 +18034,12 @@ void imgui_overlay_render(void)
             ImGui::Separator();
             ImGui::MenuItem("World View",      NULL,   &g_world_view);
             if (g_world_view) {
-                if (ImGui::MenuItem("Marked Tab Playback", NULL, &g_world_dual_marked_play)) {
+                if (ImGui::MenuItem("Marked Tab Playback", NULL, &g_world_marked_state.marked_play)) {
                     WorldMarkedRestart();
                 }
-                ImGui::MenuItem("Marked Playback Paused", NULL, &g_world_marked_paused);
+                ImGui::MenuItem("Marked Playback Paused", NULL, &g_world_marked_state.paused);
                 ImGui::SetNextItemWidth(80);
-                ImGui::SliderFloat("Marked FPS", &g_world_dual_fps, 1.0f, 60.0f, "%.1f");
+                ImGui::SliderFloat("Marked FPS", &g_world_marked_state.fps, 1.0f, 60.0f, "%.1f");
                 if (ImGui::MenuItem("Dummy Decap Body", NULL, &g_world_dummy_decap_body)) {
                     g_world_dummy_decap_reset = true;
                     g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
