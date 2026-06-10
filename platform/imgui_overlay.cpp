@@ -19313,11 +19313,10 @@ void imgui_overlay_render(void)
                 bool paste_controls_block = paste_controls.blocks_mouse;
                 ImVec2 rc[4];
                 CanvasTransformRectCorners(paste_xf, px, py, pw, ph, rc);
-                ImVec2 rb_min, rb_max;
-                CanvasQuadBounds(rc, &rb_min, &rb_max);
-                bool hovering = mouse.x >= rb_min.x && mouse.x < rb_max.x && mouse.y >= rb_min.y && mouse.y < rb_max.y;
-                bool over_sprite = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
-                                   mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y;
+                CanvasPasteHitTest paste_hit =
+                    CanvasPasteHitTestFor(rc, img_pos, img_sz, mouse);
+                bool hovering = paste_hit.hovering;
+                bool over_sprite = paste_hit.over_sprite;
 
                 /* Render clipboard pixel preview, including live scale/rotation
                    while Free Transform is active. At Normal/100 this is fully

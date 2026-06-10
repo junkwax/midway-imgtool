@@ -109,6 +109,13 @@ struct CanvasPasteControlsLayout {
     bool blocks_mouse = false;
 };
 
+struct CanvasPasteHitTest {
+    ImVec2 bounds_min = ImVec2(0, 0);
+    ImVec2 bounds_max = ImVec2(0, 0);
+    bool hovering = false;
+    bool over_sprite = false;
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -153,6 +160,10 @@ CanvasPasteHint CanvasPasteHintForState(bool transform_active,
                                         bool paste_dragging);
 CanvasPasteControlsLayout CanvasPasteControlsLayoutFor(ImVec2 canvas_origin,
                                                        ImVec2 mouse);
+CanvasPasteHitTest CanvasPasteHitTestFor(const ImVec2 corners[4],
+                                         ImVec2 img_pos,
+                                         ImVec2 img_sz,
+                                         ImVec2 mouse);
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked);

@@ -334,6 +334,19 @@ CanvasPasteControlsLayout CanvasPasteControlsLayoutFor(ImVec2 canvas_origin,
     return layout;
 }
 
+CanvasPasteHitTest CanvasPasteHitTestFor(const ImVec2 corners[4],
+                                         ImVec2 img_pos,
+                                         ImVec2 img_sz,
+                                         ImVec2 mouse)
+{
+    CanvasPasteHitTest hit;
+    CanvasQuadBounds(corners, &hit.bounds_min, &hit.bounds_max);
+    hit.hovering = CanvasPointInRect(mouse, hit.bounds_min, hit.bounds_max);
+    hit.over_sprite = CanvasPointInRect(
+        mouse, img_pos, ImVec2(img_pos.x + img_sz.x, img_pos.y + img_sz.y));
+    return hit;
+}
+
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked)
