@@ -1616,37 +1616,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 
     WorldDrawMarkedLaneTags(dl, lanes, render_info, wpos);
 
-    std::string label = "Marked tabs: ";
-    for (int slot = 0; slot < (int)lanes.size(); slot++) {
-        WorldMarkedLane &lane = lanes[slot];
-        if (!lane.img) continue;
-        const char *doc_name = !lane.label.empty()
-                             ? lane.label.c_str()
-                             : (lane.doc->fname_s[0] ? lane.doc->fname_s : "Untitled");
-        bool *mirror_flag = WorldMarkedMirrorFlag(g_world_marked_state, lane.delay_slot);
-        char part[224];
-        snprintf(part, sizeof(part), "%s[%d] %s:%s %d/%d%s%s",
-                 slot == 0 ? "" : " + ",
-                 lane.doc_idx, doc_name, img_name_string(lane.img).c_str(),
-                 lane.frame_pos + 1, (int)lane.frames.size(),
-                 (mirror_flag && *mirror_flag) ? " mirror" : "",
-                 g_world_marked_state.hold_end[lane.delay_slot] ? " hold" : "");
-        label += part;
-    }
-    char fps_buf[32];
-    snprintf(fps_buf, sizeof(fps_buf), "   fps=%.1f", g_world_marked_state.fps);
-    label += fps_buf;
-    ImVec2 label_sz = ImGui::CalcTextSize(label.c_str());
-    float label_w = label_sz.x + 8.0f;
-    if (label_w > ww) label_w = ww;
-    dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
-                      ImVec2(wpos.x + label_w, wpos.y + 18),
-                      IM_COL32(0, 0, 0, 180));
-    dl->PushClipRect(ImVec2(wpos.x, wpos.y),
-                     ImVec2(wpos.x + label_w, wpos.y + 18), true);
-    dl->AddText(ImVec2(wpos.x + 4, wpos.y + 2),
-                IM_COL32(220, 220, 220, 255), label.c_str());
-    dl->PopClipRect();
+    WorldDrawMarkedLaneStatus(dl, g_world_marked_state, lanes, wpos, ww);
 
     /* Stretch the sequence panel full-width and pin it to the very bottom of
        the canvas so it no longer covers the world sprites. */

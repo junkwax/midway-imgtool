@@ -133,6 +133,9 @@ void WorldDrawMarkedLaneTags(ImDrawList *dl,
                              const std::vector<WorldMarkedLane> &lanes,
                              const WorldMarkedLaneRenderInfo &render_info,
                              ImVec2 world_pos);
+void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
+                               const std::vector<WorldMarkedLane> &lanes,
+                               ImVec2 world_pos, float world_width);
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);

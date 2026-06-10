@@ -576,6 +576,46 @@ void WorldDrawMarkedLaneTags(ImDrawList *dl,
     }
 }
 
+void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
+                               const std::vector<WorldMarkedLane> &lanes,
+                               ImVec2 world_pos, float world_width)
+{
+    if (!dl) return;
+
+    std::string label = "Marked tabs: ";
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        const WorldMarkedLane &lane = lanes[slot];
+        if (!lane.img) continue;
+        const char *doc_name = !lane.label.empty()
+                             ? lane.label.c_str()
+                             : (lane.doc->fname_s[0] ? lane.doc->fname_s : "Untitled");
+        bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
+        char part[224];
+        snprintf(part, sizeof(part), "%s[%d] %s:%s %d/%d%s%s",
+                 slot == 0 ? "" : " + ",
+                 lane.doc_idx, doc_name, img_name_string(lane.img).c_str(),
+                 lane.frame_pos + 1, (int)lane.frames.size(),
+                 (mirror_flag && *mirror_flag) ? " mirror" : "",
+                 state.hold_end[lane.delay_slot] ? " hold" : "");
+        label += part;
+    }
+    char fps_buf[32];
+    snprintf(fps_buf, sizeof(fps_buf), "   fps=%.1f", state.fps);
+    label += fps_buf;
+
+    ImVec2 label_sz = ImGui::CalcTextSize(label.c_str());
+    float label_w = label_sz.x + 8.0f;
+    if (label_w > world_width) label_w = world_width;
+    dl->AddRectFilled(world_pos,
+                      ImVec2(world_pos.x + label_w, world_pos.y + 18),
+                      IM_COL32(0, 0, 0, 180));
+    dl->PushClipRect(world_pos,
+                     ImVec2(world_pos.x + label_w, world_pos.y + 18), true);
+    dl->AddText(ImVec2(world_pos.x + 4, world_pos.y + 2),
+                IM_COL32(220, 220, 220, 255), label.c_str());
+    dl->PopClipRect();
+}
+
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
 {
     std::string out;
