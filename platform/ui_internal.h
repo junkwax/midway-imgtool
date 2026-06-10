@@ -11,8 +11,50 @@ static const float TIMELINE_H  = 108.0f;
    module (not just the overlay) can mark edits; the palette-usage cache it
    invalidates still lives in the overlay. Use this instead of touching
    g_doc->dirty directly so future side-effects live in one place. */
+#include <string>
+#include <vector>
+
 void InvalidatePaletteUsage(void);
 inline void mark_dirty(void) { g_doc->dirty = true; InvalidatePaletteUsage(); }
+void ClearAll(void);
+#define g_dirty (g_doc->dirty)
+
+/* ---- ASM Animation Viewer State ---- */
+struct AsmAnimFrame {
+    std::vector<std::string> piece_syms; /* sprite-piece symbols composing this frame */
+    std::vector<int>         piece_img;  /* resolved IMG index per piece, -1 if missing */
+    std::vector<Document*>   piece_doc;  /* doc each piece resolved against (parallel) */
+    int  dx = 0, dy = 0;                 /* cumulative ani_adjustx/xy offset at this frame */
+    bool mirror = false;                 /* ani_flip state at this frame */
+};
+struct AsmAnim {
+    std::string              label;      /* e.g. a_rdstance */
+    std::string              name;       /* friendly name from the anitab comment, or label */
+    std::vector<AsmAnimFrame> frames;
+    std::vector<std::string> control;    /* control opcodes encountered (ani_jump, etc.) */
+    int                      missing;    /* unresolved piece count */
+};
+
+extern bool g_openimg_for_asm;
+extern bool g_openimg_for_opp;
+extern std::vector<AsmAnim> g_asm_anims;
+extern int g_asm_anim_sel;
+extern Document *g_asm_opp_doc;
+extern int g_asm_opp_doc_idx;
+extern int g_asm_opp_sel;
+extern std::vector<AsmAnim> g_asm_opp_anims;
+extern bool g_asm_dialog_opponent;
+extern bool g_show_asm_anim;
+
+void AsmAnimSelect(int i);
+void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc);
+bool LoadAsmOpponent(const char *path);
+bool LoadAsmAnimations(const char *path);
+
+/* ---- Shared overlay state & functions ---- */
+extern int g_doc_tab_select_request;
+void ResetPerDocumentUiState(bool clear_pixel_clipboard = false);
+void Mk2AutoSelectFromImg(void);
 
 /* ---- SDL state ---- */
 extern SDL_Window   *g_imgui_window;
@@ -142,14 +184,8 @@ extern int g_sat_last;
 extern int g_light_last;
 
 /* ---- File Dialog ---- */
-enum class FileDialogMode {
-    OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm,
-    SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch,
-    ImportSpriteSheetMatch, ImportGif, ExportPng, ExportPalette,
-    ImportPalette, WriteAniLst, WriteTbl, WriteIrw, LoadAsmAnim, SaveAsmAnim
-};
+#include "ui_modals.h"
 extern bool g_palette_export_act;
-void OpenFileDialog(FileDialogMode mode);
 
 /* ---- Right Panel Palette Editor ---- */
 void DrawRightPanelPaletteEditor(float panel_h);

@@ -63,6 +63,7 @@ set(IMGTOOL_SOURCES
     platform/ui_timeline.cpp
     platform/ui_palette.cpp
     platform/ui_tools.cpp
+    platform/ui_modals.cpp
     platform/world_render.cpp
     platform/anipoint.cpp
     platform/anipoint_edit.cpp
