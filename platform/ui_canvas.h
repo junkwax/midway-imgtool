@@ -51,6 +51,12 @@ int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
 int WorldMarkedSequenceTicks(WorldMarkedSequenceState &state, int slot, int frame_count);
 int WorldMarkedFrameForTick(WorldMarkedSequenceState &state, int slot,
                             int frame_count, int tick, bool hold_final);
+void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot);
+void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
+                                     Document *doc, int doc_idx,
+                                     std::vector<int> &frames,
+                                     std::vector<std::vector<int>> &frame_pieces,
+                                     std::vector<std::string> &frame_labels);
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
                                      std::vector<std::string> &frame_labels);

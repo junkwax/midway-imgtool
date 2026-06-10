@@ -1409,117 +1409,14 @@ static void WorldResetDummyDecapDelays(int frame_count)
 
 /* WorldMarkedBuildSingleFrameLane now lives in ui_canvas.{h,cpp}. */
 
-static void WorldMarkedClearSequenceState(int slot)
-{
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
-    g_world_marked_state.frame_delays[slot].clear();
-    g_world_marked_state.local_dx[slot].clear();
-    g_world_marked_state.local_dy[slot].clear();
-    g_world_marked_state.visible_from[slot].clear();
-    g_world_marked_state.frame_mirror[slot].clear();
-}
-
-static void WorldMarkedSyncSequenceOverride(int slot, Document *doc, int doc_idx,
-                                            std::vector<int> &frames,
-                                            std::vector<std::vector<int>> &frame_pieces,
-                                            std::vector<std::string> &frame_labels)
-{
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs || !doc)
-        return;
-
-    const std::vector<int> defaults = frames;
-    bool doc_changed = g_world_marked_state.sequence_doc[slot] != doc ||
-                       g_world_marked_state.sequence_doc_idx[slot] != doc_idx;
-    bool have_seq = !g_world_marked_state.sequence_frames[slot].empty();
-
-    /* Does the persisted sequence still reference only frames the doc has? */
-    bool stale_entry = false;
-    if (!doc_changed && have_seq) {
-        for (int idx : g_world_marked_state.sequence_frames[slot]) {
-            if (!doc_get_img(doc, idx)) { stale_entry = true; break; }
-        }
-    }
-    bool defaults_changed = g_world_marked_state.default_frames[slot] != defaults;
-
-    if (doc_changed || !have_seq) {
-        /* A different sprite/tab now occupies this slot (or there is nothing
-           built yet): seed the sequence straight from the marked frames. */
-        g_world_marked_state.sequence_doc[slot] = doc;
-        g_world_marked_state.sequence_doc_idx[slot] = doc_idx;
-        g_world_marked_state.default_frames[slot] = defaults;
-        g_world_marked_state.sequence_frames[slot] = defaults;
-        WorldMarkedClearSequenceState(slot);
-        EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)defaults.size());
-    } else if (defaults_changed || stale_entry) {
-        /* Same sprite, but the marked SET changed (the user marked another
-           frame/sprite) or a referenced frame was deleted. Reconcile in place
-           so the hand-built sequence survives: keep every still-marked entry
-           in its current position with its per-entry edits, drop entries whose
-           frame is gone or was unmarked, and append only the *newly* marked
-           frames at the end. Previously any marked-set change rebuilt the whole
-           sequence from defaults, discarding the user's ordering, duplicated
-           entries, and per-frame edits. */
-        EnsureWorldMarkedFrameDelays(g_world_marked_state, slot,
-            (int)g_world_marked_state.sequence_frames[slot].size());
-
-        std::vector<int> prev_defaults = g_world_marked_state.default_frames[slot];
-        std::vector<int> old_seq   = g_world_marked_state.sequence_frames[slot];
-        std::vector<int> old_delay = g_world_marked_state.frame_delays[slot];
-        std::vector<int> old_dx    = g_world_marked_state.local_dx[slot];
-        std::vector<int> old_dy    = g_world_marked_state.local_dy[slot];
-        std::vector<int> old_vis   = g_world_marked_state.visible_from[slot];
-        std::vector<int> old_mir   = g_world_marked_state.frame_mirror[slot];
-
-        std::vector<int> new_seq, new_delay, new_dx, new_dy, new_vis, new_mir;
-        new_seq.reserve(old_seq.size() + defaults.size());
-        for (size_t i = 0; i < old_seq.size(); i++) {
-            int idx = old_seq[i];
-            if (!doc_get_img(doc, idx)) continue;   /* frame deleted from doc */
-            if (std::find(defaults.begin(), defaults.end(), idx) == defaults.end())
-                continue;                            /* sprite was unmarked */
-            new_seq.push_back(idx);
-            new_delay.push_back(old_delay[i]);
-            new_dx.push_back(old_dx[i]);
-            new_dy.push_back(old_dy[i]);
-            new_vis.push_back(old_vis[i]);
-            new_mir.push_back(old_mir[i]);
-        }
-        for (int idx : defaults) {
-            /* Only frames newly added to the marked set get appended; frames
-               the user deliberately removed from the sequence (still marked)
-               stay removed. */
-            if (std::find(prev_defaults.begin(), prev_defaults.end(), idx) != prev_defaults.end())
-                continue;
-            if (std::find(new_seq.begin(), new_seq.end(), idx) != new_seq.end())
-                continue;
-            new_seq.push_back(idx);
-            new_delay.push_back(1);
-            new_dx.push_back(0);
-            new_dy.push_back(0);
-            new_vis.push_back(0);
-            new_mir.push_back(0);
-        }
-
-        g_world_marked_state.default_frames[slot] = defaults;
-        g_world_marked_state.sequence_frames[slot] = new_seq;
-        g_world_marked_state.frame_delays[slot]    = new_delay;
-        g_world_marked_state.local_dx[slot]        = new_dx;
-        g_world_marked_state.local_dy[slot]        = new_dy;
-        g_world_marked_state.visible_from[slot]    = new_vis;
-        g_world_marked_state.frame_mirror[slot]    = new_mir;
-        EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)new_seq.size());
-    }
-
-    frames = g_world_marked_state.sequence_frames[slot];
-    WorldMarkedBuildSingleFrameLane(doc, frames, frame_pieces, frame_labels);
-    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)frames.size());
-}
+/* WorldMarkedClearSequenceState and WorldMarkedSyncSequenceOverride now live
+   in ui_canvas.{h,cpp}. */
 
 static void WorldMarkedResetSequenceToDefaults(int slot)
 {
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     g_world_marked_state.sequence_frames[slot] = g_world_marked_state.default_frames[slot];
-    WorldMarkedClearSequenceState(slot);
+    WorldMarkedClearSequenceState(g_world_marked_state, slot);
     EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)g_world_marked_state.sequence_frames[slot].size());
     WorldMarkedRestart();
 }
@@ -1931,7 +1828,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         collect_marked_frames(doc, lane.frames);
         if (!lane.frames.empty()) {
             WorldMarkedBuildSingleFrameLane(doc, lane.frames, lane.frame_pieces, lane.frame_labels);
-            WorldMarkedSyncSequenceOverride(lane.delay_slot, doc, doc_idx,
+            WorldMarkedSyncSequenceOverride(g_world_marked_state, lane.delay_slot, doc, doc_idx,
                                             lane.frames, lane.frame_pieces, lane.frame_labels);
             lanes.push_back(lane);
         }
