@@ -1474,23 +1474,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     if (!g_world_marked_state.marked_play)
         return false;
 
-    struct MarkedLane {
-        Document *doc;
-        int doc_idx;
-        int delay_slot;
-        std::vector<int> frames;
-        std::vector<std::vector<int>> frame_pieces;
-        /* For ASM lanes whose pieces span multiple IMG files, the owning doc per
-           frame / per piece. Empty for ordinary single-doc lanes. */
-        std::vector<Document*> frame_docs;
-        std::vector<std::vector<Document*>> frame_piece_docs;
-        std::vector<std::string> frame_labels;
-        int frame_pos;
-        IMG *img;
-        bool dummy_decap;
-        std::string label;
-        std::string asm_label_part;
-    };
+    /* WorldMarkedLane now lives in ui_canvas.h. */
 
     struct DecapCandidate {
         Document *doc;
@@ -1504,7 +1488,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         int piece_frame_count;
     };
 
-    auto find_dummy_decap = [&]() -> MarkedLane {
+    auto find_dummy_decap = [&]() -> WorldMarkedLane {
         auto candidate_complete = [](const DecapCandidate &cand) {
             if (cand.wrapper_count >= 7) return true;
             for (int frame_no = 1; frame_no <= 7; frame_no++) {
@@ -1594,7 +1578,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 best = i;
         }
 
-        MarkedLane lane = {};
+        WorldMarkedLane lane = {};
         lane.delay_slot = kWorldDummyDecapSlot;
         lane.frame_pos = 0;
         lane.img = NULL;
@@ -1660,13 +1644,13 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         return lane;
     };
 
-    std::vector<MarkedLane> lanes;
+    std::vector<WorldMarkedLane> lanes;
     lanes.reserve(kWorldMarkedMaxTabs);
     auto add_lane = [&](int doc_idx) {
         if ((int)lanes.size() >= kWorldMarkedSourceTabs) return;
         Document *doc = document_get(doc_idx);
         if (!doc) return;
-        MarkedLane lane = {};
+        WorldMarkedLane lane = {};
         lane.doc = doc;
         lane.doc_idx = doc_idx;
         lane.delay_slot = (int)lanes.size();
@@ -1689,7 +1673,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 
     bool dummy_decap_missing = false;
     if (g_world_marked_state.dummy_decap_body) {
-        MarkedLane dummy = find_dummy_decap();
+        WorldMarkedLane dummy = find_dummy_decap();
         if (dummy.doc && !dummy.frames.empty())
             lanes.push_back(dummy);
         else
@@ -1705,7 +1689,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         if (!enabled || sel < 0 || sel >= (int)anims.size() || !doc) return;
         AsmAnim &a = anims[sel];
         if (a.frames.empty()) return;
-        MarkedLane lane = {};
+        WorldMarkedLane lane = {};
         lane.doc = doc;
         lane.doc_idx = doc_idx;
         lane.delay_slot = slot_id;
@@ -1798,7 +1782,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 
     bool have_image = false;
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
-        MarkedLane &lane = lanes[slot];
+        WorldMarkedLane &lane = lanes[slot];
         int n = (int)lane.frames.size();
         if (n <= 0) continue;
         lane.frame_pos = WorldMarkedFrameForTick(g_world_marked_state, lane.delay_slot, n, g_world_marked_state.frame,
@@ -1849,7 +1833,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 
     auto draw_sprite = [&](int slot) {
         if (slot < 0 || slot >= (int)lanes.size()) return;
-        MarkedLane &lane = lanes[slot];
+        WorldMarkedLane &lane = lanes[slot];
         int state_slot = lane.delay_slot;
         EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
         if (lane.frame_pos >= 0 &&
@@ -1923,7 +1907,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
        so it is clear which marked tab/frame each on-screen sprite came from. */
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
         if (!lane_rect_valid[slot]) continue;
-        MarkedLane &lane = lanes[slot];
+        WorldMarkedLane &lane = lanes[slot];
         const char *doc_name = !lane.label.empty()
                              ? lane.label.c_str()
                              : (lane.doc && lane.doc->fname_s[0] ? lane.doc->fname_s
@@ -1947,7 +1931,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 
     std::string label = "Marked tabs: ";
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
-        MarkedLane &lane = lanes[slot];
+        WorldMarkedLane &lane = lanes[slot];
         if (!lane.img) continue;
         const char *doc_name = !lane.label.empty()
                              ? lane.label.c_str()
@@ -2015,7 +1999,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     }
     if (hover_slot >= 0 && ImGui::IsWindowHovered() &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        MarkedLane &lane = lanes[hover_slot];
+        WorldMarkedLane &lane = lanes[hover_slot];
         int state_slot = lane.delay_slot;
         EnsureWorldMarkedFrameDelays(g_world_marked_state, state_slot, (int)lane.frames.size());
         if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size()) {
@@ -2062,7 +2046,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         out += "; Run these lanes at the same animation sleep/FPS used in the preview.\n\n";
 
         for (int slot = 0; slot < (int)lanes.size(); slot++) {
-            MarkedLane &lane = lanes[slot];
+            WorldMarkedLane &lane = lanes[slot];
             const char *doc_name = lane.doc && lane.doc->fname_s[0]
                                  ? lane.doc->fname_s : "Untitled";
             if (!lane.label.empty())
@@ -2252,7 +2236,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         }
 
         for (int slot = 0; slot < (int)lanes.size(); slot++) {
-            MarkedLane &lane = lanes[slot];
+            WorldMarkedLane &lane = lanes[slot];
             ImGui::PushID(slot);
             ImGui::Separator();
             const char *doc_name = !lane.label.empty()

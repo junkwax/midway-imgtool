@@ -66,6 +66,24 @@ struct WorldMarkedSequenceState {
     int sequence_doc_idx[kWorldMarkedMaxTabs] = {-1, -1, -1, -1, -1, -1, -1};
 };
 
+struct WorldMarkedLane {
+    Document *doc = nullptr;
+    int doc_idx = -1;
+    int delay_slot = 0;
+    std::vector<int> frames;
+    std::vector<std::vector<int>> frame_pieces;
+    /* For ASM lanes whose pieces span multiple IMG files, the owning doc per
+       frame / per piece. Empty for ordinary single-doc lanes. */
+    std::vector<Document*> frame_docs;
+    std::vector<std::vector<Document*>> frame_piece_docs;
+    std::vector<std::string> frame_labels;
+    int frame_pos = 0;
+    IMG *img = nullptr;
+    bool dummy_decap = false;
+    std::string label;
+    std::string asm_label_part;
+};
+
 WorldViewState &WorldView(void);
 WorldMarkedSequenceState &WorldMarkedState(void);
 bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot);
