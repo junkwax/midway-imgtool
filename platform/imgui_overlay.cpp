@@ -34,6 +34,7 @@
 #include "image_ops.h"
 #include "palette_math.h"
 #include "ui_internal.h"
+#include "ui_canvas.h"
 #include "ui_timeline.h"
 #include "world_render.h"
 #include "anipoint.h"
@@ -1263,9 +1264,6 @@ static int   g_world_h = 254;       /* arcade playfield height */
 static int   g_world_origin_x = 200;/* anchor target inside world */
 static int   g_world_origin_y = 20; /* anchor target inside world (top-anchored) */
 static bool  g_world_onion = false; /* faintly draw prev frame underneath */
-static SDL_Texture *g_world_onion_tex = NULL;
-static int   g_world_onion_tex_w = 0, g_world_onion_tex_h = 0;
-static int   g_world_onion_idx = -1; /* which sprite the onion tex holds */
 static bool  g_world_dual_marked_play = false;
 static float g_world_dual_fps = 12.0f;
 static float g_world_dual_timer = 0.0f;
@@ -19980,142 +19978,15 @@ void imgui_overlay_render(void)
         if (g_world_view) {
             bool drew_dual_marked = DrawWorldMarkedTabs(avail, img_pos, io);
             if (!drew_dual_marked && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
-            IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-            if (cimg) {
-                /* Auto-fit the world canvas inside the available area. */
-                float fit_x = avail.x / (float)g_world_w;
-                float fit_y = avail.y / (float)g_world_h;
-                float wscale = (fit_x < fit_y) ? fit_x : fit_y;
-                if (wscale < 1.0f) wscale = 1.0f;
-                wscale = (float)(int)wscale;
-                if (wscale < 1.0f) wscale = 1.0f;
-
-                float ww = (float)g_world_w * wscale;
-                float wh = (float)g_world_h * wscale;
-                ImVec2 wpos(img_pos.x + (avail.x - ww) * 0.5f,
-                            img_pos.y + (avail.y - wh) * 0.5f);
-
-                ImDrawList *dl = ImGui::GetWindowDrawList();
-                /* Solid black world background. */
-                dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),
-                                  IM_COL32(0, 0, 0, 255));
-                /* Origin crosshair. */
-                float ox = wpos.x + g_world_origin_x * wscale;
-                float oy = wpos.y + g_world_origin_y * wscale;
-                dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy),
-                            IM_COL32(120, 120, 120, 255));
-                dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
-                            IM_COL32(120, 120, 120, 255));
-
-                /* Onion-skin: faintly draw the previous sprite. */
-                if (g_world_onion && g_doc->imgcnt > 1) {
-                    int prev_idx = (g_doc->ilselected <= 0) ? (int)g_doc->imgcnt - 1 : g_doc->ilselected - 1;
-                    IMG *pimg = get_img(prev_idx);
-                    if (pimg && pimg->data_p && pimg->w > 0 && pimg->h > 0) {
-                        if (!g_world_onion_tex
-                            || g_world_onion_tex_w != pimg->w
-                            || g_world_onion_tex_h != pimg->h
-                            || g_world_onion_idx != prev_idx)
-                        {
-                            if (g_world_onion_tex) SDL_DestroyTexture(g_world_onion_tex);
-                            g_world_onion_tex = SDL_CreateTexture(g_imgui_renderer,
-                                SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-                                pimg->w, pimg->h);
-                            SDL_SetTextureBlendMode(g_world_onion_tex, SDL_BLENDMODE_BLEND);
-                            SDL_SetTextureScaleMode(g_world_onion_tex, SDL_ScaleModeNearest);
-                            g_world_onion_tex_w = pimg->w;
-                            g_world_onion_tex_h = pimg->h;
-                            g_world_onion_idx = prev_idx;
-                            void *pix; int pitch;
-                            if (SDL_LockTexture(g_world_onion_tex, NULL, &pix, &pitch) == 0) {
-                                int s = (pimg->w + 3) & ~3;
-                                const unsigned char *src = (const unsigned char *)pimg->data_p;
-                                Uint32 *dst = (Uint32 *)pix;
-                                for (int y = 0; y < pimg->h; y++)
-                                for (int x = 0; x < pimg->w; x++) {
-                                    unsigned char ci = src[y * s + x];
-                                    SDL_Color c = g_palette[ci];
-                                    Uint32 a = (ci == 0) ? 0u : 90u;  /* faint */
-                                    dst[y * (pitch / 4) + x] =
-                                        (a << 24) | ((Uint32)c.r << 16) |
-                                        ((Uint32)c.g << 8) | c.b;
-                                }
-                                SDL_UnlockTexture(g_world_onion_tex);
-                            }
-                        }
-                        float pw = pimg->w * wscale;
-                        float ph = pimg->h * wscale;
-                        int pax = (int)(short)pimg->anix;
-                        float pleft = g_world_mirror_active
-                            ? (ox - ((int)pimg->w - pax) * wscale)
-                            : (ox - pax * wscale);
-                        ImVec2 ppos(pleft, oy - (int)(short)pimg->aniy * wscale);
-                        ImVec2 puv0 = g_world_mirror_active ? ImVec2(1, 0) : ImVec2(0, 0);
-                        ImVec2 puv1 = g_world_mirror_active ? ImVec2(0, 1) : ImVec2(1, 1);
-                        dl->AddImage((ImTextureID)(intptr_t)g_world_onion_tex,
-                                     ppos, ImVec2(ppos.x + pw, ppos.y + ph), puv0, puv1);
-                    }
-                }
-
-                /* Sprite at world origin minus its anipoint. */
-                int ax = (int)(short)cimg->anix;
-                int ay = (int)(short)cimg->aniy;
-                float spw = cimg->w * wscale;
-                float sph = cimg->h * wscale;
-                float sleft = g_world_mirror_active
-                    ? (ox - ((int)cimg->w - ax) * wscale)
-                    : (ox - ax * wscale);
-                ImVec2 spos(sleft, oy - ay * wscale);
-                ImVec2 suv0 = g_world_mirror_active ? ImVec2(1, 0) : ImVec2(0, 0);
-                ImVec2 suv1 = g_world_mirror_active ? ImVec2(0, 1) : ImVec2(1, 1);
-
-                dl->AddImage((ImTextureID)(intptr_t)g_img_texture,
-                             spos, ImVec2(spos.x + spw, spos.y + sph), suv0, suv1);
-
-                /* Anchor marker on the sprite's anipoint (== world origin). */
-                dl->AddCircle(ImVec2(ox, oy), 4.0f,
-                              IM_COL32(255, 200, 0, 255), 0, 1.5f);
-
-                /* Drag-to-move: left-drag inside world canvas adjusts anipoint.
-                 * "Sprite follows cursor" means anix/aniy DECREASE as you drag
-                 * right/down (the anchor moves left/up in sprite-space). */
-                if (!io.WantCaptureMouse) {
-                    bool over_world =
-                        io.MousePos.x >= wpos.x && io.MousePos.x < wpos.x + ww &&
-                        io.MousePos.y >= wpos.y && io.MousePos.y < wpos.y + wh;
-                    if (over_world &&
-                        ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
-                    {
-                        ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
-                        ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
-                        int dx = (int)(d.x / wscale);
-                        int dy = (int)(d.y / wscale);
-                        if (dx != 0 || dy != 0) {
-                            int next_ax = (int)(short)cimg->anix +
-                                          (g_world_mirror_active ? dx : -dx);
-                            int next_ay = (int)(short)cimg->aniy - dy;
-                            set_primary_anipoint_with_sequence(cimg, next_ax, next_ay);
-                        }
-                    }
-                    /* Wheel zooms world canvas (changes wscale via origin sizing). */
-                }
-
-                /* Coord readout overlay (top-left of world canvas). */
-                char buf[96];
-                snprintf(buf, sizeof(buf),
-                         "[%d] %s%s   anix=%d aniy=%d   world=%dx%d",
-                         g_doc->ilselected, cimg->n_s,
-                         g_world_mirror_active ? " mirror" : "",
-                         ax, ay, g_world_w, g_world_h);
-                dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
-                                  ImVec2(wpos.x + 320, wpos.y + 18),
-                                  IM_COL32(0, 0, 0, 180));
-                dl->AddText(ImVec2(wpos.x + 4, wpos.y + 2),
-                            IM_COL32(220, 220, 220, 255), buf);
-
-                /* Reserve the canvas region so other widgets don't overlap. */
-                ImGui::Dummy(ImVec2(avail.x, avail.y));
-            }
+                IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+                /* Single-sprite World View now lives in ui_canvas.{h,cpp};
+                   the larger marked-tab World View path remains above. */
+                DrawWorldViewSingleSprite(avail, img_pos, io,
+                                          cimg, g_img_texture,
+                                          g_doc->ilselected, (int)g_doc->imgcnt,
+                                          g_world_w, g_world_h,
+                                          g_world_origin_x, g_world_origin_y,
+                                          g_world_onion, g_world_mirror_active);
             }
         }
         else if ((timeline_composite_preview_active = DrawTimelineCompositePreview(avail, img_pos))) {
@@ -22382,7 +22253,7 @@ void imgui_overlay_shutdown(void)
 {
     SessionSave();
     if (g_img_texture) { SDL_DestroyTexture(g_img_texture); g_img_texture = NULL; }
-    if (g_world_onion_tex) { SDL_DestroyTexture(g_world_onion_tex); g_world_onion_tex = NULL; }
+    ClearCanvasUiTextures();
     ClearPaletteReducePreviewTextures();
     ClearWorldTempTextures();
     ClearTimelineThumbCache();

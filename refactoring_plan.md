@@ -21,12 +21,14 @@ focused modules. Full app builds; all 7 `ctest` suites pass.
 only when a function move needs them across TUs — *not* in a big up-front sweep
 (the ~1000-line "Editor state" block is intentionally left in place).
 
-**Phase C (UI subsystems): first subsystem complete** — `ui_timeline` now owns
-the whole timeline (frame model, thumbnail cache, composite selection/playback,
-and all timeline rendering incl. the composite preview). Supporting modules
-extracted along the way: `world_render` (sprite→texture), `anipoint` (pure
-predicates + sequence-name parsing), `anipoint_edit` (sequence-propagating
-setters), `img_util` (`img_name_string`, `signed_to_img_word`).
+**Phase C (UI subsystems): first subsystem complete, second started** —
+`ui_timeline` now owns the whole timeline (frame model, thumbnail cache,
+composite selection/playback, and all timeline rendering incl. the composite
+preview). `ui_canvas` has started with the single-sprite World View canvas and
+its onion-skin texture cache. Supporting modules extracted along the way:
+`world_render` (sprite→texture), `anipoint` (pure predicates + sequence-name
+parsing), `anipoint_edit` (sequence-propagating setters), `img_util`
+(`img_name_string`, `signed_to_img_word`).
 
 The accumulated user feature work (bulk resize, smarter subframe cuts, anim
 propagation, mirrored World View fix, session restore, RGB-slider de-dup) is
@@ -45,6 +47,7 @@ committed (`fc4edeb`).
 | `anipoint_edit.{h,cpp}` | sequence-propagating anipoint setters + undo coalescing | — |
 | `world_render.{h,cpp}` | `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
 | `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
+| `ui_canvas.{h,cpp}` | single-sprite World View canvas + onion texture cache | — |
 | `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |
 
 ### For the next agent — how to continue
@@ -146,8 +149,10 @@ foundation as you go:
       `world_render` (sprite→SDL texture + temp-texture pool), `anipoint`
       (predicates + sequence-name parsing + secondary mutators), `anipoint_edit`
       (sequence-propagating setters), `img_util` (name + word clamp).
-- [ ] `ui_canvas` — canvas render, pan/zoom, World View (its `world_render`
-      sprite-texture leaf is already extracted).
+- [ ] `ui_canvas` — canvas render, pan/zoom, World View. **Started:** the
+      single-sprite World View canvas and onion-skin texture cache now live in
+      `ui_canvas`; marked-tab World View and the regular edit canvas remain in
+      `imgui_overlay.cpp`.
 - [ ] `ui_palette` — palette editor, HSL sliders, histogram, color picking.
 - [ ] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso,
       free transform, clone, smart remap).
