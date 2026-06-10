@@ -544,6 +544,38 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
     draw_slot(0);
 }
 
+void WorldDrawMarkedLaneTags(ImDrawList *dl,
+                             const std::vector<WorldMarkedLane> &lanes,
+                             const WorldMarkedLaneRenderInfo &render_info,
+                             ImVec2 world_pos)
+{
+    if (!dl) return;
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        if (!render_info.lane_rect_valid[slot]) continue;
+        const WorldMarkedLane &lane = lanes[slot];
+        const char *doc_name = !lane.label.empty()
+                             ? lane.label.c_str()
+                             : (lane.doc && lane.doc->fname_s[0]
+                                ? lane.doc->fname_s : "Untitled");
+        std::string frame_name = (lane.frame_pos >= 0 &&
+                                  lane.frame_pos < (int)lane.frame_labels.size() &&
+                                  !lane.frame_labels[lane.frame_pos].empty())
+                               ? lane.frame_labels[lane.frame_pos]
+                               : (lane.img ? img_name_string(lane.img) : std::string());
+        char tag[256];
+        snprintf(tag, sizeof(tag), "%s:%s", doc_name, frame_name.c_str());
+        ImVec2 tag_sz = ImGui::CalcTextSize(tag);
+        ImVec2 tag_pos(render_info.lane_rect_min[slot].x,
+                       render_info.lane_rect_min[slot].y - tag_sz.y - 3.0f);
+        if (tag_pos.y < world_pos.y + 1.0f) tag_pos.y = world_pos.y + 1.0f;
+        dl->AddRectFilled(ImVec2(tag_pos.x - 2.0f, tag_pos.y - 1.0f),
+                          ImVec2(tag_pos.x + tag_sz.x + 2.0f,
+                                 tag_pos.y + tag_sz.y + 1.0f),
+                          IM_COL32(0, 0, 0, 190));
+        dl->AddText(tag_pos, WorldMarkedLaneOutlineColor(slot), tag);
+    }
+}
+
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
 {
     std::string out;

@@ -1614,31 +1614,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     dl->AddCircle(ImVec2(ox, oy), 4.0f,
                   IM_COL32(255, 200, 0, 255), 0, 1.5f);
 
-    /* Tag each sprite in the canvas with its source file and current frame name
-       so it is clear which marked tab/frame each on-screen sprite came from. */
-    for (int slot = 0; slot < (int)lanes.size(); slot++) {
-        if (!render_info.lane_rect_valid[slot]) continue;
-        WorldMarkedLane &lane = lanes[slot];
-        const char *doc_name = !lane.label.empty()
-                             ? lane.label.c_str()
-                             : (lane.doc && lane.doc->fname_s[0] ? lane.doc->fname_s
-                                                                 : "Untitled");
-        std::string frame_name = (lane.frame_pos >= 0 &&
-                                  lane.frame_pos < (int)lane.frame_labels.size() &&
-                                  !lane.frame_labels[lane.frame_pos].empty())
-                               ? lane.frame_labels[lane.frame_pos]
-                               : (lane.img ? img_name_string(lane.img) : std::string());
-        char tag[256];
-        snprintf(tag, sizeof(tag), "%s:%s", doc_name, frame_name.c_str());
-        ImVec2 tag_sz = ImGui::CalcTextSize(tag);
-        ImVec2 tag_pos(render_info.lane_rect_min[slot].x,
-                       render_info.lane_rect_min[slot].y - tag_sz.y - 3.0f);
-        if (tag_pos.y < wpos.y + 1.0f) tag_pos.y = wpos.y + 1.0f;
-        dl->AddRectFilled(ImVec2(tag_pos.x - 2.0f, tag_pos.y - 1.0f),
-                          ImVec2(tag_pos.x + tag_sz.x + 2.0f, tag_pos.y + tag_sz.y + 1.0f),
-                          IM_COL32(0, 0, 0, 190));
-        dl->AddText(tag_pos, WorldMarkedLaneOutlineColor(slot), tag);
-    }
+    WorldDrawMarkedLaneTags(dl, lanes, render_info, wpos);
 
     std::string label = "Marked tabs: ";
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
