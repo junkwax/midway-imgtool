@@ -1480,28 +1480,10 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
 
     std::vector<WorldMarkedLane> lanes;
     lanes.reserve(kWorldMarkedMaxTabs);
-    auto add_lane = [&](int doc_idx) {
-        if ((int)lanes.size() >= kWorldMarkedSourceTabs) return;
-        Document *doc = document_get(doc_idx);
-        if (!doc) return;
-        WorldMarkedLane lane = {};
-        lane.doc = doc;
-        lane.doc_idx = doc_idx;
-        lane.delay_slot = (int)lanes.size();
-        lane.frame_pos = 0;
-        lane.img = NULL;
-        lane.dummy_decap = false;
-        WorldCollectMarkedFrames(doc, lane.frames);
-        if (!lane.frames.empty()) {
-            WorldMarkedBuildSingleFrameLane(doc, lane.frames, lane.frame_pieces, lane.frame_labels);
-            WorldMarkedSyncSequenceOverride(g_world_marked_state, lane.delay_slot, doc, doc_idx,
-                                            lane.frames, lane.frame_pieces, lane.frame_labels);
-            lanes.push_back(lane);
-        }
-    };
+    /* WorldAppendMarkedSourceLane now lives in ui_canvas.{h,cpp}. */
 
     for (int i = 0; i < document_tab_count(); i++) {
-        add_lane(i);
+        WorldAppendMarkedSourceLane(g_world_marked_state, i, lanes);
         if ((int)lanes.size() >= kWorldMarkedSourceTabs) break;
     }
 

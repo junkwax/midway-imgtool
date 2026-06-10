@@ -351,6 +351,32 @@ WorldMarkedLane WorldBuildDummyDecapLane(WorldMarkedSequenceState &state,
     return lane;
 }
 
+bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
+                                 std::vector<WorldMarkedLane> &lanes)
+{
+    if ((int)lanes.size() >= kWorldMarkedSourceTabs) return false;
+    Document *doc = document_get(doc_idx);
+    if (!doc) return false;
+
+    WorldMarkedLane lane = {};
+    lane.doc = doc;
+    lane.doc_idx = doc_idx;
+    lane.delay_slot = (int)lanes.size();
+    lane.frame_pos = 0;
+    lane.img = NULL;
+    lane.dummy_decap = false;
+    WorldCollectMarkedFrames(doc, lane.frames);
+    if (lane.frames.empty()) return false;
+
+    WorldMarkedBuildSingleFrameLane(doc, lane.frames,
+                                    lane.frame_pieces, lane.frame_labels);
+    WorldMarkedSyncSequenceOverride(state, lane.delay_slot, doc, doc_idx,
+                                    lane.frames, lane.frame_pieces,
+                                    lane.frame_labels);
+    lanes.push_back(lane);
+    return true;
+}
+
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
 {
     std::string out;
