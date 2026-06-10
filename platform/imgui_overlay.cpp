@@ -18935,23 +18935,11 @@ void imgui_overlay_render(void)
         bool mk2_overlay_active = g_show_mk2 && Mk2CurrentRecord() >= 0;
         if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active && !g_world_state.enabled && !timeline_composite_preview_active) {
             ImDrawList *dl = ImGui::GetWindowDrawList();
-            ImVec2 tl(img_pos.x + g_hitbox_x * sx, img_pos.y + g_hitbox_y * sy);
-            ImVec2 br(img_pos.x + (g_hitbox_x + g_hitbox_w) * sx,
-                      img_pos.y + (g_hitbox_y + g_hitbox_h) * sy);
-            ImVec2 tr(br.x, tl.y), bl(tl.x, br.y);
-            dl->AddRect(tl, br, IM_COL32(0,255,255,255), 0, 0, 2.f);
-
-            ImVec2 corners[4] = { tl, tr, br, bl };
-            float hr = 12.f * 12.f;
-            bool hovering[4];
-            for (int c = 0; c < 4; c++) {
-                ImVec2 d = mouse - corners[c];
-                hovering[c] = (d.x*d.x + d.y*d.y < hr);
-            }
-            for (int c = 0; c < 4; c++) {
-                ImU32 col = hovering[c] ? IM_COL32(255,255,0,255) : IM_COL32(0,255,255,255);
-                dl->AddCircleFilled(corners[c], 5.f, col);
-            }
+            bool hovering[4] = {false, false, false, false};
+            DrawCanvasHitboxOverlay(dl, img_pos, sx, sy,
+                                    g_hitbox_x, g_hitbox_y,
+                                    g_hitbox_w, g_hitbox_h,
+                                    mouse, hovering);
             for (int c = 0; c < 4; c++) {
                 if (hovering[c] && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                     g_hitbox_drag_corner = c;

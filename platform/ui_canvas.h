@@ -83,6 +83,10 @@ void DrawCanvasPixelHoverHighlight(ImDrawList *dl, ImVec2 mouse,
                                    bool suppress);
 void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
                                  float len, float thick);
+void DrawCanvasHitboxOverlay(ImDrawList *dl, ImVec2 img_pos,
+                             float sx, float sy,
+                             int x, int y, int w, int h,
+                             ImVec2 mouse, bool hovering[4]);
 
 struct WorldMarkedSequenceState {
     bool marked_play = false;
