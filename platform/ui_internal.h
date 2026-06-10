@@ -1,19 +1,10 @@
-/*************************************************************
- * platform/ui_internal.h
- * Shared internal declarations for the ImGui overlay.
- *
- * Phase B of the overlay split (refactoring_plan.md): the overlay's file-scope
- * state is being moved out of the imgui_overlay.cpp monolith into ui_state.cpp
- * and declared here as `extern`, so UI code split into sibling translation
- * units (Phase C: ui_canvas, ui_palette, ...) can share it.
- *
- * This header is internal to the overlay implementation; it is NOT part of the
- * public imgui_overlay.h C API. Migration is incremental — globals are added
- * here one cohesive group at a time, building green after each.
- *************************************************************/
 #pragma once
 #include <SDL.h>
+#include <vector>
 #include "document.h"   /* g_doc, Document::dirty */
+
+static const float PALETTE_H   = 112.0f;
+static const float TIMELINE_H  = 108.0f;
 
 /* ---- Dirty marking ----
    Single entry point for flagging the active document unsaved. Shared so any
@@ -107,3 +98,95 @@ struct EditSnapshot {
 extern EditSnapshot g_undo[UNDO_STACK_SIZE];
 extern int          g_undo_idx;
 extern int          g_undo_count;
+
+/* ---- Grid selection tool (for copy/paste) ---- */
+struct GridSelection {
+    bool active;        /* a selection rectangle exists and should be drawn */
+    bool dragging;      /* user is currently click-dragging the rect's far corner */
+    int x1, y1;         /* start coords (pixels) */
+    int x2, y2;         /* end coords (pixels) */
+
+    bool is_mask;       /* if true, pixel_mask is used instead of just the bounding box */
+    int mask_w, mask_h; /* dimensions of the mask */
+    std::vector<bool> pixel_mask; /* the actual selected pixels */
+};
+extern GridSelection g_grid_sel;
+bool selection_contains_pixel(IMG *img, int x, int y);
+
+/* ---- Palette Clipboard & Editor ---- */
+struct CopiedPalette {
+    bool           valid;
+    unsigned short numc;
+    unsigned char  bitspix;
+    char           n_s[10];
+    unsigned char *data;     /* numc * 2 bytes, malloc'd */
+};
+extern CopiedPalette g_pal_clipboard;
+
+extern int  g_sel_color;
+extern bool g_palette_selection[256];
+extern int  g_isolate_color;
+extern bool g_palette_nav;
+extern unsigned char g_palette_baseline[512];
+extern int g_palette_baseline_nc;
+extern bool g_palette_drag_undo_active;
+extern unsigned int g_palette_sync_serial;
+void InvalidatePaletteSync(void);
+void ApplyPalette(int pal_idx);
+
+extern int g_hue_slider;
+extern int g_sat_slider;
+extern int g_light_slider;
+extern int g_hue_last;
+extern int g_sat_last;
+extern int g_light_last;
+
+/* ---- File Dialog ---- */
+enum class FileDialogMode {
+    OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm,
+    SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch,
+    ImportSpriteSheetMatch, ImportGif, ExportPng, ExportPalette,
+    ImportPalette, WriteAniLst, WriteTbl, WriteIrw, LoadAsmAnim, SaveAsmAnim
+};
+extern bool g_palette_export_act;
+void OpenFileDialog(FileDialogMode mode);
+
+/* ---- Right Panel Palette Editor ---- */
+void DrawRightPanelPaletteEditor(float panel_h);
+void ApplyVariantToSelection(void);
+void ApplySelectionRemapToMatchingSprites(void);
+void SplitSelectionToOverlayFrame(bool clear_source);
+void OpenRenamePalette(int idx);
+
+/* ---- Tools & State ---- */
+enum class ActiveTool { None, Pencil, PaintBucket, VariantPaint, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper };
+extern ActiveTool g_active_tool;
+extern int g_pencil_brush;
+extern int g_variant_brush;
+extern int g_bucket_tolerance;
+extern bool g_bucket_contiguous;
+extern int g_wand_tolerance;
+extern bool g_wand_contiguous;
+extern int g_clone_brush;
+extern bool g_clone_source_set;
+extern int g_clone_src_x;
+extern int g_clone_src_y;
+extern bool g_clone_offset_set;
+extern int g_clone_dx;
+extern int g_clone_dy;
+extern int g_remap_target_color;
+extern int g_remap_tolerance;
+extern int g_eraser_tolerance;
+extern bool g_eraser_contiguous;
+extern bool g_eraser_defringe;
+extern std::vector<std::pair<int,int>> g_lasso_points;
+extern bool g_show_points;
+extern bool g_show_hitbox;
+
+bool CanUndo(void);
+bool CanRedo(void);
+void DoUndo(void);
+void DoRedo(void);
+void OpenResizeSpriteDialog(void);
+
+

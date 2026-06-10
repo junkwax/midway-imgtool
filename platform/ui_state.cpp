@@ -34,3 +34,52 @@ int            g_pixel_undo_img = -1;  /* -2 = never built */
 EditSnapshot g_undo[UNDO_STACK_SIZE];
 int          g_undo_idx   = -1;
 int          g_undo_count =  0;
+
+GridSelection g_grid_sel = {false, false, 0, 0, 0, 0, false, 0, 0, {}};
+
+/* ---- Palette Clipboard & Editor ---- */
+CopiedPalette g_pal_clipboard = {false, 0, 0, {0}, NULL};
+
+int  g_sel_color   = 0;
+bool g_palette_selection[256] = {false};
+int  g_isolate_color = -1;
+bool g_palette_nav   = false;
+unsigned char g_palette_baseline[512] = {0};
+int g_palette_baseline_nc = 0;
+bool g_palette_drag_undo_active = false;
+unsigned int g_palette_sync_serial = 1;
+
+int g_hue_slider = 0;
+int g_sat_slider = 0;
+int g_light_slider = 0;
+int g_hue_last = 0;
+int g_sat_last = 0;
+int g_light_last = 0;
+
+bool g_palette_export_act = false;
+
+/* ---- Tools & State ---- */
+ActiveTool g_active_tool = ActiveTool::None;
+int g_pencil_brush = 1;
+int g_variant_brush = 1;
+int g_bucket_tolerance = 0;
+bool g_bucket_contiguous = true;
+int g_wand_tolerance = 0;
+bool g_wand_contiguous = true;
+int g_clone_brush = 1;
+bool g_clone_source_set = false;
+int g_clone_src_x = 0;
+int g_clone_src_y = 0;
+bool g_clone_offset_set = false;
+int g_clone_dx = 0;
+int g_clone_dy = 0;
+int g_remap_target_color = -1;
+int g_remap_tolerance = 0;
+int g_eraser_tolerance = 0;
+bool g_eraser_contiguous = true;
+bool g_eraser_defringe = true;
+std::vector<std::pair<int,int>> g_lasso_points;
+bool g_show_points = true;
+bool g_show_hitbox = false;
+
+
