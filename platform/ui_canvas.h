@@ -84,6 +84,15 @@ struct CanvasContentBounds {
     int max_y = 0;
 };
 
+struct CanvasPasteSnapResult {
+    int x = 0;
+    int y = 0;
+    bool hit_x = false;
+    bool hit_y = false;
+    int guide_x = 0;
+    int guide_y = 0;
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -140,6 +149,14 @@ float CanvasRotateTransformAngle(float start_angle_deg,
                                  ImVec2 center,
                                  bool snap_15_deg);
 CanvasContentBounds CanvasFindOpaqueBounds(const IMG *img);
+CanvasPasteSnapResult CanvasSnapPasteToContent(int x, int y, int w, int h,
+                                               int target_w, int target_h,
+                                               const CanvasContentBounds &bounds,
+                                               float view_sx, float view_sy);
+CanvasPasteSnapResult CanvasPasteCenterGuide(int x, int y, int w, int h,
+                                             int target_w, int target_h,
+                                             bool hit_x, bool hit_y,
+                                             int guide_x, int guide_y);
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);

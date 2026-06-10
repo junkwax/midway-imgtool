@@ -19550,62 +19550,38 @@ void imgui_overlay_render(void)
                         int ny = g_pasted.drag_start_py + dy;
 
                         g_snap_hit_x = g_snap_hit_y = false;
+                        IMG *snap_img = (g_doc->ilselected >= 0)
+                            ? get_img(g_doc->ilselected) : NULL;
                         if (ImGui::GetIO().KeyShift && g_doc->ilselected >= 0) {
                             /* Cache the content bbox of the underlying sprite
                                on the first frame Shift is held during this
                                drag; recompute only on image change. */
                             if (!g_snap_bbox.valid || g_snap_bbox.img_idx != g_doc->ilselected) {
-                                IMG *cimg = get_img(g_doc->ilselected);
-                                CanvasContentBounds bounds = CanvasFindOpaqueBounds(cimg);
+                                CanvasContentBounds bounds = CanvasFindOpaqueBounds(snap_img);
                                 if (bounds.valid) {
                                     g_snap_bbox = {true, bounds.min_x, bounds.min_y,
                                                    bounds.max_x, bounds.max_y,
                                                    g_doc->ilselected};
                                 }
                             }
-                            if (g_snap_bbox.valid) {
-                                /* Threshold is screen-relative (~6 screen px)
-                                   then converted into image pixels. */
-                                int tx = (int)(6.0f / sx); if (tx < 1) tx = 1;
-                                int ty = (int)(6.0f / sy); if (ty < 1) ty = 1;
-                                int sx_min = g_snap_bbox.min_x;
-                                int sy_min = g_snap_bbox.min_y;
-                                int sx_max = g_snap_bbox.max_x + 1;
-                                int sy_max = g_snap_bbox.max_y + 1;
-
-                                if (abs(nx - sx_min) < tx)              { nx = sx_min;            g_snap_hit_x = true; g_snap_guide_x = sx_min; }
-                                else if (abs((nx + pw) - sx_max) < tx)  { nx = sx_max - pw;       g_snap_hit_x = true; g_snap_guide_x = sx_max; }
-                                else if (abs(nx - sx_max) < tx)         { nx = sx_max;            g_snap_hit_x = true; g_snap_guide_x = sx_max; }
-                                else if (abs((nx + pw) - sx_min) < tx)  { nx = sx_min - pw;       g_snap_hit_x = true; g_snap_guide_x = sx_min; }
-
-                                if (abs(ny - sy_min) < ty)              { ny = sy_min;            g_snap_hit_y = true; g_snap_guide_y = sy_min; }
-                                else if (abs((ny + ph) - sy_max) < ty)  { ny = sy_max - ph;       g_snap_hit_y = true; g_snap_guide_y = sy_max; }
-                                else if (abs(ny - sy_max) < ty)         { ny = sy_max;            g_snap_hit_y = true; g_snap_guide_y = sy_max; }
-                                else if (abs((ny + ph) - sy_min) < ty)  { ny = sy_min - ph;       g_snap_hit_y = true; g_snap_guide_y = sy_min; }
-
-                                /* Center snap: align the paste rect's center
-                                   with the sprite's center. Adobe-style. Only
-                                   engages if no edge snap fired this frame so
-                                   edge alignment takes priority. */
-                                IMG *cimg2 = get_img(g_doc->ilselected);
-                                if (cimg2 && !g_snap_hit_x) {
-                                    int sprite_cx = cimg2->w / 2;
-                                    int paste_cx  = nx + pw / 2;
-                                    if (abs(paste_cx - sprite_cx) < tx) {
-                                        nx = sprite_cx - pw / 2;
-                                        g_snap_hit_x = true;
-                                        g_snap_guide_x = sprite_cx;
-                                    }
-                                }
-                                if (cimg2 && !g_snap_hit_y) {
-                                    int sprite_cy = cimg2->h / 2;
-                                    int paste_cy  = ny + ph / 2;
-                                    if (abs(paste_cy - sprite_cy) < ty) {
-                                        ny = sprite_cy - ph / 2;
-                                        g_snap_hit_y = true;
-                                        g_snap_guide_y = sprite_cy;
-                                    }
-                                }
+                            if (g_snap_bbox.valid && snap_img) {
+                                CanvasContentBounds bounds;
+                                bounds.valid = true;
+                                bounds.min_x = g_snap_bbox.min_x;
+                                bounds.min_y = g_snap_bbox.min_y;
+                                bounds.max_x = g_snap_bbox.max_x;
+                                bounds.max_y = g_snap_bbox.max_y;
+                                CanvasPasteSnapResult snap =
+                                    CanvasSnapPasteToContent(
+                                        nx, ny, pw, ph,
+                                        snap_img->w, snap_img->h,
+                                        bounds, sx, sy);
+                                nx = snap.x;
+                                ny = snap.y;
+                                g_snap_hit_x = snap.hit_x;
+                                g_snap_hit_y = snap.hit_y;
+                                g_snap_guide_x = snap.guide_x;
+                                g_snap_guide_y = snap.guide_y;
                             }
                         } else {
                             g_snap_bbox.valid = false;
@@ -19615,22 +19591,15 @@ void imgui_overlay_render(void)
                            magenta center line when the paste rect's center
                            lands exactly on the sprite's center axis. Lets the
                            user see "I'm centered" without engaging snap. */
-                        {
-                            IMG *cimg3 = get_img(g_doc->ilselected);
-                            if (cimg3 && !g_snap_hit_x) {
-                                int sprite_cx = cimg3->w / 2;
-                                if (nx + pw / 2 == sprite_cx) {
-                                    g_snap_hit_x   = true;
-                                    g_snap_guide_x = sprite_cx;
-                                }
-                            }
-                            if (cimg3 && !g_snap_hit_y) {
-                                int sprite_cy = cimg3->h / 2;
-                                if (ny + ph / 2 == sprite_cy) {
-                                    g_snap_hit_y   = true;
-                                    g_snap_guide_y = sprite_cy;
-                                }
-                            }
+                        if (snap_img) {
+                            CanvasPasteSnapResult guide = CanvasPasteCenterGuide(
+                                nx, ny, pw, ph, snap_img->w, snap_img->h,
+                                g_snap_hit_x, g_snap_hit_y,
+                                g_snap_guide_x, g_snap_guide_y);
+                            g_snap_hit_x = guide.hit_x;
+                            g_snap_hit_y = guide.hit_y;
+                            g_snap_guide_x = guide.guide_x;
+                            g_snap_guide_y = guide.guide_y;
                         }
 
                         if (nx < 0) nx = 0;

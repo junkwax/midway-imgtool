@@ -517,6 +517,121 @@ CanvasContentBounds CanvasFindOpaqueBounds(const IMG *img)
     return bounds;
 }
 
+static int CanvasAbsInt(int v)
+{
+    return v < 0 ? -v : v;
+}
+
+CanvasPasteSnapResult CanvasSnapPasteToContent(int x, int y, int w, int h,
+                                               int target_w, int target_h,
+                                               const CanvasContentBounds &bounds,
+                                               float view_sx, float view_sy)
+{
+    CanvasPasteSnapResult result;
+    result.x = x;
+    result.y = y;
+    if (!bounds.valid)
+        return result;
+
+    int tx = (int)(6.0f / view_sx);
+    int ty = (int)(6.0f / view_sy);
+    if (tx < 1) tx = 1;
+    if (ty < 1) ty = 1;
+
+    int sx_min = bounds.min_x;
+    int sy_min = bounds.min_y;
+    int sx_max = bounds.max_x + 1;
+    int sy_max = bounds.max_y + 1;
+
+    if (CanvasAbsInt(result.x - sx_min) < tx) {
+        result.x = sx_min;
+        result.hit_x = true;
+        result.guide_x = sx_min;
+    } else if (CanvasAbsInt((result.x + w) - sx_max) < tx) {
+        result.x = sx_max - w;
+        result.hit_x = true;
+        result.guide_x = sx_max;
+    } else if (CanvasAbsInt(result.x - sx_max) < tx) {
+        result.x = sx_max;
+        result.hit_x = true;
+        result.guide_x = sx_max;
+    } else if (CanvasAbsInt((result.x + w) - sx_min) < tx) {
+        result.x = sx_min - w;
+        result.hit_x = true;
+        result.guide_x = sx_min;
+    }
+
+    if (CanvasAbsInt(result.y - sy_min) < ty) {
+        result.y = sy_min;
+        result.hit_y = true;
+        result.guide_y = sy_min;
+    } else if (CanvasAbsInt((result.y + h) - sy_max) < ty) {
+        result.y = sy_max - h;
+        result.hit_y = true;
+        result.guide_y = sy_max;
+    } else if (CanvasAbsInt(result.y - sy_max) < ty) {
+        result.y = sy_max;
+        result.hit_y = true;
+        result.guide_y = sy_max;
+    } else if (CanvasAbsInt((result.y + h) - sy_min) < ty) {
+        result.y = sy_min - h;
+        result.hit_y = true;
+        result.guide_y = sy_min;
+    }
+
+    if (target_w > 0 && !result.hit_x) {
+        int sprite_cx = target_w / 2;
+        int paste_cx = result.x + w / 2;
+        if (CanvasAbsInt(paste_cx - sprite_cx) < tx) {
+            result.x = sprite_cx - w / 2;
+            result.hit_x = true;
+            result.guide_x = sprite_cx;
+        }
+    }
+    if (target_h > 0 && !result.hit_y) {
+        int sprite_cy = target_h / 2;
+        int paste_cy = result.y + h / 2;
+        if (CanvasAbsInt(paste_cy - sprite_cy) < ty) {
+            result.y = sprite_cy - h / 2;
+            result.hit_y = true;
+            result.guide_y = sprite_cy;
+        }
+    }
+
+    return result;
+}
+
+CanvasPasteSnapResult CanvasPasteCenterGuide(int x, int y, int w, int h,
+                                             int target_w, int target_h,
+                                             bool hit_x, bool hit_y,
+                                             int guide_x, int guide_y)
+{
+    CanvasPasteSnapResult result;
+    result.x = x;
+    result.y = y;
+    result.hit_x = hit_x;
+    result.hit_y = hit_y;
+    result.guide_x = guide_x;
+    result.guide_y = guide_y;
+
+    if (target_w > 0 && !result.hit_x) {
+        int sprite_cx = target_w / 2;
+        if (result.x + w / 2 == sprite_cx) {
+            result.hit_x = true;
+            result.guide_x = sprite_cx;
+        }
+    }
+    if (target_h > 0 && !result.hit_y) {
+        int sprite_cy = target_h / 2;
+        if (result.y + h / 2 == sprite_cy) {
+            result.hit_y = true;
+            result.guide_y = sprite_cy;
+        }
+    }
+
+    return result;
+}
+
 void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 canvas_pos, ImVec2 canvas_sz,
                              ImVec2 mins[2], ImVec2 maxs[2])
