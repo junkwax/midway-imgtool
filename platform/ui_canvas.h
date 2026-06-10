@@ -41,6 +41,8 @@ struct WorldMarkedSequenceState {
     int sequence_doc_idx[kWorldMarkedMaxTabs] = {-1, -1, -1, -1, -1, -1, -1};
 };
 
+WorldMarkedSequenceState &WorldMarkedState(void);
+
 /* Pure string helpers used by the marked World View panel. */
 bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *prefix);
 bool WorldDecapBodyPieceInfo(const std::string &name, int *frame_no,

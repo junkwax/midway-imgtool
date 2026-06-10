@@ -22,6 +22,12 @@ static int s_world_onion_tex_w = 0;
 static int s_world_onion_tex_h = 0;
 static int s_world_onion_idx = -1;
 
+WorldMarkedSequenceState &WorldMarkedState(void)
+{
+    static WorldMarkedSequenceState state;
+    return state;
+}
+
 static bool WorldReadDecapFrameNo(const std::string &upper, size_t pos,
                                   int *frame_no, size_t *end_pos)
 {

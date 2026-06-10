@@ -1268,7 +1268,7 @@ static bool  g_world_mirror_active = false;
 static bool  g_world_mirror_other = false;
 /* Marked World View slot constants now live in ui_canvas.h. */
 static bool  g_world_mirror_extra[5] = {false, false, false, false, false};
-static WorldMarkedSequenceState g_world_marked_state;
+static WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
 static int   g_world_marked_drag_slot = -1;
 static int   g_world_marked_drag_frame = -1;
 static ImVec2 g_world_marked_drag_mouse = ImVec2(0, 0);
