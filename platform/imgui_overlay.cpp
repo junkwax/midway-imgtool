@@ -18870,29 +18870,14 @@ void imgui_overlay_render(void)
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img && img->w > 0) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
-
-                /* Previous-frame anipoint ghost — gray crosshair when onion-skin
-                   is on, mirroring the DOS tool's registration reference. */
-                if (g_timeline_onion && g_doc->ilselected > 0) {
-                    int prev_idx = g_doc->ilselected - 1;
-                    IMG *prev = get_img(prev_idx);
-                    if (prev) {
-                        ImVec2 sp(img_pos.x + (short)prev->anix * sx, img_pos.y + (short)prev->aniy * sy);
-                        DrawCanvasAnipointCrosshair(dl, sp, IM_COL32(160, 160, 160, 180), 12.f, 1.f);
-                        if (secondary_anipoint_in_use(prev)) {
-                            ImVec2 sp2(img_pos.x + (short)prev->anix2 * sx, img_pos.y + (short)prev->aniy2 * sy);
-                            DrawCanvasAnipointCrosshair(dl, sp2, IM_COL32(160, 160, 160, 140), 9.f, 1.f);
-                        }
-                    }
-                }
-
-                ImVec2 s1(img_pos.x + (short)img->anix * sx, img_pos.y + (short)img->aniy * sy);
                 bool h1 = false;
                 bool h2 = false;
-                CanvasAnipointHitTest(img, img_pos, sx, sy, mouse, &h1, &h2);
-                /* Primary anipoint: white crosshair, brightens on hover. */
-                ImU32 col1 = h1 ? IM_COL32(255, 220, 60, 255) : IM_COL32(255, 255, 255, 255);
-                DrawCanvasAnipointCrosshair(dl, s1, col1, 14.f, h1 ? 2.f : 1.5f);
+                IMG *prev = (g_timeline_onion && g_doc->ilselected > 0)
+                    ? get_img(g_doc->ilselected - 1)
+                    : NULL;
+                DrawCanvasAnipointOverlay(dl, img, prev,
+                                          img_pos, sx, sy, mouse,
+                                          &h1, &h2);
 
                 if (h1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag1 = true; widget_consumed_click = true; }
                 if (g_anipoint_drag1 && mbdn) {
@@ -18902,16 +18887,9 @@ void imgui_overlay_render(void)
                     widget_consumed_click = true;
                 } else if (!mbdn && g_anipoint_drag1) { g_anipoint_drag1 = false; }
 
-                /* Secondary anipoint sentinel is signed -1; cast first so
-                   (-1, -1) doesn't read as 0xFFFF and emit a phantom line. */
+                /* Secondary anipoint drag/editing stays here; drawing and
+                   hover detection live in ui_canvas. */
                 if (secondary_anipoint_in_use(img)) {
-                    ImVec2 s2(img_pos.x + (short)img->anix2 * sx, img_pos.y + (short)img->aniy2 * sy);
-                    /* Secondary anipoint: cyan crosshair (distinct from primary). */
-                    ImU32 col2 = h2 ? IM_COL32(120, 255, 255, 255) : IM_COL32(60, 200, 220, 255);
-                    DrawCanvasAnipointCrosshair(dl, s2, col2, 10.f, h2 ? 2.f : 1.5f);
-                    /* Thin connector line between the two anipoints. */
-                    dl->AddLine(s1, s2, IM_COL32(255, 255, 0, 140), 1.f);
-
                     if (h2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag2 = true; widget_consumed_click = true; }
                     if (g_anipoint_drag2 && mbdn) {
                         int nx = (int)((mouse.x - img_pos.x) / sx);

@@ -405,6 +405,52 @@ bool CanvasAnipointHitTest(const IMG *img, ImVec2 img_pos,
     return h1 || h2;
 }
 
+void DrawCanvasAnipointOverlay(ImDrawList *dl, const IMG *img,
+                               const IMG *prev_img,
+                               ImVec2 img_pos, float sx, float sy,
+                               ImVec2 mouse,
+                               bool *primary_hover,
+                               bool *secondary_hover)
+{
+    bool h1 = false;
+    bool h2 = false;
+    CanvasAnipointHitTest(img, img_pos, sx, sy, mouse, &h1, &h2);
+    if (primary_hover) *primary_hover = h1;
+    if (secondary_hover) *secondary_hover = h2;
+    if (!dl || !img)
+        return;
+
+    if (prev_img) {
+        ImVec2 sp(img_pos.x + (short)prev_img->anix * sx,
+                  img_pos.y + (short)prev_img->aniy * sy);
+        DrawCanvasAnipointCrosshair(dl, sp,
+                                    IM_COL32(160, 160, 160, 180),
+                                    12.0f, 1.0f);
+        if (secondary_anipoint_in_use(prev_img)) {
+            ImVec2 sp2(img_pos.x + (short)prev_img->anix2 * sx,
+                       img_pos.y + (short)prev_img->aniy2 * sy);
+            DrawCanvasAnipointCrosshair(dl, sp2,
+                                        IM_COL32(160, 160, 160, 140),
+                                        9.0f, 1.0f);
+        }
+    }
+
+    ImVec2 s1(img_pos.x + (short)img->anix * sx,
+              img_pos.y + (short)img->aniy * sy);
+    ImU32 col1 = h1 ? IM_COL32(255, 220, 60, 255)
+                    : IM_COL32(255, 255, 255, 255);
+    DrawCanvasAnipointCrosshair(dl, s1, col1, 14.0f, h1 ? 2.0f : 1.5f);
+
+    if (secondary_anipoint_in_use(img)) {
+        ImVec2 s2(img_pos.x + (short)img->anix2 * sx,
+                  img_pos.y + (short)img->aniy2 * sy);
+        ImU32 col2 = h2 ? IM_COL32(120, 255, 255, 255)
+                        : IM_COL32(60, 200, 220, 255);
+        DrawCanvasAnipointCrosshair(dl, s2, col2, 10.0f, h2 ? 2.0f : 1.5f);
+        dl->AddLine(s1, s2, IM_COL32(255, 255, 0, 140), 1.0f);
+    }
+}
+
 void DrawCanvasHitboxOverlay(ImDrawList *dl, ImVec2 img_pos,
                              float sx, float sy,
                              int x, int y, int w, int h,
