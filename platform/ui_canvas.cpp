@@ -228,6 +228,57 @@ void DrawCanvasRotateButtons(ImDrawList *dl, const ImVec2 mins[2],
     }
 }
 
+void DrawCanvasCheckerboard(ImDrawList *dl, ImVec2 img_pos, ImVec2 img_sz,
+                            float scale)
+{
+    if (!dl || img_sz.x <= 0.0f || img_sz.y <= 0.0f) return;
+
+    float cs = 8.0f * scale;
+    if (cs < 8.0f) cs = 8.0f;
+    for (float cy = img_pos.y; cy < img_pos.y + img_sz.y; cy += cs) {
+        for (float cx = img_pos.x; cx < img_pos.x + img_sz.x; cx += cs) {
+            int row = (int)((cy - img_pos.y) / cs);
+            int col = (int)((cx - img_pos.x) / cs);
+            ImU32 col32 = ((row + col) & 1) ? IM_COL32(160, 160, 160, 255)
+                                            : IM_COL32(100, 100, 100, 255);
+            float x2 = cx + cs;
+            if (x2 > img_pos.x + img_sz.x) x2 = img_pos.x + img_sz.x;
+            float y2 = cy + cs;
+            if (y2 > img_pos.y + img_sz.y) y2 = img_pos.y + img_sz.y;
+            dl->AddRectFilled(ImVec2(cx, cy), ImVec2(x2, y2), col32);
+        }
+    }
+}
+
+void DrawCanvasPixelGrid(ImDrawList *dl, ImVec2 img_pos, ImVec2 img_sz,
+                         int tex_w, int tex_h, float scale)
+{
+    if (!dl || scale < 4.0f || tex_w <= 0 || tex_h <= 0)
+        return;
+
+    float sx = img_sz.x / (float)tex_w;
+    float sy = img_sz.y / (float)tex_h;
+    ImU32 gc = IM_COL32(60, 60, 60, 100);
+    for (int x = 0; x <= tex_w; x++)
+        dl->AddLine(ImVec2(img_pos.x + x * sx, img_pos.y),
+                    ImVec2(img_pos.x + x * sx, img_pos.y + img_sz.y),
+                    gc, 0.5f);
+    for (int y = 0; y <= tex_h; y++)
+        dl->AddLine(ImVec2(img_pos.x, img_pos.y + y * sy),
+                    ImVec2(img_pos.x + img_sz.x, img_pos.y + y * sy),
+                    gc, 0.5f);
+}
+
+void DrawCanvasZoomIndicator(bool zoom_fit, float zoom)
+{
+    if (zoom_fit) return;
+
+    char zbuf[32];
+    snprintf(zbuf, sizeof(zbuf), "%.0f%%", zoom * 100.0f);
+    ImGui::SetCursorPos(ImVec2(8, 4));
+    ImGui::TextDisabled("%s", zbuf);
+}
+
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,

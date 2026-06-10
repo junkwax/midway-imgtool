@@ -18456,19 +18456,8 @@ void imgui_overlay_render(void)
             CanvasRotateButtonRects(img_pos, img_sz, canvas_origin, avail,
                                     rotate_button_min, rotate_button_max);
 
-            /* Checkerboard background for transparency */
             ImDrawList *dl = ImGui::GetWindowDrawList();
-            float cs = 8.0f * scale; if (cs < 8.f) cs = 8.f;
-            for (float cy = img_pos.y; cy < img_pos.y + th; cy += cs) {
-                for (float cx2 = img_pos.x; cx2 < img_pos.x + tw; cx2 += cs) {
-                    int row = (int)((cy - img_pos.y) / cs);
-                    int col = (int)((cx2 - img_pos.x) / cs);
-                    ImU32 col32 = ((row + col) & 1) ? IM_COL32(160,160,160,255) : IM_COL32(100,100,100,255);
-                    float x2 = cx2 + cs; if (x2 > img_pos.x + tw) x2 = img_pos.x + tw;
-                    float y2 = cy  + cs; if (y2 > img_pos.y + th) y2 = img_pos.y + th;
-                    dl->AddRectFilled(ImVec2(cx2, cy), ImVec2(x2, y2), col32);
-                }
-            }
+            DrawCanvasCheckerboard(dl, img_pos, img_sz, scale);
             /* Timeline onion-skin: draw prev/next frames of the current
                timeline order behind the live sprite, anipoint-aligned and
                faint, so the user can scrub or play and see motion arcs. */
@@ -18620,29 +18609,14 @@ void imgui_overlay_render(void)
                 }
             }
 
-            /* Pixel grid overlay at high zoom */
-            if (scale >= 4.0f) {
-                ImU32 gc = IM_COL32(60, 60, 60, 100);
-                for (int x = 0; x <= g_img_tex_w; x++)
-                    dl->AddLine(ImVec2(img_pos.x + x * sx, img_pos.y),
-                                ImVec2(img_pos.x + x * sx, img_pos.y + th), gc, 0.5f);
-                for (int y = 0; y <= g_img_tex_h; y++)
-                    dl->AddLine(ImVec2(img_pos.x, img_pos.y + y * sy),
-                                ImVec2(img_pos.x + tw, img_pos.y + y * sy), gc, 0.5f);
-            }
+            DrawCanvasPixelGrid(dl, img_pos, img_sz, g_img_tex_w, g_img_tex_h, scale);
 
             if (show_auto_chop_preview) {
                 DrawAutoChopPreviewRects(dl, auto_chop_preview,
                                          img_pos, sx, sy, true);
             }
 
-            /* Zoom indicator */
-            if (!g_zoom_fit) {
-                char zbuf[32];
-                snprintf(zbuf, sizeof(zbuf), "%.0f%%", g_zoom * 100.0f);
-                ImGui::SetCursorPos(ImVec2(8, 4));
-                ImGui::TextDisabled("%s", zbuf);
-            }
+            DrawCanvasZoomIndicator(g_zoom_fit, g_zoom);
         } else {
             g_zoom_pending_steps = 0;
             g_zoom_pending_fit = false;

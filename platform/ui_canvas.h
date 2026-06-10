@@ -67,6 +67,11 @@ void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
                              ImVec2 mins[2], ImVec2 maxs[2]);
 void DrawCanvasRotateButtons(ImDrawList *dl, const ImVec2 mins[2],
                              const ImVec2 maxs[2], int hover_idx);
+void DrawCanvasCheckerboard(ImDrawList *dl, ImVec2 img_pos, ImVec2 img_sz,
+                            float scale);
+void DrawCanvasPixelGrid(ImDrawList *dl, ImVec2 img_pos, ImVec2 img_sz,
+                         int tex_w, int tex_h, float scale);
+void DrawCanvasZoomIndicator(bool zoom_fit, float zoom);
 
 struct WorldMarkedSequenceState {
     bool marked_play = false;
