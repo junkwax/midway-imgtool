@@ -101,6 +101,9 @@ WorldMarkedLane WorldBuildDummyDecapLane(WorldMarkedSequenceState &state,
                                          int active_doc_idx);
 bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
                                  std::vector<WorldMarkedLane> &lanes);
+bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
+                                   std::vector<WorldMarkedLane> &lanes,
+                                   float delta_time);
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);

@@ -377,6 +377,37 @@ bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
     return true;
 }
 
+bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
+                                   std::vector<WorldMarkedLane> &lanes,
+                                   float delta_time)
+{
+    if (state.fps < 1.0f) state.fps = 1.0f;
+    if (state.fps > 60.0f) state.fps = 60.0f;
+    if (!state.paused)
+        state.timer += delta_time;
+    float step = 1.0f / state.fps;
+    while (state.timer >= step) {
+        state.timer -= step;
+        state.frame++;
+    }
+
+    bool have_image = false;
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        WorldMarkedLane &lane = lanes[slot];
+        int n = (int)lane.frames.size();
+        if (n <= 0) continue;
+        lane.frame_pos = WorldMarkedFrameForTick(state, lane.delay_slot, n,
+                                                 state.frame,
+                                                 state.hold_end[lane.delay_slot]);
+        Document *fdoc = (lane.frame_pos < (int)lane.frame_docs.size() &&
+                          lane.frame_docs[lane.frame_pos])
+                       ? lane.frame_docs[lane.frame_pos] : lane.doc;
+        lane.img = doc_get_img(fdoc, lane.frames[lane.frame_pos]);
+        if (lane.img) have_image = true;
+    }
+    return have_image;
+}
+
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
 {
     std::string out;

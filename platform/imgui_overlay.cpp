@@ -1587,29 +1587,8 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     if (lanes.empty()) return false;
     if (lanes.size() < 2 && !asm_present) return false;
 
-    if (g_world_marked_state.fps < 1.0f) g_world_marked_state.fps = 1.0f;
-    if (g_world_marked_state.fps > 60.0f) g_world_marked_state.fps = 60.0f;
-    if (!g_world_marked_state.paused)
-        g_world_marked_state.timer += io.DeltaTime;
-    float step = 1.0f / g_world_marked_state.fps;
-    while (g_world_marked_state.timer >= step) {
-        g_world_marked_state.timer -= step;
-        g_world_marked_state.frame++;
-    }
-
-    bool have_image = false;
-    for (int slot = 0; slot < (int)lanes.size(); slot++) {
-        WorldMarkedLane &lane = lanes[slot];
-        int n = (int)lane.frames.size();
-        if (n <= 0) continue;
-        lane.frame_pos = WorldMarkedFrameForTick(g_world_marked_state, lane.delay_slot, n, g_world_marked_state.frame,
-                                                 g_world_marked_state.hold_end[lane.delay_slot]);
-        Document *fdoc = (lane.frame_pos < (int)lane.frame_docs.size() && lane.frame_docs[lane.frame_pos])
-                       ? lane.frame_docs[lane.frame_pos] : lane.doc;
-        lane.img = doc_get_img(fdoc, lane.frames[lane.frame_pos]);
-        if (lane.img) have_image = true;
-    }
-    if (!have_image) return false;
+    if (!WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, io.DeltaTime))
+        return false;
 
     float fit_x = avail.x / (float)g_world_state.w;
     float fit_y = avail.y / (float)g_world_state.h;
