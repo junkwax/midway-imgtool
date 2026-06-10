@@ -292,6 +292,27 @@ void DrawCanvasPasteHint(ImDrawList *dl, ImVec2 img_pos,
                 color, hint);
 }
 
+CanvasPasteHint CanvasPasteHintForState(bool transform_active,
+                                        TransformHandle handle,
+                                        bool paste_dragging)
+{
+    CanvasPasteHint hint;
+    if (transform_active) {
+        hint.text = (handle != TransformHandle::None)
+            ? (handle == TransformHandle::Rotate ? "Rotating..."
+               : (handle == TransformHandle::Move ? "Moving..." : "Scaling..."))
+            : "Drag inside to move | handles scale | top dot rotates | Enter commits";
+        hint.color = IM_COL32(0, 220, 255, 255);
+    } else if (paste_dragging) {
+        hint.text = "Moving...";
+        hint.color = IM_COL32(255, 200, 0, 255);
+    } else {
+        hint.text = "Drag to move | H/V flip | L to layer | Ctrl+T transform | Click outside to place | Esc cancel";
+        hint.color = IM_COL32(255, 255, 0, 255);
+    }
+    return hint;
+}
+
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked)

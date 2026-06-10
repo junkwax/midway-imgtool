@@ -19379,22 +19379,11 @@ void imgui_overlay_render(void)
                                           g_snap_hit_x, g_snap_guide_x,
                                           g_snap_hit_y, g_snap_guide_y);
 
-                /* Instruction text */
-                const char *paste_hint = NULL;
-                ImU32 paste_hint_col = IM_COL32(255, 255, 0, 255);
-                if (g_xform.active) {
-                    paste_hint = (g_xform.handle != TransformHandle::None)
-                        ? (g_xform.handle == TransformHandle::Rotate ? "Rotating..."
-                           : (g_xform.handle == TransformHandle::Move ? "Moving..." : "Scaling..."))
-                        : "Drag inside to move | handles scale | top dot rotates | Enter commits";
-                    paste_hint_col = IM_COL32(0, 220, 255, 255);
-                } else if (g_pasted.dragging) {
-                    paste_hint = "Moving...";
-                    paste_hint_col = IM_COL32(255, 200, 0, 255);
-                } else {
-                    paste_hint = "Drag to move | H/V flip | L to layer | Ctrl+T transform | Click outside to place | Esc cancel";
-                }
-                DrawCanvasPasteHint(dl, img_pos, paste_hint, paste_hint_col);
+                CanvasPasteHint paste_hint =
+                    CanvasPasteHintForState(g_xform.active, g_xform.handle,
+                                            g_pasted.dragging);
+                DrawCanvasPasteHint(dl, img_pos,
+                                    paste_hint.text, paste_hint.color);
 
                 dl->AddRectFilled(paste_controls_min, paste_controls_max,
                                   IM_COL32(18, 20, 24, 230), 4.0f);

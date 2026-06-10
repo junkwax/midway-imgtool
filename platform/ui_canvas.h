@@ -93,6 +93,11 @@ struct CanvasPasteSnapResult {
     int guide_y = 0;
 };
 
+struct CanvasPasteHint {
+    const char *text = "";
+    ImU32 color = IM_COL32(255, 255, 0, 255);
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -132,6 +137,9 @@ void DrawCanvasPasteSnapGuides(ImDrawList *dl, ImVec2 img_pos,
                                bool hit_y, int guide_y);
 void DrawCanvasPasteHint(ImDrawList *dl, ImVec2 img_pos,
                          const char *hint, ImU32 color);
+CanvasPasteHint CanvasPasteHintForState(bool transform_active,
+                                        TransformHandle handle,
+                                        bool paste_dragging);
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked);
