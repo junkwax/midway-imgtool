@@ -1523,76 +1523,50 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     WorldMarkedSceneResult scene =
         WorldDrawMarkedScene(g_world_marked_state, g_world_state, lanes,
                              avail, img_pos);
-    float panel_w = scene.panel_layout.width;
-    float panel_h = scene.panel_layout.height;
-    ImVec2 panel_pos = scene.panel_layout.pos;
 
     ImGui::SetCursorScreenPos(img_pos);
     ImGui::Dummy(ImVec2(avail.x, avail.y));
 
-    /* WorldBuildMarkedAsm now lives in ui_canvas.{h,cpp}. */
-
-    ImGui::SetCursorScreenPos(panel_pos);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.03f, 0.03f, 0.035f, 0.90f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
-    if (ImGui::BeginChild("##world_marked_sequence",
-                          ImVec2(panel_w, panel_h), true,
-                          ImGuiWindowFlags_HorizontalScrollbar)) {
-        IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
-        WorldMarkedPanelAction panel_action =
-            WorldDrawMarkedPanelHeader(g_world_marked_state, lanes,
-                                       dummy_decap_missing, selected_img,
-                                       document_active_index());
-        if (panel_action.copied_asm) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Copied World View ASM for %d lane%s.",
-                     panel_action.copied_lane_count,
-                     panel_action.copied_lane_count == 1 ? "" : "s");
-            g_restore_msg_timer = 4.0f;
-        }
-        if (panel_action.request_save_asm)
-            g_request_save_world_asm = true;   /* dialog opened in main loop */
-        if (panel_action.request_load_asm) {
-            g_show_asm_anim = true;
-            g_request_load_asm = true;
-        }
-        if (panel_action.dummy_assigned) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Assigned dummy body to [%d] %sDECAP.",
-                     g_world_marked_state.dummy_decap_doc_idx,
-                     g_world_marked_state.dummy_decap_prefix.c_str());
-            g_restore_msg_timer = 4.0f;
-        } else if (panel_action.dummy_assign_failed) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Select a DECAP body frame/piece first.");
-            g_restore_msg_timer = 4.0f;
-        }
-
-        for (int slot = 0; slot < (int)lanes.size(); slot++) {
-            WorldMarkedLane &lane = lanes[slot];
-            ImGui::PushID(slot);
-            WorldDrawMarkedLaneControls(g_world_marked_state, lane, slot);
-
-            WorldMarkedLaneThumbClick thumb_click =
-                WorldDrawMarkedLaneThumbnails(g_world_marked_state, lane);
-            if (thumb_click.clicked) {
-                if (thumb_click.doc_idx != document_active_index()) {
-                    document_set_active(thumb_click.doc_idx);
-                    ResetPerDocumentUiState(false);
-                    g_doc_tab_select_request = thumb_click.doc_idx;
-                }
-                g_doc->ilselected = thumb_click.img_idx;
-                g_zoom_reset = true;
-            }
-            ImGui::PopID();
-        }
+    IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
+    WorldMarkedPanelResult panel_result =
+        WorldDrawMarkedPanel(g_world_marked_state, lanes,
+                             scene.panel_layout, dummy_decap_missing,
+                             selected_img, document_active_index());
+    WorldMarkedPanelAction panel_action = panel_result.header;
+    if (panel_action.copied_asm) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Copied World View ASM for %d lane%s.",
+                 panel_action.copied_lane_count,
+                 panel_action.copied_lane_count == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
     }
-    ImGui::EndChild();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
-
-    if (WorldDrawMarkedAsmPopup(g_world_marked_state)) {
+    if (panel_action.request_save_asm)
+        g_request_save_world_asm = true;   /* dialog opened in main loop */
+    if (panel_action.request_load_asm) {
+        g_show_asm_anim = true;
+        g_request_load_asm = true;
+    }
+    if (panel_action.dummy_assigned) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Assigned dummy body to [%d] %sDECAP.",
+                 g_world_marked_state.dummy_decap_doc_idx,
+                 g_world_marked_state.dummy_decap_prefix.c_str());
+        g_restore_msg_timer = 4.0f;
+    } else if (panel_action.dummy_assign_failed) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Select a DECAP body frame/piece first.");
+        g_restore_msg_timer = 4.0f;
+    }
+    if (panel_result.thumb_click.clicked) {
+        if (panel_result.thumb_click.doc_idx != document_active_index()) {
+            document_set_active(panel_result.thumb_click.doc_idx);
+            ResetPerDocumentUiState(false);
+            g_doc_tab_select_request = panel_result.thumb_click.doc_idx;
+        }
+        g_doc->ilselected = panel_result.thumb_click.img_idx;
+        g_zoom_reset = true;
+    }
+    if (panel_result.copied_popup_asm) {
         snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied World View ASM.");
         g_restore_msg_timer = 4.0f;
     }

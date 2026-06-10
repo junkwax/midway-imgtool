@@ -882,6 +882,46 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     return action;
 }
 
+WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
+                                            std::vector<WorldMarkedLane> &lanes,
+                                            const WorldMarkedPanelLayout &layout,
+                                            bool dummy_decap_missing,
+                                            IMG *selected_img,
+                                            int active_doc_idx)
+{
+    WorldMarkedPanelResult result = {};
+
+    ImGui::SetCursorScreenPos(layout.pos);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.03f, 0.03f, 0.035f, 0.90f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+    if (ImGui::BeginChild("##world_marked_sequence",
+                          ImVec2(layout.width, layout.height), true,
+                          ImGuiWindowFlags_HorizontalScrollbar)) {
+        result.header =
+            WorldDrawMarkedPanelHeader(state, lanes, dummy_decap_missing,
+                                       selected_img, active_doc_idx);
+
+        for (int slot = 0; slot < (int)lanes.size(); slot++) {
+            WorldMarkedLane &lane = lanes[slot];
+            ImGui::PushID(slot);
+            WorldDrawMarkedLaneControls(state, lane, slot);
+
+            WorldMarkedLaneThumbClick thumb_click =
+                WorldDrawMarkedLaneThumbnails(state, lane);
+            if (thumb_click.clicked)
+                result.thumb_click = thumb_click;
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+
+    result.copied_popup_asm = WorldDrawMarkedAsmPopup(state);
+    return result;
+}
+
 void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                                  WorldMarkedLane &lane,
                                  int display_slot)

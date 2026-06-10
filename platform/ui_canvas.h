@@ -122,6 +122,12 @@ struct WorldMarkedPanelAction {
     bool dummy_assign_failed = false;
 };
 
+struct WorldMarkedPanelResult {
+    WorldMarkedPanelAction header;
+    WorldMarkedLaneThumbClick thumb_click;
+    bool copied_popup_asm = false;
+};
+
 struct WorldMarkedLaneRenderInfo {
     bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
     bool lane_mirror_x[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
@@ -195,6 +201,12 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
                                                   bool dummy_decap_missing,
                                                   IMG *selected_img,
                                                   int active_doc_idx);
+WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
+                                            std::vector<WorldMarkedLane> &lanes,
+                                            const WorldMarkedPanelLayout &layout,
+                                            bool dummy_decap_missing,
+                                            IMG *selected_img,
+                                            int active_doc_idx);
 void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                                  WorldMarkedLane &lane,
                                  int display_slot);
