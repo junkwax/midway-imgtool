@@ -8,8 +8,8 @@ tracks slice-by-slice progress.
 
 ## Current checkpoint - June 10, 2026
 
-Branch: `refactor/overlay-split` (32 commits ahead of `SDL-main`). Working tree
-clean. `imgui_overlay.cpp` is down to 22,123 lines; `ui_canvas.cpp` is now 337
+Branch: `refactor/overlay-split` (39 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is down to 21,842 lines; `ui_canvas.cpp` is now 618
 lines. Full app builds; all 7 `ctest` suites pass.
 
 **Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
@@ -25,8 +25,9 @@ only when a function move needs them across TUs — *not* in a big up-front swee
 `ui_timeline` now owns the whole timeline (frame model, thumbnail cache,
 composite selection/playback, and all timeline rendering incl. the composite
 preview). `ui_canvas` has started with the single-sprite World View canvas, its
-onion-skin texture cache, and marked World View constants/string/model helpers.
-Supporting modules extracted along the way:
+onion-skin texture cache, and marked World View constants, playback/sequence
+state, string/model helpers, sequence tick/sync/edit helpers. Supporting
+modules extracted along the way:
 `world_render` (sprite→texture), `anipoint` (pure predicates + sequence-name
 parsing), `anipoint_edit` (sequence-propagating setters), `img_util`
 (`img_name_string`, `signed_to_img_word`).
@@ -151,10 +152,11 @@ foundation as you go:
       (predicates + sequence-name parsing + secondary mutators), `anipoint_edit`
       (sequence-propagating setters), `img_util` (name + word clamp).
 - [ ] `ui_canvas` — canvas render, pan/zoom, World View. **Started:** the
-      single-sprite World View canvas, onion-skin texture cache, and marked
-      World View constants/string/model helpers now live in `ui_canvas`;
-      marked-tab drawing/playback state and the regular edit canvas remain in
-      `imgui_overlay.cpp`.
+      single-sprite World View canvas, onion-skin texture cache, marked World
+      View constants, playback/sequence state, string/model helpers, and
+      sequence tick/sync/edit helpers now live in `ui_canvas`; marked-tab
+      drawing, dummy-decap detection, mirror flags, ASM export popup state, and
+      the regular edit canvas remain in `imgui_overlay.cpp`.
 - [ ] `ui_palette` — palette editor, HSL sliders, histogram, color picking.
 - [ ] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso,
       free transform, clone, smart remap).
