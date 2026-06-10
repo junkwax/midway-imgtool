@@ -8,8 +8,8 @@ tracks slice-by-slice progress.
 
 ## Current checkpoint - June 10, 2026
 
-Branch: `refactor/overlay-split` (71 commits ahead of `SDL-main`). Working tree
-clean. `imgui_overlay.cpp` is down to 20,588 lines; `ui_canvas.cpp` is now 2,214
+Branch: `refactor/overlay-split` (72 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is down to 20,580 lines; `ui_canvas.cpp` is now 2,235
 lines. Full app builds; all 7 `ctest` suites pass.
 
 **Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
@@ -24,7 +24,7 @@ only when a function move needs them across TUs — *not* in a big up-front swee
 **Phase C (UI subsystems): first subsystem complete, second started** —
 `ui_timeline` now owns the whole timeline (frame model, thumbnail cache,
 composite selection/playback, and all timeline rendering incl. the composite
-preview). `ui_canvas` has started with zoom/pan helpers, canvas rotate-button layout/draw helpers, canvas chrome drawing (checkerboard, pixel grid, zoom badge), DMA compression and color-isolation overlay drawing, the single-sprite
+preview). `ui_canvas` has started with zoom/pan helpers, canvas rotate-button layout/draw helpers, canvas chrome drawing (checkerboard, pixel grid, zoom badge, pixel hover highlight), DMA compression and color-isolation overlay drawing, the single-sprite
 World View canvas, World View config state, onion-skin texture cache, and marked World View
 constants, playback/sequence/mirror/dummy-decap/drag/ASM-popup state,
 string/model helpers, sequence tick/sync/edit helpers, and dummy-decap timing
@@ -58,7 +58,7 @@ committed (`fc4edeb`).
 | `anipoint_edit.{h,cpp}` | sequence-propagating anipoint setters + undo coalescing | — |
 | `world_render.{h,cpp}` | `doc_get_img`, `doc_get_pal`, `BuildWorldSpriteTexture`, temp-tex pool | — |
 | `ui_timeline.{h,cpp}` | timeline frame model, thumbs, composite, playback, preview | — |
-| `ui_canvas.{h,cpp}` | zoom/pan helpers, canvas rotate-button geometry/drawing, canvas chrome drawing (checkerboard, pixel grid, zoom badge), DMA compression and color-isolation overlay drawing, single-sprite World View canvas, World View config/layout state, onion texture cache, marked World View orchestration/scene drawing, marked World View lane model/constants/playback+sequence+mirror+dummy-decap+drag+ASM-popup state/string/model helpers, marked-frame collection, source/dummy-decap lane collection/builders, ASM lane builder, lane playback resolver/sequence refresh, selected dummy-decap assignment, panel wrapper/layout/header controls, per-lane edit controls, thumbnail strip, drag, sprite/tag/status drawing, render rects + ASM generation/preview | — |
+| `ui_canvas.{h,cpp}` | zoom/pan helpers, canvas rotate-button geometry/drawing, canvas chrome drawing (checkerboard, pixel grid, zoom badge, pixel hover highlight), DMA compression and color-isolation overlay drawing, single-sprite World View canvas, World View config/layout state, onion texture cache, marked World View orchestration/scene drawing, marked World View lane model/constants/playback+sequence+mirror+dummy-decap+drag+ASM-popup state/string/model helpers, marked-frame collection, source/dummy-decap lane collection/builders, ASM lane builder, lane playback resolver/sequence refresh, selected dummy-decap assignment, panel wrapper/layout/header controls, per-lane edit controls, thumbnail strip, drag, sprite/tag/status drawing, render rects + ASM generation/preview | — |
 | `ui_internal.h` / `ui_state.cpp` | shared overlay state foundation + `mark_dirty`, `ICON_*` | — |
 
 ### For the next agent — how to continue
@@ -162,7 +162,7 @@ foundation as you go:
       (sequence-propagating setters), `img_util` (name + word clamp).
 - [ ] `ui_canvas` — canvas render, pan/zoom, World View. **Started:** the
       zoom/pan helpers, canvas rotate-button layout/draw helpers, canvas chrome
-      drawing (checkerboard, pixel grid, zoom badge), DMA compression and
+      drawing (checkerboard, pixel grid, zoom badge, pixel hover highlight), DMA compression and
       color-isolation overlay drawing, single-sprite World View canvas, World View config/layout state, onion-skin
       texture cache, marked World View constants,
       playback/sequence/mirror/dummy-decap/drag/ASM-popup state, string/model

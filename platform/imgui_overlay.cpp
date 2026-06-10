@@ -18610,17 +18610,9 @@ void imgui_overlay_render(void)
 
         /* Pixel highlight at high zoom */
         if (!canvas_input_blocked && !timeline_composite_preview_active) {
-            bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
-                        mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y &&
-                        !rotate_button_hovered;
-            if (over && img_sz.x > 0 && ((sx + sy) * 0.5f) >= 4.0f) {
-                int hx = (int)((mouse.x - img_pos.x) / sx);
-                int hy = (int)((mouse.y - img_pos.y) / sy);
-                ImDrawList *dl = ImGui::GetWindowDrawList();
-                dl->AddRect(ImVec2(img_pos.x + hx * sx, img_pos.y + hy * sy),
-                            ImVec2(img_pos.x + (hx + 1) * sx, img_pos.y + (hy + 1) * sy),
-                            IM_COL32(255, 255, 0, 180), 0.0f, 0, 1.5f);
-            }
+            DrawCanvasPixelHoverHighlight(ImGui::GetWindowDrawList(),
+                                          mouse, img_pos, img_sz, sx, sy,
+                                          rotate_button_hovered);
         }
 
         /* ---- Pencil + eyedropper + fill + pan tools ---- */

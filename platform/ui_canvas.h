@@ -77,6 +77,10 @@ void DrawCanvasDmaCompressionOverlay(ImDrawList *dl, IMG *img,
 void DrawCanvasColorIsolationOverlay(ImDrawList *dl, IMG *img,
                                      const bool kept[256],
                                      ImVec2 img_pos, float sx, float sy);
+void DrawCanvasPixelHoverHighlight(ImDrawList *dl, ImVec2 mouse,
+                                   ImVec2 img_pos, ImVec2 img_sz,
+                                   float sx, float sy,
+                                   bool suppress);
 
 struct WorldMarkedSequenceState {
     bool marked_play = false;

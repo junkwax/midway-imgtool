@@ -347,6 +347,27 @@ void DrawCanvasColorIsolationOverlay(ImDrawList *dl, IMG *img,
     }
 }
 
+void DrawCanvasPixelHoverHighlight(ImDrawList *dl, ImVec2 mouse,
+                                   ImVec2 img_pos, ImVec2 img_sz,
+                                   float sx, float sy,
+                                   bool suppress)
+{
+    if (!dl || suppress || img_sz.x <= 0.0f || img_sz.y <= 0.0f)
+        return;
+    if (((sx + sy) * 0.5f) < 4.0f)
+        return;
+    if (mouse.x < img_pos.x || mouse.x >= img_pos.x + img_sz.x ||
+        mouse.y < img_pos.y || mouse.y >= img_pos.y + img_sz.y)
+        return;
+
+    int hx = (int)((mouse.x - img_pos.x) / sx);
+    int hy = (int)((mouse.y - img_pos.y) / sy);
+    dl->AddRect(ImVec2(img_pos.x + hx * sx, img_pos.y + hy * sy),
+                ImVec2(img_pos.x + (hx + 1) * sx,
+                       img_pos.y + (hy + 1) * sy),
+                IM_COL32(255, 255, 0, 180), 0.0f, 0, 1.5f);
+}
+
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,
