@@ -98,6 +98,17 @@ struct CanvasPasteHint {
     ImU32 color = IM_COL32(255, 255, 0, 255);
 };
 
+struct CanvasPasteControlsLayout {
+    ImVec2 min = ImVec2(0, 0);
+    ImVec2 max = ImVec2(0, 0);
+    ImVec2 blend_label_pos = ImVec2(0, 0);
+    ImVec2 blend_control_pos = ImVec2(0, 0);
+    ImVec2 opacity_label_pos = ImVec2(0, 0);
+    ImVec2 opacity_control_pos = ImVec2(0, 0);
+    float item_width = 0.0f;
+    bool blocks_mouse = false;
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -140,6 +151,8 @@ void DrawCanvasPasteHint(ImDrawList *dl, ImVec2 img_pos,
 CanvasPasteHint CanvasPasteHintForState(bool transform_active,
                                         TransformHandle handle,
                                         bool paste_dragging);
+CanvasPasteControlsLayout CanvasPasteControlsLayoutFor(ImVec2 canvas_origin,
+                                                       ImVec2 mouse);
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked);

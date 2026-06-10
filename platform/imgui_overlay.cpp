@@ -19308,12 +19308,9 @@ void imgui_overlay_render(void)
                 CanvasTransform2D paste_xf =
                     CanvasMakeTransform(img_pos, sx, sy, px, py, pw, ph,
                                         angle_deg);
-                ImVec2 paste_controls_min(canvas_origin.x + 10.0f, canvas_origin.y + 10.0f);
-                ImVec2 paste_controls_max(paste_controls_min.x + 276.0f,
-                                           paste_controls_min.y + 62.0f);
-                bool paste_controls_block =
-                    mouse.x >= paste_controls_min.x && mouse.x < paste_controls_max.x &&
-                    mouse.y >= paste_controls_min.y && mouse.y < paste_controls_max.y;
+                CanvasPasteControlsLayout paste_controls =
+                    CanvasPasteControlsLayoutFor(canvas_origin, mouse);
+                bool paste_controls_block = paste_controls.blocks_mouse;
                 ImVec2 rc[4];
                 CanvasTransformRectCorners(paste_xf, px, py, pw, ph, rc);
                 ImVec2 rb_min, rb_max;
@@ -19385,17 +19382,15 @@ void imgui_overlay_render(void)
                 DrawCanvasPasteHint(dl, img_pos,
                                     paste_hint.text, paste_hint.color);
 
-                dl->AddRectFilled(paste_controls_min, paste_controls_max,
+                dl->AddRectFilled(paste_controls.min, paste_controls.max,
                                   IM_COL32(18, 20, 24, 230), 4.0f);
-                dl->AddRect(paste_controls_min, paste_controls_max,
+                dl->AddRect(paste_controls.min, paste_controls.max,
                             IM_COL32(90, 130, 180, 210), 4.0f, 0, 1.0f);
                 ImGui::PushID("paste_controls");
-                ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 8.0f,
-                                                  paste_controls_min.y + 7.0f));
+                ImGui::SetCursorScreenPos(paste_controls.blend_label_pos);
                 ImGui::TextUnformatted("Blend");
-                ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 76.0f,
-                                                  paste_controls_min.y + 5.0f));
-                ImGui::SetNextItemWidth(paste_controls_max.x - paste_controls_min.x - 86.0f);
+                ImGui::SetCursorScreenPos(paste_controls.blend_control_pos);
+                ImGui::SetNextItemWidth(paste_controls.item_width);
                 if (ImGui::BeginCombo("##blend", PasteBlendModeName(g_paste_blend_mode))) {
                     for (PasteBlendMode mode : k_paste_blend_modes) {
                         bool selected = (g_paste_blend_mode == mode);
@@ -19405,12 +19400,10 @@ void imgui_overlay_render(void)
                     }
                     ImGui::EndCombo();
                 }
-                ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 8.0f,
-                                                  paste_controls_min.y + 34.0f));
+                ImGui::SetCursorScreenPos(paste_controls.opacity_label_pos);
                 ImGui::TextUnformatted("Opacity");
-                ImGui::SetCursorScreenPos(ImVec2(paste_controls_min.x + 76.0f,
-                                                  paste_controls_min.y + 32.0f));
-                ImGui::SetNextItemWidth(paste_controls_max.x - paste_controls_min.x - 86.0f);
+                ImGui::SetCursorScreenPos(paste_controls.opacity_control_pos);
+                ImGui::SetNextItemWidth(paste_controls.item_width);
                 ImGui::SliderInt("##opacity", &g_paste_opacity, 0, 100, "%d%%");
                 ImGui::PopID();
 

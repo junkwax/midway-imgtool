@@ -313,6 +313,27 @@ CanvasPasteHint CanvasPasteHintForState(bool transform_active,
     return hint;
 }
 
+CanvasPasteControlsLayout CanvasPasteControlsLayoutFor(ImVec2 canvas_origin,
+                                                       ImVec2 mouse)
+{
+    CanvasPasteControlsLayout layout;
+    layout.min = ImVec2(canvas_origin.x + 10.0f,
+                        canvas_origin.y + 10.0f);
+    layout.max = ImVec2(layout.min.x + 276.0f,
+                        layout.min.y + 62.0f);
+    layout.blend_label_pos = ImVec2(layout.min.x + 8.0f,
+                                    layout.min.y + 7.0f);
+    layout.blend_control_pos = ImVec2(layout.min.x + 76.0f,
+                                      layout.min.y + 5.0f);
+    layout.opacity_label_pos = ImVec2(layout.min.x + 8.0f,
+                                      layout.min.y + 34.0f);
+    layout.opacity_control_pos = ImVec2(layout.min.x + 76.0f,
+                                        layout.min.y + 32.0f);
+    layout.item_width = layout.max.x - layout.min.x - 86.0f;
+    layout.blocks_mouse = CanvasPointInRect(mouse, layout.min, layout.max);
+    return layout;
+}
+
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked)
