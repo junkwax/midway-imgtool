@@ -97,6 +97,8 @@ int WorldDummyDecapFrameCount(void);
 int WorldDummyDecapFrameNo(int index);
 void WorldResetDummyDecapDelays(WorldMarkedSequenceState &state, int frame_count);
 void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out);
+WorldMarkedLane WorldBuildDummyDecapLane(WorldMarkedSequenceState &state,
+                                         int active_doc_idx);
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);

@@ -172,6 +172,185 @@ void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out)
     }
 }
 
+struct WorldDecapCandidate {
+    Document *doc;
+    int doc_idx;
+    std::string prefix;
+    int frame_idx[8];
+    std::vector<int> pieces[8];
+    bool has_leg[8];
+    bool has_torso[8];
+    int wrapper_count;
+    int piece_frame_count;
+};
+
+static bool WorldDecapCandidateComplete(const WorldDecapCandidate &cand)
+{
+    if (cand.wrapper_count >= 7) return true;
+    for (int frame_no = 1; frame_no <= 7; frame_no++) {
+        if (!cand.has_leg[frame_no] || !cand.has_torso[frame_no])
+            return false;
+    }
+    return true;
+}
+
+static int WorldDecapCandidateScore(const WorldDecapCandidate &cand)
+{
+    int piece_frames = 0;
+    for (int frame_no = 1; frame_no <= 7; frame_no++)
+        if (cand.has_leg[frame_no] && cand.has_torso[frame_no])
+            piece_frames++;
+    return cand.wrapper_count * 10 + piece_frames;
+}
+
+WorldMarkedLane WorldBuildDummyDecapLane(WorldMarkedSequenceState &state,
+                                         int active_doc_idx)
+{
+    std::vector<WorldDecapCandidate> candidates;
+    for (int doc_idx = 0; doc_idx < document_tab_count(); doc_idx++) {
+        Document *doc = document_get(doc_idx);
+        if (!doc) continue;
+        for (unsigned int img_idx = 0; img_idx < doc->imgcnt; img_idx++) {
+            IMG *img = doc_get_img(doc, (int)img_idx);
+            int frame_no = 0;
+            std::string prefix;
+            int piece_kind = -1;
+            bool is_wrapper = WorldDecapBodyFrameNo(img_name_string(img),
+                                                    &frame_no, &prefix);
+            bool is_piece = !is_wrapper &&
+                WorldDecapBodyPieceInfo(img_name_string(img),
+                                        &frame_no, &prefix, &piece_kind);
+            if (!is_wrapper && !is_piece)
+                continue;
+
+            int cand_idx = -1;
+            for (int i = 0; i < (int)candidates.size(); i++) {
+                if (candidates[i].doc_idx == doc_idx &&
+                    candidates[i].prefix == prefix) {
+                    cand_idx = i;
+                    break;
+                }
+            }
+            if (cand_idx < 0) {
+                WorldDecapCandidate cand = {};
+                cand.doc = doc;
+                cand.doc_idx = doc_idx;
+                cand.prefix = prefix;
+                for (int i = 0; i < 8; i++) cand.frame_idx[i] = -1;
+                for (int i = 0; i < 8; i++) {
+                    cand.has_leg[i] = false;
+                    cand.has_torso[i] = false;
+                }
+                cand.wrapper_count = 0;
+                cand.piece_frame_count = 0;
+                candidates.push_back(cand);
+                cand_idx = (int)candidates.size() - 1;
+            }
+            WorldDecapCandidate &cand = candidates[cand_idx];
+            if (is_wrapper && cand.frame_idx[frame_no] < 0) {
+                candidates[cand_idx].frame_idx[frame_no] = (int)img_idx;
+                candidates[cand_idx].wrapper_count++;
+            } else if (is_piece) {
+                bool had_frame = !cand.pieces[frame_no].empty();
+                cand.pieces[frame_no].push_back((int)img_idx);
+                if (piece_kind == 0) cand.has_leg[frame_no] = true;
+                else cand.has_torso[frame_no] = true;
+                if (!had_frame) cand.piece_frame_count++;
+            }
+        }
+    }
+
+    int best = -1;
+    for (int i = 0; i < (int)candidates.size(); i++) {
+        if (!WorldDecapCandidateComplete(candidates[i])) continue;
+        if (state.dummy_decap_manual) {
+            if (candidates[i].doc_idx != state.dummy_decap_doc_idx ||
+                candidates[i].prefix != state.dummy_decap_prefix)
+                continue;
+            best = i;
+            break;
+        }
+        if (best < 0)
+            best = i;
+        else if (candidates[i].doc_idx == active_doc_idx &&
+                 candidates[best].doc_idx != active_doc_idx)
+            best = i;
+        else if (candidates[i].doc_idx == candidates[best].doc_idx &&
+                 WorldDecapCandidateScore(candidates[i]) >
+                 WorldDecapCandidateScore(candidates[best]))
+            best = i;
+    }
+
+    WorldMarkedLane lane = {};
+    lane.delay_slot = kWorldDummyDecapSlot;
+    lane.frame_pos = 0;
+    lane.img = NULL;
+    lane.dummy_decap = true;
+    lane.label = "Dummy Decap Body";
+    lane.asm_label_part = "dummy_decap_body";
+    if (best < 0) {
+        lane.doc = NULL;
+        lane.doc_idx = -1;
+        return lane;
+    }
+
+    WorldDecapCandidate &cand = candidates[best];
+    lane.doc = cand.doc;
+    lane.doc_idx = cand.doc_idx;
+    lane.asm_label_part = "dummy_decap_body_" +
+                          WorldMarkedAsmLabelPart(cand.prefix.c_str(),
+                                                  kWorldDummyDecapSlot);
+    char label_buf[96];
+    snprintf(label_buf, sizeof(label_buf), "Dummy Decap Body [%s]",
+             cand.prefix.c_str());
+    lane.label = label_buf;
+
+    int n = WorldDummyDecapFrameCount();
+    lane.frames.reserve((size_t)n);
+    lane.frame_pieces.reserve((size_t)n);
+    lane.frame_labels.reserve((size_t)n);
+    for (int i = 0; i < n; i++) {
+        int frame_no = WorldDummyDecapFrameNo(i);
+        char frame_label[96];
+        snprintf(frame_label, sizeof(frame_label), "%sDECAP%d",
+                 cand.prefix.c_str(), frame_no);
+        lane.frame_labels.push_back(frame_label);
+
+        std::vector<int> pieces;
+        if (cand.frame_idx[frame_no] >= 0) {
+            pieces.push_back(cand.frame_idx[frame_no]);
+        } else {
+            pieces = cand.pieces[frame_no];
+            std::sort(pieces.begin(), pieces.end(), [&](int a, int b) {
+                IMG *ia = doc_get_img(cand.doc, a);
+                IMG *ib = doc_get_img(cand.doc, b);
+                int fa = 0, fb = 0, ka = 0, kb = 0;
+                std::string pa, pb;
+                WorldDecapBodyPieceInfo(img_name_string(ia), &fa, &pa, &ka);
+                WorldDecapBodyPieceInfo(img_name_string(ib), &fb, &pb, &kb);
+                if (ka != kb) return ka < kb;
+                return img_name_string(ia) < img_name_string(ib);
+            });
+        }
+        int representative = pieces.empty() ? -1 : pieces[0];
+        lane.frames.push_back(representative);
+        lane.frame_pieces.push_back(pieces);
+    }
+
+    if (state.dummy_decap_reset ||
+        state.dummy_decap_doc_idx != cand.doc_idx ||
+        state.dummy_decap_prefix != cand.prefix ||
+        (int)state.frame_delays[kWorldDummyDecapSlot].size() !=
+        (int)lane.frames.size()) {
+        state.dummy_decap_doc_idx = cand.doc_idx;
+        state.dummy_decap_prefix = cand.prefix;
+        WorldResetDummyDecapDelays(state, (int)lane.frames.size());
+    }
+    EnsureWorldMarkedFrameDelays(state, kWorldDummyDecapSlot,
+                                 (int)lane.frames.size());
+    return lane;
+}
+
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback)
 {
     std::string out;
