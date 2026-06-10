@@ -47,6 +47,21 @@ struct WorldMarkedPanelLayout {
     float height = 0.0f;
 };
 
+float ZoomFitScaleForAvailable(const ImVec2 &avail);
+float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
+void ZoomClampPanForScale(const ImVec2 &avail, float scale);
+void ZoomClampPanForAvailable(const ImVec2 &avail);
+void ZoomPanBy(const ImVec2 &avail, float dx, float dy);
+void ZoomImageRectForAvailable(const ImVec2 &avail, const ImVec2 &origin,
+                               ImVec2 *pos, ImVec2 *size, float *scale_out);
+float ZoomNextLevel(float current, int dir);
+void ResetZoomToFit(void);
+void QueueZoomStep(int dir);
+void QueueZoomFit(void);
+bool ApplyZoomScale(float old_scale, float new_scale,
+                    const ImVec2 &anchor, const ImVec2 &old_pos,
+                    const ImVec2 &old_size, const ImVec2 &avail);
+
 struct WorldMarkedSequenceState {
     bool marked_play = false;
     float fps = 12.0f;
