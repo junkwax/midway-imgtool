@@ -1266,8 +1266,6 @@ static int   g_world_origin_y = 20; /* anchor target inside world (top-anchored)
 static bool  g_world_onion = false; /* faintly draw prev frame underneath */
 /* Marked World View slot constants now live in ui_canvas.h. */
 static WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
-static bool  g_world_marked_show_asm = false;
-static std::string g_world_marked_generated_asm;
 /* g_world_temp_textures + ClearWorldTempTextures + BuildWorldSpriteTexture +
    doc_get_pal now live in world_render.{h,cpp}. */
 static int   g_load2_selected_idx = -1;          /* index into g_load2_report.issues */
@@ -2202,8 +2200,8 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         ImGui::TextDisabled("Tick %d", g_world_marked_state.frame);
         ImGui::SameLine();
         if (ImGui::SmallButton("Copy ASM##world_marked_copy_asm")) {
-            g_world_marked_generated_asm = build_world_marked_asm();
-            ImGui::SetClipboardText(g_world_marked_generated_asm.c_str());
+            g_world_marked_state.generated_asm = build_world_marked_asm();
+            ImGui::SetClipboardText(g_world_marked_state.generated_asm.c_str());
             snprintf(g_restore_msg, sizeof(g_restore_msg),
                      "Copied World View ASM for %d lane%s.",
                      (int)lanes.size(), lanes.size() == 1 ? "" : "s");
@@ -2213,14 +2211,14 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned local-anipoint tables.");
         ImGui::SameLine();
         if (ImGui::SmallButton("View ASM##world_marked_view_asm")) {
-            g_world_marked_generated_asm = build_world_marked_asm();
-            g_world_marked_show_asm = true;
+            g_world_marked_state.generated_asm = build_world_marked_asm();
+            g_world_marked_state.show_asm = true;
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Preview the generated animation-table source.");
         ImGui::SameLine();
         if (ImGui::SmallButton("Save ASM##world_marked_save_asm")) {
-            g_world_marked_generated_asm = build_world_marked_asm();
+            g_world_marked_state.generated_asm = build_world_marked_asm();
             g_request_save_world_asm = true;   /* dialog opened in main loop */
         }
         if (ImGui::IsItemHovered())
@@ -2465,23 +2463,23 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor();
 
-    if (g_world_marked_show_asm)
+    if (g_world_marked_state.show_asm)
         ImGui::OpenPopup("World View ASM");
-    if (ImGui::BeginPopupModal("World View ASM", &g_world_marked_show_asm,
+    if (ImGui::BeginPopupModal("World View ASM", &g_world_marked_state.show_asm,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextDisabled("Generated from the current marked-tab World View sequence.");
         ImGui::BeginChild("##world_marked_asm_text", ImVec2(720.0f, 420.0f), true,
                           ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::TextUnformatted(g_world_marked_generated_asm.c_str());
+        ImGui::TextUnformatted(g_world_marked_state.generated_asm.c_str());
         ImGui::EndChild();
         if (ImGui::Button("Copy to Clipboard")) {
-            ImGui::SetClipboardText(g_world_marked_generated_asm.c_str());
+            ImGui::SetClipboardText(g_world_marked_state.generated_asm.c_str());
             snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied World View ASM.");
             g_restore_msg_timer = 4.0f;
         }
         ImGui::SameLine();
         if (ImGui::Button("Close")) {
-            g_world_marked_show_asm = false;
+            g_world_marked_state.show_asm = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -9991,7 +9989,7 @@ static void OpenFileDialog(FileDialogMode mode) {
            from the first generated animation label (e.g. a_imgtool_slot1_kick),
            falling back to a blank name if nothing has been generated yet. */
         g_file_dialog_file[0] = '\0';
-        const std::string &asm_src = g_world_marked_generated_asm;
+        const std::string &asm_src = g_world_marked_state.generated_asm;
         for (size_t ls = 0; ls < asm_src.size(); ) {
             size_t le = asm_src.find('\n', ls);
             size_t line_end = (le == std::string::npos) ? asm_src.size() : le;
@@ -10427,12 +10425,12 @@ static void DrawFileDialog() {
                 if (dot == std::string::npos) full_path += ".ASM";
                 FILE *af = fopen(full_path.c_str(), "wb");
                 if (af) {
-                    fwrite(g_world_marked_generated_asm.data(), 1,
-                           g_world_marked_generated_asm.size(), af);
+                    fwrite(g_world_marked_state.generated_asm.data(), 1,
+                           g_world_marked_state.generated_asm.size(), af);
                     fclose(af);
                     snprintf(g_restore_msg, sizeof(g_restore_msg),
                              "Saved World View ASM (%d bytes).",
-                             (int)g_world_marked_generated_asm.size());
+                             (int)g_world_marked_state.generated_asm.size());
                 } else {
                     snprintf(g_restore_msg, sizeof(g_restore_msg), "Could not write ASM file.");
                 }

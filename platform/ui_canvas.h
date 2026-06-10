@@ -43,6 +43,8 @@ struct WorldMarkedSequenceState {
     int drag_dx = 0;
     int drag_dy = 0;
     bool drag_mirror = false;
+    bool show_asm = false;
+    std::string generated_asm;
     bool hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
     std::vector<int> frame_delays[kWorldMarkedMaxTabs];
     std::vector<int> local_dx[kWorldMarkedMaxTabs];
