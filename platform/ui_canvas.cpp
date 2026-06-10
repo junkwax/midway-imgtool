@@ -539,6 +539,52 @@ float CanvasRotateTransformAngle(float start_angle_deg,
     return new_angle;
 }
 
+CanvasTransformDragResult CanvasResolveTransformDrag(
+    const CanvasTransformDragStart &start,
+    ImVec2 mouse,
+    float sx, float sy,
+    ImVec2 center,
+    bool aspect_locked,
+    bool shift_down)
+{
+    CanvasTransformDragResult result;
+    result.x = start.x;
+    result.y = start.y;
+    result.w = start.w;
+    result.h = start.h;
+    result.angle_deg = start.angle_deg;
+
+    if (start.handle == TransformHandle::None)
+        return result;
+
+    if (start.handle == TransformHandle::Move) {
+        int dx = 0;
+        int dy = 0;
+        CanvasDragDeltaPixels(start.mouse, mouse, sx, sy, &dx, &dy);
+        result.x = start.x + dx;
+        result.y = start.y + dy;
+        return result;
+    }
+
+    if (start.handle == TransformHandle::Rotate) {
+        result.angle_deg = CanvasRotateTransformAngle(
+            start.angle_deg, start.mouse, mouse, center, shift_down);
+        return result;
+    }
+
+    int dx = 0;
+    int dy = 0;
+    CanvasDragDeltaPixels(start.mouse, mouse, sx, sy, &dx, &dy);
+    bool lock_now = aspect_locked ^ shift_down;
+    CanvasResizeTransformRect(start.handle,
+                              start.x, start.y, start.w, start.h,
+                              start.ref_aspect,
+                              dx, dy, lock_now,
+                              &result.x, &result.y,
+                              &result.w, &result.h);
+    return result;
+}
+
 void CanvasDragDeltaPixels(ImVec2 drag_start_mouse, ImVec2 mouse,
                            float sx, float sy,
                            int *dx, int *dy)

@@ -76,6 +76,25 @@ struct CanvasTransformHandleOverlay {
     ImVec2 chain_max = ImVec2(0, 0);
 };
 
+struct CanvasTransformDragStart {
+    TransformHandle handle = TransformHandle::None;
+    ImVec2 mouse = ImVec2(0, 0);
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+    float angle_deg = 0.0f;
+    float ref_aspect = 1.0f;
+};
+
+struct CanvasTransformDragResult {
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+    float angle_deg = 0.0f;
+};
+
 struct CanvasContentBounds {
     bool valid = false;
     int min_x = 0;
@@ -189,6 +208,13 @@ float CanvasRotateTransformAngle(float start_angle_deg,
                                  ImVec2 mouse,
                                  ImVec2 center,
                                  bool snap_15_deg);
+CanvasTransformDragResult CanvasResolveTransformDrag(
+    const CanvasTransformDragStart &start,
+    ImVec2 mouse,
+    float sx, float sy,
+    ImVec2 center,
+    bool aspect_locked,
+    bool shift_down);
 void CanvasDragDeltaPixels(ImVec2 drag_start_mouse, ImVec2 mouse,
                            float sx, float sy,
                            int *dx, int *dy);

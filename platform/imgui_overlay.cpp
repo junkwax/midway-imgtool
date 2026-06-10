@@ -19459,35 +19459,27 @@ void imgui_overlay_render(void)
                         g_xform.drag_angle_deg = g_xform.angle_deg;
                     }
                     if (g_xform.handle != TransformHandle::None && mbdn) {
-                        if (g_xform.handle == TransformHandle::Move) {
-                            int dx = 0, dy = 0;
-                            CanvasDragDeltaPixels(
-                                ImVec2(g_xform.drag_mx, g_xform.drag_my),
-                                mouse, sx, sy, &dx, &dy);
-                            g_xform.rx = g_xform.drag_rx + dx;
-                            g_xform.ry = g_xform.drag_ry + dy;
-                        } else if (g_xform.handle == TransformHandle::Rotate) {
-                            g_xform.angle_deg = CanvasRotateTransformAngle(
-                                g_xform.drag_angle_deg,
-                                ImVec2(g_xform.drag_mx, g_xform.drag_my),
-                                mouse, ImVec2(center_sx, center_sy),
+                        CanvasTransformDragStart drag_start;
+                        drag_start.handle = g_xform.handle;
+                        drag_start.mouse = ImVec2(g_xform.drag_mx,
+                                                  g_xform.drag_my);
+                        drag_start.x = g_xform.drag_rx;
+                        drag_start.y = g_xform.drag_ry;
+                        drag_start.w = g_xform.drag_rw;
+                        drag_start.h = g_xform.drag_rh;
+                        drag_start.angle_deg = g_xform.drag_angle_deg;
+                        drag_start.ref_aspect = g_xform.ref_aspect;
+                        CanvasTransformDragResult drag =
+                            CanvasResolveTransformDrag(
+                                drag_start, mouse, sx, sy,
+                                ImVec2(center_sx, center_sy),
+                                g_xform.aspect_locked,
                                 ImGui::GetIO().KeyShift);
-                        } else {
-                            int dx = 0, dy = 0;
-                            CanvasDragDeltaPixels(
-                                ImVec2(g_xform.drag_mx, g_xform.drag_my),
-                                mouse, sx, sy, &dx, &dy);
-                            bool lock_now = g_xform.aspect_locked ^
-                                ImGui::GetIO().KeyShift;
-                            CanvasResizeTransformRect(
-                                g_xform.handle,
-                                g_xform.drag_rx, g_xform.drag_ry,
-                                g_xform.drag_rw, g_xform.drag_rh,
-                                g_xform.ref_aspect,
-                                dx, dy, lock_now,
-                                &g_xform.rx, &g_xform.ry,
-                                &g_xform.rw, &g_xform.rh);
-                        }
+                        g_xform.rx = drag.x;
+                        g_xform.ry = drag.y;
+                        g_xform.rw = drag.w;
+                        g_xform.rh = drag.h;
+                        g_xform.angle_deg = drag.angle_deg;
                     }
                     if (g_xform.handle != TransformHandle::None && !mbdn) {
                         g_xform.handle = TransformHandle::None;
