@@ -144,6 +144,12 @@ struct CanvasPasteHitTest {
     bool over_sprite = false;
 };
 
+struct CanvasPastePreviewCell {
+    int target_x = 0;
+    int target_y = 0;
+    ImVec2 quad[4] = {};
+};
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail);
 float ZoomDisplayScaleForAvailable(const ImVec2 &avail);
 void ZoomClampPanForScale(const ImVec2 &avail, float scale);
@@ -192,6 +198,12 @@ CanvasPasteHitTest CanvasPasteHitTestFor(const ImVec2 corners[4],
                                          ImVec2 img_pos,
                                          ImVec2 img_sz,
                                          ImVec2 mouse);
+CanvasPastePreviewCell CanvasPastePreviewCellForPixel(
+    const CanvasTransform2D &xf,
+    int paste_x, int paste_y,
+    int paste_w, int paste_h,
+    int clip_w, int clip_h,
+    int pixel_x, int pixel_y);
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked);

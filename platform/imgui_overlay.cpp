@@ -19335,33 +19335,28 @@ void imgui_overlay_render(void)
                     for (int x = 0; x < cw; x++) {
                         unsigned char ci = src[y * cs + x];
                         if (ci == 0) continue;
-                        float ix0 = (float)px + ((float)x * (float)pw / (float)cw);
-                        float iy0 = (float)py + ((float)y * (float)ph / (float)ch);
-                        float ix1 = (float)px + ((float)(x + 1) * (float)pw / (float)cw);
-                        float iy1 = (float)py + ((float)(y + 1) * (float)ph / (float)ch);
-                        ImVec2 mid = CanvasTransformPointImage(
-                            paste_xf, (ix0 + ix1) * 0.5f,
-                            (iy0 + iy1) * 0.5f);
-                        int dxp = (int)floorf(mid.x);
-                        int dyp = (int)floorf(mid.y);
+                        CanvasPastePreviewCell cell =
+                            CanvasPastePreviewCellForPixel(
+                                paste_xf, px, py, pw, ph, cw, ch, x, y);
                         unsigned char dst_ci = 0;
-                        if (dst_pixels && simg && dxp >= 0 && dyp >= 0 &&
-                            dxp < (int)simg->w && dyp < (int)simg->h)
-                            dst_ci = dst_pixels[dyp * dst_stride + dxp];
+                        if (dst_pixels && simg && cell.target_x >= 0 &&
+                            cell.target_y >= 0 &&
+                            cell.target_x < (int)simg->w &&
+                            cell.target_y < (int)simg->h)
+                            dst_ci = dst_pixels[cell.target_y * dst_stride +
+                                                cell.target_x];
                         int rr = 255, gg = 255, bb = 255, aa = 255;
                         if (!paste_preview_rgba(ci, dst_ci, spal, paste_pal_map,
-                                                paste_remap, dxp, dyp,
+                                                paste_remap,
+                                                cell.target_x, cell.target_y,
                                                 &rr, &gg, &bb, &aa))
                             continue;
                         ImU32 col = IM_COL32((unsigned char)rr,
                                              (unsigned char)gg,
                                              (unsigned char)bb,
                                              (unsigned char)aa);
-                        ImVec2 q0 = CanvasTransformPointScreen(paste_xf, ix0, iy0);
-                        ImVec2 q1 = CanvasTransformPointScreen(paste_xf, ix1, iy0);
-                        ImVec2 q2 = CanvasTransformPointScreen(paste_xf, ix1, iy1);
-                        ImVec2 q3 = CanvasTransformPointScreen(paste_xf, ix0, iy1);
-                        dl->AddQuadFilled(q0, q1, q2, q3, col);
+                        dl->AddQuadFilled(cell.quad[0], cell.quad[1],
+                                          cell.quad[2], cell.quad[3], col);
                     }
                 }
 

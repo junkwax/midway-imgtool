@@ -347,6 +347,33 @@ CanvasPasteHitTest CanvasPasteHitTestFor(const ImVec2 corners[4],
     return hit;
 }
 
+CanvasPastePreviewCell CanvasPastePreviewCellForPixel(
+    const CanvasTransform2D &xf,
+    int paste_x, int paste_y,
+    int paste_w, int paste_h,
+    int clip_w, int clip_h,
+    int pixel_x, int pixel_y)
+{
+    CanvasPastePreviewCell cell;
+    float ix0 = (float)paste_x + ((float)pixel_x * (float)paste_w /
+                                  (float)clip_w);
+    float iy0 = (float)paste_y + ((float)pixel_y * (float)paste_h /
+                                  (float)clip_h);
+    float ix1 = (float)paste_x + ((float)(pixel_x + 1) * (float)paste_w /
+                                  (float)clip_w);
+    float iy1 = (float)paste_y + ((float)(pixel_y + 1) * (float)paste_h /
+                                  (float)clip_h);
+    ImVec2 mid = CanvasTransformPointImage(
+        xf, (ix0 + ix1) * 0.5f, (iy0 + iy1) * 0.5f);
+    cell.target_x = (int)floorf(mid.x);
+    cell.target_y = (int)floorf(mid.y);
+    cell.quad[0] = CanvasTransformPointScreen(xf, ix0, iy0);
+    cell.quad[1] = CanvasTransformPointScreen(xf, ix1, iy0);
+    cell.quad[2] = CanvasTransformPointScreen(xf, ix1, iy1);
+    cell.quad[3] = CanvasTransformPointScreen(xf, ix0, iy1);
+    return cell;
+}
+
 CanvasTransformHandleOverlay DrawCanvasTransformHandles(
     ImDrawList *dl, const ImVec2 corners[4], ImVec2 mouse,
     TransformHandle active_handle, bool aspect_locked)
