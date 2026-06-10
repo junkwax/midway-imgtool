@@ -193,6 +193,9 @@ void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, i
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
                                      std::vector<std::string> &frame_labels);
+void WorldRefreshMarkedLaneAfterSequenceEdit(WorldMarkedSequenceState &state,
+                                             WorldMarkedLane &lane,
+                                             int &edit_frame);
 
 /* Draw the single-sprite World View canvas into the current ImGui window.
    Returns true when it consumed/reserved the canvas area. */

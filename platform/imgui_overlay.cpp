@@ -1706,24 +1706,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             if (edit_fi < 0) edit_fi = 0;
             if (edit_fi >= (int)lane.frames.size()) edit_fi = (int)lane.frames.size() - 1;
 
-            auto refresh_lane_after_sequence_edit = [&]() {
-                if (!lane.dummy_decap) {
-                    lane.frames = g_world_marked_state.sequence_frames[lane.delay_slot];
-                    WorldMarkedBuildSingleFrameLane(lane.doc, lane.frames,
-                                                    lane.frame_pieces, lane.frame_labels);
-                }
-                EnsureWorldMarkedFrameDelays(g_world_marked_state, lane.delay_slot, (int)lane.frames.size());
-                lane.frame_pos = WorldMarkedFrameForTick(g_world_marked_state, lane.delay_slot, (int)lane.frames.size(),
-                                                         g_world_marked_state.frame,
-                                                         g_world_marked_state.hold_end[lane.delay_slot]);
-                if (lane.frame_pos < 0) lane.frame_pos = 0;
-                if (lane.frame_pos >= (int)lane.frames.size())
-                    lane.frame_pos = (int)lane.frames.size() - 1;
-                lane.img = (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size())
-                         ? doc_get_img(lane.doc, lane.frames[lane.frame_pos])
-                         : NULL;
-                edit_fi = lane.frame_pos;
-            };
+            /* WorldRefreshMarkedLaneAfterSequenceEdit now lives in ui_canvas.{h,cpp}. */
 
             if (edit_fi >= 0) {
                 ImGui::AlignTextToFramePadding();
@@ -1737,7 +1720,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                     ImGui::BeginDisabled(edit_fi <= 0);
                     if (ImGui::SmallButton("<##world_seq_left")) {
                         WorldMarkedMoveSequenceEntry(g_world_marked_state, lane.delay_slot, edit_fi, -1);
-                        refresh_lane_after_sequence_edit();
+                        WorldRefreshMarkedLaneAfterSequenceEdit(g_world_marked_state, lane, edit_fi);
                     }
                     ImGui::EndDisabled();
                     if (ImGui::IsItemHovered())
@@ -1746,7 +1729,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                     ImGui::BeginDisabled(edit_fi >= (int)lane.frames.size() - 1);
                     if (ImGui::SmallButton(">##world_seq_right")) {
                         WorldMarkedMoveSequenceEntry(g_world_marked_state, lane.delay_slot, edit_fi, +1);
-                        refresh_lane_after_sequence_edit();
+                        WorldRefreshMarkedLaneAfterSequenceEdit(g_world_marked_state, lane, edit_fi);
                     }
                     ImGui::EndDisabled();
                     if (ImGui::IsItemHovered())
@@ -1754,21 +1737,21 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                     ImGui::SameLine();
                     if (ImGui::SmallButton("+##world_seq_dup")) {
                         WorldMarkedDuplicateSequenceEntry(g_world_marked_state, lane.delay_slot, edit_fi);
-                        refresh_lane_after_sequence_edit();
+                        WorldRefreshMarkedLaneAfterSequenceEdit(g_world_marked_state, lane, edit_fi);
                     }
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Duplicate this sequence entry so the same sprite can use different local anipoints later.");
                     ImGui::SameLine();
                     if (ImGui::SmallButton("-##world_seq_del")) {
                         WorldMarkedDeleteSequenceEntry(g_world_marked_state, lane.delay_slot, edit_fi);
-                        refresh_lane_after_sequence_edit();
+                        WorldRefreshMarkedLaneAfterSequenceEdit(g_world_marked_state, lane, edit_fi);
                     }
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Remove this sequence entry. The sprite itself is not deleted.");
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Reset Seq##world_seq_reset")) {
                         WorldMarkedResetSequenceToDefaults(g_world_marked_state, lane.delay_slot);
-                        refresh_lane_after_sequence_edit();
+                        WorldRefreshMarkedLaneAfterSequenceEdit(g_world_marked_state, lane, edit_fi);
                     }
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Rebuild this lane from the currently marked sprites and clear local sequence offsets.");

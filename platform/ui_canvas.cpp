@@ -1112,6 +1112,30 @@ void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &fram
     }
 }
 
+void WorldRefreshMarkedLaneAfterSequenceEdit(WorldMarkedSequenceState &state,
+                                             WorldMarkedLane &lane,
+                                             int &edit_frame)
+{
+    if (!lane.dummy_decap) {
+        lane.frames = state.sequence_frames[lane.delay_slot];
+        WorldMarkedBuildSingleFrameLane(lane.doc, lane.frames,
+                                        lane.frame_pieces, lane.frame_labels);
+    }
+
+    EnsureWorldMarkedFrameDelays(state, lane.delay_slot, (int)lane.frames.size());
+    lane.frame_pos = WorldMarkedFrameForTick(state, lane.delay_slot,
+                                             (int)lane.frames.size(),
+                                             state.frame,
+                                             state.hold_end[lane.delay_slot]);
+    if (lane.frame_pos < 0) lane.frame_pos = 0;
+    if (lane.frame_pos >= (int)lane.frames.size())
+        lane.frame_pos = (int)lane.frames.size() - 1;
+    lane.img = (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size())
+             ? doc_get_img(lane.doc, lane.frames[lane.frame_pos])
+             : NULL;
+    edit_frame = lane.frame_pos;
+}
+
 void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
                                      Document *doc, int doc_idx,
                                      std::vector<int> &frames,
