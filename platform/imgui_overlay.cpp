@@ -1903,26 +1903,9 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor();
 
-    if (g_world_marked_state.show_asm)
-        ImGui::OpenPopup("World View ASM");
-    if (ImGui::BeginPopupModal("World View ASM", &g_world_marked_state.show_asm,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextDisabled("Generated from the current marked-tab World View sequence.");
-        ImGui::BeginChild("##world_marked_asm_text", ImVec2(720.0f, 420.0f), true,
-                          ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::TextUnformatted(g_world_marked_state.generated_asm.c_str());
-        ImGui::EndChild();
-        if (ImGui::Button("Copy to Clipboard")) {
-            ImGui::SetClipboardText(g_world_marked_state.generated_asm.c_str());
-            snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied World View ASM.");
-            g_restore_msg_timer = 4.0f;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Close")) {
-            g_world_marked_state.show_asm = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
+    if (WorldDrawMarkedAsmPopup(g_world_marked_state)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied World View ASM.");
+        g_restore_msg_timer = 4.0f;
     }
     return true;
 }

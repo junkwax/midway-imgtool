@@ -772,6 +772,32 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     return out;
 }
 
+bool WorldDrawMarkedAsmPopup(WorldMarkedSequenceState &state)
+{
+    bool copied = false;
+    if (state.show_asm)
+        ImGui::OpenPopup("World View ASM");
+    if (ImGui::BeginPopupModal("World View ASM", &state.show_asm,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextDisabled("Generated from the current marked-tab World View sequence.");
+        ImGui::BeginChild("##world_marked_asm_text", ImVec2(720.0f, 420.0f), true,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+        ImGui::TextUnformatted(state.generated_asm.c_str());
+        ImGui::EndChild();
+        if (ImGui::Button("Copy to Clipboard")) {
+            ImGui::SetClipboardText(state.generated_asm.c_str());
+            copied = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close")) {
+            state.show_asm = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    return copied;
+}
+
 void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
                                const WorldMarkedLaneRenderInfo &render_info,
