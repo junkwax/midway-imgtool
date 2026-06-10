@@ -160,6 +160,9 @@ void WorldDrawMarkedLaneTags(ImDrawList *dl,
 void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
                                ImVec2 world_pos, float world_width);
+void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
+                                 WorldMarkedLane &lane,
+                                 int display_slot);
 std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes);
 bool WorldDrawMarkedAsmPopup(WorldMarkedSequenceState &state);
