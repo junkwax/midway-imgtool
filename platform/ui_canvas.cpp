@@ -165,6 +165,69 @@ bool ApplyZoomScale(float old_scale, float new_scale,
     return true;
 }
 
+bool CanvasPointInRect(ImVec2 p, ImVec2 mn, ImVec2 mx)
+{
+    return p.x >= mn.x && p.x < mx.x && p.y >= mn.y && p.y < mx.y;
+}
+
+void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
+                             ImVec2 canvas_pos, ImVec2 canvas_sz,
+                             ImVec2 mins[2], ImVec2 maxs[2])
+{
+    const float size = 24.0f;
+    const float margin = 6.0f;
+    float left = canvas_pos.x;
+    float top = canvas_pos.y;
+    float right = canvas_pos.x + canvas_sz.x;
+    float bottom = canvas_pos.y + canvas_sz.y;
+
+    float x0 = img_pos.x + img_sz.x + margin;
+    float y0 = img_pos.y;
+    if (x0 + size > right) x0 = right - size - margin;
+    if (x0 < left) x0 = left;
+    if (y0 < top) y0 = top;
+    if (y0 + size > bottom) y0 = bottom - size;
+    if (y0 < top) y0 = top;
+
+    mins[0] = ImVec2(x0, y0);
+    maxs[0] = ImVec2(x0 + size, y0 + size);
+    mins[1] = maxs[1] = ImVec2(0, 0);
+}
+
+static void DrawRotateArrow(ImDrawList *dl, ImVec2 center, ImU32 col)
+{
+    const float r = 6.8f;
+    float a0 = -2.35f;
+    float a1 =  3.55f;
+    dl->PathArcTo(center, r, a0, a1, 24);
+    dl->PathStroke(col, false, 1.8f);
+
+    float tip_a = a1;
+    ImVec2 tip(center.x + cosf(tip_a) * r, center.y + sinf(tip_a) * r);
+    ImVec2 dir(-sinf(tip_a), cosf(tip_a));
+    ImVec2 n(-dir.y, dir.x);
+    ImVec2 p1(tip.x - dir.x * 5.0f + n.x * 3.0f,
+              tip.y - dir.y * 5.0f + n.y * 3.0f);
+    ImVec2 p2(tip.x - dir.x * 5.0f - n.x * 3.0f,
+              tip.y - dir.y * 5.0f - n.y * 3.0f);
+    dl->AddTriangleFilled(tip, p1, p2, col);
+}
+
+void DrawCanvasRotateButtons(ImDrawList *dl, const ImVec2 mins[2],
+                             const ImVec2 maxs[2], int hover_idx)
+{
+    for (int i = 0; i < 1; i++) {
+        bool hover = (i == hover_idx);
+        ImU32 bg = hover ? IM_COL32(45, 45, 45, 230) : IM_COL32(12, 12, 12, 175);
+        ImU32 border = hover ? IM_COL32(255, 220, 90, 255) : IM_COL32(235, 235, 235, 180);
+        ImU32 icon = hover ? IM_COL32(255, 235, 130, 255) : IM_COL32(245, 245, 245, 230);
+        dl->AddRectFilled(mins[i], maxs[i], bg, 4.0f);
+        dl->AddRect(mins[i], maxs[i], border, 4.0f, 0, hover ? 1.5f : 1.0f);
+        ImVec2 c((mins[i].x + maxs[i].x) * 0.5f, (mins[i].y + maxs[i].y) * 0.5f);
+        DrawRotateArrow(dl, c, icon);
+    }
+}
+
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,

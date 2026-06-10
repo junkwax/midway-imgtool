@@ -61,6 +61,12 @@ void QueueZoomFit(void);
 bool ApplyZoomScale(float old_scale, float new_scale,
                     const ImVec2 &anchor, const ImVec2 &old_pos,
                     const ImVec2 &old_size, const ImVec2 &avail);
+bool CanvasPointInRect(ImVec2 p, ImVec2 mn, ImVec2 mx);
+void CanvasRotateButtonRects(ImVec2 img_pos, ImVec2 img_sz,
+                             ImVec2 canvas_pos, ImVec2 canvas_sz,
+                             ImVec2 mins[2], ImVec2 maxs[2]);
+void DrawCanvasRotateButtons(ImDrawList *dl, const ImVec2 mins[2],
+                             const ImVec2 maxs[2], int hover_idx);
 
 struct WorldMarkedSequenceState {
     bool marked_play = false;
