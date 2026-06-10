@@ -368,6 +368,16 @@ void DrawCanvasPixelHoverHighlight(ImDrawList *dl, ImVec2 mouse,
                 IM_COL32(255, 255, 0, 180), 0.0f, 0, 1.5f);
 }
 
+void DrawCanvasAnipointCrosshair(ImDrawList *dl, ImVec2 p, ImU32 col,
+                                 float len, float thick)
+{
+    if (!dl) return;
+
+    dl->AddLine(ImVec2(p.x - len, p.y), ImVec2(p.x + len, p.y), col, thick);
+    dl->AddLine(ImVec2(p.x, p.y - len), ImVec2(p.x, p.y + len), col, thick);
+    dl->AddCircleFilled(p, 1.5f, col);
+}
+
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,

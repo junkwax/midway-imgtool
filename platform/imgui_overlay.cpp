@@ -18876,19 +18876,6 @@ void imgui_overlay_render(void)
             if (img && img->w > 0) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
 
-                /* DOS-style anipoint crosshair: long thin lines, optional
-                   center dot. Reads as a registration mark, not a button.
-                   The previous frame's anipoint is drawn dimmer underneath
-                   when onion-skin is on, mirroring the gray crosshair in
-                   the original DOS tool. */
-                auto draw_crosshair = [&](ImVec2 p, ImU32 col, float len, float thick) {
-                    dl->AddLine(ImVec2(p.x - len, p.y), ImVec2(p.x + len, p.y), col, thick);
-                    dl->AddLine(ImVec2(p.x, p.y - len), ImVec2(p.x, p.y + len), col, thick);
-                    /* small center gap fill so the cross stays readable on
-                       busy sprite content */
-                    dl->AddCircleFilled(p, 1.5f, col);
-                };
-
                 /* Previous-frame anipoint ghost — gray crosshair when onion-skin
                    is on, mirroring the DOS tool's registration reference. */
                 if (g_timeline_onion && g_doc->ilselected > 0) {
@@ -18896,10 +18883,10 @@ void imgui_overlay_render(void)
                     IMG *prev = get_img(prev_idx);
                     if (prev) {
                         ImVec2 sp(img_pos.x + (short)prev->anix * sx, img_pos.y + (short)prev->aniy * sy);
-                        draw_crosshair(sp, IM_COL32(160, 160, 160, 180), 12.f, 1.f);
+                        DrawCanvasAnipointCrosshair(dl, sp, IM_COL32(160, 160, 160, 180), 12.f, 1.f);
                         if (secondary_anipoint_in_use(prev)) {
                             ImVec2 sp2(img_pos.x + (short)prev->anix2 * sx, img_pos.y + (short)prev->aniy2 * sy);
-                            draw_crosshair(sp2, IM_COL32(160, 160, 160, 140), 9.f, 1.f);
+                            DrawCanvasAnipointCrosshair(dl, sp2, IM_COL32(160, 160, 160, 140), 9.f, 1.f);
                         }
                     }
                 }
@@ -18909,7 +18896,7 @@ void imgui_overlay_render(void)
                 bool h1 = (d1.x*d1.x + d1.y*d1.y) < 10*10;
                 /* Primary anipoint: white crosshair, brightens on hover. */
                 ImU32 col1 = h1 ? IM_COL32(255, 220, 60, 255) : IM_COL32(255, 255, 255, 255);
-                draw_crosshair(s1, col1, 14.f, h1 ? 2.f : 1.5f);
+                DrawCanvasAnipointCrosshair(dl, s1, col1, 14.f, h1 ? 2.f : 1.5f);
 
                 if (h1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag1 = true; widget_consumed_click = true; }
                 if (g_anipoint_drag1 && mbdn) {
@@ -18927,7 +18914,7 @@ void imgui_overlay_render(void)
                     bool h2 = (d2.x*d2.x + d2.y*d2.y) < 10*10;
                     /* Secondary anipoint: cyan crosshair (distinct from primary). */
                     ImU32 col2 = h2 ? IM_COL32(120, 255, 255, 255) : IM_COL32(60, 200, 220, 255);
-                    draw_crosshair(s2, col2, 10.f, h2 ? 2.f : 1.5f);
+                    DrawCanvasAnipointCrosshair(dl, s2, col2, 10.f, h2 ? 2.f : 1.5f);
                     /* Thin connector line between the two anipoints. */
                     dl->AddLine(s1, s2, IM_COL32(255, 255, 0, 140), 1.f);
 
