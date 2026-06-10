@@ -521,6 +521,42 @@ void DrawCanvasStrikeBoxOverlay(ImDrawList *dl, ImVec2 img_pos,
     }
 }
 
+void CanvasResizeRectFromCorner(int corner, int mouse_x, int mouse_y,
+                                int *x, int *y, int *w, int *h)
+{
+    if (!x || !y || !w || !h)
+        return;
+
+    int nx = *x;
+    int ny = *y;
+    int nw = *w;
+    int nh = *h;
+    if (corner == 0) {
+        nw += nx - mouse_x;
+        nh += ny - mouse_y;
+        nx = mouse_x;
+        ny = mouse_y;
+    } else if (corner == 1) {
+        nw = mouse_x - nx;
+        nh += ny - mouse_y;
+        ny = mouse_y;
+    } else if (corner == 2) {
+        nw = mouse_x - nx;
+        nh = mouse_y - ny;
+    } else if (corner == 3) {
+        nw += nx - mouse_x;
+        nx = mouse_x;
+        nh = mouse_y - ny;
+    }
+    if (nw < 1) nw = 1;
+    if (nh < 1) nh = 1;
+
+    *x = nx;
+    *y = ny;
+    *w = nw;
+    *h = nh;
+}
+
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,

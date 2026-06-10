@@ -102,6 +102,8 @@ void DrawCanvasStrikeBoxOverlay(ImDrawList *dl, ImVec2 img_pos,
                                 const char *label,
                                 ImVec2 mouse, bool enable_hover,
                                 bool hovering[4]);
+void CanvasResizeRectFromCorner(int corner, int mouse_x, int mouse_y,
+                                int *x, int *y, int *w, int *h);
 
 struct WorldMarkedSequenceState {
     bool marked_play = false;

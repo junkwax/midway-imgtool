@@ -18922,13 +18922,9 @@ void imgui_overlay_render(void)
             if (g_hitbox_drag_corner >= 0 && mbdn) {
                 int mx = (int)((mouse.x - img_pos.x) / sx);
                 int my = (int)((mouse.y - img_pos.y) / sy);
-                int c = g_hitbox_drag_corner;
-                if (c == 0) { g_hitbox_w += g_hitbox_x - mx; g_hitbox_h += g_hitbox_y - my; g_hitbox_x = mx; g_hitbox_y = my; }
-                if (c == 1) { g_hitbox_w = mx - g_hitbox_x; g_hitbox_h += g_hitbox_y - my; g_hitbox_y = my; }
-                if (c == 2) { g_hitbox_w = mx - g_hitbox_x; g_hitbox_h = my - g_hitbox_y; }
-                if (c == 3) { g_hitbox_w += g_hitbox_x - mx; g_hitbox_x = mx; g_hitbox_h = my - g_hitbox_y; }
-                if (g_hitbox_w < 1) g_hitbox_w = 1;
-                if (g_hitbox_h < 1) g_hitbox_h = 1;
+                CanvasResizeRectFromCorner(g_hitbox_drag_corner, mx, my,
+                                           &g_hitbox_x, &g_hitbox_y,
+                                           &g_hitbox_w, &g_hitbox_h);
             } else if (!mbdn && g_hitbox_drag_corner >= 0) {
                 undo_push();
                 g_hitbox_drag_corner = -1;
@@ -18971,14 +18967,9 @@ void imgui_overlay_render(void)
             if (g_mk2_drag_corner >= 0 && mbdn) {
                 int mx = (int)((mouse.x - img_pos.x) / sx);
                 int my = (int)((mouse.y - img_pos.y) / sy);
-                int c = g_mk2_drag_corner;
                 int nx = hx, ny = hy, nw = hw, nh = hh;
-                if (c == 0) { nw += hx - mx; nh += hy - my; nx = mx; ny = my; }
-                if (c == 1) { nw  = mx - hx; nh += hy - my;            ny = my; }
-                if (c == 2) { nw  = mx - hx; nh  = my - hy; }
-                if (c == 3) { nw += hx - mx; nx = mx;       nh  = my - hy; }
-                if (nw < 1) nw = 1;
-                if (nh < 1) nh = 1;
+                CanvasResizeRectFromCorner(g_mk2_drag_corner, mx, my,
+                                           &nx, &ny, &nw, &nh);
                 /* Push values through the document so the .ASM line buffer
                    stays in sync and Save picks them up. */
                 if (nx != hx) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_X_OFFSET, nx);
