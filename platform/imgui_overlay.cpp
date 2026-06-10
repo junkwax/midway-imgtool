@@ -1350,20 +1350,7 @@ static bool *WorldMarkedMirrorFlag(int slot)
     return NULL;
 }
 
-static void WorldMarkedRestart(void)
-{
-    g_world_marked_state.timer = 0.0f;
-    g_world_marked_state.frame = 0;
-}
-
-static void StepWorldMarkedSequence(int delta)
-{
-    g_world_marked_state.paused = true;
-    g_world_marked_state.timer = 0.0f;
-    g_world_marked_state.frame += delta;
-    if (g_world_marked_state.frame < 0)
-        g_world_marked_state.frame = 0;
-}
+/* WorldMarkedRestart and StepWorldMarkedSequence now live in ui_canvas.{h,cpp}. */
 
 /* World marked clamp and tick helpers now live in ui_canvas.{h,cpp}. */
 
@@ -1407,77 +1394,7 @@ static void WorldResetDummyDecapDelays(int frame_count)
 /* WorldMarkedClearSequenceState and WorldMarkedSyncSequenceOverride now live
    in ui_canvas.{h,cpp}. */
 
-static void WorldMarkedResetSequenceToDefaults(int slot)
-{
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
-    g_world_marked_state.sequence_frames[slot] = g_world_marked_state.default_frames[slot];
-    WorldMarkedClearSequenceState(g_world_marked_state, slot);
-    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)g_world_marked_state.sequence_frames[slot].size());
-    WorldMarkedRestart();
-}
-
-static void WorldMarkedDuplicateSequenceEntry(int slot, int frame_idx)
-{
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
-    std::vector<int> &frames = g_world_marked_state.sequence_frames[slot];
-    if (frame_idx < 0 || frame_idx >= (int)frames.size()) return;
-    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)frames.size());
-
-    int insert_at = frame_idx + 1;
-    frames.insert(frames.begin() + insert_at, frames[frame_idx]);
-    g_world_marked_state.frame_delays[slot].insert(g_world_marked_state.frame_delays[slot].begin() + insert_at,
-                                             g_world_marked_state.frame_delays[slot][frame_idx]);
-    g_world_marked_state.local_dx[slot].insert(g_world_marked_state.local_dx[slot].begin() + insert_at,
-                                         g_world_marked_state.local_dx[slot][frame_idx]);
-    g_world_marked_state.local_dy[slot].insert(g_world_marked_state.local_dy[slot].begin() + insert_at,
-                                         g_world_marked_state.local_dy[slot][frame_idx]);
-    g_world_marked_state.visible_from[slot].insert(g_world_marked_state.visible_from[slot].begin() + insert_at,
-                                             g_world_marked_state.visible_from[slot][frame_idx]);
-    g_world_marked_state.paused = true;
-    g_world_marked_state.timer = 0.0f;
-    g_world_marked_state.frame = WorldMarkedTickForFrame(g_world_marked_state, slot, (int)frames.size(), insert_at);
-}
-
-/* Reorder: swap a sequence entry with its neighbor (dir -1 = earlier, +1 =
-   later), carrying its per-entry delay/offset/visibility along. */
-static void WorldMarkedMoveSequenceEntry(int slot, int frame_idx, int dir)
-{
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
-    std::vector<int> &frames = g_world_marked_state.sequence_frames[slot];
-    int n = (int)frames.size();
-    int j = frame_idx + dir;
-    if (frame_idx < 0 || frame_idx >= n || j < 0 || j >= n) return;
-    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, n);
-
-    std::swap(frames[frame_idx], frames[j]);
-    std::swap(g_world_marked_state.frame_delays[slot][frame_idx], g_world_marked_state.frame_delays[slot][j]);
-    std::swap(g_world_marked_state.local_dx[slot][frame_idx],     g_world_marked_state.local_dx[slot][j]);
-    std::swap(g_world_marked_state.local_dy[slot][frame_idx],     g_world_marked_state.local_dy[slot][j]);
-    std::swap(g_world_marked_state.visible_from[slot][frame_idx], g_world_marked_state.visible_from[slot][j]);
-
-    g_world_marked_state.paused = true;
-    g_world_marked_state.timer = 0.0f;
-    g_world_marked_state.frame = WorldMarkedTickForFrame(g_world_marked_state, slot, n, j);
-}
-
-static void WorldMarkedDeleteSequenceEntry(int slot, int frame_idx)
-{
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
-    std::vector<int> &frames = g_world_marked_state.sequence_frames[slot];
-    if ((int)frames.size() <= 1 || frame_idx < 0 || frame_idx >= (int)frames.size()) return;
-    EnsureWorldMarkedFrameDelays(g_world_marked_state, slot, (int)frames.size());
-
-    frames.erase(frames.begin() + frame_idx);
-    g_world_marked_state.frame_delays[slot].erase(g_world_marked_state.frame_delays[slot].begin() + frame_idx);
-    g_world_marked_state.local_dx[slot].erase(g_world_marked_state.local_dx[slot].begin() + frame_idx);
-    g_world_marked_state.local_dy[slot].erase(g_world_marked_state.local_dy[slot].begin() + frame_idx);
-    g_world_marked_state.visible_from[slot].erase(g_world_marked_state.visible_from[slot].begin() + frame_idx);
-    if (frame_idx >= (int)frames.size())
-        frame_idx = (int)frames.size() - 1;
-    g_world_marked_state.paused = true;
-    g_world_marked_state.timer = 0.0f;
-    g_world_marked_state.frame = WorldMarkedTickForFrame(g_world_marked_state, slot, (int)frames.size(), frame_idx);
-}
+/* World marked sequence edit helpers now live in ui_canvas.{h,cpp}. */
 
 static std::string regex_escape(const std::string &s)
 {
@@ -1922,7 +1839,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             bool *df = WorldMarkedMirrorFlag(kWorldDummyDecapSlot);
             if (df) *df = pf ? !*pf : true;
         }
-        WorldMarkedRestart();
+        WorldMarkedRestart(g_world_marked_state);
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Assigned dummy body to [%d] %sDECAP.",
                  g_world_dummy_decap_doc_idx, g_world_dummy_decap_prefix.c_str());
@@ -2322,7 +2239,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("Refresh##world_marked_restart"))
-            WorldMarkedRestart();
+            WorldMarkedRestart(g_world_marked_state);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Restart every marked tab sequence from frame 1.");
         ImGui::SameLine();
@@ -2367,7 +2284,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body", &g_world_dummy_decap_body)) {
             g_world_dummy_decap_reset = true;
             g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
-            WorldMarkedRestart();
+            WorldMarkedRestart(g_world_marked_state);
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Adds the stock fatality decap body as its own sync lane using *DECAP1-7 frames from open tabs.");
@@ -2386,7 +2303,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
             if (ImGui::SmallButton("Auto##world_dummy_auto")) {
                 g_world_dummy_decap_manual = false;
                 g_world_dummy_decap_reset = true;
-                WorldMarkedRestart();
+                WorldMarkedRestart(g_world_marked_state);
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Return to automatic dummy body selection.");
@@ -2410,7 +2327,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Reset Body##world_dummy_decap_reset")) {
                     WorldResetDummyDecapDelays((int)lane.frames.size());
-                    WorldMarkedRestart();
+                    WorldMarkedRestart(g_world_marked_state);
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Restore stock decap timing: 48, 6/6, 10-tick wobble, 6-tick fall.");
@@ -2456,7 +2373,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                     ImGui::SameLine();
                     ImGui::BeginDisabled(edit_fi <= 0);
                     if (ImGui::SmallButton("<##world_seq_left")) {
-                        WorldMarkedMoveSequenceEntry(lane.delay_slot, edit_fi, -1);
+                        WorldMarkedMoveSequenceEntry(g_world_marked_state, lane.delay_slot, edit_fi, -1);
                         refresh_lane_after_sequence_edit();
                     }
                     ImGui::EndDisabled();
@@ -2465,7 +2382,7 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                     ImGui::SameLine();
                     ImGui::BeginDisabled(edit_fi >= (int)lane.frames.size() - 1);
                     if (ImGui::SmallButton(">##world_seq_right")) {
-                        WorldMarkedMoveSequenceEntry(lane.delay_slot, edit_fi, +1);
+                        WorldMarkedMoveSequenceEntry(g_world_marked_state, lane.delay_slot, edit_fi, +1);
                         refresh_lane_after_sequence_edit();
                     }
                     ImGui::EndDisabled();
@@ -2473,21 +2390,21 @@ static bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                         ImGui::SetTooltip("Move this entry later in the animation order.");
                     ImGui::SameLine();
                     if (ImGui::SmallButton("+##world_seq_dup")) {
-                        WorldMarkedDuplicateSequenceEntry(lane.delay_slot, edit_fi);
+                        WorldMarkedDuplicateSequenceEntry(g_world_marked_state, lane.delay_slot, edit_fi);
                         refresh_lane_after_sequence_edit();
                     }
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Duplicate this sequence entry so the same sprite can use different local anipoints later.");
                     ImGui::SameLine();
                     if (ImGui::SmallButton("-##world_seq_del")) {
-                        WorldMarkedDeleteSequenceEntry(lane.delay_slot, edit_fi);
+                        WorldMarkedDeleteSequenceEntry(g_world_marked_state, lane.delay_slot, edit_fi);
                         refresh_lane_after_sequence_edit();
                     }
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Remove this sequence entry. The sprite itself is not deleted.");
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Reset Seq##world_seq_reset")) {
-                        WorldMarkedResetSequenceToDefaults(lane.delay_slot);
+                        WorldMarkedResetSequenceToDefaults(g_world_marked_state, lane.delay_slot);
                         refresh_lane_after_sequence_edit();
                     }
                     if (ImGui::IsItemHovered())
@@ -14390,7 +14307,7 @@ static void DrawAsmAnimWindow(void)
     if (ImGui::Checkbox("Play in World View lane", &g_asm_lane_enabled) && g_asm_lane_enabled) {
         g_world_view = true;
         g_world_marked_state.marked_play = true;
-        WorldMarkedRestart();
+        WorldMarkedRestart(g_world_marked_state);
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Render this animation as a lane in World View, using the script's\n"
@@ -14486,7 +14403,7 @@ static void DrawAsmAnimWindow(void)
                     g_asm_opp_sel = i;
                     AsmResolveAnimGlobal(g_asm_opp_anims[i]);
                     g_request_asm_opp_autoload = true;
-                    WorldMarkedRestart();
+                    WorldMarkedRestart(g_world_marked_state);
                 }
                 if (seld) ImGui::SetItemDefaultFocus();
             }
@@ -15495,7 +15412,7 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
     g_world_dummy_decap_doc_idx = -1;
     g_world_dummy_decap_prefix.clear();
     g_world_marked_state.paused = false;
-    WorldMarkedRestart();
+    WorldMarkedRestart(g_world_marked_state);
     g_zoom_reset = true;
 
     char buf[320];
@@ -17363,7 +17280,7 @@ static float DrawDocumentTabBar(float y, float sw)
             bool marked_was_on = g_world_marked_state.marked_play;
             tab_toggle(g_world_marked_state.marked_play ? "Marked: On" : "Marked", &g_world_marked_state.marked_play);
             if (marked_was_on != g_world_marked_state.marked_play) {
-                WorldMarkedRestart();
+                WorldMarkedRestart(g_world_marked_state);
             }
             tab_toggle(g_world_mirror_active ? "Mirror 1: On" : "Mirror 1", &g_world_mirror_active);
             tab_toggle(g_world_mirror_other ? "Mirror 2: On" : "Mirror 2", &g_world_mirror_other);
@@ -17610,11 +17527,11 @@ void imgui_overlay_render(void)
     bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() || ImGui::IsAnyItemFocused() || io.WantTextInput;
     if (!widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
         if (ImGui::Shortcut(ImGuiKey_LeftArrow, route)) {
-            if (g_world_view && g_world_marked_state.marked_play) StepWorldMarkedSequence(-1);
+            if (g_world_view && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, -1);
             else StepTimelinePlayhead(-1);
         }
         if (ImGui::Shortcut(ImGuiKey_RightArrow, route)) {
-            if (g_world_view && g_world_marked_state.marked_play) StepWorldMarkedSequence(1);
+            if (g_world_view && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, 1);
             else StepTimelinePlayhead(1);
         }
     }
@@ -18035,7 +17952,7 @@ void imgui_overlay_render(void)
             ImGui::MenuItem("World View",      NULL,   &g_world_view);
             if (g_world_view) {
                 if (ImGui::MenuItem("Marked Tab Playback", NULL, &g_world_marked_state.marked_play)) {
-                    WorldMarkedRestart();
+                    WorldMarkedRestart(g_world_marked_state);
                 }
                 ImGui::MenuItem("Marked Playback Paused", NULL, &g_world_marked_state.paused);
                 ImGui::SetNextItemWidth(80);
@@ -18043,7 +17960,7 @@ void imgui_overlay_render(void)
                 if (ImGui::MenuItem("Dummy Decap Body", NULL, &g_world_dummy_decap_body)) {
                     g_world_dummy_decap_reset = true;
                     g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
-                    WorldMarkedRestart();
+                    WorldMarkedRestart(g_world_marked_state);
                 }
                 if (ImGui::BeginMenu("Marked Tab Lanes")) {
                     for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
@@ -18054,7 +17971,7 @@ void imgui_overlay_render(void)
                         else
                             snprintf(label, sizeof(label), "Slot %d Hold Final Frame", slot + 1);
                         if (ImGui::MenuItem(label, NULL, &g_world_marked_state.hold_end[slot])) {
-                            WorldMarkedRestart();
+                            WorldMarkedRestart(g_world_marked_state);
                         }
                         bool *mirror = WorldMarkedMirrorFlag(slot);
                         if (mirror) {

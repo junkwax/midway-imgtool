@@ -155,6 +155,21 @@ int ClampWorldMarkedVisibleFrom(int value)
     return value;
 }
 
+void WorldMarkedRestart(WorldMarkedSequenceState &state)
+{
+    state.timer = 0.0f;
+    state.frame = 0;
+}
+
+void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta)
+{
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame += delta;
+    if (state.frame < 0)
+        state.frame = 0;
+}
+
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count)
 {
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
@@ -355,6 +370,76 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
     frames = state.sequence_frames[slot];
     WorldMarkedBuildSingleFrameLane(doc, frames, frame_pieces, frame_labels);
     EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
+}
+
+void WorldMarkedResetSequenceToDefaults(WorldMarkedSequenceState &state, int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    state.sequence_frames[slot] = state.default_frames[slot];
+    WorldMarkedClearSequenceState(state, slot);
+    EnsureWorldMarkedFrameDelays(state, slot, (int)state.sequence_frames[slot].size());
+    WorldMarkedRestart(state);
+}
+
+void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    std::vector<int> &frames = state.sequence_frames[slot];
+    if (frame_idx < 0 || frame_idx >= (int)frames.size()) return;
+    EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
+
+    int insert_at = frame_idx + 1;
+    frames.insert(frames.begin() + insert_at, frames[frame_idx]);
+    state.frame_delays[slot].insert(state.frame_delays[slot].begin() + insert_at,
+                                    state.frame_delays[slot][frame_idx]);
+    state.local_dx[slot].insert(state.local_dx[slot].begin() + insert_at,
+                                state.local_dx[slot][frame_idx]);
+    state.local_dy[slot].insert(state.local_dy[slot].begin() + insert_at,
+                                state.local_dy[slot][frame_idx]);
+    state.visible_from[slot].insert(state.visible_from[slot].begin() + insert_at,
+                                    state.visible_from[slot][frame_idx]);
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = WorldMarkedTickForFrame(state, slot, (int)frames.size(), insert_at);
+}
+
+void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx, int dir)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    std::vector<int> &frames = state.sequence_frames[slot];
+    int n = (int)frames.size();
+    int j = frame_idx + dir;
+    if (frame_idx < 0 || frame_idx >= n || j < 0 || j >= n) return;
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+
+    std::swap(frames[frame_idx], frames[j]);
+    std::swap(state.frame_delays[slot][frame_idx], state.frame_delays[slot][j]);
+    std::swap(state.local_dx[slot][frame_idx],     state.local_dx[slot][j]);
+    std::swap(state.local_dy[slot][frame_idx],     state.local_dy[slot][j]);
+    std::swap(state.visible_from[slot][frame_idx], state.visible_from[slot][j]);
+
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = WorldMarkedTickForFrame(state, slot, n, j);
+}
+
+void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    std::vector<int> &frames = state.sequence_frames[slot];
+    if ((int)frames.size() <= 1 || frame_idx < 0 || frame_idx >= (int)frames.size()) return;
+    EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
+
+    frames.erase(frames.begin() + frame_idx);
+    state.frame_delays[slot].erase(state.frame_delays[slot].begin() + frame_idx);
+    state.local_dx[slot].erase(state.local_dx[slot].begin() + frame_idx);
+    state.local_dy[slot].erase(state.local_dy[slot].begin() + frame_idx);
+    state.visible_from[slot].erase(state.visible_from[slot].begin() + frame_idx);
+    if (frame_idx >= (int)frames.size())
+        frame_idx = (int)frames.size() - 1;
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = WorldMarkedTickForFrame(state, slot, (int)frames.size(), frame_idx);
 }
 
 static void rebuild_world_onion_texture(IMG *img, int image_idx)

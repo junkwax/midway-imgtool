@@ -50,6 +50,8 @@ std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);
 int ClampWorldMarkedVisibleFrom(int value);
+void WorldMarkedRestart(WorldMarkedSequenceState &state);
+void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta);
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count);
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
                             int frame_count, int frame_idx);
@@ -62,6 +64,10 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
                                      std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
                                      std::vector<std::string> &frame_labels);
+void WorldMarkedResetSequenceToDefaults(WorldMarkedSequenceState &state, int slot);
+void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
+void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx, int dir);
+void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
                                      std::vector<std::string> &frame_labels);
