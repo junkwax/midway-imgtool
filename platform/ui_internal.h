@@ -225,6 +225,8 @@ bool CanRedo(void);
 void DoUndo(void);
 void DoRedo(void);
 void OpenResizeSpriteDialog(void);
+void MakeDerivedImageName(const char *base, const char *suffix, char out[16]);
+
 
 /* ---- Clipboard, transform and hitbox shared state ---- */
 struct CopiedImage {

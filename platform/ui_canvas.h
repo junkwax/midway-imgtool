@@ -566,3 +566,44 @@ void ClearCanvasUiTextures(void);
 
 /* Draw the main edit canvas window. */
 void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canvas_h);
+
+/* Clipboard, Paste, and Layer Operations */
+void ClearPixelClipboard(void);
+bool BuildClipboardPaletteMap(const PAL *target_pal, unsigned char map[256]);
+void copy_image(bool cut);
+void PasteClipboardAsNewImage(void);
+void CutSelectionToNewImage(void);
+void CopySelectionToNewImage(void);
+bool paste_preview_rgba(unsigned char src_ci, unsigned char dst_ci,
+                        const PAL *target_pal,
+                        const unsigned char pal_map[256],
+                        bool remap_palette, int x, int y,
+                        int *r, int *g, int *b, int *a);
+void flip_clipboard_horizontal(void);
+void flip_clipboard_vertical(void);
+void flatten_img_layer(IMG *img);
+void delete_img_layer(IMG *img);
+void flip_layer_horizontal(SpriteLayer *L);
+void flip_layer_vertical(SpriteLayer *L);
+void drop_paste_to_layer(void);
+void apply_pasted_region(void);
+void paste_image(void);
+bool clipboard_secondary_anipoint_in_use(void);
+
+/* Free Transform */
+void xform_begin(void);
+void xform_cancel(void);
+void xform_commit(void);
+
+/* Selections */
+void select_all(void);
+void deselect_all(void);
+void invert_selection(void);
+bool selection_contains_pixel(IMG *img, int x, int y);
+bool selection_bbox_from_mask(const std::vector<bool> &mask, int sw, int sh,
+                               int *x1, int *y1, int *x2, int *y2);
+bool selection_current_to_mask(int sw, int sh, std::vector<bool> *out);
+void selection_commit_mask(int sw, int sh, const std::vector<bool> &mask);
+void selection_apply_mask(int sw, int sh, std::vector<bool> mask, bool add);
+void selection_begin_add_drag(int sw, int sh, bool add);
+void selection_finish_add_drag(int sw, int sh);

@@ -136,40 +136,9 @@ void ClearDocumentRedoStack(void);
 
 /* ---- Clipboard (pixel data only) ---- */
 
-static void ClearPixelClipboard(void)
-{
-    if (g_clipboard.data_p) free(g_clipboard.data_p);
-    memset(&g_clipboard, 0, sizeof(g_clipboard));
-}
+/* now lives in ui_canvas.cpp: static void ClearPixelClipboard */
 
-bool BuildClipboardPaletteMap(const PAL *target_pal, unsigned char map[256])
-{
-    for (int i = 0; i < 256; i++) map[i] = (unsigned char)i;
-    if (!g_clipboard.has_palette || !target_pal || !target_pal->data_p)
-        return false;
-
-    int src_n = g_clipboard.palette_numc;
-    int dst_n = target_pal->numc;
-    if (src_n > 256) src_n = 256;
-    if (dst_n > 256) dst_n = 256;
-    if (src_n <= 0 || dst_n <= 0) return false;
-
-    const unsigned char *td = (const unsigned char *)target_pal->data_p;
-    if (src_n == dst_n &&
-        memcmp(g_clipboard.palette_data, td, (size_t)src_n * 2u) == 0)
-        return false;
-
-    map[0] = 0;
-    for (int i = 1; i < 256; i++) {
-        if (i < src_n) {
-            unsigned short src_word = palette_word_at(g_clipboard.palette_data, i);
-            map[i] = nearest_palette_index_for_word(src_word, target_pal);
-        } else {
-            map[i] = (i < dst_n) ? (unsigned char)i : 0;
-        }
-    }
-    return true;
-}
+/* now lives in ui_canvas.cpp: bool BuildClipboardPaletteMap */
 
 /* ---- Editor state ---- */
 /* g_show_dma_comp defined in ui_state.cpp */
@@ -264,9 +233,6 @@ void InvalidatePaletteSync(void)
 }
 
 
-static int  g_selection_add_mask_w = 0;
-static int  g_selection_add_mask_h = 0;
-static std::vector<bool> g_selection_add_mask;
 
 /* Active tool state (moved to ui_internal.h / ui_state.cpp) */
 
@@ -325,8 +291,7 @@ void undo_push(void);
 
 int FindDirtyDocumentIndex(void);
 static bool HasDirtyDocuments(void);
-static bool clipboard_secondary_anipoint_in_use(void);
-static void MakeDerivedImageName(const char *base, const char *suffix, char out[16]);
+
 
 struct DocSnapshot {
     unsigned int seq;
@@ -1813,7 +1778,7 @@ static bool ImageNameExists(const char *name)
     return false;
 }
 
-static void MakeDerivedImageName(const char *base, const char *suffix, char out[16])
+void MakeDerivedImageName(const char *base, const char *suffix, char out[16])
 {
     char root[16];
     if (base && *base) {
@@ -2036,18 +2001,7 @@ static int create_variant_shadow_slot(int base_idx, int target_pal_idx, unsigned
     return slot;
 }
 
-bool selection_contains_pixel(IMG *img, int x, int y)
-{
-    if (!img || !g_grid_sel.active) return false;
-    int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
-    int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-    if (x < x1 || x > x2 || y < y1 || y > y2) return false;
-    if (!g_grid_sel.is_mask) return true;
-    if (x < 0 || y < 0 || x >= g_grid_sel.mask_w || y >= g_grid_sel.mask_h) return false;
-    return g_grid_sel.pixel_mask[(size_t)y * g_grid_sel.mask_w + x];
-}
+/* now lives in ui_canvas.cpp: bool selection_contains_pixel */
 
 static VariantPaintResult ApplyVariantPaintToPixels(IMG *img, const std::vector<std::pair<int,int>>& pixels)
 {
@@ -2285,1087 +2239,109 @@ static void undo_apply(int idx)
 }
 
 /* ---- Copy/Paste helpers (pixel data only) ---- */
-void copy_image(bool cut)
+/* now lives in ui_canvas.cpp: void copy_image */
 
-{
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+/* now lives in ui_canvas.cpp: void PasteClipboardAsNewImage */
 
-    /* Cut clears pixels in the source — capture them for pixel-level undo
-       (undo_push only saves metadata, which left cut un-undoable). */
-    PixelHist cut_snap = {};
-    bool cut_captured = cut && pixel_hist_capture(&cut_snap, false);
+/* now lives in ui_canvas.cpp: void CutSelectionToNewImage */
 
-    ClearPixelClipboard();
+/* now lives in ui_canvas.cpp: void CopySelectionToNewImage */
 
-    int x1 = 0, y1 = 0, x2 = img->w - 1, y2 = img->h - 1;
+/* now lives in ui_canvas.cpp: const PasteBlendMode k_paste_blend_modes[] = { */
+/* now lives in ui_canvas.cpp: static int paste_clamp_byte */
 
-    /* If grid selection is active, copy only the selected region */
-    if (g_grid_sel.active) {
-        x1 = g_grid_sel.x1; y1 = g_grid_sel.y1;
-        x2 = g_grid_sel.x2; y2 = g_grid_sel.y2;
-        if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-        if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-        if (x1 < 0) x1 = 0; if (x1 >= (int)img->w) x1 = img->w - 1;
-        if (y1 < 0) y1 = 0; if (y1 >= (int)img->h) y1 = img->h - 1;
-        if (x2 < 0) x2 = 0; if (x2 >= (int)img->w) x2 = img->w - 1;
-        if (y2 < 0) y2 = 0; if (y2 >= (int)img->h) y2 = img->h - 1;
-    }
+/* now lives in ui_canvas.cpp: static PasteRGB paste_rgb_from_target_index */
 
-    int w = (x2 - x1) + 1;
-    int h = (y2 - y1) + 1;
-    int origin_x = x1;
-    int origin_y = y1;
-    unsigned short stride = (img->w + 3) & ~3;
-    unsigned short clip_stride = (w + 3) & ~3;
-    unsigned int size = clip_stride * h;
+/* now lives in ui_canvas.cpp: static PasteRGB paste_rgb_from_clipboard_index */
 
-    /* Copy selected pixel data */
-    g_clipboard.data_p = malloc(size);
-    if (!g_clipboard.data_p) { if (cut_captured) pixel_hist_free(&cut_snap); return; }
+/* now lives in ui_canvas.cpp: static PasteRGB paste_quantize_rgb_to_target */
 
-    for (int y = 0; y < h; y++) {
-        unsigned char *src = (unsigned char *)img->data_p + (y1 + y) * stride + x1;
-        unsigned char *dst = (unsigned char *)g_clipboard.data_p + y * clip_stride;
-        if (g_grid_sel.active && g_grid_sel.is_mask) {
-            for (int x = 0; x < w; x++) {
-                if (g_grid_sel.pixel_mask[(y1 + y) * g_grid_sel.mask_w + (x1 + x)]) {
-                    dst[x] = src[x];
-                    if (cut) src[x] = 0;
-                } else {
-                    dst[x] = 0;
-                }
-            }
-        } else {
-            memcpy(dst, src, w);
-            if (cut) {
-                memset(src, 0, w);
-            }
-        }
-    }
+/* now lives in ui_canvas.cpp: static unsigned int paste_dissolve_hash */
 
-    if (cut) {
-        if (cut_captured) push_pixel_history_entry(&cut_snap);
-        mark_dirty();
-        g_img_tex_idx = -2;
-        /* Don't drop the marquee on cut, acts more like Photoshop where selection stays */
-    }
+/* now lives in ui_canvas.cpp: static bool paste_dissolve_keeps */
 
-    g_clipboard.w = w;
-    g_clipboard.h = h;
-    g_clipboard.stride = clip_stride;
-    g_clipboard.valid = true;
-    g_clipboard.has_meta = true;
-    g_clipboard.has_opaque = false;
-    g_clipboard.from_cut = cut;
-    g_clipboard.origin_x = origin_x;
-    g_clipboard.origin_y = origin_y;
-    g_clipboard.palnum = img->palnum;
-    g_clipboard.anix = img->anix;
-    g_clipboard.aniy = img->aniy;
-    g_clipboard.anix2 = img->anix2;
-    g_clipboard.aniy2 = img->aniy2;
-    g_clipboard.aniz2 = img->aniz2;
-    g_clipboard.opals = img->opals;
-    g_clipboard.has_palette = false;
-    g_clipboard.palette_numc = 0;
-    memset(g_clipboard.palette_data, 0, sizeof(g_clipboard.palette_data));
-    {
-        PAL *clip_pal = get_pal(img->palnum);
-        if (clip_pal && clip_pal->data_p && clip_pal->numc > 0) {
-            int n = clip_pal->numc;
-            if (n > 256) n = 256;
-            memcpy(g_clipboard.palette_data, clip_pal->data_p, (size_t)n * 2u);
-            g_clipboard.palette_numc = (unsigned short)n;
-            g_clipboard.has_palette = true;
-        }
-    }
-    strncpy(g_clipboard.source_name, img->n_s, 15);
-    g_clipboard.source_name[15] = '\0';
-    strncpy(g_clipboard.src_filename, img->src_filename, sizeof(g_clipboard.src_filename) - 1);
-    g_clipboard.src_filename[sizeof(g_clipboard.src_filename) - 1] = '\0';
+/* now lives in ui_canvas.cpp: static int paste_blend_channel */
 
-    /* Tight-crop the clipboard to its non-transparent content bbox. Adobe
-       behaviour: a cut/copy carries the visible pixels, not the empty
-       transparent padding around them. Without this, a small motif inside a
-       large marquee pastes off-center because the rect is bigger than what
-       the user actually sees. The crop is applied to *all* copies (not just
-       marquee or mask copies) so a full-image copy still drops the empty
-       margin most sprite frames have around them. */
-    {
-        unsigned char *cd = (unsigned char *)g_clipboard.data_p;
-        int min_x = w, min_y = h, max_x = -1, max_y = -1;
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                if (cd[y * clip_stride + x] != 0) {
-                    if (x < min_x) min_x = x;
-                    if (x > max_x) max_x = x;
-                    if (y < min_y) min_y = y;
-                    if (y > max_y) max_y = y;
-                }
-            }
-        }
-        if (max_x >= 0 && max_y >= 0) {
-            g_clipboard.has_opaque = true;
-            if (min_x > 0 || min_y > 0 || max_x < w - 1 || max_y < h - 1) {
-                int nw = max_x - min_x + 1;
-                int nh = max_y - min_y + 1;
-                unsigned short nstride = (unsigned short)((nw + 3) & ~3);
-                unsigned int nsize = (unsigned int)nstride * nh;
-                unsigned char *nbuf = (unsigned char *)malloc(nsize);
-                if (nbuf) {
-                    memset(nbuf, 0, nsize);
-                    for (int y = 0; y < nh; y++) {
-                        memcpy(nbuf + y * nstride,
-                               cd + (min_y + y) * clip_stride + min_x,
-                               nw);
-                    }
-                    free(g_clipboard.data_p);
-                    g_clipboard.data_p = nbuf;
-                    g_clipboard.w      = (unsigned short)nw;
-                    g_clipboard.h      = (unsigned short)nh;
-                    g_clipboard.stride = nstride;
-                    g_clipboard.origin_x += min_x;
-                    g_clipboard.origin_y += min_y;
-                }
-            }
-        }
-        /* If max_x < 0 the selection was entirely transparent; the clipboard
-           is left as-is (the user explicitly copied empty pixels — possibly
-           intentional for blanking). */
-    }
-}
+/* now lives in ui_canvas.cpp: static bool paste_composite_rgb */
 
-void PasteClipboardAsNewImage(void)
-
-{
-    if (!g_clipboard.valid || !g_clipboard.data_p || g_clipboard.w == 0 || g_clipboard.h == 0) return;
-
-    /* Adds a whole new image — needs a document snapshot so undo removes it
-       (undo_push only restores the selected image's metadata). */
-    doc_undo_push();
-
-    IMG *dst = (IMG *)AllocImg();
-    if (!dst) return;
-
-    int w = g_clipboard.w;
-    int h = g_clipboard.h;
-    int src_stride = g_clipboard.stride;
-    int dst_stride = (w + 3) & ~3;
-    size_t sz = (size_t)dst_stride * h;
-
-    dst->data_p = PoolAlloc(sz);
-    if (!dst->data_p) {
-        unlink_and_free_img(dst);
-        return;
-    }
-
-    unsigned char *src = (unsigned char *)g_clipboard.data_p;
-    unsigned char *dp = (unsigned char *)dst->data_p;
-    for (int y = 0; y < h; y++) {
-        memcpy(dp + y * dst_stride, src + y * src_stride, w);
-    }
-
-    dst->w = (unsigned short)w;
-    dst->h = (unsigned short)h;
-    dst->flags = 0;
-    dst->palnum = g_clipboard.has_meta ? g_clipboard.palnum
-                 : (g_doc->plselected >= 0 ? (unsigned short)g_doc->plselected : 0);
-    if (g_doc->palcnt > 0 && dst->palnum >= g_doc->palcnt)
-        dst->palnum = (g_doc->plselected >= 0 && (unsigned)g_doc->plselected < g_doc->palcnt)
-                    ? (unsigned short)g_doc->plselected : 0;
-    dst->opals = g_clipboard.has_meta ? g_clipboard.opals : 0;
-    if (g_clipboard.has_meta) dst->aniz2 = g_clipboard.aniz2;
-    else clear_secondary_anipoint(dst);
-
-    if (g_clipboard.has_meta) {
-        dst->anix  = (unsigned short)((short)g_clipboard.anix  - (short)g_clipboard.origin_x);
-        dst->aniy  = (unsigned short)((short)g_clipboard.aniy  - (short)g_clipboard.origin_y);
-        if (clipboard_secondary_anipoint_in_use()) {
-            dst->anix2 = (unsigned short)((short)g_clipboard.anix2 - (short)g_clipboard.origin_x);
-            dst->aniy2 = (unsigned short)((short)g_clipboard.aniy2 - (short)g_clipboard.origin_y);
-        } else {
-            clear_secondary_anipoint(dst);
-        }
-        strncpy(dst->src_filename, g_clipboard.src_filename, sizeof(dst->src_filename) - 1);
-        dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
-    }
-
-    MakeDerivedImageName(g_clipboard.source_name[0] ? g_clipboard.source_name : "PASTE",
-                         g_clipboard.from_cut ? "CUT" : "CPY",
-                         dst->n_s);
-
-    g_doc->ilselected = (int)g_doc->imgcnt - 1;
-    g_img_tex_idx = -2;
-    g_zoom_reset = true;
-    g_palette_nav = false;
-    mark_dirty();
-    snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "Pasted clipboard as new sprite: %dx%d.", w, h);
-    g_restore_msg_timer = 4.0f;
-}
-
-void CutSelectionToNewImage(void)
-
-{
-    if (g_doc->ilselected < 0) return;
-    copy_image(true);
-    if (g_clipboard.valid) PasteClipboardAsNewImage();
-}
-
-void CopySelectionToNewImage(void)
-
-{
-    if (g_doc->ilselected < 0) return;
-    copy_image(false);
-    if (g_clipboard.valid) PasteClipboardAsNewImage();
-}
-
-const PasteBlendMode k_paste_blend_modes[] = {
-    PasteBlendMode::Normal,
-    PasteBlendMode::Dissolve,
-    PasteBlendMode::Darken,
-    PasteBlendMode::Multiply,
-    PasteBlendMode::ColorBurn,
-    PasteBlendMode::LinearBurn,
-    PasteBlendMode::Lighten,
-    PasteBlendMode::Screen,
-    PasteBlendMode::ColorDodge,
-    PasteBlendMode::Overlay,
-    PasteBlendMode::SoftLight,
-    PasteBlendMode::HardLight,
-    PasteBlendMode::Difference,
-    PasteBlendMode::Exclusion
-};
-
-const char *PasteBlendModeName(PasteBlendMode mode)
-{
-    switch (mode) {
-    case PasteBlendMode::Normal:     return "Normal";
-    case PasteBlendMode::Dissolve:   return "Dissolve";
-    case PasteBlendMode::Darken:     return "Darken";
-    case PasteBlendMode::Multiply:   return "Multiply";
-    case PasteBlendMode::ColorBurn:  return "Color Burn";
-    case PasteBlendMode::LinearBurn: return "Linear Burn";
-    case PasteBlendMode::Lighten:    return "Lighten";
-    case PasteBlendMode::Screen:     return "Screen";
-    case PasteBlendMode::ColorDodge: return "Color Dodge";
-    case PasteBlendMode::Overlay:    return "Overlay";
-    case PasteBlendMode::SoftLight:  return "Soft Light";
-    case PasteBlendMode::HardLight:  return "Hard Light";
-    case PasteBlendMode::Difference: return "Difference";
-    case PasteBlendMode::Exclusion:  return "Exclusion";
-    }
-    return "Normal";
-}
-
-struct PasteRGB {
-    int r, g, b;
-};
-
-static int paste_clamp_byte(int v)
-{
-    if (v < 0) return 0;
-    if (v > 255) return 255;
-    return v;
-}
-
-static PasteRGB paste_rgb_from_target_index(const PAL *pal, unsigned char ci)
-{
-    if (pal && pal->data_p && ci < pal->numc && ci < 256) {
-        const unsigned char *pd = (const unsigned char *)pal->data_p;
-        unsigned char r = 0, g = 0, b = 0;
-        pal_word_to_rgb8(pd + ci * 2, &r, &g, &b);
-        return {(int)r, (int)g, (int)b};
-    }
-    SDL_Color c = g_palette[ci];
-    return {(int)c.r, (int)c.g, (int)c.b};
-}
-
-static PasteRGB paste_rgb_from_clipboard_index(unsigned char ci, const PAL *target_pal,
-                                               const unsigned char pal_map[256],
-                                               bool remap_palette)
-{
-    if (g_clipboard.has_palette && ci < g_clipboard.palette_numc && ci < 256) {
-        unsigned char r = 0, g = 0, b = 0;
-        pal_word_to_rgb8(g_clipboard.palette_data + ci * 2, &r, &g, &b);
-        return {(int)r, (int)g, (int)b};
-    }
-    unsigned char draw_ci = remap_palette ? pal_map[ci] : ci;
-    return paste_rgb_from_target_index(target_pal, draw_ci);
-}
-
-static PasteRGB paste_quantize_rgb_to_target(const PAL *target_pal, PasteRGB rgb)
-{
-    if (!target_pal || !target_pal->data_p || target_pal->numc <= 1) return rgb;
-    unsigned short word = rgb_to_word15((unsigned char)paste_clamp_byte(rgb.r),
-                                        (unsigned char)paste_clamp_byte(rgb.g),
-                                        (unsigned char)paste_clamp_byte(rgb.b));
-    int idx = FindNearestPaletteSlot(target_pal, word);
-    return paste_rgb_from_target_index(target_pal, (unsigned char)idx);
-}
-
-static unsigned int paste_dissolve_hash(int x, int y, unsigned char src_ci)
-{
-    unsigned int h = (unsigned int)x * 73856093u
-                   ^ (unsigned int)y * 19349663u
-                   ^ (unsigned int)src_ci * 83492791u;
-    h ^= h >> 13;
-    h *= 1274126177u;
-    h ^= h >> 16;
-    return h;
-}
-
-static bool paste_dissolve_keeps(int x, int y, unsigned char src_ci, int opacity)
-{
-    if (opacity >= 100) return true;
-    if (opacity <= 0) return false;
-    return (int)(paste_dissolve_hash(x, y, src_ci) % 100u) < opacity;
-}
-
-static int paste_blend_channel(PasteBlendMode mode, int s, int d)
-{
-    s = paste_clamp_byte(s);
-    d = paste_clamp_byte(d);
-    switch (mode) {
-    case PasteBlendMode::Darken:
-        return (s < d) ? s : d;
-    case PasteBlendMode::Multiply:
-        return (s * d + 127) / 255;
-    case PasteBlendMode::ColorBurn:
-        return (s == 0) ? 0 : paste_clamp_byte(255 - ((255 - d) * 255 + s / 2) / s);
-    case PasteBlendMode::LinearBurn:
-        return paste_clamp_byte(s + d - 255);
-    case PasteBlendMode::Lighten:
-        return (s > d) ? s : d;
-    case PasteBlendMode::Screen:
-        return 255 - ((255 - s) * (255 - d) + 127) / 255;
-    case PasteBlendMode::ColorDodge:
-        return (s >= 255) ? 255 : paste_clamp_byte((d * 255 + (255 - s) / 2) / (255 - s));
-    case PasteBlendMode::Overlay:
-        return (d < 128)
-            ? paste_clamp_byte((2 * s * d + 127) / 255)
-            : paste_clamp_byte(255 - (2 * (255 - s) * (255 - d) + 127) / 255);
-    case PasteBlendMode::SoftLight: {
-        float sf = (float)s / 255.0f;
-        float df = (float)d / 255.0f;
-        float out = (sf < 0.5f)
-            ? (df - (1.0f - 2.0f * sf) * df * (1.0f - df))
-            : (df + (2.0f * sf - 1.0f) * (sqrtf(df) - df));
-        return paste_clamp_byte((int)(out * 255.0f + 0.5f));
-    }
-    case PasteBlendMode::HardLight:
-        return (s < 128)
-            ? paste_clamp_byte((2 * s * d + 127) / 255)
-            : paste_clamp_byte(255 - (2 * (255 - s) * (255 - d) + 127) / 255);
-    case PasteBlendMode::Difference:
-        return (s > d) ? (s - d) : (d - s);
-    case PasteBlendMode::Exclusion:
-        return paste_clamp_byte(s + d - (2 * s * d + 127) / 255);
-    case PasteBlendMode::Normal:
-    case PasteBlendMode::Dissolve:
-    default:
-        return s;
-    }
-}
-
-static bool paste_composite_rgb(PasteBlendMode mode, PasteRGB src, PasteRGB dst,
-                                int opacity, int x, int y, unsigned char src_ci,
-                                PasteRGB *out)
-{
-    if (!out) return false;
-    if (opacity <= 0) return false;
-    if (opacity > 100) opacity = 100;
-
-    if (mode == PasteBlendMode::Dissolve) {
-        if (!paste_dissolve_keeps(x, y, src_ci, opacity)) return false;
-        *out = src;
-        return true;
-    }
-
-    PasteRGB blended = src;
-    if (mode != PasteBlendMode::Normal) {
-        blended.r = paste_blend_channel(mode, src.r, dst.r);
-        blended.g = paste_blend_channel(mode, src.g, dst.g);
-        blended.b = paste_blend_channel(mode, src.b, dst.b);
-    }
-
-    out->r = paste_clamp_byte((dst.r * (100 - opacity) + blended.r * opacity + 50) / 100);
-    out->g = paste_clamp_byte((dst.g * (100 - opacity) + blended.g * opacity + 50) / 100);
-    out->b = paste_clamp_byte((dst.b * (100 - opacity) + blended.b * opacity + 50) / 100);
-    return true;
-}
-
-static unsigned char paste_composite_index(unsigned char src_ci, unsigned char dst_ci,
-                                           const PAL *target_pal,
-                                           const unsigned char pal_map[256],
-                                           bool remap_palette, int x, int y)
-{
-    if (src_ci == 0) return dst_ci;
-    int opacity = g_paste_opacity;
-    if (opacity <= 0) return dst_ci;
-    if (opacity > 100) opacity = 100;
-
-    unsigned char mapped = remap_palette ? pal_map[src_ci] : src_ci;
-    if (g_paste_blend_mode == PasteBlendMode::Normal && opacity >= 100)
-        return mapped;
-
-    if (g_paste_blend_mode == PasteBlendMode::Dissolve)
-        return paste_dissolve_keeps(x, y, src_ci, opacity) ? mapped : dst_ci;
-
-    if (dst_ci == 0 || !target_pal || !target_pal->data_p || target_pal->numc <= 1)
-        return mapped;
-
-    PasteRGB src = paste_rgb_from_clipboard_index(src_ci, target_pal, pal_map, remap_palette);
-    PasteRGB dst = paste_rgb_from_target_index(target_pal, dst_ci);
-    PasteRGB out;
-    if (!paste_composite_rgb(g_paste_blend_mode, src, dst, opacity, x, y, src_ci, &out))
-        return dst_ci;
-
-    unsigned short word = rgb_to_word15((unsigned char)out.r,
-                                        (unsigned char)out.g,
-                                        (unsigned char)out.b);
-    return (unsigned char)FindNearestPaletteSlot(target_pal, word);
-}
-
-bool paste_preview_rgba(unsigned char src_ci, unsigned char dst_ci,
-                        const PAL *target_pal,
-                        const unsigned char pal_map[256],
-                        bool remap_palette, int x, int y,
-                        int *r, int *g, int *b, int *a)
-{
-    if (src_ci == 0 || !r || !g || !b || !a) return false;
-    int opacity = g_paste_opacity;
-    if (opacity <= 0) return false;
-    if (opacity > 100) opacity = 100;
-
-    unsigned char mapped = remap_palette ? pal_map[src_ci] : src_ci;
-    PasteRGB src = (g_paste_blend_mode == PasteBlendMode::Normal)
-        ? paste_rgb_from_target_index(target_pal, mapped)
-        : paste_rgb_from_clipboard_index(src_ci, target_pal, pal_map, remap_palette);
-
-    if (g_paste_blend_mode == PasteBlendMode::Normal && opacity >= 100) {
-        *r = src.r; *g = src.g; *b = src.b; *a = 255;
-        return true;
-    }
-
-    if (g_paste_blend_mode == PasteBlendMode::Dissolve) {
-        if (!paste_dissolve_keeps(x, y, src_ci, opacity)) return false;
-        *r = src.r; *g = src.g; *b = src.b; *a = 255;
-        return true;
-    }
-
-    if (dst_ci == 0) {
-        *r = src.r; *g = src.g; *b = src.b;
-        *a = (g_paste_blend_mode == PasteBlendMode::Normal)
-            ? paste_clamp_byte((opacity * 255 + 50) / 100)
-            : 255;
-        return true;
-    }
-
-    PasteRGB dst = paste_rgb_from_target_index(target_pal, dst_ci);
-    PasteRGB out;
-    if (!paste_composite_rgb(g_paste_blend_mode, src, dst, opacity, x, y, src_ci, &out))
-        return false;
-    out = paste_quantize_rgb_to_target(target_pal, out);
-    *r = out.r; *g = out.g; *b = out.b; *a = 255;
-    return true;
-}
+/* now lives in ui_canvas.cpp: static unsigned char paste_composite_index */
+/* now lives in ui_canvas.cpp: bool paste_preview_rgba */
 
 /* Mirror the floating clipboard in place so a paste can be flipped before it
    is committed with Enter. Operates on palette indices, so it is lossless.
    The floating overlay is drawn straight from the clipboard each frame, so the
    preview updates immediately. */
-void flip_clipboard_horizontal(void)
+/* now lives in ui_canvas.cpp: void flip_clipboard_horizontal */
 
-{
-    if (!g_clipboard.valid || !g_clipboard.data_p) return;
-    int w = g_clipboard.w, h = g_clipboard.h, stride = g_clipboard.stride;
-    unsigned char *d = (unsigned char *)g_clipboard.data_p;
-    for (int y = 0; y < h; y++) {
-        unsigned char *row = d + (size_t)y * stride;
-        for (int x = 0; x < w / 2; x++) {
-            unsigned char t = row[x];
-            row[x] = row[w - 1 - x];
-            row[w - 1 - x] = t;
-        }
-    }
-}
-
-void flip_clipboard_vertical(void)
-
-{
-    if (!g_clipboard.valid || !g_clipboard.data_p) return;
-    int w = g_clipboard.w, h = g_clipboard.h, stride = g_clipboard.stride;
-    unsigned char *d = (unsigned char *)g_clipboard.data_p;
-    for (int y = 0; y < h / 2; y++) {
-        unsigned char *r0 = d + (size_t)y * stride;
-        unsigned char *r1 = d + (size_t)(h - 1 - y) * stride;
-        for (int x = 0; x < w; x++) {
-            unsigned char t = r0[x]; r0[x] = r1[x]; r1[x] = t;
-        }
-    }
-}
+/* now lives in ui_canvas.cpp: void flip_clipboard_vertical */
 
 /* Permanently merge the layer into the host image's pixels and drop it. */
-void flatten_img_layer(IMG *img)
-{
-    SpriteLayer *L = img_layer(img);
-    if (!L || !img->data_p) { if (L) { free(img->layer_p); img->layer_p = NULL; } return; }
-    if (L->visible) {
-        int stride = (img->w + 3) & ~3;
-        composite_layer_onto(L, (unsigned char *)img->data_p, img->w, img->h, stride);
-    }
-    free(img->layer_p);
-    img->layer_p = NULL;
-    g_img_tex_idx = -2;
-}
+/* now lives in ui_canvas.cpp: void flatten_img_layer */
 
-void delete_img_layer(IMG *img)
-{
-    if (img && img->layer_p) { free(img->layer_p); img->layer_p = NULL; g_img_tex_idx = -2; }
-}
+/* now lives in ui_canvas.cpp: void delete_img_layer */
 
-void flip_layer_horizontal(SpriteLayer *L)
-{
-    if (!L) return;
-    unsigned char *p = layer_pixels(L);
-    for (int y = 0; y < L->h; y++) {
-        unsigned char *row = p + (size_t)y * L->stride;
-        for (int x = 0; x < L->w / 2; x++) {
-            unsigned char t = row[x]; row[x] = row[L->w - 1 - x]; row[L->w - 1 - x] = t;
-        }
-    }
-}
-void flip_layer_vertical(SpriteLayer *L)
-{
-    if (!L) return;
-    unsigned char *p = layer_pixels(L);
-    for (int y = 0; y < L->h / 2; y++) {
-        unsigned char *r0 = p + (size_t)y * L->stride;
-        unsigned char *r1 = p + (size_t)(L->h - 1 - y) * L->stride;
-        for (int x = 0; x < L->w; x++) { unsigned char t = r0[x]; r0[x] = r1[x]; r1[x] = t; }
-    }
-}
+/* now lives in ui_canvas.cpp: void flip_layer_horizontal */
+/* now lives in ui_canvas.cpp: void flip_layer_vertical */
 
 /* Turn the active floating paste into a layer on the selected sprite. The
    clipboard indices are remapped to the host palette first (same nearest-color
    mapping a normal paste uses) so the layer composites with a plain copy.
    Replaces any existing layer (single-overlay model). */
-void drop_paste_to_layer(void)
+/* now lives in ui_canvas.cpp: void drop_paste_to_layer */
 
-{
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
-
-    int w = g_clipboard.w, h = g_clipboard.h;
-    if (w <= 0 || h <= 0) return;
-    int stride = (w + 3) & ~3;
-
-    SpriteLayer *L = (SpriteLayer *)malloc(layer_total_bytes(w, h));
-    if (!L) return;
-
-    doc_undo_push();
-
-    L->w = w; L->h = h; L->stride = stride;
-    L->x = g_pasted.paste_x; L->y = g_pasted.paste_y;
-    L->visible = 1;
-
-    unsigned char pal_map[256];
-    PAL *target_pal = get_pal(img->palnum);
-    bool remap = BuildClipboardPaletteMap(target_pal, pal_map);
-
-    unsigned char *dpix = layer_pixels(L);
-    int clip_stride = g_clipboard.stride;
-    const unsigned char *sp = (const unsigned char *)g_clipboard.data_p;
-    for (int y = 0; y < h; y++) {
-        unsigned char *drow = dpix + (size_t)y * stride;
-        const unsigned char *srow = sp + (size_t)y * clip_stride;
-        for (int x = 0; x < w; x++) {
-            unsigned char ci = srow[x];
-            drow[x] = (ci && remap) ? pal_map[ci] : ci;
-        }
-        for (int x = w; x < stride; x++) drow[x] = 0;   /* pad */
-    }
-
-    if (img->layer_p) free(img->layer_p);
-    img->layer_p = L;
-
-    /* The paste has become the layer; clear the floating paste. */
-    g_pasted.active = false;
-    g_pasted.dragging = false;
-    g_img_tex_idx = -2;
-
-    snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "Dropped paste to layer (%dx%d). Edit it in the Sprite Layer panel; "
-             "it flattens on save.", w, h);
-    g_restore_msg_timer = 5.0f;
-}
-
-void apply_pasted_region(void)
-{
-    mark_dirty();
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
-
-    /* Capture pre-paste pixels so committing a paste is undoable. */
-    PixelHist paste_snap = {};
-    bool paste_captured = pixel_hist_capture(&paste_snap, false);
-
-    unsigned short stride = (img->w + 3) & ~3;
-    unsigned short clip_stride = g_clipboard.stride;
-    int px = g_pasted.paste_x, py = g_pasted.paste_y;
-    int pw = g_clipboard.w, ph = g_clipboard.h;
-    unsigned char pal_map[256];
-    PAL *target_pal = get_pal(img->palnum);
-    bool remap_palette = BuildClipboardPaletteMap(target_pal, pal_map);
-
-    /* Adobe-like clipping: allow pasting partially off-canvas */
-    int start_x = (px < 0) ? -px : 0;
-    int start_y = (py < 0) ? -py : 0;
-    int end_x = pw;
-    int end_y = ph;
-
-    if (px + pw > (int)img->w) end_x = img->w - px;
-    if (py + ph > (int)img->h) end_y = img->h - py;
-
-    /* Copy clipboard data to target location with clipping and transparency support. */
-    for (int y = start_y; y < end_y; y++) {
-        unsigned char *src = (unsigned char *)g_clipboard.data_p + y * clip_stride;
-        unsigned char *dst = (unsigned char *)img->data_p + (py + y) * stride + px + start_x;
-        for (int x = start_x; x < end_x; x++) {
-            /* 0 remains transparent. Opaque pixels overwrite by default;
-               blend/opacity modes composite in RGB and quantize back to the
-               target indexed palette. */
-            if (src[x] != 0)
-                dst[x - start_x] = paste_composite_index(src[x], dst[x - start_x],
-                                                         target_pal, pal_map,
-                                                         remap_palette,
-                                                         px + x, py + y);
-        }
-    }
-    if (paste_captured) push_pixel_history_entry(&paste_snap);
-    g_img_tex_idx = -2;
-}
+/* now lives in ui_canvas.cpp: void apply_pasted_region */
 
 /* Nearest-neighbor resample the clipboard to exactly (nw, nh). Used both
    by paste-to-fit (downscale-only) and free-transform commit (any scale).
    Nearest-neighbor (not bilinear) is required because the clipboard stores
    palette indices, not RGB — averaging indices produces garbage colors. */
-static void scale_clipboard_to(int nw, int nh)
-{
-    if (!g_clipboard.valid || !g_clipboard.data_p) return;
-    int sw = g_clipboard.w, sh = g_clipboard.h;
-    if (nw < 1) nw = 1;
-    if (nh < 1) nh = 1;
-    if (nw == sw && nh == sh) return;
+/* now lives in ui_canvas.cpp: static void scale_clipboard_to */
 
-    unsigned short src_stride = g_clipboard.stride;
-    unsigned short dst_stride = (unsigned short)((nw + 3) & ~3);
-    unsigned char *src = (unsigned char *)g_clipboard.data_p;
-    unsigned char *dst = (unsigned char *)malloc((size_t)dst_stride * nh);
-    if (!dst) return;
-    memset(dst, 0, (size_t)dst_stride * nh);
-
-    /* Inverse mapping: for each destination pixel, sample the source pixel
-       nearest to the center of that destination cell. Avoids the gaps you
-       get from forward mapping when the ratio isn't integral. Works for
-       both upscale and downscale. */
-    for (int dy = 0; dy < nh; dy++) {
-        int sy_idx = (int)(((long long)dy * sh + sh / 2) / nh);
-        if (sy_idx >= sh) sy_idx = sh - 1;
-        unsigned char *srow = src + sy_idx * src_stride;
-        unsigned char *drow = dst + dy * dst_stride;
-        for (int dx = 0; dx < nw; dx++) {
-            int sx_idx = (int)(((long long)dx * sw + sw / 2) / nw);
-            if (sx_idx >= sw) sx_idx = sw - 1;
-            drow[dx] = srow[sx_idx];
-        }
-    }
-
-    free(g_clipboard.data_p);
-    g_clipboard.data_p = dst;
-    g_clipboard.w      = (unsigned short)nw;
-    g_clipboard.h      = (unsigned short)nh;
-    g_clipboard.stride = dst_stride;
-}
-
-static void transform_clipboard_to(int scaled_w, int scaled_h, float angle_deg,
-                                   int *out_w, int *out_h)
-{
-    if (out_w) *out_w = g_clipboard.w;
-    if (out_h) *out_h = g_clipboard.h;
-    if (!g_clipboard.valid || !g_clipboard.data_p) return;
-
-    int sw = g_clipboard.w;
-    int sh = g_clipboard.h;
-    if (scaled_w < 1) scaled_w = 1;
-    if (scaled_h < 1) scaled_h = 1;
-
-    while (angle_deg <= -180.0f) angle_deg += 360.0f;
-    while (angle_deg >   180.0f) angle_deg -= 360.0f;
-    const float PI_F = 3.14159265358979323846f;
-    float rad = angle_deg * PI_F / 180.0f;
-    float c = cosf(rad);
-    float s = sinf(rad);
-
-    int dw = scaled_w;
-    int dh = scaled_h;
-    if (fabsf(angle_deg) > 0.001f) {
-        dw = (int)ceilf(fabsf((float)scaled_w * c) + fabsf((float)scaled_h * s));
-        dh = (int)ceilf(fabsf((float)scaled_w * s) + fabsf((float)scaled_h * c));
-        if (dw < 1) dw = 1;
-        if (dh < 1) dh = 1;
-    }
-
-    unsigned short src_stride = g_clipboard.stride;
-    unsigned short dst_stride = (unsigned short)((dw + 3) & ~3);
-    unsigned char *src = (unsigned char *)g_clipboard.data_p;
-    unsigned char *dst = (unsigned char *)malloc((size_t)dst_stride * dh);
-    if (!dst) return;
-    memset(dst, 0, (size_t)dst_stride * dh);
-
-    float dst_cx = (float)dw * 0.5f;
-    float dst_cy = (float)dh * 0.5f;
-    float scaled_cx = (float)scaled_w * 0.5f;
-    float scaled_cy = (float)scaled_h * 0.5f;
-
-    for (int y = 0; y < dh; y++) {
-        unsigned char *drow = dst + y * dst_stride;
-        for (int x = 0; x < dw; x++) {
-            float dx = ((float)x + 0.5f) - dst_cx;
-            float dy = ((float)y + 0.5f) - dst_cy;
-            float ux =  c * dx + s * dy + scaled_cx;
-            float uy = -s * dx + c * dy + scaled_cy;
-            if (ux < 0.0f || uy < 0.0f || ux >= (float)scaled_w || uy >= (float)scaled_h)
-                continue;
-
-            int sx_idx = (int)(ux * (float)sw / (float)scaled_w);
-            int sy_idx = (int)(uy * (float)sh / (float)scaled_h);
-            if (sx_idx < 0) sx_idx = 0;
-            if (sy_idx < 0) sy_idx = 0;
-            if (sx_idx >= sw) sx_idx = sw - 1;
-            if (sy_idx >= sh) sy_idx = sh - 1;
-            drow[x] = src[sy_idx * src_stride + sx_idx];
-        }
-    }
-
-    free(g_clipboard.data_p);
-    g_clipboard.data_p = dst;
-    g_clipboard.w      = (unsigned short)dw;
-    g_clipboard.h      = (unsigned short)dh;
-    g_clipboard.stride = dst_stride;
-    if (out_w) *out_w = dw;
-    if (out_h) *out_h = dh;
-}
+/* now lives in ui_canvas.cpp: static void transform_clipboard_to */
 
 /* Downscale-only convenience wrapper used by paste-to-fit: shrink while
    preserving aspect ratio, no-op if the clipboard already fits. */
-static void scale_clipboard_to_fit(int max_w, int max_h)
-{
-    if (!g_clipboard.valid || !g_clipboard.data_p) return;
-    int sw = g_clipboard.w, sh = g_clipboard.h;
-    if (sw <= max_w && sh <= max_h) return;
-
-    long long rx = ((long long)max_w << 16) / sw;
-    long long ry = ((long long)max_h << 16) / sh;
-    long long r  = (rx < ry) ? rx : ry;
-    int nw = (int)((long long)sw * r >> 16);
-    int nh = (int)((long long)sh * r >> 16);
-    if (nw < 1) nw = 1;
-    if (nh < 1) nh = 1;
-    if (nw > max_w) nw = max_w;
-    if (nh > max_h) nh = max_h;
-    scale_clipboard_to(nw, nh);
-}
+/* now lives in ui_canvas.cpp: static void scale_clipboard_to_fit */
 
 /* Marquee-select the entire current sprite. Adobe's Ctrl+A. Stored as a
    rectangle (not a mask) since "everything" is trivially representable. */
-void select_all(void)
-
-{
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || img->w == 0 || img->h == 0) return;
-    g_active_tool        = ActiveTool::Marquee;
-    g_grid_sel.active    = true;
-    g_grid_sel.dragging  = false;
-    g_grid_sel.is_mask   = false;
-    g_grid_sel.pixel_mask.clear();
-    g_grid_sel.x1 = 0;             g_grid_sel.y1 = 0;
-    g_grid_sel.x2 = img->w - 1;    g_grid_sel.y2 = img->h - 1;
-}
+/* now lives in ui_canvas.cpp: void select_all */
 
 /* Clear any active marquee / lasso / wand selection. Adobe's Ctrl+D. Does
    NOT cancel a floating paste — that's Esc's job, and overloading Ctrl+D
    to do both would be surprising. */
-void deselect_all(void)
-
-{
-    g_grid_sel.active   = false;
-    g_grid_sel.dragging = false;
-    g_grid_sel.is_mask  = false;
-    g_grid_sel.pixel_mask.clear();
-    g_lasso_points.clear();
-    g_selection_add_drag = false;
-    g_selection_add_mask.clear();
-    g_selection_add_mask_w = g_selection_add_mask_h = 0;
-}
+/* now lives in ui_canvas.cpp: void deselect_all */
 
 /* Invert the current selection. Adobe's Shift+Ctrl+I. Promotes a rect
    selection to a pixel mask so the inversion can be expressed precisely. */
-void invert_selection(void)
+/* now lives in ui_canvas.cpp: void invert_selection */
 
-{
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || img->w == 0 || img->h == 0) return;
-    int sw = img->w, sh = img->h;
+/* now lives in ui_canvas.cpp: static bool selection_bbox_from_mask */
 
-    if (!g_grid_sel.active) {
-        /* Inverting "nothing" = "everything". */
-        select_all();
-        return;
-    }
+/* now lives in ui_canvas.cpp: static bool selection_current_to_mask */
 
-    /* Build a fresh mask covering the whole sprite, flipping bits inside the
-       current selection. Promotes rect selections to masks transparently. */
-    std::vector<bool> new_mask((size_t)sw * sh, false);
+/* now lives in ui_canvas.cpp: static void selection_commit_mask */
 
-    int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
-    int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-    if (x1 < 0) x1 = 0; if (x2 >= sw) x2 = sw - 1;
-    if (y1 < 0) y1 = 0; if (y2 >= sh) y2 = sh - 1;
+/* now lives in ui_canvas.cpp: static void selection_apply_mask */
 
-    for (int y = 0; y < sh; y++) {
-        for (int x = 0; x < sw; x++) {
-            bool inside;
-            if (g_grid_sel.is_mask) {
-                inside = g_grid_sel.pixel_mask[(size_t)y * g_grid_sel.mask_w + x];
-            } else {
-                inside = (x >= x1 && x <= x2 && y >= y1 && y <= y2);
-            }
-            new_mask[(size_t)y * sw + x] = !inside;
-        }
-    }
+/* now lives in ui_canvas.cpp: void selection_begin_add_drag */
 
-    g_grid_sel.active     = true;
-    g_grid_sel.is_mask    = true;
-    g_grid_sel.mask_w     = sw;
-    g_grid_sel.mask_h     = sh;
-    g_grid_sel.pixel_mask = std::move(new_mask);
-    g_grid_sel.x1 = 0; g_grid_sel.y1 = 0;
-    g_grid_sel.x2 = sw - 1; g_grid_sel.y2 = sh - 1;
-}
+/* now lives in ui_canvas.cpp: void selection_finish_add_drag */
 
-static bool selection_bbox_from_mask(const std::vector<bool> &mask, int sw, int sh,
-                                     int *x1, int *y1, int *x2, int *y2)
-{
-    int min_x = sw, min_y = sh, max_x = -1, max_y = -1;
-    for (int y = 0; y < sh; y++) {
-        for (int x = 0; x < sw; x++) {
-            if (!mask[(size_t)y * sw + x]) continue;
-            if (x < min_x) min_x = x;
-            if (x > max_x) max_x = x;
-            if (y < min_y) min_y = y;
-            if (y > max_y) max_y = y;
-        }
-    }
-    if (max_x < min_x || max_y < min_y) return false;
-    if (x1) *x1 = min_x; if (y1) *y1 = min_y;
-    if (x2) *x2 = max_x; if (y2) *y2 = max_y;
-    return true;
-}
-
-static bool selection_current_to_mask(int sw, int sh, std::vector<bool> *out)
-{
-    if (!out) return false;
-    out->assign((size_t)sw * sh, false);
-    if (!g_grid_sel.active) return false;
-
-    if (g_grid_sel.is_mask &&
-        g_grid_sel.mask_w == sw && g_grid_sel.mask_h == sh &&
-        g_grid_sel.pixel_mask.size() == (size_t)sw * sh) {
-        *out = g_grid_sel.pixel_mask;
-    } else {
-        int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
-        int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
-        if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-        if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-        if (x1 < 0) x1 = 0; if (x2 >= sw) x2 = sw - 1;
-        if (y1 < 0) y1 = 0; if (y2 >= sh) y2 = sh - 1;
-        if (x1 > x2 || y1 > y2) return false;
-        for (int y = y1; y <= y2; y++)
-            for (int x = x1; x <= x2; x++)
-                (*out)[(size_t)y * sw + x] = true;
-    }
-
-    int bx1, by1, bx2, by2;
-    return selection_bbox_from_mask(*out, sw, sh, &bx1, &by1, &bx2, &by2);
-}
-
-static void selection_commit_mask(int sw, int sh, const std::vector<bool> &mask)
-{
-    int x1, y1, x2, y2;
-    if (!selection_bbox_from_mask(mask, sw, sh, &x1, &y1, &x2, &y2)) {
-        deselect_all();
-        return;
-    }
-    g_grid_sel.active = true;
-    g_grid_sel.dragging = false;
-    g_grid_sel.is_mask = true;
-    g_grid_sel.mask_w = sw;
-    g_grid_sel.mask_h = sh;
-    g_grid_sel.pixel_mask = mask;
-    g_grid_sel.x1 = x1; g_grid_sel.y1 = y1;
-    g_grid_sel.x2 = x2; g_grid_sel.y2 = y2;
-}
-
-static void selection_apply_mask(int sw, int sh, std::vector<bool> mask, bool add)
-{
-    if (add) {
-        std::vector<bool> base;
-        if (selection_current_to_mask(sw, sh, &base)) {
-            for (size_t i = 0; i < mask.size() && i < base.size(); i++)
-                mask[i] = mask[i] || base[i];
-        }
-    }
-    selection_commit_mask(sw, sh, mask);
-}
-
-void selection_begin_add_drag(int sw, int sh, bool add)
-{
-    g_selection_add_drag = false;
-    g_selection_add_mask.clear();
-    g_selection_add_mask_w = g_selection_add_mask_h = 0;
-    if (!add) return;
-    if (selection_current_to_mask(sw, sh, &g_selection_add_mask)) {
-        g_selection_add_drag = true;
-        g_selection_add_mask_w = sw;
-        g_selection_add_mask_h = sh;
-    }
-}
-
-void selection_finish_add_drag(int sw, int sh)
-{
-    if (!g_selection_add_drag ||
-        g_selection_add_mask_w != sw || g_selection_add_mask_h != sh ||
-        g_selection_add_mask.size() != (size_t)sw * sh) {
-        g_selection_add_drag = false;
-        g_selection_add_mask.clear();
-        return;
-    }
-
-    std::vector<bool> current;
-    if (selection_current_to_mask(sw, sh, &current)) {
-        for (size_t i = 0; i < current.size(); i++)
-            current[i] = current[i] || g_selection_add_mask[i];
-        selection_commit_mask(sw, sh, current);
-    }
-    g_selection_add_drag = false;
-    g_selection_add_mask.clear();
-}
-
-void paste_image(void)
-
-{
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
-
-    undo_push();
-
-    /* If the clipboard is larger than the target sprite, nearest-neighbor
-       downscale it to fit (preserving aspect ratio). Without this, the user
-       has to manually clip away anything that hangs off the edge. */
-    int orig_w = g_clipboard.w, orig_h = g_clipboard.h;
-    if (g_clipboard.w > img->w || g_clipboard.h > img->h) {
-        scale_clipboard_to_fit(img->w, img->h);
-        if (g_clipboard.w != orig_w || g_clipboard.h != orig_h) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Paste scaled to fit: %dx%d -> %dx%d",
-                     orig_w, orig_h,
-                     (int)g_clipboard.w, (int)g_clipboard.h);
-            g_restore_msg_timer = 3.0f;
-        }
-    }
-
-    /* Show paste boundary centered on the target so the floating sprite is
-       immediately visible and ready to resize/move. */
-    g_pasted.active = true;
-    g_pasted.paste_x = ((int)img->w - (int)g_clipboard.w) / 2;
-    g_pasted.paste_y = ((int)img->h - (int)g_clipboard.h) / 2;
-    if (g_pasted.paste_x < 0) g_pasted.paste_x = 0;
-    if (g_pasted.paste_y < 0) g_pasted.paste_y = 0;
-    g_pasted.dragging = false;
-
-    /* Clear grid selection since paste is now active */
-    g_grid_sel.active = false;
-
-    /* Auto-enter Free Transform so the user can immediately resize without
-       having to press Ctrl+T as a separate step. Enter / Ctrl+T / click
-       outside the rect all still commit the transform and then commit the
-       paste; Esc reverts the transform first, then a second Esc cancels
-       the paste entirely. */
-    xform_begin();
-}
+/* now lives in ui_canvas.cpp: void paste_image */
 
 /* Begin Free Transform on the active floating paste. Captures the rect
    geometry at this moment so Esc can revert. The aspect lock persists
    across invocations (g_xform.aspect_locked is not reset here). */
-void xform_begin(void)
-{
-    if (!g_pasted.active || !g_clipboard.valid) return;
-    if (g_xform.active) return; /* already transforming */
-    g_xform.active   = true;
-    g_xform.rx       = g_pasted.paste_x;
-    g_xform.ry       = g_pasted.paste_y;
-    g_xform.rw       = g_clipboard.w;
-    g_xform.rh       = g_clipboard.h;
-    g_xform.start_x  = g_xform.rx;
-    g_xform.start_y  = g_xform.ry;
-    g_xform.start_w  = g_xform.rw;
-    g_xform.start_h  = g_xform.rh;
-    g_xform.angle_deg = 0.0f;
-    g_xform.start_angle_deg = 0.0f;
-    g_xform.handle   = TransformHandle::None;
-    g_xform.ref_aspect = (g_xform.rh > 0) ? (float)g_xform.rw / (float)g_xform.rh : 1.0f;
-}
+/* now lives in ui_canvas.cpp: void xform_begin */
 
-/* Cancel transform — revert rect to its pre-transform geometry; the paste
-   stays floating at its original size. */
-void xform_cancel(void)
-{
-    if (!g_xform.active) return;
-    g_pasted.paste_x = g_xform.start_x;
-    g_pasted.paste_y = g_xform.start_y;
-    g_xform.angle_deg = g_xform.start_angle_deg;
-    g_xform.active   = false;
-    g_xform.handle   = TransformHandle::None;
-}
+/* now lives in ui_canvas.cpp: /* Cancel transform — revert rect to its pre-transform geometry; the paste */
 
 /* Commit transform — if the rect dimensions changed, nearest-neighbor
    resample the clipboard to match, then update the paste position to the
    final top-left. After this the floating paste continues normally and the
    user can still move it before final drop. */
-void xform_commit(void)
-{
-    if (!g_xform.active) return;
-    int nw = g_xform.rw, nh = g_xform.rh;
-    if (nw < 1) nw = 1;
-    if (nh < 1) nh = 1;
-    int out_w = nw;
-    int out_h = nh;
-    if (nw != (int)g_clipboard.w || nh != (int)g_clipboard.h ||
-        fabsf(g_xform.angle_deg) > 0.001f) {
-        transform_clipboard_to(nw, nh, g_xform.angle_deg, &out_w, &out_h);
-    }
-    float cx = (float)g_xform.rx + (float)nw * 0.5f;
-    float cy = (float)g_xform.ry + (float)nh * 0.5f;
-    g_pasted.paste_x = (int)floorf(cx - (float)out_w * 0.5f + 0.5f);
-    g_pasted.paste_y = (int)floorf(cy - (float)out_h * 0.5f + 0.5f);
-    g_xform.active   = false;
-    g_xform.handle   = TransformHandle::None;
-}
+/* now lives in ui_canvas.cpp: void xform_commit */
 
 /* ---- Full-sprite resize ---- */
 enum class SpriteResizeMode { IndexNearest = 0, MaxQuality = 1, QualitySmallBytes = 2 };
@@ -3404,12 +2380,7 @@ static int round_to_int(double v)
 /* clear_secondary_anipoint / activate_secondary_anipoint and
    secondary_anipoint_words_in_use now live in anipoint.{h,cpp}. */
 
-static bool clipboard_secondary_anipoint_in_use(void)
-{
-    return secondary_anipoint_words_in_use(g_clipboard.anix2,
-                                           g_clipboard.aniy2,
-                                           g_clipboard.aniz2);
-}
+/* now lives in ui_canvas.cpp: bool clipboard_secondary_anipoint_in_use */
 
 static void default_anipoints_to_center(IMG *img)
 {
