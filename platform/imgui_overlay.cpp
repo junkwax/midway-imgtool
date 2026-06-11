@@ -466,7 +466,7 @@ void Mk2SelectRecord(int rec_idx) {
 /* g_world_state and g_world_marked_state defined in ui_state.cpp */
 /* g_world_temp_textures + ClearWorldTempTextures + BuildWorldSpriteTexture +
    doc_get_pal now live in world_render.{h,cpp}. */
-static int   g_load2_selected_idx = -1;          /* index into g_load2_report.issues */
+/* g_load2_selected_idx is defined in ui_state.cpp. */
 
 
 
@@ -815,7 +815,7 @@ void OpenRenameImage(void);  /* forward decl — used by DuplicateImage */
    across invocations (g_xform.aspect_locked is not reset here). */
 /* now lives in ui_canvas.cpp: void xform_begin */
 
-/* now lives in ui_canvas.cpp: /* Cancel transform — revert rect to its pre-transform geometry; the paste */
+/* now lives in ui_canvas.cpp: void xform_cancel */
 
 /* Commit transform — if the rect dimensions changed, nearest-neighbor
    resample the clipboard to match, then update the paste position to the

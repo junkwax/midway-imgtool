@@ -18,6 +18,41 @@ if(NOT IMGTOOL_GIT_REV)
     set(IMGTOOL_GIT_REV "unknown")
 endif()
 
+set(IMGTOOL_VERSION "0.0.0-dev")
+if(DEFINED ENV{IMGTOOL_VERSION} AND NOT "$ENV{IMGTOOL_VERSION}" STREQUAL "")
+    set(IMGTOOL_VERSION "$ENV{IMGTOOL_VERSION}")
+elseif(DEFINED ENV{GITHUB_REF_TYPE} AND "$ENV{GITHUB_REF_TYPE}" STREQUAL "tag"
+       AND DEFINED ENV{GITHUB_REF_NAME} AND NOT "$ENV{GITHUB_REF_NAME}" STREQUAL "")
+    set(IMGTOOL_VERSION "$ENV{GITHUB_REF_NAME}")
+elseif(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --exact-match --match "v[0-9]*"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE IMGTOOL_EXACT_TAG
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(IMGTOOL_EXACT_TAG)
+        set(IMGTOOL_VERSION "${IMGTOOL_EXACT_TAG}")
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} describe --tags --match "v[0-9]*" --abbrev=0
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            OUTPUT_VARIABLE IMGTOOL_BASE_TAG
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(IMGTOOL_BASE_TAG)
+            string(REGEX REPLACE "^v" "" IMGTOOL_BASE_VERSION "${IMGTOOL_BASE_TAG}")
+            set(IMGTOOL_VERSION "${IMGTOOL_BASE_VERSION}-dev+${IMGTOOL_GIT_REV}")
+        elseif(NOT IMGTOOL_GIT_REV STREQUAL "unknown")
+            set(IMGTOOL_VERSION "dev+${IMGTOOL_GIT_REV}")
+        endif()
+    endif()
+endif()
+string(REGEX REPLACE "^v" "" IMGTOOL_VERSION "${IMGTOOL_VERSION}")
+message(STATUS "ImgTool version: ${IMGTOOL_VERSION} (${IMGTOOL_GIT_REV})")
+
 # SDL2
 if(WIN32)
     find_package(SDL2 REQUIRED)
@@ -118,8 +153,12 @@ if(MSVC)
     target_compile_definitions(imgtool-cli PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-target_compile_definitions(imgtool PRIVATE IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}")
+target_compile_definitions(imgtool PRIVATE
+    IMGTOOL_VERSION="${IMGTOOL_VERSION}"
+    IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}"
+)
 target_compile_definitions(imgtool-cli PRIVATE
+    IMGTOOL_VERSION="${IMGTOOL_VERSION}"
     IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}"
     IMGTOOL_CLI_ONLY
 )

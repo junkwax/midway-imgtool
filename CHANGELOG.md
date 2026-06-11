@@ -34,6 +34,9 @@ during the refactor.
   pixel remapping, and kept the bottom palette bar docked predictably.
 
 ### Build And Contributors
+- **Automatic app versioning** — release builds now derive the in-app version
+  from the pushed `v*` tag at CMake configure time, with dev builds falling back
+  to a `-dev+sha` version string.
 - **Contributor setup** — added `CONTRIBUTING.md`, `build.sh`, and
   `CMakePresets.json` to make fresh-clone builds and CI reproduction easier
   across platforms.
