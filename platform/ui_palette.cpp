@@ -2220,7 +2220,123 @@ void CopyPaletteZeroToOpaqueSlot(void)
     CopyPaletteZeroToOpaqueSlot(-1);
 }
 
+void MoveSelectedPaletteColorsToEnd(void)
+{
+    if (g_doc->plselected < 0) return;
+    PAL *pal = get_pal(g_doc->plselected);
+    if (!pal || !pal->data_p) return;
+
+    int N = (int)pal->numc;
+    if (N <= 1) return;
+
+    std::vector<int> new_to_old;
+    new_to_old.push_back(0); // Index 0 must always stay at 0 (transparency).
+
+    // First, add all unselected active colors (1 to N-1)
+    for (int i = 1; i < N; i++) {
+        if (!g_palette_selection[i]) {
+            new_to_old.push_back(i);
+        }
+    }
+
+    // Then, add all selected colors (1 to N-1)
+    int selected_count = 0;
+    for (int i = 1; i < N; i++) {
+        if (g_palette_selection[i]) {
+            new_to_old.push_back(i);
+            selected_count++;
+        }
+    }
+
+    if (selected_count == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No palette colors selected. Use Ctrl+click to select colors first.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    // Check if any colors actually changed position
+    bool changed = false;
+    for (int i = 0; i < N; i++) {
+        if (new_to_old[i] != i) {
+            changed = true;
+            break;
+        }
+    }
+
+    if (!changed) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Selected colors are already at the end of the palette.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    doc_undo_push();
+
+    // Create the remap table
+    unsigned char remap[256];
+    for (int i = 0; i < 256; i++) {
+        remap[i] = (unsigned char)i;
+    }
+    for (int new_idx = 0; new_idx < N; new_idx++) {
+        int old_idx = new_to_old[new_idx];
+        remap[old_idx] = (unsigned char)new_idx;
+    }
+
+    // Reorder the palette color data
+    unsigned char old_colors[512];
+    memcpy(old_colors, pal->data_p, (size_t)N * 2);
+    unsigned char *colors = (unsigned char *)pal->data_p;
+    for (int new_idx = 0; new_idx < N; new_idx++) {
+        int old_idx = new_to_old[new_idx];
+        colors[new_idx * 2 + 0] = old_colors[old_idx * 2 + 0];
+        colors[new_idx * 2 + 1] = old_colors[old_idx * 2 + 1];
+    }
+
+    // Update g_sel_color
+    if (g_sel_color >= 0 && g_sel_color < N) {
+        g_sel_color = remap[g_sel_color];
+    }
+
+    // Update g_palette_selection mask
+    bool new_selection[256] = {false};
+    for (int i = 0; i < N; i++) {
+        if (g_palette_selection[i]) {
+            new_selection[remap[i]] = true;
+        }
+    }
+    memcpy(g_palette_selection, new_selection, sizeof(g_palette_selection));
+
+    // Remap pixel indices in all images that use this palette
+    int remapped_images = 0;
+    IMG *img = (IMG *)g_doc->img_p;
+    while (img) {
+        if ((int)img->palnum == g_doc->plselected && img->data_p && img->w > 0 && img->h > 0) {
+            remapped_images++;
+            unsigned short stride = (img->w + 3) & ~3;
+            unsigned char *pixels = (unsigned char *)img->data_p;
+            for (int y = 0; y < img->h; y++) {
+                for (int x = 0; x < img->w; x++) {
+                    unsigned char *idx = &pixels[y * stride + x];
+                    *idx = remap[*idx];
+                }
+            }
+        }
+        img = (IMG *)img->nxt_p;
+    }
+
+    ApplyPalette(g_doc->plselected);
+    save_palette_baseline();
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Moved %d selected color%s to the end. Remapped %d sprite%s.",
+             selected_count, selected_count == 1 ? "" : "s",
+             remapped_images, remapped_images == 1 ? "" : "s");
+    g_restore_msg_timer = 4.0f;
+}
+
 /* ---- Drawing Implementations ---- */
+
 
 void DrawBottomPaletteBar(ImVec2 avail)
 {
@@ -2385,6 +2501,10 @@ void DrawBottomPaletteBar(ImVec2 avail)
             if (ImGui::MenuItem(i == 0 ? "Copy #0 + Remap Current Sprite"
                                        : "Copy #0 Here + Remap Current Sprite")) {
                 CopyPaletteZeroAndRemap(PaletteZeroRemapMode::CurrentImage, i == 0 ? -1 : i);
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Move Selected Colors to End")) {
+                MoveSelectedPaletteColorsToEnd();
             }
             ImGui::EndPopup();
         }
@@ -2831,6 +2951,9 @@ void DrawRightPanelPaletteEditor(float panel_h)
         ImGui::SameLine();
         if (ImGui::SmallButton("#0>")) CopyPaletteZeroToOpaqueSlot();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy transparent color #0 to the first safe opaque slot");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Move>")) MoveSelectedPaletteColorsToEnd();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Group selected colors and move them to the end of the palette");
         ImGui::PopID();
     }
 

@@ -119,4 +119,6 @@ void CreateCleanedPaletteCopy(void);
 void CopyPaletteZeroToOpaqueSlot(int requested_slot);
 void CopyPaletteZeroToOpaqueSlot(void);
 void ClearPaletteReducePreviewTextures(void);
+void MoveSelectedPaletteColorsToEnd(void);
 void ResetPaletteUiState(void);
+
