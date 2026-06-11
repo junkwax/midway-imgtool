@@ -3001,3 +3001,376 @@ void ResetPaletteUiState(void)
     ClearPaletteReducePreviewTextures();
 }
 
+
+
+/* =========================================================
+   Extracted Selection Propagation from imgui_overlay.cpp
+   ========================================================= */
+struct SelectionPropagateSample {
+    int src_idx;
+    int pal_idx;
+    int target_idx;
+    bool source_colors[256];
+    std::vector<std::pair<int,int>> exact_pixels;
+    std::vector<std::pair<int,int>> rel_seeds;
+    int area;
+    int min_x, min_y, max_x, max_y;
+    double rel_cx, rel_cy;
+};
+
+struct SelectionPropagateMatch {
+    int img_idx;
+    std::vector<std::pair<int,int>> pixels;
+};
+
+struct SelectionComponentStats {
+    int area;
+    int min_x, min_y, max_x, max_y;
+    long long sum_x, sum_y;
+};
+
+static bool BuildSelectionPropagateSample(SelectionPropagateSample *sample,
+                                          char *err, size_t err_sz)
+{
+    if (err && err_sz) err[0] = '\0';
+    if (!sample) return false;
+    sample->src_idx = g_doc->ilselected;
+    sample->pal_idx = -1;
+    sample->target_idx = g_sel_color;
+    memset(sample->source_colors, 0, sizeof(sample->source_colors));
+    sample->exact_pixels.clear();
+    sample->rel_seeds.clear();
+    sample->area = 0;
+    sample->min_x = sample->min_y = 0x7FFFFFFF;
+    sample->max_x = sample->max_y = -1;
+    sample->rel_cx = 0.0;
+    sample->rel_cy = 0.0;
+
+    IMG *src = (sample->src_idx >= 0) ? get_img(sample->src_idx) : NULL;
+    if (!src || !src->data_p || src->w == 0 || src->h == 0) {
+        snprintf(err, err_sz, "Select a source sprite first.");
+        return false;
+    }
+    if (!g_grid_sel.active) {
+        snprintf(err, err_sz, "Select the feature first, then propagate it.");
+        return false;
+    }
+    if (g_sel_color <= 0 || g_sel_color >= 256) {
+        snprintf(err, err_sz, "Pick a non-transparent destination swatch first.");
+        return false;
+    }
+
+    sample->pal_idx = (int)src->palnum;
+    PAL *pal = get_pal(sample->pal_idx);
+    if (!pal || !pal->data_p) {
+        snprintf(err, err_sz, "Source sprite has no usable palette.");
+        return false;
+    }
+
+    int stride = (src->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)src->data_p;
+    long long sum_x = 0;
+    long long sum_y = 0;
+
+    for (int y = 0; y < src->h; y++) {
+        for (int x = 0; x < src->w; x++) {
+            if (!selection_contains_pixel(src, x, y)) continue;
+            unsigned char ci = pix[y * stride + x];
+            if (ci == 0 || ci == (unsigned char)g_sel_color) continue;
+            sample->source_colors[ci] = true;
+            sample->exact_pixels.push_back({x, y});
+            sum_x += x;
+            sum_y += y;
+            if (x < sample->min_x) sample->min_x = x;
+            if (x > sample->max_x) sample->max_x = x;
+            if (y < sample->min_y) sample->min_y = y;
+            if (y > sample->max_y) sample->max_y = y;
+        }
+    }
+
+    sample->area = (int)sample->exact_pixels.size();
+    if (sample->area <= 0) {
+        snprintf(err, err_sz,
+                 "Selection has no source-colored opaque pixels to remap.");
+        return false;
+    }
+
+    sample->rel_cx = (double)sum_x / (double)sample->area - (double)(short)src->anix;
+    sample->rel_cy = (double)sum_y / (double)sample->area - (double)(short)src->aniy;
+
+    int seed_limit = 768;
+    int step = sample->area > seed_limit
+        ? (sample->area + seed_limit - 1) / seed_limit
+        : 1;
+    sample->rel_seeds.reserve((size_t)((sample->area + step - 1) / step));
+    for (int i = 0; i < sample->area; i += step) {
+        int x = sample->exact_pixels[i].first;
+        int y = sample->exact_pixels[i].second;
+        sample->rel_seeds.push_back({x - (int)(short)src->anix,
+                                     y - (int)(short)src->aniy});
+    }
+    return true;
+}
+
+static bool SelectionPropagateColorMatch(const SelectionPropagateSample &sample,
+                                         unsigned char ci)
+{
+    return ci != 0 && ci != (unsigned char)sample.target_idx &&
+           sample.source_colors[ci];
+}
+
+static bool FindNearestSelectionSeedPixel(IMG *img,
+                                          const SelectionPropagateSample &sample,
+                                          int cx, int cy, int radius,
+                                          int *out_x, int *out_y)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+    int w = img->w;
+    int h = img->h;
+    int stride = (w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+
+    int best_x = -1;
+    int best_y = -1;
+    int best_d2 = 0x7FFFFFFF;
+    int x0 = cx - radius; if (x0 < 0) x0 = 0;
+    int y0 = cy - radius; if (y0 < 0) y0 = 0;
+    int x1 = cx + radius; if (x1 >= w) x1 = w - 1;
+    int y1 = cy + radius; if (y1 >= h) y1 = h - 1;
+
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            if (!SelectionPropagateColorMatch(sample, pix[y * stride + x]))
+                continue;
+            int dx = x - cx;
+            int dy = y - cy;
+            int d2 = dx * dx + dy * dy;
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best_x = x;
+                best_y = y;
+                if (d2 == 0) {
+                    if (out_x) *out_x = best_x;
+                    if (out_y) *out_y = best_y;
+                    return true;
+                }
+            }
+        }
+    }
+
+    if (best_x < 0) return false;
+    if (out_x) *out_x = best_x;
+    if (out_y) *out_y = best_y;
+    return true;
+}
+
+static void FloodSelectionPropagateComponent(IMG *img,
+                                             const SelectionPropagateSample &sample,
+                                             int sx, int sy,
+                                             std::vector<unsigned char> &visited,
+                                             std::vector<std::pair<int,int>> &out,
+                                             SelectionComponentStats *stats)
+{
+    if (!img || !img->data_p || !stats) return;
+    int w = img->w;
+    int h = img->h;
+    int stride = (w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+    if (sx < 0 || sy < 0 || sx >= w || sy >= h) return;
+    if (visited[(size_t)sy * w + sx]) return;
+    if (!SelectionPropagateColorMatch(sample, pix[sy * stride + sx])) return;
+
+    stats->area = 0;
+    stats->min_x = stats->min_y = 0x7FFFFFFF;
+    stats->max_x = stats->max_y = -1;
+    stats->sum_x = stats->sum_y = 0;
+
+    std::vector<std::pair<int,int>> stack;
+    stack.push_back({sx, sy});
+    visited[(size_t)sy * w + sx] = 1;
+
+    while (!stack.empty()) {
+        std::pair<int,int> pt = stack.back();
+        stack.pop_back();
+        int x = pt.first;
+        int y = pt.second;
+
+        out.push_back(pt);
+        stats->area++;
+        stats->sum_x += x;
+        stats->sum_y += y;
+        if (x < stats->min_x) stats->min_x = x;
+        if (x > stats->max_x) stats->max_x = x;
+        if (y < stats->min_y) stats->min_y = y;
+        if (y > stats->max_y) stats->max_y = y;
+
+        const int dx[4] = {0, 1, 0, -1};
+        const int dy[4] = {-1, 0, 1, 0};
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx[i];
+            int ny = y + dy[i];
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            size_t off = (size_t)ny * w + nx;
+            if (visited[off]) continue;
+            if (!SelectionPropagateColorMatch(sample, pix[ny * stride + nx]))
+                continue;
+            visited[off] = 1;
+            stack.push_back({nx, ny});
+        }
+    }
+}
+
+static bool SelectionPropagateComponentLooksLikely(IMG *img,
+                                                   const SelectionPropagateSample &sample,
+                                                   const SelectionComponentStats &stats)
+{
+    if (!img || stats.area <= 0 || sample.area <= 0) return false;
+    double ratio = (double)stats.area / (double)sample.area;
+    if (ratio < 0.04 || ratio > 8.0) return false;
+
+    double cx = (double)stats.sum_x / (double)stats.area - (double)(short)img->anix;
+    double cy = (double)stats.sum_y / (double)stats.area - (double)(short)img->aniy;
+    double dx = cx - sample.rel_cx;
+    double dy = cy - sample.rel_cy;
+    double dist = sqrt(dx * dx + dy * dy);
+
+    int sample_w = sample.max_x - sample.min_x + 1;
+    int sample_h = sample.max_y - sample.min_y + 1;
+    if (sample_w < 1) sample_w = 1;
+    if (sample_h < 1) sample_h = 1;
+    double reach = (double)(sample_w > sample_h ? sample_w : sample_h) * 2.5 + 12.0;
+    if (reach < 28.0) reach = 28.0;
+    return dist <= reach;
+}
+
+static std::vector<std::pair<int,int>>
+FindSelectionPropagationPixels(IMG *img, const SelectionPropagateSample &sample,
+                               int img_idx)
+{
+    std::vector<std::pair<int,int>> result;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return result;
+
+    if (img_idx == sample.src_idx) {
+        result = sample.exact_pixels;
+        return result;
+    }
+
+    int sample_w = sample.max_x - sample.min_x + 1;
+    int sample_h = sample.max_y - sample.min_y + 1;
+    int radius = (sample_w > sample_h ? sample_w : sample_h) / 2;
+    if (radius < 6) radius = 6;
+    if (radius > 18) radius = 18;
+
+    int w = img->w;
+    int h = img->h;
+    std::vector<unsigned char> visited((size_t)w * h, 0);
+    for (const auto &seed : sample.rel_seeds) {
+        int ex = (int)(short)img->anix + seed.first;
+        int ey = (int)(short)img->aniy + seed.second;
+        int sx = 0, sy = 0;
+        if (!FindNearestSelectionSeedPixel(img, sample, ex, ey, radius, &sx, &sy))
+            continue;
+        if (visited[(size_t)sy * w + sx])
+            continue;
+
+        std::vector<std::pair<int,int>> component;
+        SelectionComponentStats stats = {};
+        FloodSelectionPropagateComponent(img, sample, sx, sy,
+                                         visited, component, &stats);
+        if (component.empty())
+            continue;
+        if (!SelectionPropagateComponentLooksLikely(img, sample, stats))
+            continue;
+        result.insert(result.end(), component.begin(), component.end());
+    }
+    return result;
+}
+
+void ApplySelectionRemapToMatchingSprites(void)
+{
+    SelectionPropagateSample sample = {};
+    char err[160];
+    if (!BuildSelectionPropagateSample(&sample, err, sizeof(err))) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", err);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    std::vector<SelectionPropagateMatch> matches;
+    int scanned = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if ((int)img->palnum != sample.pal_idx ||
+            !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+        scanned++;
+        std::vector<std::pair<int,int>> pts =
+            FindSelectionPropagationPixels(img, sample, idx);
+        if (!pts.empty())
+            matches.push_back({idx, std::move(pts)});
+    }
+
+    if (matches.empty()) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No matching regions found in %d same-palette sprite%s.",
+                 scanned, scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    if (!doc_undo_push()) return;
+
+    PAL *pal = get_pal(sample.pal_idx);
+    if (!ensure_palette_numc(pal, sample.target_idx + 1)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Could not extend palette to index %d.", sample.target_idx);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int changed_pixels = 0;
+    int changed_images = 0;
+    for (SelectionPropagateMatch &m : matches) {
+        IMG *img = get_img(m.img_idx);
+        if (!img || !img->data_p) continue;
+        int stride = (img->w + 3) & ~3;
+        unsigned char *pix = (unsigned char *)img->data_p;
+        int image_changed = 0;
+        for (const auto &pt : m.pixels) {
+            int x = pt.first;
+            int y = pt.second;
+            if (x < 0 || y < 0 || x >= (int)img->w || y >= (int)img->h)
+                continue;
+            unsigned char *p = pix + y * stride + x;
+            if (!SelectionPropagateColorMatch(sample, *p))
+                continue;
+            *p = (unsigned char)sample.target_idx;
+            image_changed++;
+        }
+        if (image_changed > 0) {
+            changed_pixels += image_changed;
+            changed_images++;
+            InvalidateThumb(m.img_idx);
+        }
+    }
+
+    if (changed_pixels > 0) {
+        ApplyPalette(sample.pal_idx);
+        save_palette_baseline();
+        g_img_tex_idx = -2;
+        mark_dirty();
+    }
+
+    if (changed_pixels > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Remapped %d likely-matching pixel%s in %d/%d sprite%s to #%d.",
+                 changed_pixels, changed_pixels == 1 ? "" : "s",
+                 changed_images, scanned, scanned == 1 ? "" : "s",
+                 sample.target_idx);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Matching regions were already using #%d.", sample.target_idx);
+    }
+    g_restore_msg_timer = 5.0f;
+}
+
