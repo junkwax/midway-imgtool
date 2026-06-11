@@ -60,7 +60,6 @@ extern struct SDL_Color g_palette[256];
 
 // Make sure definitions moved are declared as non-static if accessed externally
 std::vector<std::string> g_recent_files;
-static WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
 
 /* ---- ImGui Native File Dialog ---- */
 bool g_show_file_dialog = false;
@@ -1574,10 +1573,7 @@ static bool          g_mk2_status_sticky = false;
 static char          g_mk2_search[64] = "";
 
 /* ---- MK2 fatality lab state (moved from overlay) ---- */
-static mk2fatal::Document   g_mk2_fatality_doc;
 static char                 g_mk2_fatality_root[1024] = "..\\mk2-main";
-static std::string          g_mk2_fatality_status;
-static bool                 g_mk2_fatality_status_sticky = false;
 static int                  g_mk2_fatality_command_idx = 0;
 static int                  g_mk2_fatality_combo_idx = 0;
 static int                  g_mk2_fatality_anim_idx = 0;
