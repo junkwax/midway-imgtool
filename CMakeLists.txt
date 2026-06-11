@@ -18,6 +18,41 @@ if(NOT IMGTOOL_GIT_REV)
     set(IMGTOOL_GIT_REV "unknown")
 endif()
 
+set(IMGTOOL_VERSION "0.0.0-dev")
+if(DEFINED ENV{IMGTOOL_VERSION} AND NOT "$ENV{IMGTOOL_VERSION}" STREQUAL "")
+    set(IMGTOOL_VERSION "$ENV{IMGTOOL_VERSION}")
+elseif(DEFINED ENV{GITHUB_REF_TYPE} AND "$ENV{GITHUB_REF_TYPE}" STREQUAL "tag"
+       AND DEFINED ENV{GITHUB_REF_NAME} AND NOT "$ENV{GITHUB_REF_NAME}" STREQUAL "")
+    set(IMGTOOL_VERSION "$ENV{GITHUB_REF_NAME}")
+elseif(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --exact-match --match "v[0-9]*"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE IMGTOOL_EXACT_TAG
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(IMGTOOL_EXACT_TAG)
+        set(IMGTOOL_VERSION "${IMGTOOL_EXACT_TAG}")
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} describe --tags --match "v[0-9]*" --abbrev=0
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            OUTPUT_VARIABLE IMGTOOL_BASE_TAG
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(IMGTOOL_BASE_TAG)
+            string(REGEX REPLACE "^v" "" IMGTOOL_BASE_VERSION "${IMGTOOL_BASE_TAG}")
+            set(IMGTOOL_VERSION "${IMGTOOL_BASE_VERSION}-dev+${IMGTOOL_GIT_REV}")
+        elseif(NOT IMGTOOL_GIT_REV STREQUAL "unknown")
+            set(IMGTOOL_VERSION "dev+${IMGTOOL_GIT_REV}")
+        endif()
+    endif()
+endif()
+string(REGEX REPLACE "^v" "" IMGTOOL_VERSION "${IMGTOOL_VERSION}")
+message(STATUS "ImgTool version: ${IMGTOOL_VERSION} (${IMGTOOL_GIT_REV})")
+
 # SDL2
 if(WIN32)
     find_package(SDL2 REQUIRED)
@@ -58,6 +93,23 @@ set(IMGTOOL_SOURCES
     imgui/backends/imgui_impl_sdl2.cpp
     imgui/backends/imgui_impl_sdlrenderer2.cpp
     platform/imgui_overlay.cpp
+    platform/ui_state.cpp
+    platform/ui_main.cpp
+    platform/ui_canvas.cpp
+    platform/ui_timeline.cpp
+    platform/ui_palette.cpp
+    platform/ui_tools.cpp
+    platform/ui_modals.cpp
+    platform/ui_undo.cpp
+    platform/ui_autochop.cpp
+    platform/world_render.cpp
+    platform/anipoint.cpp
+    platform/anipoint_edit.cpp
+    platform/img_util.cpp
+    platform/color_ops.cpp
+    platform/image_ops.cpp
+    platform/palette_math.cpp
+    platform/sprite_resize_ops.cpp
     platform/img_io.cpp
     platform/load2_verify.cpp
     platform/lod_parser.cpp
@@ -101,8 +153,12 @@ if(MSVC)
     target_compile_definitions(imgtool-cli PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-target_compile_definitions(imgtool PRIVATE IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}")
+target_compile_definitions(imgtool PRIVATE
+    IMGTOOL_VERSION="${IMGTOOL_VERSION}"
+    IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}"
+)
 target_compile_definitions(imgtool-cli PRIVATE
+    IMGTOOL_VERSION="${IMGTOOL_VERSION}"
     IMGTOOL_GIT_REV="${IMGTOOL_GIT_REV}"
     IMGTOOL_CLI_ONLY
 )
@@ -165,6 +221,43 @@ else()
 endif()
 add_test(NAME sprite_sheet_import
          COMMAND sprite_sheet_import_test)
+
+# Pure-module unit tests. Each links only the extracted module under test (no
+# app/UI sources), so they're small and fast. They still pull SDL2 for headers
+# only: img_format.h includes document.h which includes SDL.h. SDL_MAIN_HANDLED
+# keeps SDL from redefining main(). Add new pure-logic modules here as the
+# overlay split proceeds.
+foreach(pure_test palette_math color_ops sprite_resize_ops anipoint img_util)
+    add_executable(${pure_test}_test
+        test/${pure_test}_test.cpp
+        platform/${pure_test}.cpp
+    )
+    target_include_directories(${pure_test}_test PRIVATE platform)
+    target_link_libraries(${pure_test}_test PRIVATE SDL2::SDL2)
+    if(MSVC)
+        target_compile_options(${pure_test}_test PRIVATE /W3)
+        target_compile_definitions(${pure_test}_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+    else()
+        target_compile_definitions(${pure_test}_test PRIVATE SDL_MAIN_HANDLED)
+    endif()
+    add_test(NAME ${pure_test} COMMAND ${pure_test}_test)
+endforeach()
+
+# image_ops depends on palette_math, so it links both modules.
+add_executable(image_ops_test
+    test/image_ops_test.cpp
+    platform/image_ops.cpp
+    platform/palette_math.cpp
+)
+target_include_directories(image_ops_test PRIVATE platform)
+target_link_libraries(image_ops_test PRIVATE SDL2::SDL2)
+if(MSVC)
+    target_compile_options(image_ops_test PRIVATE /W3)
+    target_compile_definitions(image_ops_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+else()
+    target_compile_definitions(image_ops_test PRIVATE SDL_MAIN_HANDLED)
+endif()
+add_test(NAME image_ops COMMAND image_ops_test)
 
 # mk2_roundtrip_test: load + idempotent round-trip check on a real MKSTK.ASM.
 # Only built when MK2_MKSTK_PATH is set (so a fresh checkout without the mk2

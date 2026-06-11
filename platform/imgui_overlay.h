@@ -6,10 +6,11 @@
 #pragma once
 #include <SDL.h>
 
-/* Single source of truth for the version string shipped in the binary.
-   Used by the window title and the About dialog. Bump alongside the
-   CHANGELOG entry and the git tag at release time. */
-#define IMGTOOL_VERSION "3.10.0"
+/* Version string shipped in the binary. CMake defines this from the release
+   tag; the fallback keeps ad-hoc non-CMake builds identifiable. */
+#ifndef IMGTOOL_VERSION
+#define IMGTOOL_VERSION "0.0.0-dev"
+#endif
 
 #ifdef __cplusplus
 extern "C" {

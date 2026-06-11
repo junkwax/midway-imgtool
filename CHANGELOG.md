@@ -8,6 +8,42 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.11.0] — Overlay split complete and editor workflow polish
+
+Feature release completing the long-running ImGui overlay split while keeping
+the editor behavior intact, plus several small workflow improvements that landed
+during the refactor.
+
+### Overlay Refactor
+- **Overlay split complete** — the former monolithic `imgui_overlay.cpp` now
+  delegates to focused UI modules for canvas, modals, palette editing, main
+  layout, tools, timeline, undo, auto-chop, and shared state.
+- **Reusable logic modules** — palette math, color operations, image edge/stroke
+  analysis, sprite resizing, anipoint helpers, IMG utilities, and World View
+  texture rendering now live in isolated units with targeted tests where
+  practical.
+- **Cleaner release tree** — removed the completed refactor plan and a
+  workspace-specific scratch signature script from the shipped source.
+
+### Editor Workflow
+- **Global shortcuts and layout components** — keyboard shortcuts and shared UI
+  layout helpers are consolidated so extracted modules behave consistently.
+- **Toolbars and operations menus** — the side panel button grids were replaced
+  with denser toolbars and grouped operation dropdowns.
+- **Palette cleanup tools** — added a move-selected-colors-to-end operation with
+  pixel remapping, and kept the bottom palette bar docked predictably.
+
+### Build And Contributors
+- **Automatic app versioning** — release builds now derive the in-app version
+  from the pushed `v*` tag at CMake configure time, with dev builds falling back
+  to a `-dev+sha` version string.
+- **Contributor setup** — added `CONTRIBUTING.md`, `build.sh`, and
+  `CMakePresets.json` to make fresh-clone builds and CI reproduction easier
+  across platforms.
+- **Expanded verification** — the extracted pure modules are covered by the
+  standard CTest suite, with the MK2 roundtrip test still available when the
+  external ASM fixture is configured.
+
 ## [v3.10.0] — World View ASM autoload and sequence polish
 
 Feature release focused on making multi-IMG character animations easier to load,
