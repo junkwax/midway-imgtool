@@ -6,12 +6,12 @@ maintainability problem is `platform/imgui_overlay.cpp` — a ~22,900-line
 manipulation logic. This document describes the strategy for breaking it up and
 tracks slice-by-slice progress.
 
-## Current checkpoint - June 10, 2026
+## Current checkpoint - June 11, 2026
 
-Branch: `refactor/overlay-split` (102 commits ahead of `SDL-main`). Working tree
-clean. `imgui_overlay.cpp` is at 12,048 lines; `ui_main.cpp` is 1,875 lines;
-`ui_modals.cpp` is 1,564 lines; `ui_canvas.cpp` is 4,506 lines; `ui_palette.cpp`
-is 3,003 lines; `ui_tools.cpp` is 190 lines.
+Branch: `refactor/overlay-split` (110 commits ahead of `SDL-main`). Working tree
+clean. `imgui_overlay.cpp` is at 2,850 lines; `ui_canvas.cpp` is 8,883 lines;
+`ui_modals.cpp` is 5,565 lines; `ui_palette.cpp` is 3,376 lines; `ui_main.cpp` is 2,382 lines;
+`ui_timeline.cpp` is 601 lines; `ui_tools.cpp` is 190 lines; `ui_state.cpp` is 315 lines.
 Full app builds; all 8 `ctest` suites pass.
 
 **Phase A (pure-logic extraction): done & unit-tested** — `palette_math`,
@@ -23,12 +23,14 @@ Full app builds; all 8 `ctest` suites pass.
 only when a function move needs them across TUs — *not* in a big up-front sweep
 (the ~1000-line "Editor state" block is intentionally left in place).
 
-**Phase C (UI subsystems): timeline, canvas, palette, and tools extracted** —
+**Phase C (UI subsystems): timeline, canvas, palette, tools, modals, main extracted** —
 `ui_timeline` owns the whole timeline (frame model, thumbnail cache,
 composite selection/playback, and all timeline rendering incl. the composite
-preview). `ui_canvas` owns zoom/pan, canvas rendering helpers, and layout helpers (single and marked World View).
+preview). `ui_canvas` owns zoom/pan, canvas rendering, clipboard, selection marquee, free transform, and resizing logic.
 `ui_palette` owns the palette editor, HSL sliders, histogram, and color picking.
 `ui_tools` owns the Left Toolbar and tool properties/state.
+`ui_modals` owns all dialogs and modals (including bulk restore, import/export, and resizing dialogs).
+`ui_main` owns the main window layout, menu bar, and transform menu items.
 Supporting modules extracted along the way:
 `world_render` (sprite→texture), `anipoint` (pure predicates + sequence-name
 parsing), `anipoint_edit` (sequence-propagating setters), `img_util`
@@ -155,34 +157,13 @@ foundation as you go:
       `world_render` (sprite→SDL texture + temp-texture pool), `anipoint`
       (predicates + sequence-name parsing + secondary mutators), `anipoint_edit`
       (sequence-propagating setters), `img_util` (name + word clamp).
-- [ ] `ui_canvas` — canvas render, pan/zoom, World View. **Started:** the
-      zoom/pan helpers, canvas rotate-button geometry/drawing, canvas chrome
-      drawing (checkerboard, pixel grid, zoom badge, pixel hover highlight,
-      pencil cursor drawing, clone-stamp visual aids, lasso path and selection
-      overlay drawing, paste border/snap-guide/hint chrome, paste controls
-      layout, transform handle overlay),
-      paste/free-transform geometry helpers incl. drag-delta conversion,
-      proportional resize/rotate math, opaque content bounds, paste
-      snap/center-guide math, paste clamp geometry, paste hint-state
-      selection, paste hover/sprite hit-testing, paste drag resolution,
-      transform drag resolution, paste preview-cell geometry, and paste overlay
-      geometry setup,
-      anipoint hit-testing/overlay drawing, IMG hitbox and MK2 strike-box
-      overlay drawing, shared corner-resize geometry, DMA compression and
-      color-isolation overlay drawing, single-sprite World View canvas, World View config/layout state, onion-skin
-      texture cache, marked World View constants,
-      playback/sequence/mirror/dummy-decap/drag/ASM-popup state, string/model
-      helpers, sequence tick/sync/edit helpers, and dummy-decap timing reset
-      helpers, plus the marked-lane model, marked-frame collection, and
-      source/dummy-decap lane collection/builders, ASM lane builder, lane playback resolver/sequence refresh, selected dummy-decap assignment, per-lane edit controls, thumbnail
-      strip, marked World View orchestration/scene drawing, and sprite panel wrapper/layout/header controls/drag handling, tag/status
-      drawing, render rect bookkeeping, and ASM export text generation/preview
-      now live in `ui_canvas`; most regular edit-canvas interaction/rendering
-      remains in `imgui_overlay.cpp`.
+- [x] `ui_canvas` — canvas render, pan/zoom, World View, clipboard, marquee/selections, free transform, sprite resizing. **Complete.**
 - [x] `ui_palette` — palette editor, HSL sliders, histogram, color picking. **Complete.**
 - [x] `ui_tools` — toolbars and per-tool interaction (pencil, fill, lasso, free transform, clone, smart remap). **Complete.**
 - [x] `ui_modals` — export/import dialogs and confirmation prompts. **Complete.**
 - [x] `ui_main` — frame layout, dockspace, menu bar (whatever remains). **Complete.**
+- [ ] **`ui_undo`** — Undo/Redo document history stack management (`doc_undo_push`, `RestoreDocSnapshot`, etc.).
+- [ ] **`ui_autochop`** — Auto-Chop and Auto-Split dialogs and preview generation helpers.
 
 ## Later phases (after the split)
 
