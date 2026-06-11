@@ -650,6 +650,7 @@ extern std::vector<PixelHist> g_pixel_hist;
 extern std::vector<PixelHist> g_pixel_redo;
 extern unsigned int g_undo_seq;
 void ClearDocumentRedoStack(void);
+void ClearDocumentHistoryStacks(void);
 void pixel_hist_free(PixelHist *e);
 bool pixel_hist_capture_img(int img_idx, PixelHist *out, bool full_state = false);
 bool pixel_hist_capture(PixelHist *out, bool full_state = false);

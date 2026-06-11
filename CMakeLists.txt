@@ -65,6 +65,8 @@ set(IMGTOOL_SOURCES
     platform/ui_palette.cpp
     platform/ui_tools.cpp
     platform/ui_modals.cpp
+    platform/ui_undo.cpp
+    platform/ui_autochop.cpp
     platform/world_render.cpp
     platform/anipoint.cpp
     platform/anipoint_edit.cpp

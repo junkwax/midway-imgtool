@@ -8881,3 +8881,297 @@ int BulkResizeMarkedSprites(int scale_x, int scale_y,
     return changed;
 }
 
+/* ---- Marked-image helpers ---------------------------------------- */
+
+int CountMarkedImages(void)
+{
+    int count = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p)
+        if (img->flags & 1) count++;
+    return count;
+}
+
+void MirrorMarkedAnipointsToReverseWithToast(void)
+{
+    int marked = CountMarkedImages();
+    int changed = MirrorMarkedAnipointsToReverse();
+    if (changed > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mirrored anipoints on %d marked sprite%s.",
+                 changed, changed == 1 ? "" : "s");
+    } else if (marked > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No marked anipoints moved; X values are centered.");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark sprites first, then mirror anipoints.");
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
+/* ---- Variant paint ------------------------------------------------ */
+
+static bool ensure_all_palettes_numc(int min_numc)
+{
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p) {
+        if (!ensure_palette_numc(p, min_numc)) return false;
+    }
+    return true;
+}
+
+static void collect_library_used_indices(bool used[256])
+{
+    memset(used, 0, sizeof(bool) * 256);
+    used[0] = true;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *pix = (const unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++)
+            for (int x = 0; x < img->w; x++)
+                used[pix[y * stride + x]] = true;
+    }
+}
+
+static bool slot_matches_variant_shadow(int slot, int base_idx, int target_pal_idx, unsigned short target_word)
+{
+    PAL *target = get_pal(target_pal_idx);
+    if (!target || !target->data_p || slot >= (int)target->numc) return false;
+    if (pal_word_or_black(target, slot) != target_word) return false;
+
+    int pal_idx = 0;
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p, pal_idx++) {
+        if (pal_idx == target_pal_idx) continue;
+        if (!p->data_p || slot >= (int)p->numc) return false;
+        if (pal_word_or_black(p, slot) != pal_word_or_black(p, base_idx)) return false;
+    }
+    return true;
+}
+
+static int find_variant_shadow_slot(int base_idx, int target_pal_idx, unsigned short target_word)
+{
+    if (base_idx <= 0 || base_idx >= 256) return -1;
+    for (int slot = 1; slot < 256; slot++) {
+        if (slot == base_idx) continue;
+        if (slot_matches_variant_shadow(slot, base_idx, target_pal_idx, target_word))
+            return slot;
+    }
+    return -1;
+}
+
+static int create_variant_shadow_slot(int base_idx, int target_pal_idx, unsigned short target_word, bool *created)
+{
+    if (created) *created = false;
+    int existing = find_variant_shadow_slot(base_idx, target_pal_idx, target_word);
+    if (existing >= 0) return existing;
+
+    bool used[256];
+    collect_library_used_indices(used);
+    int slot = -1;
+    for (int i = 1; i < 256; i++) {
+        if (!used[i]) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+    if (!ensure_all_palettes_numc(slot + 1)) return -1;
+
+    int pal_idx = 0;
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p, pal_idx++) {
+        unsigned short w = (pal_idx == target_pal_idx)
+            ? target_word
+            : pal_word_or_black(p, base_idx);
+        unsigned char *pd = (unsigned char *)p->data_p;
+        pd[slot * 2 + 0] = (unsigned char)(w & 0xFF);
+        pd[slot * 2 + 1] = (unsigned char)(w >> 8);
+    }
+
+    if (created) *created = true;
+    return slot;
+}
+
+static VariantPaintResult ApplyVariantPaintToPixels(IMG *img, const std::vector<std::pair<int,int>>& pixels)
+{
+    VariantPaintResult r = {0, 0, 0, 0};
+    if (!img || !img->data_p || pixels.empty()) return r;
+    int target_pal_idx = img->palnum;
+    PAL *target_pal = get_pal(target_pal_idx);
+    if (!target_pal || !target_pal->data_p || target_pal_idx < 0) {
+        r.skipped_no_slot = (int)pixels.size();
+        return r;
+    }
+    if (g_sel_color == 0) {
+        r.skipped_no_slot = (int)pixels.size();
+        return r;
+    }
+
+    SDL_Color &tc = g_palette[g_sel_color];
+    unsigned short target_word = rgb_to_word15(tc.r, tc.g, tc.b);
+    int base_to_slot[256];
+    for (int i = 0; i < 256; i++) base_to_slot[i] = -1;
+
+    int stride = (img->w + 3) & ~3;
+    unsigned char *data = (unsigned char *)img->data_p;
+    for (const auto &pt : pixels) {
+        int x = pt.first, y = pt.second;
+        if (x < 0 || y < 0 || x >= (int)img->w || y >= (int)img->h) continue;
+        unsigned char *pix = data + y * stride + x;
+        int base_idx = *pix;
+        if (base_idx == 0) { r.skipped_transparent++; continue; }
+        if (pal_word_or_black(target_pal, base_idx) == target_word) continue;
+
+        int slot = base_to_slot[base_idx];
+        if (slot == -1) {
+            bool created = false;
+            slot = create_variant_shadow_slot(base_idx, target_pal_idx, target_word, &created);
+            base_to_slot[base_idx] = (slot >= 0) ? slot : -2;
+            if (created) r.slots++;
+        }
+        if (slot < 0) {
+            r.skipped_no_slot++;
+            continue;
+        }
+        if (*pix != (unsigned char)slot) {
+            *pix = (unsigned char)slot;
+            r.pixels++;
+        }
+    }
+
+    if (r.pixels > 0 || r.slots > 0) {
+        ApplyPalette(target_pal_idx);
+        g_img_tex_idx = -2;
+        mark_dirty();
+    }
+    return r;
+}
+
+VariantPaintResult ApplyVariantBrush(IMG *img, int cx, int cy, int brush)
+{
+    std::vector<std::pair<int,int>> pts;
+    int r = brush > 0 ? brush : 1;
+    int r2 = (r - 1) * (r - 1);
+    for (int by = -(r - 1); by <= (r - 1); by++) {
+        for (int bx = -(r - 1); bx <= (r - 1); bx++) {
+            if (r > 1 && bx * bx + by * by > r2) continue;
+            pts.push_back({cx + bx, cy + by});
+        }
+    }
+    return ApplyVariantPaintToPixels(img, pts);
+}
+
+void ApplyVariantToSelection(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+    if (!g_grid_sel.active) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select pixels first, then apply variant paint.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    if (g_sel_color == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Variant paint needs an opaque target color.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    std::vector<std::pair<int,int>> pts;
+    for (int y = 0; y < img->h; y++)
+        for (int x = 0; x < img->w; x++)
+            if (selection_contains_pixel(img, x, y)) pts.push_back({x, y});
+
+    doc_undo_push();
+    VariantPaintResult r = ApplyVariantPaintToPixels(img, pts);
+    if (r.pixels > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Variantized %d px using %d shadow slot%s.",
+                 r.pixels, r.slots, r.slots == 1 ? "" : "s");
+    } else if (r.skipped_no_slot > 0 && g_sel_color == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Variant paint needs an opaque target color.");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No pixels changed (%d transparent skipped).", r.skipped_transparent);
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
+/* ---- World marked tabs -------------------------------------------- */
+
+bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
+{
+    std::vector<WorldMarkedAsmLaneInput> asm_lanes;
+    asm_lanes.reserve(2);
+    auto add_asm_lane = [&](std::vector<AsmAnim> &anims, bool enabled, int sel,
+                            int slot_id, Document *doc, int doc_idx) {
+        if (!enabled || sel < 0 || sel >= (int)anims.size() || !doc) return;
+        AsmAnim &a = anims[sel];
+        if (a.frames.empty()) return;
+        WorldMarkedAsmLaneInput input = {};
+        input.enabled = true;
+        input.slot_id = slot_id;
+        input.doc = doc;
+        input.doc_idx = doc_idx;
+        input.name = a.name.c_str();
+        input.frames.reserve(a.frames.size());
+        for (const AsmAnimFrame &fr : a.frames) {
+            WorldAsmLaneFrame view = {};
+            view.piece_img = &fr.piece_img;
+            view.piece_doc = &fr.piece_doc;
+            view.dx = fr.dx;
+            view.dy = fr.dy;
+            view.mirror = fr.mirror;
+            input.frames.push_back(view);
+        }
+        asm_lanes.push_back(input);
+    };
+    add_asm_lane(g_asm_anims, g_asm_lane_enabled, g_asm_anim_sel,
+                 kWorldAsmSlot, g_asm_anim_doc, g_asm_anim_doc_idx);
+    add_asm_lane(g_asm_opp_anims, g_asm_opp_enabled, g_asm_opp_sel,
+                 kWorldAsmOpponentSlot, g_asm_opp_doc, g_asm_opp_doc_idx);
+
+    IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
+    WorldMarkedTabsResult tabs_result =
+        WorldDrawMarkedTabs(g_world_marked_state, g_world_state,
+                            avail, img_pos, io.DeltaTime,
+                            document_active_index(), selected_img, asm_lanes);
+    if (!tabs_result.drew)
+        return false;
+
+    WorldMarkedPanelAction panel_action = tabs_result.panel.header;
+    if (panel_action.copied_asm) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Copied World View ASM for %d lane%s.",
+                 panel_action.copied_lane_count,
+                 panel_action.copied_lane_count == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    }
+    if (panel_action.request_save_asm)
+        g_request_save_world_asm = true;   /* dialog opened in main loop */
+    if (panel_action.request_load_asm) {
+        g_show_asm_anim = true;
+        g_request_load_asm = true;
+    }
+    if (panel_action.dummy_assigned) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Assigned dummy body to [%d] %sDECAP.",
+                 g_world_marked_state.dummy_decap_doc_idx,
+                 g_world_marked_state.dummy_decap_prefix.c_str());
+        g_restore_msg_timer = 4.0f;
+    } else if (panel_action.dummy_assign_failed) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Select a DECAP body frame/piece first.");
+        g_restore_msg_timer = 4.0f;
+    }
+    if (tabs_result.panel.thumb_click.clicked) {
+        if (tabs_result.panel.thumb_click.doc_idx != document_active_index()) {
+            document_set_active(tabs_result.panel.thumb_click.doc_idx);
+            ResetPerDocumentUiState(false);
+            g_doc_tab_select_request = tabs_result.panel.thumb_click.doc_idx;
+        }
+        g_doc->ilselected = tabs_result.panel.thumb_click.img_idx;
+        g_zoom_reset = true;
+    }
+    if (tabs_result.panel.copied_popup_asm) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied World View ASM.");
+        g_restore_msg_timer = 4.0f;
+    }
+    return true;
+}
+

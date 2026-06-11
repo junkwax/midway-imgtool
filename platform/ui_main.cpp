@@ -10,6 +10,9 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <cstdlib>
+#include <regex>
 
 #include "img_format.h"
 #include "ui_internal.h"
@@ -29,6 +32,10 @@
 #include "mk2_hitbox.h"
 #include "mk2_fatality.h"
 #include "compat.h"
+
+extern "C" { extern struct SDL_Color g_palette[256]; }
+extern int g_img_tex_idx;
+
 
 void DrawMainLayout(void)
 {
@@ -2378,5 +2385,473 @@ void DrawSpriteTransformMenuItems(void)
         TransformSelectedSprite(SpriteTransformOp::FlipVertical);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
         "Flips pixels, anipoints, and hitbox together.");
+}
+
+/* ---- Image texture renderer ---- */
+void rebuild_img_texture(IMG *img)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) {
+        if (g_img_texture) { SDL_DestroyTexture(g_img_texture); g_img_texture = NULL; }
+        g_img_tex_w = g_img_tex_h = 0;
+        return;
+    }
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+
+    if (!g_img_texture || g_img_tex_w != w || g_img_tex_h != h) {
+        if (g_img_texture) SDL_DestroyTexture(g_img_texture);
+        g_img_texture = SDL_CreateTexture(g_imgui_renderer,
+            SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+        SDL_SetTextureBlendMode(g_img_texture, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_img_texture, SDL_ScaleModeNearest);
+        g_img_tex_w = w;
+        g_img_tex_h = h;
+    }
+    void *pixels; int pitch;
+    if (SDL_LockTexture(g_img_texture, NULL, &pixels, &pitch) != 0) return;
+    const unsigned char *src = (const unsigned char *)img->data_p;
+    Uint32 *dst = (Uint32 *)pixels;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = src[y * stride + x];
+            SDL_Color c = g_palette[ci];
+            Uint32 a = (ci == 0) ? 0x00u : 0xFFu;
+            dst[y * (pitch / 4) + x] = (a << 24) | ((Uint32)c.r << 16) | ((Uint32)c.g << 8) | c.b;
+        }
+    }
+
+    /* Composite an attached overlay layer directly into the texture for the
+       canvas preview (non-destructive — base data_p is untouched). */
+    SpriteLayer *L = img_layer(img);
+    if (L && L->visible) {
+        const unsigned char *lp = layer_pixels(L);
+        for (int ly = 0; ly < L->h; ly++) {
+            int dy = L->y + ly;
+            if (dy < 0 || dy >= h) continue;
+            const unsigned char *lrow = lp + (size_t)ly * L->stride;
+            for (int lx = 0; lx < L->w; lx++) {
+                int dx = L->x + lx;
+                if (dx < 0 || dx >= w) continue;
+                unsigned char ci = lrow[lx];
+                if (ci == 0) continue;
+                SDL_Color c = g_palette[ci];
+                dst[dy * (pitch / 4) + dx] =
+                    (0xFFu << 24) | ((Uint32)c.r << 16) | ((Uint32)c.g << 8) | c.b;
+            }
+        }
+    }
+    SDL_UnlockTexture(g_img_texture);
+}
+
+/* ---- LOAD2 drift texture ---- */
+void update_drift_texture(IMG *img)
+{
+    int baseline_w = img ? (img->baseline_w ? (int)img->baseline_w : (int)img->w) : 0;
+    int baseline_h = img ? (img->baseline_h ? (int)img->baseline_h : (int)img->h) : 0;
+    if (!img || !img->data_p || !img->baseline_p || img->w == 0 || img->h == 0 ||
+        baseline_w != (int)img->w || baseline_h != (int)img->h) {
+        if (g_load2_drift_tex) { SDL_DestroyTexture(g_load2_drift_tex); g_load2_drift_tex = NULL; }
+        g_load2_drift_tex_w = g_load2_drift_tex_h = 0;
+        return;
+    }
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+
+    if (!g_load2_drift_tex || g_load2_drift_tex_w != w || g_load2_drift_tex_h != h) {
+        if (g_load2_drift_tex) SDL_DestroyTexture(g_load2_drift_tex);
+        g_load2_drift_tex = SDL_CreateTexture(g_imgui_renderer,
+            SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+        SDL_SetTextureBlendMode(g_load2_drift_tex, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_load2_drift_tex, SDL_ScaleModeNearest);
+        g_load2_drift_tex_w = w;
+        g_load2_drift_tex_h = h;
+    }
+    void *pixels; int pitch;
+    if (SDL_LockTexture(g_load2_drift_tex, NULL, &pixels, &pitch) != 0) return;
+
+    const unsigned char *cur  = (const unsigned char *)img->data_p;
+    const unsigned char *base = (const unsigned char *)img->baseline_p;
+    Uint32 *dst = (Uint32 *)pixels;
+
+    for (int y = 0; y < h; y++) {
+        int bl = 0, bt = 0, cl = 0, ct = 0;
+        const unsigned char *brow = base + y * stride;
+        const unsigned char *crow = cur  + y * stride;
+        while (bl < w && brow[bl] == 0) bl++;
+        if (bl < w) { int x = w - 1; while (x >= bl && brow[x] == 0) { bt++; x--; } }
+        while (cl < w && crow[cl] == 0) cl++;
+        if (cl < w) { int x = w - 1; while (x >= cl && crow[x] == 0) { ct++; x--; } }
+        bool row_drifts = (bl != cl) || (bt != ct);
+
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = cur[y * stride + x];
+            SDL_Color c = g_palette[ci];
+            Uint32 r = c.r, g = c.g, b = c.b;
+            Uint32 a = (ci == 0) ? 0x00u : 0xFFu;
+
+            if (row_drifts) {
+                if (a == 0) { r = 200; g = 40; b = 40; a = 90; }
+                else { r = (r + 510) / 3; g = g / 3; b = b / 3; }
+            }
+            dst[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+    SDL_UnlockTexture(g_load2_drift_tex);
+}
+
+/* ---- Document tab bar ---- */
+static void RequestCloseDocumentTab(int idx)
+{
+    Document *doc = document_get(idx);
+    if (!doc) return;
+    if (doc->dirty) {
+        ActivateDocumentTab(idx);
+        g_pending_action = PendingAction::CloseTab;
+        g_pending_tab_index = idx;
+        g_show_unsaved_confirm = true;
+        return;
+    }
+    bool closing_active = (idx == document_active_index());
+    document_close_tab(idx);
+    ResetPerDocumentUiState(false);
+    if (closing_active) g_doc_tab_select_request = document_active_index();
+}
+
+float DrawDocumentTabBar(float y, float sw)
+{
+    const float tab_h = ImGui::GetFrameHeight() + 5.0f;
+    ImGui::SetNextWindowPos(ImVec2(0, y));
+    ImGui::SetNextWindowSize(ImVec2(sw, tab_h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 2));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 0));
+    ImGui::Begin("##document_tabs", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    int activate_idx = -1;
+    int close_idx = -1;
+    bool new_tab = false;
+    int active = document_active_index();
+
+    ImGuiTabBarFlags tab_flags = ImGuiTabBarFlags_FittingPolicyScroll;
+    if (ImGui::BeginTabBar("##img_document_tabs", tab_flags)) {
+        int n = document_tab_count();
+        for (int i = 0; i < n; i++) {
+            Document *doc = document_get(i);
+            if (!doc) continue;
+
+            const char *base = doc->fname_s[0] ? doc->fname_s : "Untitled";
+            char label[96];
+            snprintf(label, sizeof(label), "%s%s##doc_tab_%d",
+                     doc->dirty ? "* " : "", base, i);
+
+            bool open = true;
+            ImGuiTabItemFlags item_flags = (i == active) ? ImGuiTabItemFlags_SetSelected
+                                                         : ImGuiTabItemFlags_None;
+            bool visible = ImGui::BeginTabItem(label, &open, item_flags);
+            bool activated = ImGui::IsItemActivated();
+            if (activated && i != active)
+                activate_idx = i;
+            if (visible)
+                ImGui::EndTabItem();
+            if (!open)
+                close_idx = i;
+        }
+
+        if (g_world_state.enabled) {
+            auto tab_toggle = [](const char *label, bool *value) {
+                bool was_on = *value;
+                if (was_on) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+                    ImGui::PushStyleColor(ImGuiCol_Tab, ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
+                    ImGui::PushStyleColor(ImGuiCol_TabHovered, ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
+                }
+                if (ImGui::TabItemButton(label, ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
+                    *value = !*value;
+                if (was_on) ImGui::PopStyleColor(3);
+            };
+            tab_toggle(g_world_state.onion ? "Onion: On" : "Onion", &g_world_state.onion);
+            bool marked_was_on = g_world_marked_state.marked_play;
+            tab_toggle(g_world_marked_state.marked_play ? "Marked: On" : "Marked", &g_world_marked_state.marked_play);
+            if (marked_was_on != g_world_marked_state.marked_play) {
+                WorldMarkedRestart(g_world_marked_state);
+            }
+            tab_toggle(g_world_marked_state.mirror_active ? "Mirror 1: On" : "Mirror 1", &g_world_marked_state.mirror_active);
+            tab_toggle(g_world_marked_state.mirror_other ? "Mirror 2: On" : "Mirror 2", &g_world_marked_state.mirror_other);
+        }
+
+        if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
+            new_tab = true;
+        ImGui::EndTabBar();
+    }
+    g_doc_tab_select_request = -1;
+
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+
+    if (activate_idx >= 0)
+        ActivateDocumentTab(activate_idx);
+    if (close_idx >= 0)
+        RequestCloseDocumentTab(close_idx);
+    if (new_tab) {
+        document_new_tab();
+        g_doc_tab_select_request = document_active_index();
+        ResetPerDocumentUiState(false);
+    }
+    return tab_h;
+}
+
+/* ---- Image management helpers ---- */
+void NormalizeImageDeleteIndices(std::vector<int> *indices)
+{
+    if (!indices) return;
+    indices->erase(std::remove_if(indices->begin(), indices->end(),
+        [](int idx) { return idx < 0 || (unsigned int)idx >= g_doc->imgcnt; }),
+        indices->end());
+    std::sort(indices->begin(), indices->end());
+    indices->erase(std::unique(indices->begin(), indices->end()), indices->end());
+}
+
+void SetIDFromSecondList(void)
+{
+    mark_dirty();
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img) return;
+
+    if (!img->pttbl_p) {
+        AddPointTable(g_doc->ilselected);
+        img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+        if (!img || !img->pttbl_p) return;
+    }
+
+    /* PTTBL.ID is at struct offset 14 (dw aligned, pack-2) */
+    unsigned char *pttbl = (unsigned char *)img->pttbl_p;
+    unsigned short new_id = (unsigned short)(g_doc->il2selected + 1);
+    pttbl[14] = (unsigned char)(new_id & 0xFF);
+    pttbl[15] = (unsigned char)(new_id >> 8);
+}
+
+static bool ImageNameExists(const char *name)
+{
+    if (!name || !*name) return false;
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
+        char existing[16];
+        strncpy(existing, p->n_s, 15);
+        existing[15] = '\0';
+        if (strcmp(existing, name) == 0) return true;
+    }
+    return false;
+}
+
+void MakeDerivedImageName(const char *base, const char *suffix, char out[16])
+{
+    char root[16];
+    if (base && *base) {
+        strncpy(root, base, 15);
+        root[15] = '\0';
+    } else {
+        strncpy(root, "SPRITE", sizeof(root));
+    }
+
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        char tail[8];
+        if (attempt == 0) snprintf(tail, sizeof(tail), "%s", suffix ? suffix : "");
+        else              snprintf(tail, sizeof(tail), "%s%d", suffix ? suffix : "", attempt);
+
+        size_t tail_len = strlen(tail);
+        size_t budget = (tail_len < 15) ? (15 - tail_len) : 0;
+        snprintf(out, 16, "%.*s%s", (int)budget, root, tail);
+        if (!ImageNameExists(out)) return;
+    }
+
+    snprintf(out, 16, "%.15s", root);
+}
+
+void DuplicateImage(void)
+{
+    IMG *src = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!src) return;
+
+    doc_undo_push();   /* adds a new image — undo must remove it */
+
+    IMG *dst = (IMG *)AllocImg();
+    if (!dst) return;
+
+    /* Copy pixel data */
+    dst->data_p = NULL;
+    if (src->data_p) {
+        unsigned int stride = ((unsigned int)src->w + 3) & ~3;
+        unsigned int sz = stride * src->h;
+        dst->data_p = malloc(sz);
+        if (!dst->data_p) goto err;
+        memcpy(dst->data_p, src->data_p, sz);
+    }
+
+    /* Copy point table */
+    dst->pttbl_p = NULL;
+    if (src->pttbl_p) {
+        dst->pttbl_p = malloc(40);
+        if (!dst->pttbl_p) goto err;
+        memcpy(dst->pttbl_p, src->pttbl_p, 40);
+    }
+
+    /* Copy header fields */
+    dst->flags  = src->flags;
+    dst->anix   = src->anix;
+    dst->aniy   = src->aniy;
+    dst->w      = src->w;
+    dst->h      = src->h;
+    dst->palnum = src->palnum;
+    dst->anix2  = src->anix2;
+    dst->aniy2  = src->aniy2;
+    dst->aniz2  = src->aniz2;
+    dst->opals  = src->opals;
+
+    strncpy(dst->src_filename, src->src_filename, sizeof(dst->src_filename) - 1);
+    dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
+    MakeDerivedImageName(src->n_s, "DUP", dst->n_s);
+
+    /* Select the new image and open rename */
+    g_doc->ilselected = (int)g_doc->imgcnt - 1;
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    OpenRenameImage();
+    return;
+
+err:
+    /* Rollback: delete the newly-allocated image */
+    if (dst->data_p) free(dst->data_p);
+    if (dst->pttbl_p) free(dst->pttbl_p);
+    {
+        IMG *prev = NULL;
+        IMG *cur = (IMG *)g_doc->img_p;
+        while (cur && cur != dst) { prev = cur; cur = (IMG *)cur->nxt_p; }
+        if (cur == dst) {
+            if (prev) prev->nxt_p = cur->nxt_p;
+            else g_doc->img_p = cur->nxt_p;
+            g_doc->imgcnt--;
+        }
+    }
+    free(dst);
+}
+
+void AddNewBlankImage(int w, int h)
+{
+    if (w < 1)    w = 1;
+    if (w > 1024) w = 1024;
+    if (h < 1)    h = 1;
+    if (h > 1024) h = 1024;
+    mark_dirty();
+    IMG *img = AllocImg();
+    if (!img) return;
+
+    img->w        = (unsigned short)w;
+    img->h        = (unsigned short)h;
+    img->flags    = 0;
+    img->anix     = 0;
+    img->aniy     = 0;
+    clear_secondary_anipoint(img);
+    img->opals    = (unsigned short)-1;
+    img->pttbl_p  = NULL;
+    img->palnum   = (g_doc->plselected >= 0) ? (unsigned short)g_doc->plselected : 0;
+
+    unsigned int stride = ((unsigned int)img->w + 3) & ~3;
+    unsigned int sz = stride * img->h;
+    img->data_p = PoolAlloc(sz);
+    if (img->data_p) memset(img->data_p, 0, sz);
+    img->baseline_p = PoolAlloc(sz);
+    if (img->baseline_p) {
+        memset(img->baseline_p, 0, sz);
+        img->baseline_w = img->w;
+        img->baseline_h = img->h;
+    }
+
+    static int next_id = 1;
+    snprintf(img->n_s, sizeof(img->n_s), "NEW%d", next_id++);
+
+    if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
+    g_img_tex_idx = -2;
+}
+
+/* ---- Anipoint propagation across tabs ---- */
+static std::string regex_escape_main(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (char ch : s) {
+        switch (ch) {
+            case '\\': case '.': case '^': case '$': case '|':
+            case '(': case ')': case '[': case ']': case '{':
+            case '}': case '*': case '+': case '?':
+                out.push_back('\\');
+                break;
+            default:
+                break;
+        }
+        out.push_back(ch);
+    }
+    return out;
+}
+
+static std::string sprite_family_regex_pattern_main(const std::string &name)
+{
+    if (name.size() > 2)
+        return std::string("^..") + regex_escape_main(name.substr(2)) + "$";
+    return std::string("^") + regex_escape_main(name) + "$";
+}
+
+int PushAnipointsToMatchingOpenTabs(const IMG *src, int *matched_count, int *doc_count, std::string *pattern_out)
+{
+    if (matched_count) *matched_count = 0;
+    if (doc_count) *doc_count = 0;
+    if (pattern_out) pattern_out->clear();
+    if (!src) return 0;
+
+    std::string src_name = img_name_string(src);
+    if (src_name.empty()) return 0;
+
+    std::string pattern = sprite_family_regex_pattern_main(src_name);
+    if (pattern_out) *pattern_out = pattern;
+
+    std::regex name_re(pattern, std::regex_constants::ECMAScript | std::regex_constants::icase);
+    int changed = 0;
+    int matched = 0;
+    int docs_changed = 0;
+
+    for (int tab = 0; tab < document_tab_count(); tab++) {
+        Document *doc = document_get(tab);
+        if (!doc) continue;
+
+        bool doc_touched = false;
+        for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p) {
+            std::string name = img_name_string(img);
+            if (name.empty() || !std::regex_match(name, name_re)) continue;
+
+            matched++;
+            if (img == src) continue;
+            if (img->anix  == src->anix  && img->aniy  == src->aniy &&
+                img->anix2 == src->anix2 && img->aniy2 == src->aniy2 &&
+                img->aniz2 == src->aniz2)
+                continue;
+
+            img->anix  = src->anix;
+            img->aniy  = src->aniy;
+            img->anix2 = src->anix2;
+            img->aniy2 = src->aniy2;
+            img->aniz2 = src->aniz2;
+            changed++;
+            doc_touched = true;
+        }
+
+        if (doc_touched) {
+            doc->dirty = true;
+            docs_changed++;
+        }
+    }
+
+    if (matched_count) *matched_count = matched;
+    if (doc_count) *doc_count = docs_changed;
+    return changed;
 }
 
