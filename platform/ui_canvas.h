@@ -600,10 +600,5 @@ void select_all(void);
 void deselect_all(void);
 void invert_selection(void);
 bool selection_contains_pixel(IMG *img, int x, int y);
-bool selection_bbox_from_mask(const std::vector<bool> &mask, int sw, int sh,
-                               int *x1, int *y1, int *x2, int *y2);
-bool selection_current_to_mask(int sw, int sh, std::vector<bool> *out);
-void selection_commit_mask(int sw, int sh, const std::vector<bool> &mask);
-void selection_apply_mask(int sw, int sh, std::vector<bool> mask, bool add);
 void selection_begin_add_drag(int sw, int sh, bool add);
 void selection_finish_add_drag(int sw, int sh);
