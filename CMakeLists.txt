@@ -59,6 +59,7 @@ set(IMGTOOL_SOURCES
     imgui/backends/imgui_impl_sdlrenderer2.cpp
     platform/imgui_overlay.cpp
     platform/ui_state.cpp
+    platform/ui_main.cpp
     platform/ui_canvas.cpp
     platform/ui_timeline.cpp
     platform/ui_palette.cpp

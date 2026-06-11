@@ -120,4 +120,40 @@ int  g_snap_guide_y = 0;
 WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
 bool g_show_dma_comp = false;
 
+ImageListSort g_image_list_sort = ImageListSort::Original;
+bool g_image_list_sort_desc = false;
+bool g_show_debug = false;
+bool g_show_about = false;
+bool g_show_help = false;
+const float TOOLBAR_W = 76.0f;
+const float PANEL_W = 280.0f;
+
+float g_play_speed = 12.0f;
+float g_play_timer = 0.0f;
+unsigned int g_timeline_built_for_imgcnt = 0;
+bool g_timeline_pingpong = false;
+int g_timeline_play_dir = 1;
+bool g_timeline_onion = false;
+
+bool g_show_new_blank_dialog = false;
+bool g_show_restore_regex = false;
+bool g_show_histogram = false;
+L2Report g_load2_report = {};
+int g_load2_selected_idx = -1;
+bool g_show_load2_verify = false;
+bool g_show_mk2_fatality = false;
+bool g_request_save_world_asm = false;
+bool g_request_load_asm = false;
+bool g_request_load_opp_asm = false;
+bool g_request_asm_autoload = false;
+bool g_request_asm_opp_autoload = false;
+bool g_request_locate_img = false;
+bool g_request_locate_opp_img = false;
+
+bool g_show_new_img_confirm = false;
+bool g_pending_quit = false;
+
+
+
+
 

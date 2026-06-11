@@ -49,7 +49,7 @@ static bool g_palette_merge_preview_only = false;
 static bool g_merge_opt_grow = true;
 static bool g_merge_opt_perceptual = false;
 
-static bool  g_show_histogram = false;
+/* g_show_histogram is defined in ui_state.cpp */
 static float g_histogram_data[256] = {0};
 static float g_histogram_max = 0.0f;
 static int   g_histogram_img_count = 0;

@@ -413,6 +413,117 @@ void pixel_hist_push_stroke(void);
 int PaintBucketFill(IMG *img, int sx, int sy, unsigned char new_color, int tolerance, bool contiguous);
 bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io);
 
+enum class ImageListSort { Original = 0, Name, Size };
+extern ImageListSort g_image_list_sort;
+extern bool g_image_list_sort_desc;
+extern bool g_show_debug;
+extern bool g_show_about;
+extern bool g_show_help;
+extern const float TOOLBAR_W;
+extern const float PANEL_W;
+
+float DrawDocumentTabBar(float y, float sw);
+void rebuild_img_texture(IMG *img);
+void OpenRenameImage(void);
+void DuplicateImage(void);
+void DrawSpriteTransformMenuItems(void);
+void RequestDeleteImage(int idx);
+int CountMarkedImages(void);
+void RequestDeleteMarkedImages(void);
+
+void LabeledValue(const char *label, const char *fmt, ...);
+bool AnimPointSliderInt(const char *label, int *value, int min_value, int max_value);
+std::string sprite_family_key(const std::string &name);
+std::string sprite_family_regex_pattern(const std::string &name);
+int PushAnipointsToMatchingOpenTabs(const IMG *src, int *matched_count, int *doc_count, std::string *pattern_out);
+void MirrorMarkedAnipointsToReverseWithToast(void);
+int AutoCalculateTimelineAnipointsFromLock(void);
+
+extern float g_play_speed;
+extern float g_play_timer;
+extern unsigned int g_timeline_built_for_imgcnt;
+extern bool g_timeline_pingpong;
+extern int g_timeline_play_dir;
+
+void DrawRenameDialog(void);
+void DrawLoad2VerifyDialog(void);
+void DrawPaletteMergeQualityDialog(void);
+void DrawSpriteLayerPanel(void);
+void DrawAsmAnimWindow(void);
+void DrawPaletteHistogramDialog(void);
+void DrawPaletteReduceDialog(void);
+void DrawMk2HitboxWindow(void);
+void DrawMk2FatalityWindow(void);
+void DrawAutoChopDialog(void);
+void DrawResizeSpriteDialog(void);
+void DrawBulkResizeDialog(void);
+void DrawBulkRestoreRegexDialog(void);
+void DrawDeleteImagesConfirm(void);
+void DrawDebugInfoModal(void);
+void DrawNewImgConfirm(void);
+void DrawNewBlankImageDialog(void);
+void DrawHelpModal(void);
+void DrawAboutModal(void);
+void DrawTransientToast(float delta_time);
+void DrawVerboseLogWindow(void);
+void finish_sequence_anipoint_edit_if_idle(void);
+
+extern bool g_show_new_blank_dialog;
+extern bool g_show_restore_regex;
+extern bool g_show_histogram;
+#include "load2_verify.h"
+extern L2Report g_load2_report;
+extern int g_load2_selected_idx;
+extern bool g_show_load2_verify;
+extern bool g_show_mk2_fatality;
+extern bool g_request_save_world_asm;
+extern bool g_request_load_asm;
+extern bool g_request_load_opp_asm;
+extern bool g_request_asm_autoload;
+extern bool g_request_asm_opp_autoload;
+extern bool g_request_locate_img;
+extern bool g_request_locate_opp_img;
+
+void DrawUnsavedChangesConfirm(void);
+void DrawMk2UnsavedChangesConfirm(void);
+void DrawMk2FatalityUnsavedChangesConfirm(void);
+void StripMarkedImages(int max_transparent_neighbors, int specific_color = -1);
+void DitherReplaceMarkedImages(int specific_color);
+void OpenRenameMarkedImages(void);
+void OpenAutoChopDialog(void);
+void OpenBulkResizeDialog(void);
+void CopySelectionToNewImage(void);
+void CutSelectionToNewImage(void);
+void PasteClipboardAsNewImage(void);
+void AsmProcessAutoload(void);
+void AsmProcessOppAutoload(void);
+
+void copy_image(bool cut);
+void paste_image(void);
+void select_all(void);
+void deselect_all(void);
+void invert_selection(void);
+void TogglePointTable(void);
+void MoveImageUp(void);
+void MoveImageDown(void);
+void flip_clipboard_horizontal(void);
+void flip_clipboard_vertical(void);
+void drop_paste_to_layer(void);
+void imgtool_toggle_timeline_play(void);
+void LeastSquaresReduceMarked(void); /* definition has no args, body has them locally */
+void SetIDFromSecondList(void);
+void SwitchImageList(void);
+void ClearExtraData(void);
+int RemoveHardStrokeFromTargets(int max_width);
+int ApplyMarkedLikenessToSelected(void);
+
+extern bool g_show_new_img_confirm;
+extern bool g_pending_quit;
+
+
+
+
+
 
 
 
