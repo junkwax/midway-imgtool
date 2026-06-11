@@ -2774,29 +2774,25 @@ void DrawRightPanelPaletteEditor(float panel_h)
             }
             ImGui::EndListBox();
         }
-        ImGui::PushID("palette_controls");
+        ImGui::PushID("palette_controls");        /* Row 1: Mark utilities */
         if (ImGui::SmallButton("Mk All"))    { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags|=1; p=(PAL*)p->nxt_p;} }
         ImGui::SameLine();
         if (ImGui::SmallButton("Clr All"))   { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags&=~1;p=(PAL*)p->nxt_p;} }
         ImGui::SameLine();
         if (ImGui::SmallButton("Invert"))    { PAL *p=(PAL*)g_doc->pal_p; while(p){p->flags^=1; p=(PAL*)p->nxt_p;} }
-        ImGui::SameLine();
+
+        /* Row 2: Select / Create / Delete */
         if (ImGui::SmallButton("Mk"))        { PAL *p=get_pal(g_doc->plselected); if(p) p->flags^=1; }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark / unmark selected palette");
         ImGui::SameLine();
         if (ImGui::SmallButton("Add")) AddNewPalette();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank 256-color palette");
-
-        if (ImGui::SmallButton("Merge"))     MergeMarkedPalettes();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Merge marked palettes into selected palette");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Prev"))      OpenPaletteMergePreview();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preview marked-palette merge before applying it");
         ImGui::SameLine();
         if (ImGui::SmallButton("Dup"))       DuplicatePalette();
         ImGui::SameLine();
         if (ImGui::SmallButton("Del"))       DeletePalette();
-        ImGui::SameLine();
+
+        /* Row 3: Clipboard & Export */
         if (ImGui::SmallButton("Copy"))      CopyPaletteToClipboard();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy selected palette to cross-file clipboard");
         ImGui::SameLine();
@@ -2806,7 +2802,17 @@ void DrawRightPanelPaletteEditor(float panel_h)
             ImGui::SetTooltip("Paste clipboard palette as new (%s, %d colors)",
                               g_pal_clipboard.n_s, (int)g_pal_clipboard.numc);
         if (!g_pal_clipboard.valid) ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Export")) OpenFileDialog(FileDialogMode::ExportPalette);
 
+        /* Row 4: Merging */
+        if (ImGui::SmallButton("Merge"))     MergeMarkedPalettes();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Merge marked palettes into selected palette");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Prev"))      OpenPaletteMergePreview();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preview marked-palette merge before applying it");
+
+        /* Row 5: Cleaning */
         if (ImGui::SmallButton("Clean")) CleanupSelectedPalette();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pack used colors into visible ramps and remap images using this palette");
         ImGui::SameLine();
@@ -2815,7 +2821,8 @@ void DrawRightPanelPaletteEditor(float panel_h)
         ImGui::SameLine();
         if (ImGui::SmallButton("Dups")) MergeDuplicatePalettes();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Merge duplicate palettes into the first matching palette");
-        ImGui::SameLine();
+
+        /* Row 6: Inheritance & Reduction */
         if (ImGui::SmallButton("Inh")) InheritSelectedPaletteFromMarked();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Inherit colors from marked source palette into selected target");
         ImGui::SameLine();
@@ -2824,8 +2831,6 @@ void DrawRightPanelPaletteEditor(float panel_h)
         ImGui::SameLine();
         if (ImGui::SmallButton("#0>")) CopyPaletteZeroToOpaqueSlot();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy transparent color #0 to the first safe opaque slot");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Export")) OpenFileDialog(FileDialogMode::ExportPalette);
         ImGui::PopID();
     }
 

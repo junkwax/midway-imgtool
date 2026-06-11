@@ -1226,6 +1226,8 @@ void DrawMainLayout(void)
             /* Mark and edit buttons below list. Keep them in short rows so
                the fixed-width side panel never clips the rightmost actions. */
             int n_marked_imgs = CountMarkedImages();
+            
+            /* Row 1: Mark utilities */
             if (ImGui::SmallButton("Mk All"))   { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags|=1; p=(IMG*)p->nxt_p;} }
             ImGui::SameLine();
             if (ImGui::SmallButton("Clr All"))  { IMG *p=(IMG*)g_doc->img_p; while(p){p->flags&=~1; p=(IMG*)p->nxt_p;} }
@@ -1235,15 +1237,13 @@ void DrawMainLayout(void)
             if (ImGui::SmallButton("Mk Sel##img")) { IMG *img = get_img(g_doc->ilselected); if (img) img->flags ^= 1; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mark / unmark selected sprite");
 
+            /* Row 2: Basic operations */
             if (ImGui::SmallButton("Add##img")) { g_show_new_blank_dialog = true; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank image (W/H prompt)");
             ImGui::SameLine();
             if (g_doc->ilselected < 0) ImGui::BeginDisabled();
             if (ImGui::SmallButton("Dup##img")) DuplicateImage();
             if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate selected sprite (Ctrl+J)");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Resize##img")) OpenResizeSpriteDialog();
-            if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Resize selected sprite");
             ImGui::SameLine();
             if (ImGui::SmallButton("Trim##img")) {
                 doc_undo_push();
@@ -1262,6 +1262,7 @@ void DrawMainLayout(void)
                 ImGui::SetTooltip("Delete selected sprite (Del)");
             if (g_doc->ilselected < 0) ImGui::EndDisabled();
 
+            /* Row 3: Clipboard operations */
             if (g_doc->ilselected < 0) ImGui::BeginDisabled();
             if (ImGui::SmallButton("Copy+##img")) CopySelectionToNewImage();
             if (g_doc->ilselected >= 0 && ImGui::IsItemHovered())
@@ -1277,12 +1278,21 @@ void DrawMainLayout(void)
             if (g_clipboard.valid && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Paste clipboard as a new sprite (Ctrl+Shift+V)");
             if (!g_clipboard.valid) ImGui::EndDisabled();
+
+            /* Row 4: Resizing */
+            if (g_doc->ilselected < 0) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Resize##img")) OpenResizeSpriteDialog();
+            if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Resize selected sprite");
+            if (g_doc->ilselected < 0) ImGui::EndDisabled();
             ImGui::SameLine();
             if (n_marked_imgs == 0) ImGui::BeginDisabled();
             if (ImGui::SmallButton("Bulk Size##img")) OpenBulkResizeDialog();
             if (n_marked_imgs > 0 && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Resize every marked sprite by percentage");
-            ImGui::SameLine();
+            if (n_marked_imgs == 0) ImGui::EndDisabled();
+
+            /* Row 5: Bulk operations */
+            if (n_marked_imgs == 0) ImGui::BeginDisabled();
             if (ImGui::SmallButton("Bulk Rename##img")) OpenRenameMarkedImages();
             if (n_marked_imgs > 0 && ImGui::IsItemHovered())
                 ImGui::SetTooltip("Rename marked sprites as Base1, Base2, Base3...");
@@ -1292,6 +1302,7 @@ void DrawMainLayout(void)
                 ImGui::SetTooltip("Delete marked sprites");
             if (n_marked_imgs == 0) ImGui::EndDisabled();
 
+            /* Row 6: Auto Split / Chop */
             bool can_break_subframes = (n_marked_imgs > 0 || g_doc->ilselected >= 0);
             if (!can_break_subframes) ImGui::BeginDisabled();
             if (ImGui::SmallButton("Break Sub##img")) OpenAutoChopDialog();
