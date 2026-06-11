@@ -587,3 +587,31 @@ static const int k_auto_split_min_side = 5;
 extern int g_mk2_char_idx;
 extern int g_mk2_move_idx;
 extern char g_mk2_path[1024];
+
+/* ---- Pixel History Undo/Redo ---- */
+struct PixelHist {
+    unsigned int   seq;         /* global undo ordering across stack types */
+    int            img_idx;     /* index into the IMG list at the time */
+    bool           full_state;  /* true for geometry-changing operations */
+    unsigned short w, h;        /* sentinels for stale-redo protection */
+    unsigned short anix, aniy;
+    unsigned short anix2, aniy2, aniz2;
+    unsigned short palnum;
+    unsigned short flags;
+    unsigned short opals;
+    unsigned int   size;        /* bytes in `data` */
+    unsigned char *data;        /* owned malloc()'d buffer */
+};
+extern const size_t kPixelHistMax;
+extern std::vector<PixelHist> g_pixel_hist;
+extern std::vector<PixelHist> g_pixel_redo;
+extern unsigned int g_undo_seq;
+void ClearDocumentRedoStack(void);
+void pixel_hist_free(PixelHist *e);
+bool pixel_hist_capture_img(int img_idx, PixelHist *out, bool full_state = false);
+bool pixel_hist_capture(PixelHist *out, bool full_state = false);
+bool pixel_hist_restore(const PixelHist *e);
+void pixel_hist_push_stroke(void);
+void ClearPixelHistoryStacks(void);
+bool push_pixel_history_entry(PixelHist *snap);
+void unlink_and_free_img(IMG *victim);

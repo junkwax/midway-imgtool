@@ -1,3 +1,4 @@
+extern int g_img_tex_idx;
 #include "mk2_fatality.h"
 /*************************************************************
  * platform/ui_state.cpp
@@ -184,3 +185,111 @@ std::string g_mk2_fatality_status;
 int g_mk2_char_idx = 0;
 int g_mk2_move_idx = 0;
 char g_mk2_path[1024] = "";
+
+
+/* ---- Pixel Undo/Redo State ---- */
+const size_t kPixelHistMax = 32;
+std::vector<PixelHist> g_pixel_hist;
+std::vector<PixelHist> g_pixel_redo;
+unsigned int g_undo_seq = 0;
+
+void pixel_hist_free(PixelHist *e) {
+    if (e->data) free(e->data);
+    e->data = NULL;
+}
+
+bool pixel_hist_capture_img(int img_idx, PixelHist *out, bool full_state) {
+    IMG *img = (img_idx >= 0) ? get_img(img_idx) : NULL;
+    if (!img || !img->data_p) return false;
+    unsigned short stride = (img->w + 3) & ~3;
+    unsigned int sz = (unsigned int)stride * img->h;
+    unsigned char *buf = (unsigned char *)malloc(sz);
+    if (!buf) return false;
+    memcpy(buf, img->data_p, sz);
+    out->img_idx = img_idx;
+    out->full_state = full_state;
+    out->w = img->w; out->h = img->h;
+    out->anix = img->anix; out->aniy = img->aniy;
+    out->anix2 = img->anix2; out->aniy2 = img->aniy2; out->aniz2 = img->aniz2;
+    out->palnum = img->palnum;
+    out->flags = img->flags;
+    out->opals = img->opals;
+    out->size = sz;
+    out->data = buf;
+    return true;
+}
+
+bool pixel_hist_capture(PixelHist *out, bool full_state) {
+    return pixel_hist_capture_img(g_doc->ilselected, out, full_state);
+}
+
+
+bool pixel_hist_restore(const PixelHist *e) {
+    if (!e || !e->data || e->size == 0) return false;
+    IMG *img = get_img(e->img_idx);
+    if (!img) return false;
+    if (e->full_state) {
+        unsigned char *buf = (unsigned char *)malloc(e->size);
+        if (!buf) return false;
+        memcpy(buf, e->data, e->size);
+        free(img->data_p);
+        img->data_p = buf;
+        img->w = e->w; img->h = e->h;
+        img->anix = e->anix; img->aniy = e->aniy;
+        img->anix2 = e->anix2; img->aniy2 = e->aniy2; img->aniz2 = e->aniz2;
+        img->palnum = e->palnum;
+        img->flags = e->flags;
+        img->opals = e->opals;
+        g_zoom_reset = true;
+    } else {
+        if (!img->data_p || img->w != e->w || img->h != e->h) return false;
+        unsigned int cur_sz = (unsigned int)((img->w + 3) & ~3) * img->h;
+        if (cur_sz != e->size) return false;
+        memcpy(img->data_p, e->data, e->size);
+    }
+    g_doc->ilselected = e->img_idx;
+    g_img_tex_idx = -2;
+    return true;
+}
+
+void pixel_hist_push_stroke(void) {
+    PixelHist e = {};
+    if (!pixel_hist_capture(&e)) return;
+    e.seq = ++g_undo_seq;
+    if (g_pixel_hist.size() >= kPixelHistMax) {
+        pixel_hist_free(&g_pixel_hist.front());
+        g_pixel_hist.erase(g_pixel_hist.begin());
+    }
+    g_pixel_hist.push_back(e);
+    for (auto &r : g_pixel_redo) pixel_hist_free(&r);
+    g_pixel_redo.clear();
+    ClearDocumentRedoStack();
+}
+
+
+void ClearPixelHistoryStacks(void)
+{
+    for (auto &e : g_pixel_hist) pixel_hist_free(&e);
+    for (auto &e : g_pixel_redo) pixel_hist_free(&e);
+    g_pixel_hist.clear();
+    g_pixel_redo.clear();
+}
+
+
+bool push_pixel_history_entry(PixelHist *snap)
+{
+    if (!snap || !snap->data) return false;
+    if (snap->seq == 0) snap->seq = ++g_undo_seq;
+    if (g_pixel_hist.size() >= kPixelHistMax) {
+        pixel_hist_free(&g_pixel_hist.front());
+        g_pixel_hist.erase(g_pixel_hist.begin());
+    }
+    g_pixel_hist.push_back(*snap);
+    snap->data = NULL;
+    for (auto &redo : g_pixel_redo) pixel_hist_free(&redo);
+    g_pixel_redo.clear();
+    ClearDocumentRedoStack();
+    return true;
+}
+
+

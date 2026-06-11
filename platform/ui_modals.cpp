@@ -4920,3 +4920,403 @@ void DrawTransientToast(float dt)
     }
     ImGui::End();
 }
+
+
+/* ---- Extracted g_help_text ---- */
+const char *g_help_text =
+    R"IMA(IMAGE TOOL HELP
+================================================================================
+
+QUICKSTART
+----------
+What is an IMG file?  An IMG file is a container of multiple sprites (images)
+plus one or more palettes that colorize them.  A single IMG can hold hundreds
+of frames -- e.g. NINJAS10.IMG probably holds every animation frame for a
+ninja character.  Think of imgtool as a sprite-sheet editor.
+
+Launch: Double-click imgtool.exe.  You'll see a mostly-black window waiting
+for you to load something.
+
+Step 1 -- Open a file:  Ctrl+O opens the file browser.
+  Up/Down - scroll through files
+  Enter   - open directory or load the selected file
+  Backspace - go up one directory
+  Esc     - cancel
+
+Step 2 -- Read the screen:
+  +----------------------------------+-------------------+
+  |         MAIN IMAGE VIEW          |                   |
+  |     current sprite drawn here    |   PROPERTIES      |
+  |                                  |   (anim points,   |
+  |                                  |    hitbox sliders)|
+  +-----------------+----------------+-------------------+
+  |  PALETTE LIST   |        IMAGE LIST                  |
+  |  (pal names)    |   (all sprites in this IMG)        |
+  +-----------------+------------------------------------+
+
+  - Main view (center) -- the currently-selected sprite
+  - Image list (right) -- every sprite in the file. "*" = marked
+  - Palette list (top-right panel) -- palettes in this IMG
+  - Bottom palette bar -- 256 color swatches for current palette
+
+Step 3 -- Browse: Up/Down moves one sprite. PgUp/PgDn jumps a page.
+
+Step 4 -- Mark sprites: Space toggles mark. M marks all, m clears all.
+  Marking is how you select sprites for batch operations.
+
+Step 5 -- Zoom: toolbar Z+/Z-, Ctrl+= / Ctrl+-, or Ctrl+mouse wheel zooms.
+  Ctrl+0 fits the sprite. Mouse wheel scrolls vertically. Middle-mouse drag
+  pans. Space + left drag also pans (Photoshop hand-tool style).
+
+Step 6 -- Palettes: click a palette in the Palette list to set it on the
+  active sprite. [ sets palette for marked sprites, ] for the current one
+  (when no paint tool is active - Pencil reassigns [ and ] to brush size).
+
+Step 7 -- Two IMGs at once: Tab swaps between list 1 and list 2. Open a
+  second IMG after pressing Tab, then swap back with Tab.
+
+Step 8 -- Save: Ctrl+S saves. Pre-2.x IMGs are auto-converted on load.
+
+
+================================================================================
+KEYBOARD REFERENCE
+------------------
+
+File:
+  Ctrl+O               Open IMG
+  Ctrl+S               Save IMG
+  Alt+L  / Alt+S       Load / Save LBM
+  Ctrl+L               Load TGA
+  Ctrl+B               Build TGA from marked images
+  Esc                  Quit (prompts on unsaved changes)
+
+Edit:
+  Ctrl+Z               Undo (paint stroke, anipoint, hitbox, palette ops)
+  Ctrl+Y               Redo
+  Ctrl+C / Ctrl+X / Ctrl+V   Copy / Cut / Paste
+  Ctrl+Shift+X         Cut selection to a new sprite
+  Ctrl+Shift+V         Paste clipboard as a new sprite
+  Ctrl+A               Select all
+  Ctrl+D               Deselect
+  Ctrl+Shift+I         Invert selection
+  Ctrl+J               Duplicate image (or duplicate floating paste)
+  Ctrl+E               Merge Down: commit floating paste in place
+  Ctrl+T               Free Transform floating paste (scale / rotate)
+  H / V                Flip floating paste horizontally / vertically
+  L                    Drop floating paste to a non-destructive sprite layer
+
+Image list:
+  Space                Mark / Unmark current image
+  Shift+M              Set all marks (typed as "M")
+  M                    Clear all marks (typed as "m")
+  Del                  Delete image when image list is active
+  Shift+Del            Delete image from anywhere
+  Ctrl+R               Rename current image
+  Ctrl+P               Add / Remove point table on current image
+  Alt+PgUp / PgDn      Move current image up / down in the list
+  Tab                  Swap image lists (lists 1 and 2)
+  ;                    Least-squares size reduce on marked
+
+Tools (toolbar shortcuts):
+  P                    Pencil   - paint at current color
+  G                    Paint Bucket - fill contiguous area
+  V                    Variant Paint - target-palette-only color over opaque pixels
+  R                    Marquee  - rectangular selection
+  W                    Magic Wand (Ctrl-click adds)
+  L                    Lasso
+  I                    Eyedropper - pick color from canvas
+  (no shortcut)        Smart Eraser, Clone Stamp, Smart Remap (toolbar buttons)
+
+Brush-specific (only fire while Pencil or Variant Paint is active):
+  [ / ]                Shrink / grow brush radius (1..16)
+
+Palette (only fire when no paint tool is active):
+  [                    Set palette for marked images
+  ]                    Set palette for current image
+  Shift+8 (`*`)        Merge marked palettes
+  Shift+R              Rename selected palette
+  Del                  Delete selected palette when palette list is active
+
+Timeline / Anim:
+  K                    Toggle timeline play / stop
+  Left / Right         Step prev / next animation frame
+  Ctrl+Left / Right    Move current timeline frame earlier / later
+  Hold                 Set extra base ticks before the current frame advances
+  Ctrl-click frames    Pair two frames; Play/Left/Right advances both
+  Drag paired sprite   Move sprite by editing its anipoint; lock Back/Front to protect it
+  Auto Anipts          With a paired frame locked, align the sequence by sprite sizes
+  World Marked         Play marked animations from up to four IMG tabs together
+  World Sequence       On-canvas Pause/Refresh plus per-frame delay thumbnails
+  Dummy Body           Adds stock *DECAP1-7 body fall as an editable sync lane
+  World Left / Right   Pause and scrub all marked-tab sequences together
+
+View / Help:
+  Ctrl+= / Ctrl+-      Zoom in / out
+  Ctrl+0               Fit sprite to canvas
+  H                    Show this help
+  F9                   Debug info popup
+
+Mouse on canvas:
+  Mouse wheel          Scroll vertically
+  Ctrl + mouse wheel   Zoom in / out from canvas center
+  Middle drag          Pan
+  Space + left drag    Pan (Photoshop hand-tool style)
+  Right-click          Eyedrop (any tool mode)
+  Blank left-drag      Starts marquee selection from transparent pixels
+  Shift + left-click   Flood fill (when no select tool active)
+
+
+================================================================================
+MK2 STRIKE-TABLE EDITOR
+-----------------------
+Tools - MK2 Hitboxes (MKSTK.ASM)... opens an editor for the strike-table
+source file used by the MK2 source tree. Imgtool parses MKSTK.ASM directly
+and writes back in place, preserving comments, indentation, and symbolic
+literals (e.g. sf_squeeze).
+
+Workflow:
+  Browse... - native file picker, remembers last directory
+  Load      - parse the .asm into memory
+  Save      - write the in-memory edits back to disk
+  Reload    - re-read from disk, dropping unsaved edits
+  Undo / Redo (and Ctrl+Z / Ctrl+Shift+Z when the panel has focus)
+
+3-pane navigator:
+  Left  - character codes (jc, lk, hh, nj, etc. - the two-letter labels
+          MKSTK.ASM itself uses). The panel auto-jumps to the matching
+          character when you open a sprite IMG with a recognized prefix
+          (CAGE -> jc, KANG -> lk, HATHED -> hh, NINJAS -> nj, etc.).
+  Mid   - moves for the selected character. Filter box at the top.
+  Right - fields for the selected move: x/y/w/h, strike_routine (raw
+          token), damage split into hit/block bytes, score (32-bit),
+          sound (raw token).
+
+Canvas overlay:
+  The selected move's collision box draws on the active sprite as a
+  magenta rectangle with drag-to-resize corner handles. The IMG-embedded
+  hitbox overlay auto-hides while an MK2 move is selected so the two
+  systems don't pile on top of each other.
+
+
+================================================================================
+FILE FORMATS
+------------
+
+IMG (Image Library) -- Primary format. Binary, little-endian, packed structs.
+  LIB_HDR (28 bytes): g_doc->imgcnt, g_doc->palcnt, version (0x634+)
+  IMAGE records (50 bytes each): name[16], flags, anix/y, w, h, palnum
+  PALETTE records (26 bytes each): name[10], flags, bitspix, numc
+  BLOB: raw pixel data (stride = (w+3)&~3) + 15-bit packed RGB palettes
+
+TGA (TrueVision Targa) -- 8-bit color-mapped, bottom-up by default.
+  Loads as new image+palette. Saves current image with its palette.
+
+LBM (IFF/ILBM) -- Chunk-based format. CMAP (palette) + BODY (bitmap).
+  Supports RLE-compressed body chunks.
+
+PNG -- Import/Export via stb_image. Auto-quantizes colors to nearest
+  15-bit palette on import. Exports RGBA with transparency for color 0.
+
+Pre-2.x IMG files (version < 0x500) are auto-converted on open.
+Max sprite size: 640x400. Max 2000 images/palettes per file.
+
+
+================================================================================
+DMA2 HARDWARE REFERENCE
+-----------------------
+The Williams DMA #2 (January 1992, Rev 1.5) handles pixel transfers between
+image memory and the bitmap. This is the hardware that MK/NBA-era games used
+to blit sprites to screen.  The following is the original document text:
+
+)IMA"
+R"dma2(
+		THE BRAND SPANKING NEW DMA (#2)
+
+			KEEP ENTERPRISES, INC.
+
+			JANUARY 1, 1992
+
+			DOCUMENT REV. 1.5
+
+
+	DMA # 2 - GENERAL INFORMATION
+
+	- THE NEW DMA WILL INCORPORATE BACKWARD COMPATIBILITY TO THE OLD DMA
+	IN BOTH PINOUT AND FUNCTIONALITY.
+
+	- THE NEW FEATURES IN ADDITION TO THE OLD ARE AS FOLLOWS:
+
+		1) VARIABLE PIXEL SIZE PROCESSING.  THE NEW DMA CAN PROCESS
+		   1 TO 8 BIT PIXELS THAT ARE STORED IN IMAGE MEMORY IN A
+		   SERIAL FASHION.
+
+		   EXAMPLE:  5 BIT PIXELS STORED INTO 8 BIT EPROM
+		   +---+---+---+---+---+---+---+---+
+		   |P1 |P1 |P1 |P1 |P1 |P2 |P2 |P2 |
+		   +---+---+---+---+---+---+---+---+
+		   |P2 |P2 |P3 |P3 |P3 |P3 |P3 |P4 |
+		   +---+---+---+---+---+---+---+---+
+		   |P4 |P4 |P4 |P4 |P5 |P5 |P5 |P5 |
+		   +---+---+---+---+---+---+---+---+
+		   |P5 |P6 |P6 |P6 |P6 |P6 |P7 |P7 |
+		   +---+---+---+---+---+---+---+---+
+
+		2) THE NEW DMA CAN BE HALTED IN THE MIDDLE OF A TRANSFER
+		   AND THEN BE RESTARTED TO RESUME THE TRANSFER.  THIS IS
+		   ACCOMPLISHED BY WRITING A ZERO TO THE DMA GO BIT (BIT 15)
+		   IN THE CONTROL REGISTER.  IN THE OLD DMA, THIS WOULD KILL
+		   THE TRANSFER SO THAT IT COULD NOT BE RESTARTED.  TO KILL
+		   A TRANSFER IN THE NEW DMA, WRITE A ZERO TO THE DMA GO BIT 2
+		   TIMES IN A ROW.  TO RESTART A TRANSFER AFTER HALTING,
+		   WRITE A ONE TO THE DMA GO BIT IN THE CONTROL REGISTER.
+
+		3) IN ADDITION TO THE CLIPPING ACHIEVED BY MANIPULATING THE
+		   OFFSET REGISTER, IN THE NEW DMA, A METHOD OF CLIPPING
+		   USING REGISTERED CLIP VALUES IS AVAILABLE. THE HOST CAN
+		   SPECIFY CLIP AMOUNTS TO THE DMA AND THE MATH NEEDED TO
+		   IMPLEMENT A TRANSFER IS DONE INTERNAL TO THE DMA.
+
+		4) THE NEW DMA CAN DO A TRANSFER FROM THE IMAGE MEMORY TO THE
+		   BIT MAP WITH A SCALING EFFECT, I.E. THE IMAGE CAN BE
+		   SHRUNK OR ENLARGED.
+
+		5) THE NEW DMA IMPLEMENTS A COMPRESSION MODE IN WHICH LEADING
+		   AND TRAILING ZERO DATA PIXELS CAN BE ENCODED IN A RUN LENGTH
+		   FASHION TO SAVE ON IMAGE MEMORY.
+
+		6) OFF SCREEN CLIPPING CAN BE AUTOMATIC.  THERE ARE FOUR
+		   REGISTERS THAT SPECIFY THE WINDOW TO WHICH THE DMA CAN
+		   TRANSFER DATA.
+
+		7) NOTE THAT THE CONTROL REGISTER AND THE OFFSET REGISTER
+		   HAVE BEEN SWAPPED SO THAT THE MOVE MULTIPLE INSTRUCTION
+		   CAN BE USED TO DOWNLOAD THE REGISTERS AND SET DMA GO
+		   EFFICIENTLY.
+
+	DMA # 2 - INTERNAL REGISTERS R5-R0
+
+	    REGISTER # 7 - SOURCE VERTICAL SIZE REGISTER
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+	    | 0 | 0 | 0 | 0 | 0 | 0 |           VERTICAL SIZE              |
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+	    REGISTER # 6 - SOURCE HORIZONTAL SIZE REGISTER
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+	    | 0 | 0 | 0 | 0 | 0 | 0 |          HORIZONTAL SIZE             |
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+	    REGISTER # 5 - DESTINATION ADDRESS - Y
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+	    | 0 | 0 | 0 | 0 | 0 | 0 | 0 |      DESTINATION Y COORDINATE     |
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+	    REGISTER # 4 - DESTINATION ADDRESS - X
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+	    | 0 | 0 | 0 | 0 | 0 | 0 | 0 |      DESTINATION X COORDINATE     |
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+	    REGISTER # 3 - SOURCE ADDRESS - HIGH ORDER
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+	    |               SOURCE ADDRESS UPPER 16 BITS                   |
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+	    REGISTER # 2 - SOURCE ADDRESS - LOW ORDER
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+	    |               SOURCE ADDRESS LOWER 16 BITS                   |
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+	    REGISTER # 1 - CONTROL REGISTER   ** SEE NOTE 1 BELOW
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+	    |DGO|  PIX SIZE |TM1|TM0|LM1|LM0|CMP|CLP|VFL|HFL|   PIXEL OPS   |
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+	    REGISTER # 0 - OFFSET REGISTER / RCLIP-LCLIP VALUES
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+	    |            OFFSET VALUE FOR OLD STYLE CLIPPING               |
+	    |   LEFT CLIP PIXELS VALUE     |    RIGHT CLIP PIXELS VALUE    |
+	    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+	    ** NOTE 1:
+	    DGO      - BIT 15     - DMA GO / DMA HALT
+	    PIX      - BITS 14-12 - PIXEL SIZE (0 = 8 BITS)
+	    TM1      - BIT 11     - DMA COMPRESS TRAIL PIX MULT BIT 1
+	    TM2      - BIT 10     - DMA COMPRESS TRAIL PIX MULT BIT 0
+	    LM1      - BIT 9      - DMA COMPRESS LEAD  PIX MULT BIT 1
+	    LM0      - BIT 8      - DMA COMPRESS LEAD  PIX MULT BIT 0
+	    CMP      - BIT 7      - DMA COMPRESS MODE
+	    CLP      - BIT 6      - DMA CLIP ON = 1 (USING U,D,L,R METHOD)
+	    VFL      - BIT 5      - VERTICAL FLIP (FLIP ABOUT X AXIS)
+	    HFL      - BIT 4      - HORIZONTAL FLIP (FLIP ABOUT Y AXIS)
+	    OPS      - BITS 3-0   - PIXEL CONSTANT/SUBSTITUTION OPS
+
+	    ** NOTE 2: IN COMPRESSION MODE, SCALING IS INHIBITED AND
+	               CLIPPING IS INHIBITED.
+
+
+	DMA # 2 - CLIPPING AN IMAGE
+
+	OVERVIEW: AN IMAGE CAN BE TRANSFERRED TO THE BIT MAP IN ITS
+	ENTIRETY OR A PORTION CAN BE "CLIPPED" BY SPECIFYING LEFT AND
+	RIGHT CLIP AMOUNTS IN REGISTER 0, WITH BIT 6 (CLP) SET.
+
+	IMPLEMENTATION:
+	        - THE OFFSET METHOD (OLD STYLE): REGISTER 0 UPPER BYTE =
+	          LEFT CLIP, LOWER BYTE = RIGHT CLIP.
+	        - THE REGISTER CLIP METHOD (NEW FEATURE): SET CLP BIT TO 1,
+	          USE REGISTERS 12 AND 13 FOR WINDOW BORDERS.
+
+
+	DMA # 2 - TRANSFERRING A SCALED IMAGE
+
+	OVERVIEW: AN IMAGE CAN BE SCALED BY TRAVERSING EACH LINE WITH A
+	PREDETERMINED SAMPLE RATE.  RATIO IS 1:(INT + FRAC/256).
+	REGISTER 11 = Y SCALE, REGISTER 10 = X SCALE.
+	SCALE FACTORS: UPPER BYTE = INTEGER, LOWER BYTE = FRACTION.
+
+	MAXIMUM SCALE FACTOR FOR SHRINK IN X DIRECTION:
+	#BITS/PIXEL    INT  FRACTION
+	-----------    ---- --------
+	     1          1F    FF
+	     2          10    00
+	     3          0A    AA
+	     4          08    00
+	     5          06    66
+	     6          05    55
+	     7          04    92
+	     8          04    00
+
+
+	DMA # 2 - COMPRESSION OF LEADING AND TRAILING ZEROS
+
+	TO SAVE IMAGE SPACE, LEADING AND TRAILING ZERO PIXELS ARE RUN-
+	LENGTH ENCODED. THE FIRST BYTE OF EACH COMPRESSED LINE CONTAINS:
+	UPPER NIBBLE = TRAILING ZERO COUNT, LOWER NIBBLE = LEADING ZERO
+	COUNT. TMx/LMx BITS IN CONTROL REGISTER MULTIPLY THESE VALUES BY
+	1, 2, 4, OR 8.
+
+	IN COMPRESSION MODE, THE DMA DECODES THIS ON THE FLY IF:
+	  CMP (BIT 7) = 1, TMx, LMx BITS = 0.
+
+
+	DMA # 2 - OFF SCREEN CLIPPING (WINDOWING)
+
+	FOUR REGISTERS SPECIFY WINDOW BOUNDARIES (0-511).  SET CONFIG
+	REGISTER BIT 5 = 0 FOR LEFT/RIGHT, = 1 FOR UPPER/LOWER.
+	REGISTERS 12/13 HOLD LEFT/TOP AND RIGHT/BOTTOM LIMITS.
+
+
+	DMA # 2 - LIMITATIONS
+
+	SCALING: THERE ARE SIZE LIMITS. SEE TABLE ABOVE FOR SHRINK/GROW
+	MAX/MIN IN X DIRECTION. 1-BIT PIXELS CAN SHRINK TO 1F.FF (1:31.996).
+	COMPRESSION: CLIPPING AND SCALING ARE DISABLED IN COMPRESS MODE.
+)dma2"
+R"IMA(
+================================================================================
+ABOUT
+-----
+midway-imgtool -- Editor for Midway arcade IMG container files (MK2/MK3,
+NBA Jam, NBA Hangtime, etc.).  Originally a 1992 DOS tool by Shawn Liptak
+(Williams Electronics), now a pure C/C++ + SDL2 + Dear ImGui port.
+SDL-main branch -- 64-bit build.  github.com/junkwax/midway-imgtool
+)IMA";

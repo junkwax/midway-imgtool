@@ -10,6 +10,8 @@
 #include "mk2_hitbox.h"
 #include "load2_verify.h"
 #include "ui_canvas.h"
+#include "palette_math.h"
+#include "ui_palette.h"
 
 #include "anipoint.h"       /* secondary_anipoint_in_use */
 #include "anipoint_edit.h"  /* set_primary_anipoint_with_sequence */
@@ -4504,3 +4506,2639 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
     ImGui::End();
     ImGui::PopStyleColor();
 }
+
+
+/* =========================================================
+   Extracted canvas/pixel operations from imgui_overlay.cpp
+   ========================================================= */
+
+// Extracted from imgui_overlay.cpp: FloodFill
+void FloodFill(IMG *img, int sx, int sy, unsigned char new_color)
+{
+    if (!img || !img->data_p || sx < 0 || sy < 0 || sx >= (int)img->w || sy >= (int)img->h)
+        return;
+    unsigned short stride = (unsigned short)((img->w + 3) & ~3);
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    unsigned char old_color = pixels[sy * stride + sx];
+    if (old_color == new_color) return;
+    struct Pt { int x, y; };
+    std::vector<Pt> stack; stack.reserve(4096);
+    stack.push_back({sx, sy});
+    while (!stack.empty()) {
+        Pt p = stack.back(); stack.pop_back();
+        if (p.x < 0 || p.x >= (int)img->w || p.y < 0 || p.y >= (int)img->h) continue;
+        unsigned char *px = &pixels[p.y * stride + p.x];
+        if (*px != old_color) continue;
+        *px = new_color;
+        stack.push_back({p.x + 1, p.y}); stack.push_back({p.x - 1, p.y});
+        stack.push_back({p.x, p.y + 1}); stack.push_back({p.x, p.y - 1});
+    }
+}
+
+
+// Extracted from imgui_overlay.cpp: PaintBucketFill
+int PaintBucketFill(IMG *img, int sx, int sy, unsigned char new_color, int tolerance, bool contiguous)
+{
+    if (!img || !img->data_p || sx < 0 || sy < 0 || sx >= (int)img->w || sy >= (int)img->h)
+        return 0;
+    if (tolerance < 0) tolerance = 0;
+    if (tolerance > 255) tolerance = 255;
+
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    unsigned char target = pixels[sy * stride + sx];
+    if (target == new_color) return 0;
+
+    auto in_range = [&](unsigned char v) {
+        int d = (int)v - (int)target;
+        if (d < 0) d = -d;
+        return d <= tolerance;
+    };
+
+    int changed = 0;
+    if (contiguous) {
+        struct Pt { int x, y; };
+        std::vector<Pt> stack;
+        std::vector<unsigned char> seen((size_t)w * h, 0);
+        stack.reserve(4096);
+        stack.push_back({sx, sy});
+        seen[sy * w + sx] = 1;
+
+        while (!stack.empty()) {
+            Pt p = stack.back();
+            stack.pop_back();
+            unsigned char *px = &pixels[p.y * stride + p.x];
+            if (!in_range(*px)) continue;
+            *px = new_color;
+            changed++;
+
+            const int dx[4] = {1, -1, 0, 0};
+            const int dy[4] = {0, 0, 1, -1};
+            for (int i = 0; i < 4; i++) {
+                int nx = p.x + dx[i], ny = p.y + dy[i];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                size_t off = (size_t)ny * w + nx;
+                if (seen[off]) continue;
+                seen[off] = 1;
+                if (in_range(pixels[ny * stride + nx]))
+                    stack.push_back({nx, ny});
+            }
+        }
+    } else {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                unsigned char *px = &pixels[y * stride + x];
+                if (!in_range(*px)) continue;
+                *px = new_color;
+                changed++;
+            }
+        }
+    }
+    return changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: SmartErase
+void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous, bool defringe)
+{
+    if (!img || !img->data_p || sx < 0 || sy < 0 ||
+        sx >= (int)img->w || sy >= (int)img->h) return;
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *pix = (unsigned char *)img->data_p;
+    int target = pix[sy * stride + sx];
+    if (target == 0) return; /* clicked on existing transparent */
+
+    auto in_range = [&](unsigned char v) {
+        int d = (int)v - target;
+        if (d < 0) d = -d;
+        return d <= tolerance;
+    };
+
+    /* Mark which pixels we'll erase, so defringe can scan against the
+       original neighborhood before zeroing. Multiply in size_t so the
+       computation can't overflow int for pathological sprite sizes. */
+    std::vector<unsigned char> kill((size_t)w * h, 0);
+
+    if (contiguous) {
+        struct Pt { int x, y; };
+        std::vector<Pt> stack; stack.reserve(4096);
+        stack.push_back({sx, sy});
+        kill[sy * w + sx] = 1;
+        while (!stack.empty()) {
+            Pt p = stack.back(); stack.pop_back();
+            const int dx[] = {1, -1, 0, 0};
+            const int dy[] = {0, 0, 1, -1};
+            for (int i = 0; i < 4; i++) {
+                int nx = p.x + dx[i], ny = p.y + dy[i];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                if (kill[ny * w + nx]) continue;
+                if (!in_range(pix[ny * stride + nx])) continue;
+                kill[ny * w + nx] = 1;
+                stack.push_back({nx, ny});
+            }
+        }
+    } else {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (in_range(pix[y * stride + x]))
+                    kill[y * w + x] = 1;
+            }
+        }
+    }
+
+    /* Optionally compute defringe replacements before applying the kill. */
+    std::vector<std::pair<int,unsigned char>> defringe_writes;
+    if (defringe) {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (kill[y * w + x]) continue;
+                unsigned char self = pix[y * stride + x];
+                if (self == 0) continue;
+                /* Edge test: any 8-neighbor will be killed. */
+                bool touches = false;
+                for (int dy = -1; dy <= 1 && !touches; dy++) {
+                    for (int dx = -1; dx <= 1 && !touches; dx++) {
+                        if (!dx && !dy) continue;
+                        int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                        if (kill[ny * w + nx]) touches = true;
+                    }
+                }
+                if (!touches) continue;
+                /* Average palette indices of safe (non-killed, non-zero,
+                   not-itself-the-chroma) neighbors. This is a coarse proxy
+                   for picking the nearest "skin/fabric" color in the
+                   indexed palette — gives a much cleaner edge than just
+                   leaving the blue-spill pixel alone. */
+                int sum = 0, n = 0;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (!dx && !dy) continue;
+                        int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                        if (kill[ny * w + nx]) continue;
+                        unsigned char nv = pix[ny * stride + nx];
+                        if (nv == 0) continue;
+                        if (in_range(nv)) continue;
+                        sum += nv; n++;
+                    }
+                }
+                if (n > 0) {
+                    defringe_writes.push_back({y * stride + x, (unsigned char)(sum / n)});
+                }
+            }
+        }
+    }
+
+    /* Apply the kill, then the defringe overrides. */
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (kill[y * w + x]) pix[y * stride + x] = 0;
+        }
+    }
+    for (auto &w_ : defringe_writes) pix[w_.first] = w_.second;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessBBox
+struct LikenessBBox {
+    int x1, y1, x2, y2;
+    int w, h;
+    float anchor_u, anchor_v;
+    bool anchor_ok;
+};
+
+
+// Extracted from imgui_overlay.cpp: LikenessSample
+struct LikenessSample {
+    float u, v;
+    int x, y;
+    unsigned char idx;
+    int r, g, b, luma;
+};
+
+
+// Extracted from imgui_overlay.cpp: LikenessColor
+struct LikenessColor {
+    unsigned char idx;
+    float r, g, b, luma;
+    bool found;
+};
+
+
+// Extracted from imgui_overlay.cpp: LikenessOpaqueBBox
+static bool LikenessOpaqueBBox(IMG *img, LikenessBBox *bbox)
+{
+    if (!img || !img->data_p || !bbox || img->w == 0 || img->h == 0)
+        return false;
+
+    int min_x = img->w, min_y = img->h, max_x = -1, max_y = -1;
+    int stride = (img->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            if (pix[y * stride + x] == 0) continue;
+            if (x < min_x) min_x = x;
+            if (x > max_x) max_x = x;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
+    }
+    if (max_x < min_x || max_y < min_y) return false;
+
+    bbox->x1 = min_x; bbox->y1 = min_y;
+    bbox->x2 = max_x; bbox->y2 = max_y;
+    bbox->w = max_x - min_x + 1;
+    bbox->h = max_y - min_y + 1;
+
+    float span_x = (bbox->w > 1) ? (float)(bbox->w - 1) : 1.0f;
+    float span_y = (bbox->h > 1) ? (float)(bbox->h - 1) : 1.0f;
+    bbox->anchor_u = ((float)(short)img->anix - (float)bbox->x1) / span_x;
+    bbox->anchor_v = ((float)(short)img->aniy - (float)bbox->y1) / span_y;
+    bbox->anchor_ok = bbox->anchor_u >= -0.25f && bbox->anchor_u <= 1.25f &&
+                      bbox->anchor_v >= -0.25f && bbox->anchor_v <= 1.25f;
+    return true;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessWordLuma8
+static int LikenessWordLuma8(unsigned short word)
+{
+    int r = (int)((word >> 10) & 0x1F) * 255 / 31;
+    int g = (int)((word >>  5) & 0x1F) * 255 / 31;
+    int b = (int)( word        & 0x1F) * 255 / 31;
+    return (r * 54 + g * 183 + b * 19) >> 8;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessWordRgb8
+static void LikenessWordRgb8(unsigned short word, int *r, int *g, int *b)
+{
+    if (r) *r = (int)((word >> 10) & 0x1F) * 255 / 31;
+    if (g) *g = (int)((word >>  5) & 0x1F) * 255 / 31;
+    if (b) *b = (int)( word        & 0x1F) * 255 / 31;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessBuildSamples
+static void LikenessBuildSamples(IMG *src, PAL *src_pal,
+                                 const LikenessBBox &bbox,
+                                 std::vector<LikenessSample> &samples,
+                                 bool used_slots[256],
+                                 int *mean_luma)
+{
+    samples.clear();
+    memset(used_slots, 0, sizeof(bool) * 256);
+    if (mean_luma) *mean_luma = 128;
+    if (!src || !src->data_p || !src_pal || !src_pal->data_p) return;
+
+    int stride = (src->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)src->data_p;
+    float span_x = (bbox.w > 1) ? (float)(bbox.w - 1) : 1.0f;
+    float span_y = (bbox.h > 1) ? (float)(bbox.h - 1) : 1.0f;
+    long long luma_sum = 0;
+
+    samples.reserve((size_t)bbox.w * bbox.h / 2);
+    for (int y = bbox.y1; y <= bbox.y2; y++) {
+        for (int x = bbox.x1; x <= bbox.x2; x++) {
+            unsigned char ci = pix[y * stride + x];
+            if (ci == 0) continue;
+            unsigned short word = pal_word_or_black(src_pal, ci);
+            int r, g, b;
+            LikenessWordRgb8(word, &r, &g, &b);
+            int luma = LikenessWordLuma8(word);
+            LikenessSample s = {};
+            s.u = ((float)x - (float)bbox.x1) / span_x;
+            s.v = ((float)y - (float)bbox.y1) / span_y;
+            s.x = x;
+            s.y = y;
+            s.idx = ci;
+            s.r = r; s.g = g; s.b = b; s.luma = luma;
+            samples.push_back(s);
+            used_slots[ci] = true;
+            luma_sum += luma;
+        }
+    }
+    if (mean_luma && !samples.empty())
+        *mean_luma = (int)(luma_sum / (long long)samples.size());
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessMaskScore
+static float LikenessMaskScore(IMG *target, const LikenessBBox &tb,
+                               const std::vector<LikenessSample> &samples,
+                               bool mirror)
+{
+    const int G = 32;
+    bool src_occ[G * G] = {};
+    for (const LikenessSample &s : samples) {
+        float u = mirror ? (1.0f - s.u) : s.u;
+        int bx = (int)(u * (G - 1) + 0.5f);
+        int by = (int)(s.v * (G - 1) + 0.5f);
+        if (bx < 0) bx = 0; if (bx >= G) bx = G - 1;
+        if (by < 0) by = 0; if (by >= G) by = G - 1;
+        src_occ[by * G + bx] = true;
+    }
+
+    int stride = (target->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)target->data_p;
+    float span_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float span_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    float score = 0.0f;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            if (pix[y * stride + x] == 0) continue;
+            int bx = (int)((((float)x - tb.x1) / span_x) * (G - 1) + 0.5f);
+            int by = (int)((((float)y - tb.y1) / span_y) * (G - 1) + 0.5f);
+            if (bx < 0) bx = 0; if (bx >= G) bx = G - 1;
+            if (by < 0) by = 0; if (by >= G) by = G - 1;
+            if (src_occ[by * G + bx]) {
+                score += 2.0f;
+            } else {
+                bool has_near_source = false;
+                for (int dy = -1; dy <= 1 && !has_near_source; dy++) {
+                    for (int dx = -1; dx <= 1 && !has_near_source; dx++) {
+                        int nx = bx + dx, ny = by + dy;
+                        if (nx < 0 || nx >= G || ny < 0 || ny >= G) continue;
+                        if (src_occ[ny * G + nx]) has_near_source = true;
+                    }
+                }
+                if (has_near_source) score += 0.75f;
+            }
+        }
+    }
+    return score;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessNearestUsedSlot
+static int LikenessNearestUsedSlot(PAL *pal, const bool used_slots[256],
+                                   int r, int g, int b)
+{
+    if (!pal || !pal->data_p) return 0;
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    unsigned short desired = rgb_to_word15((unsigned char)r,
+                                           (unsigned char)g,
+                                           (unsigned char)b);
+    int count = pal->numc;
+    if (count > 256) count = 256;
+    int best = 0;
+    int best_dist = 0x7FFFFFFF;
+    for (int i = 1; i < count; i++) {
+        if (!used_slots[i]) continue;
+        int dist = PaletteColorDistance5(desired, pal_word_or_black(pal, i));
+        if (dist < best_dist) {
+            best_dist = dist;
+            best = i;
+            if (dist == 0) break;
+        }
+    }
+    if (best > 0) return best;
+    return FindNearestPaletteSlot(pal, desired);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessSampleSourceColor
+static bool LikenessSampleSourceColor(const std::vector<LikenessSample> &samples,
+                                      const std::vector<std::vector<int>> &bins,
+                                      float u, float v,
+                                      LikenessColor *out)
+{
+    if (out) *out = {};
+    if (samples.empty() || !out) return false;
+    const int G = 32;
+    const float radii[] = { 0.055f, 0.095f, 0.16f, 0.27f };
+    for (float radius : radii) {
+        float r2 = radius * radius;
+        int bx0 = (int)((u - radius) * G);
+        int bx1 = (int)((u + radius) * G);
+        int by0 = (int)((v - radius) * G);
+        int by1 = (int)((v + radius) * G);
+        if (bx0 < 0) bx0 = 0; if (bx1 >= G) bx1 = G - 1;
+        if (by0 < 0) by0 = 0; if (by1 >= G) by1 = G - 1;
+
+        double wr = 0.0, wg = 0.0, wb = 0.0, wl = 0.0, wsum = 0.0;
+        const LikenessSample *nearest = NULL;
+        float nearest_d2 = 9999.0f;
+        for (int by = by0; by <= by1; by++) {
+            for (int bx = bx0; bx <= bx1; bx++) {
+                const std::vector<int> &bucket = bins[by * G + bx];
+                for (int si : bucket) {
+                    const LikenessSample &s = samples[si];
+                    float dx = (s.u - u) * 1.12f;
+                    float dy = s.v - v;
+                    float d2 = dx * dx + dy * dy;
+                    if (d2 > r2) continue;
+                    if (d2 < nearest_d2) {
+                        nearest_d2 = d2;
+                        nearest = &s;
+                    }
+                    double wt = 1.0 / (0.0009 + (double)d2);
+                    wr += (double)s.r * wt;
+                    wg += (double)s.g * wt;
+                    wb += (double)s.b * wt;
+                    wl += (double)s.luma * wt;
+                    wsum += wt;
+                }
+            }
+        }
+        if (wsum > 0.0) {
+            out->r = (float)(wr / wsum);
+            out->g = (float)(wg / wsum);
+            out->b = (float)(wb / wsum);
+            out->luma = (float)(wl / wsum);
+            if (nearest) {
+                out->r = out->r * 0.65f + nearest->r * 0.35f;
+                out->g = out->g * 0.65f + nearest->g * 0.35f;
+                out->b = out->b * 0.65f + nearest->b * 0.35f;
+                out->luma = out->luma * 0.65f + nearest->luma * 0.35f;
+                out->idx = nearest->idx;
+            }
+            out->found = true;
+            return true;
+        }
+    }
+
+    const LikenessSample *nearest = &samples[0];
+    float best_d2 = 9999.0f;
+    for (const LikenessSample &s : samples) {
+        float dx = (s.u - u) * 1.12f;
+        float dy = s.v - v;
+        float d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            nearest = &s;
+        }
+    }
+    out->r = (float)nearest->r;
+    out->g = (float)nearest->g;
+    out->b = (float)nearest->b;
+    out->luma = (float)nearest->luma;
+    out->idx = nearest->idx;
+    out->found = true;
+    return true;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessPartBox
+struct LikenessPartBox {
+    int x1, y1, x2, y2;
+    int count;
+    float cx, cy;
+    bool valid;
+};
+
+
+// Extracted from imgui_overlay.cpp: LikenessClampInt
+static int LikenessClampInt(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessAbsInt
+static int LikenessAbsInt(int v)
+{
+    return v < 0 ? -v : v;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessPaletteRgb
+static void LikenessPaletteRgb(PAL *pal, unsigned char ci,
+                               int *r, int *g, int *b, int *luma)
+{
+    unsigned short word = pal_word_or_black(pal, ci);
+    int rr, gg, bb;
+    LikenessWordRgb8(word, &rr, &gg, &bb);
+    if (r) *r = rr;
+    if (g) *g = gg;
+    if (b) *b = bb;
+    if (luma) *luma = LikenessWordLuma8(word);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsGoldPixel
+static bool LikenessIsGoldPixel(PAL *pal, unsigned char ci)
+{
+    if (!pal || ci == 0) return false;
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    return luma >= 48 && luma <= 212 &&
+           r >= 82 && g >= 50 &&
+           r > b + 34 && g > b + 16 &&
+           r >= g - 28;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsHeadPixel
+static bool LikenessIsHeadPixel(PAL *pal, unsigned char ci)
+{
+    if (!pal || ci == 0) return false;
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    int mn = r < g ? r : g; if (b < mn) mn = b;
+    int mx = r > g ? r : g; if (b > mx) mx = b;
+    int chroma = mx - mn;
+
+    bool pale_hair = luma >= 108 && chroma <= 88;
+    bool skin = luma >= 78 &&
+                r >= g - 18 && g >= b - 34 &&
+                r > b + 10 && chroma <= 132;
+    bool hot_gold = LikenessIsGoldPixel(pal, ci) && b < 72 && luma < 150;
+    return (pale_hair || skin) && !hot_gold;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessTransparentNeighborCount
+static int LikenessTransparentNeighborCount(const unsigned char *pix,
+                                            int w, int h, int stride,
+                                            int x, int y)
+{
+    int n = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h ||
+                pix[(size_t)ny * stride + nx] == 0)
+                n++;
+        }
+    }
+    return n;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessHasLocalContrast
+static bool LikenessHasLocalContrast(const unsigned char *pix,
+                                     int w, int h, int stride,
+                                     int x, int y, PAL *pal)
+{
+    if (!pix || !pal) return false;
+    unsigned char ci = pix[(size_t)y * stride + x];
+    if (ci == 0) return false;
+    unsigned short self = pal_word_or_black(pal, ci);
+    int self_luma = LikenessWordLuma8(self);
+    int max_dist = 0;
+    int max_luma_delta = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            unsigned char ni = pix[(size_t)ny * stride + nx];
+            if (ni == 0 || ni == ci) continue;
+            unsigned short nw = pal_word_or_black(pal, ni);
+            int dist = PaletteColorDistance5(self, nw);
+            int ld = self_luma - LikenessWordLuma8(nw);
+            if (ld < 0) ld = -ld;
+            if (dist > max_dist) max_dist = dist;
+            if (ld > max_luma_delta) max_luma_delta = ld;
+        }
+    }
+    return max_dist >= 86 || max_luma_delta >= 34;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessFindHeadPart
+static bool LikenessFindHeadPart(const unsigned char *pix,
+                                 int w, int h, int stride,
+                                 PAL *pal,
+                                 const LikenessBBox &bbox,
+                                 bool prefer_top,
+                                 LikenessPartBox *out)
+{
+    if (out) *out = {};
+    if (!pix || !pal || !out) return false;
+
+    std::vector<unsigned char> visited((size_t)stride * h, 0);
+    std::vector<int> queue;
+    float best_score = -1.0f;
+    float span_y = (bbox.h > 1) ? (float)(bbox.h - 1) : 1.0f;
+
+    for (int y = bbox.y1; y <= bbox.y2; y++) {
+        for (int x = bbox.x1; x <= bbox.x2; x++) {
+            size_t off = (size_t)y * stride + x;
+            if (visited[off] || !LikenessIsHeadPixel(pal, pix[off])) continue;
+
+            int min_x = x, min_y = y, max_x = x, max_y = y;
+            int count = 0;
+            long long sum_x = 0, sum_y = 0;
+            queue.clear();
+            queue.push_back(y * stride + x);
+            visited[off] = 1;
+
+            for (size_t qi = 0; qi < queue.size(); qi++) {
+                int qoff = queue[qi];
+                int cy = qoff / stride;
+                int cx = qoff - cy * stride;
+                count++;
+                sum_x += cx;
+                sum_y += cy;
+                if (cx < min_x) min_x = cx;
+                if (cy < min_y) min_y = cy;
+                if (cx > max_x) max_x = cx;
+                if (cy > max_y) max_y = cy;
+
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (dx == 0 && dy == 0) continue;
+                        int nx = cx + dx;
+                        int ny = cy + dy;
+                        if (nx < bbox.x1 || nx > bbox.x2 ||
+                            ny < bbox.y1 || ny > bbox.y2)
+                            continue;
+                        size_t noff = (size_t)ny * stride + nx;
+                        if (visited[noff] || !LikenessIsHeadPixel(pal, pix[noff]))
+                            continue;
+                        visited[noff] = 1;
+                        queue.push_back(ny * stride + nx);
+                    }
+                }
+            }
+
+            if (count < 3) continue;
+            int bw = max_x - min_x + 1;
+            int bh = max_y - min_y + 1;
+            float cx = (float)sum_x / (float)count;
+            float cy = (float)sum_y / (float)count;
+            float norm_y = (cy - (float)bbox.y1) / span_y;
+            float density = (float)count / (float)(bw * bh);
+            float score = (float)count * (1.0f + density * 0.8f);
+            if (prefer_top) score *= 1.0f + (1.0f - norm_y) * 1.15f;
+            if (bw > bbox.w * 7 / 10 || bh > bbox.h * 5 / 10) score *= 0.45f;
+            if (prefer_top && norm_y > 0.70f) score *= 0.25f;
+
+            if (score > best_score) {
+                best_score = score;
+                out->x1 = min_x; out->y1 = min_y;
+                out->x2 = max_x; out->y2 = max_y;
+                out->count = count;
+                out->cx = cx; out->cy = cy;
+                out->valid = true;
+            }
+        }
+    }
+    return out->valid;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessExpandPartBox
+static void LikenessExpandPartBox(LikenessPartBox *box,
+                                  int w, int h, int px, int py)
+{
+    if (!box || !box->valid) return;
+    box->x1 = LikenessClampInt(box->x1 - px, 0, w - 1);
+    box->x2 = LikenessClampInt(box->x2 + px, 0, w - 1);
+    box->y1 = LikenessClampInt(box->y1 - py, 0, h - 1);
+    box->y2 = LikenessClampInt(box->y2 + py, 0, h - 1);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessPointInPartBox
+static bool LikenessPointInPartBox(const LikenessPartBox &box, int x, int y)
+{
+    return box.valid &&
+           x >= box.x1 && x <= box.x2 &&
+           y >= box.y1 && y <= box.y2;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessNearestOpaqueInBox
+char LikenessNearestOpaqueInBox(const unsigned char *pix,
+                                                int w, int h, int stride,
+                                                const LikenessPartBox &box,
+                                                int x, int y)
+{
+    if (!pix || !box.valid) return 0;
+    x = LikenessClampInt(x, box.x1, box.x2);
+    y = LikenessClampInt(y, box.y1, box.y2);
+    unsigned char direct = pix[(size_t)y * stride + x];
+    if (direct != 0) return direct;
+
+    int max_radius = box.x2 - box.x1;
+    int bh = box.y2 - box.y1;
+    if (bh > max_radius) max_radius = bh;
+    if (max_radius > 4) max_radius = 4;
+    for (int r = 1; r <= max_radius; r++) {
+        unsigned char best = 0;
+        int best_d2 = 0x7FFFFFFF;
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                int sx = x + dx;
+                int sy = y + dy;
+                if (sx < box.x1 || sx > box.x2 ||
+                    sy < box.y1 || sy > box.y2 ||
+                    sx < 0 || sy < 0 || sx >= w || sy >= h)
+                    continue;
+                unsigned char ci = pix[(size_t)sy * stride + sx];
+                if (ci == 0) continue;
+                int d2 = dx * dx + dy * dy;
+                if (d2 < best_d2) {
+                    best_d2 = d2;
+                    best = ci;
+                }
+            }
+        }
+        if (best != 0) return best;
+    }
+    return 0;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessProjectPartBox
+static LikenessPartBox LikenessProjectPartBox(const LikenessPartBox &src_box,
+                                              const LikenessBBox &sb,
+                                              const LikenessBBox &tb,
+                                              bool mirror,
+                                              int target_w, int target_h)
+{
+    LikenessPartBox out = {};
+    if (!src_box.valid) return out;
+    float sxspan = (sb.w > 1) ? (float)(sb.w - 1) : 1.0f;
+    float syspan = (sb.h > 1) ? (float)(sb.h - 1) : 1.0f;
+    float txspan = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float tyspan = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+
+    float u1 = ((float)src_box.x1 - (float)sb.x1) / sxspan;
+    float u2 = ((float)src_box.x2 - (float)sb.x1) / sxspan;
+    if (mirror) {
+        float mu1 = 1.0f - u2;
+        float mu2 = 1.0f - u1;
+        u1 = mu1; u2 = mu2;
+    }
+    float v1 = ((float)src_box.y1 - (float)sb.y1) / syspan;
+    float v2 = ((float)src_box.y2 - (float)sb.y1) / syspan;
+
+    if (sb.anchor_ok && tb.anchor_ok) {
+        float src_anchor_u = mirror ? (1.0f - sb.anchor_u) : sb.anchor_u;
+        float du = 0.28f * (src_anchor_u - tb.anchor_u);
+        float dv = 0.24f * (sb.anchor_v - tb.anchor_v);
+        u1 -= du; u2 -= du;
+        v1 -= dv; v2 -= dv;
+    }
+
+    out.x1 = LikenessClampInt((int)(tb.x1 + u1 * txspan + 0.5f), 0, target_w - 1);
+    out.x2 = LikenessClampInt((int)(tb.x1 + u2 * txspan + 0.5f), 0, target_w - 1);
+    out.y1 = LikenessClampInt((int)(tb.y1 + v1 * tyspan + 0.5f), 0, target_h - 1);
+    out.y2 = LikenessClampInt((int)(tb.y1 + v2 * tyspan + 0.5f), 0, target_h - 1);
+    if (out.x1 > out.x2) { int t = out.x1; out.x1 = out.x2; out.x2 = t; }
+    if (out.y1 > out.y2) { int t = out.y1; out.y1 = out.y2; out.y2 = t; }
+    out.count = src_box.count;
+    out.cx = (out.x1 + out.x2) * 0.5f;
+    out.cy = (out.y1 + out.y2) * 0.5f;
+    out.valid = out.x2 >= out.x1 && out.y2 >= out.y1;
+    return out;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessProjectSourceToTarget
+static bool LikenessProjectSourceToTarget(float raw_u, float raw_v,
+                                          const LikenessBBox &sb,
+                                          const LikenessBBox &tb,
+                                          bool mirror,
+                                          float *out_u, float *out_v)
+{
+    float u = mirror ? (1.0f - raw_u) : raw_u;
+    float v = raw_v;
+    if (sb.anchor_ok && tb.anchor_ok) {
+        float src_anchor_u = mirror ? (1.0f - sb.anchor_u) : sb.anchor_u;
+        u -= 0.28f * (src_anchor_u - tb.anchor_u);
+        v -= 0.24f * (sb.anchor_v - tb.anchor_v);
+    }
+    if (u < -0.08f || u > 1.08f || v < -0.08f || v > 1.08f)
+        return false;
+    if (u < 0.0f) u = 0.0f; if (u > 1.0f) u = 1.0f;
+    if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
+    if (out_u) *out_u = u;
+    if (out_v) *out_v = v;
+    return true;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessMaskMismatch
+static int LikenessMaskMismatch(const unsigned char *src_pix,
+                                int sw, int sh, int ss, int sx, int sy,
+                                const unsigned char *dst_pix,
+                                int dw, int dh, int ds, int dx0, int dy0)
+{
+    int mismatch = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            bool so = false;
+            bool do_ = false;
+            int ax = sx + dx, ay = sy + dy;
+            int bx = dx0 + dx, by = dy0 + dy;
+            if (ax >= 0 && ay >= 0 && ax < sw && ay < sh)
+                so = src_pix[(size_t)ay * ss + ax] != 0;
+            if (bx >= 0 && by >= 0 && bx < dw && by < dh)
+                do_ = dst_pix[(size_t)by * ds + bx] != 0;
+            if (so != do_) mismatch++;
+        }
+    }
+    return mismatch;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessApplyHeadPatch
+static int LikenessApplyHeadPatch(const unsigned char *source_pix,
+                                  int sw, int sh, int ss,
+                                  const unsigned char *target_original,
+                                  int tw, int th, int ts,
+                                  unsigned char *target_pix,
+                                  PAL *source_pal, PAL *target_pal,
+                                  const LikenessBBox &sb,
+                                  const LikenessBBox &tb,
+                                  bool mirror,
+                                  std::vector<unsigned char> &patch_mask,
+                                  LikenessPartBox *source_head_out)
+{
+    LikenessPartBox source_head = {};
+    LikenessPartBox target_head = {};
+    if (!LikenessFindHeadPart(source_pix, sw, sh, ss, source_pal, sb,
+                              true, &source_head))
+        return 0;
+
+    if (!LikenessFindHeadPart(target_original, tw, th, ts, target_pal, tb,
+                              false, &target_head))
+        target_head = LikenessProjectPartBox(source_head, sb, tb, mirror, tw, th);
+
+    if (!target_head.valid) return 0;
+    if (source_head_out) *source_head_out = source_head;
+
+    LikenessExpandPartBox(&source_head, sw, sh, 1, 1);
+    LikenessExpandPartBox(&target_head, tw, th, 1, 1);
+
+    float source_span_x = (source_head.x2 > source_head.x1)
+        ? (float)(source_head.x2 - source_head.x1) : 1.0f;
+    float source_span_y = (source_head.y2 > source_head.y1)
+        ? (float)(source_head.y2 - source_head.y1) : 1.0f;
+    float target_span_x = (target_head.x2 > target_head.x1)
+        ? (float)(target_head.x2 - target_head.x1) : 1.0f;
+    float target_span_y = (target_head.y2 > target_head.y1)
+        ? (float)(target_head.y2 - target_head.y1) : 1.0f;
+
+    int changed = 0;
+    for (int y = target_head.y1; y <= target_head.y2; y++) {
+        for (int x = target_head.x1; x <= target_head.x2; x++) {
+            int off = y * ts + x;
+            if (target_original[(size_t)off] == 0) continue;
+
+            float rx = ((float)x - (float)target_head.x1) / target_span_x;
+            float ry = ((float)y - (float)target_head.y1) / target_span_y;
+            float sx_f = mirror
+                ? (float)source_head.x2 - rx * source_span_x
+                : (float)source_head.x1 + rx * source_span_x;
+            float sy_f = (float)source_head.y1 + ry * source_span_y;
+            int sx = LikenessClampInt((int)(sx_f + 0.5f), 0, sw - 1);
+            int sy = LikenessClampInt((int)(sy_f + 0.5f), 0, sh - 1);
+            unsigned char ci = LikenessNearestOpaqueInBox(source_pix, sw, sh, ss,
+                                                          source_head, sx, sy);
+            if (ci == 0) continue;
+            if (target_pix[off] != ci) {
+                target_pix[off] = ci;
+                changed++;
+            }
+            patch_mask[(size_t)off] = 1;
+        }
+    }
+    return changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessApplyDetailPatches
+static int LikenessApplyDetailPatches(const unsigned char *source_pix,
+                                      int sw, int sh, int ss,
+                                      const unsigned char *target_original,
+                                      int tw, int th, int ts,
+                                      unsigned char *target_pix,
+                                      PAL *source_pal, PAL *target_pal,
+                                      const LikenessBBox &sb,
+                                      const LikenessBBox &tb,
+                                      bool mirror,
+                                      const LikenessPartBox &source_head,
+                                      std::vector<unsigned char> &patch_mask)
+{
+    if (!source_pix || !target_original || !target_pix ||
+        !source_pal || !target_pal)
+        return 0;
+
+    float sspan_x = (sb.w > 1) ? (float)(sb.w - 1) : 1.0f;
+    float sspan_y = (sb.h > 1) ? (float)(sb.h - 1) : 1.0f;
+    float tspan_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float tspan_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    int search_radius = 2 + ((tb.w > tb.h ? tb.w : tb.h) / 46);
+    if (search_radius < 2) search_radius = 2;
+    if (search_radius > 5) search_radius = 5;
+
+    std::vector<int> best_score((size_t)ts * th, 0x7FFFFFFF);
+    int changed = 0;
+
+    for (int sy = sb.y1; sy <= sb.y2; sy++) {
+        for (int sx = sb.x1; sx <= sb.x2; sx++) {
+            int soff = sy * ss + sx;
+            unsigned char ci = source_pix[(size_t)soff];
+            if (ci == 0) continue;
+            if (LikenessPointInPartBox(source_head, sx, sy)) continue;
+
+            float raw_u = ((float)sx - (float)sb.x1) / sspan_x;
+            float raw_v = ((float)sy - (float)sb.y1) / sspan_y;
+            bool gold = LikenessIsGoldPixel(source_pal, ci);
+            bool headish = LikenessIsHeadPixel(source_pal, ci);
+            bool contrast = LikenessHasLocalContrast(source_pix, sw, sh, ss,
+                                                     sx, sy, source_pal);
+            bool edge = LikenessTransparentNeighborCount(source_pix, sw, sh, ss,
+                                                         sx, sy) > 0;
+            if (!(gold && (raw_v < 0.80f || contrast || edge)) &&
+                !(headish && contrast && raw_v < 0.70f) &&
+                !(contrast && raw_v < 0.72f && edge))
+                continue;
+
+            float tu, tv;
+            if (!LikenessProjectSourceToTarget(raw_u, raw_v, sb, tb, mirror,
+                                               &tu, &tv))
+                continue;
+            int tx0 = LikenessClampInt((int)(tb.x1 + tu * tspan_x + 0.5f),
+                                       0, tw - 1);
+            int ty0 = LikenessClampInt((int)(tb.y1 + tv * tspan_y + 0.5f),
+                                       0, th - 1);
+
+            int best_off = -1;
+            int best = 0x7FFFFFFF;
+            for (int dy = -search_radius; dy <= search_radius; dy++) {
+                for (int dx = -search_radius; dx <= search_radius; dx++) {
+                    int tx = tx0 + dx;
+                    int ty = ty0 + dy;
+                    if (tx < 0 || ty < 0 || tx >= tw || ty >= th) continue;
+                    int toff = ty * ts + tx;
+                    if (target_original[(size_t)toff] == 0) continue;
+                    if (patch_mask[(size_t)toff] == 1) continue;
+
+                    int dist2 = dx * dx + dy * dy;
+                    int mismatch = LikenessMaskMismatch(source_pix, sw, sh, ss,
+                                                        sx, sy,
+                                                        target_original,
+                                                        tw, th, ts, tx, ty);
+                    unsigned char old_ci = target_original[(size_t)toff];
+                    bool target_warm = LikenessIsGoldPixel(target_pal, old_ci) ||
+                                       LikenessIsHeadPixel(target_pal, old_ci);
+                    int target_edge = LikenessTransparentNeighborCount(
+                        target_original, tw, th, ts, tx, ty);
+
+                    int score = dist2 * 7 + mismatch * 8;
+                    if (gold && target_warm) score -= 10;
+                    else if (gold) score += 4;
+                    if (contrast) score -= 4;
+                    if (target_edge > 0) score -= 3;
+
+                    if (score < best) {
+                        best = score;
+                        best_off = toff;
+                    }
+                }
+            }
+
+            if (best_off < 0 || best > 70 || best >= best_score[(size_t)best_off])
+                continue;
+            best_score[(size_t)best_off] = best;
+            if (target_pix[best_off] != ci) {
+                target_pix[best_off] = ci;
+                changed++;
+            }
+            patch_mask[(size_t)best_off] = 2;
+        }
+    }
+    return changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessBlendPatchEdges
+static int LikenessBlendPatchEdges(unsigned char *target_pix,
+                                   const unsigned char *target_original,
+                                   int w, int h, int stride,
+                                   PAL *source_pal,
+                                   const bool used_slots[256],
+                                   const std::vector<unsigned char> &patch_mask)
+{
+    if (!target_pix || !target_original || !source_pal || !used_slots)
+        return 0;
+
+    struct BlendWrite { int off; unsigned char ci; };
+    std::vector<BlendWrite> writes;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int off = y * stride + x;
+            if (target_original[(size_t)off] == 0 || patch_mask[(size_t)off])
+                continue;
+            unsigned char old_ci = target_pix[off];
+            if (old_ci == 0) continue;
+
+            int patch_neighbors = 0;
+            int rsum = 0, gsum = 0, bsum = 0;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    int noff = ny * stride + nx;
+                    if (!patch_mask[(size_t)noff]) continue;
+                    unsigned char pci = target_pix[noff];
+                    if (pci == 0) continue;
+                    int pr, pg, pb;
+                    LikenessPaletteRgb(source_pal, pci, &pr, &pg, &pb, NULL);
+                    rsum += pr; gsum += pg; bsum += pb;
+                    patch_neighbors++;
+                }
+            }
+            if (patch_neighbors < 2) continue;
+
+            int sr, sg, sbc;
+            LikenessPaletteRgb(source_pal, old_ci, &sr, &sg, &sbc, NULL);
+            int ar = rsum / patch_neighbors;
+            int ag = gsum / patch_neighbors;
+            int ab = bsum / patch_neighbors;
+            int mix = patch_neighbors >= 4 ? 112 : 78; /* 0..256 */
+            int nr = (sr * (256 - mix) + ar * mix) >> 8;
+            int ng = (sg * (256 - mix) + ag * mix) >> 8;
+            int nb = (sbc * (256 - mix) + ab * mix) >> 8;
+            int ci = LikenessNearestUsedSlot(source_pal, used_slots, nr, ng, nb);
+            if (ci > 0 && ci != old_ci)
+                writes.push_back({off, (unsigned char)ci});
+        }
+    }
+
+    int changed = 0;
+    for (const BlendWrite &wr : writes) {
+        if (target_pix[wr.off] != wr.ci) {
+            target_pix[wr.off] = wr.ci;
+            changed++;
+        }
+    }
+    return changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessMaterial
+enum LikenessMaterial {
+    LK_MATERIAL_ANY = 0,
+    LK_MATERIAL_HEAD,
+    LK_MATERIAL_SKIN,
+    LK_MATERIAL_BLUE,
+    LK_MATERIAL_LOWER,
+    LK_MATERIAL_BLACK
+};
+
+
+// Extracted from imgui_overlay.cpp: LikenessActorStats
+struct LikenessActorStats {
+    int opaque;
+    int remapped;
+    int accents;
+    int cleaned;
+    int edge_darkened;
+    int head_pixels;
+    int skin_pixels;
+};
+
+
+// Extracted from imgui_overlay.cpp: LikenessClampByte
+static int LikenessClampByte(int v)
+{
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return v;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessRgbLuma8
+static int LikenessRgbLuma8(int r, int g, int b)
+{
+    return (r * 54 + g * 183 + b * 19) >> 8;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsBadGreenRgb
+static bool LikenessIsBadGreenRgb(int r, int g, int b, int luma)
+{
+    (void)luma;
+    return g > 65 && g > r + 7 && g > b + 18 &&
+           (r < 105 || b < 55);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsBadGreenPixel
+static bool LikenessIsBadGreenPixel(PAL *pal, unsigned char ci)
+{
+    if (!pal || ci == 0) return false;
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    return LikenessIsBadGreenRgb(r, g, b, luma);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsBlackRgb
+static bool LikenessIsBlackRgb(int r, int g, int b, int luma)
+{
+    return luma <= 34 || (r < 44 && g < 44 && b < 54);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsBlueRgb
+static bool LikenessIsBlueRgb(int r, int g, int b, int luma)
+{
+    if (LikenessIsBadGreenRgb(r, g, b, luma)) return false;
+    int mn = r < g ? r : g; if (b < mn) mn = b;
+    int mx = r > g ? r : g; if (b > mx) mx = b;
+    int chroma = mx - mn;
+    return luma >= 14 && luma <= 184 &&
+           b >= r + 4 && b >= g - 12 &&
+           (b >= 46 || chroma >= 26);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsLowerRgb
+static bool LikenessIsLowerRgb(int r, int g, int b, int luma)
+{
+    if (LikenessIsBadGreenRgb(r, g, b, luma)) return false;
+    if (luma < 28 || luma > 214) return false;
+    return r >= 54 && g >= 34 &&
+           r > b + 22 && g > b + 7 &&
+           r >= g - 38;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsSkinRgb
+static bool LikenessIsSkinRgb(int r, int g, int b, int luma)
+{
+    if (LikenessIsBadGreenRgb(r, g, b, luma) ||
+        LikenessIsBlueRgb(r, g, b, luma))
+        return false;
+
+    int mn = r < g ? r : g; if (b < mn) mn = b;
+    int mx = r > g ? r : g; if (b > mx) mx = b;
+    int chroma = mx - mn;
+    bool warm_skin = luma >= 58 &&
+                     r >= g - 28 && g >= b - 42 &&
+                     r > b + 7 && chroma <= 140;
+    bool pale_hair = luma >= 102 &&
+                     chroma <= 86 &&
+                     r >= b - 18 && g >= b - 24;
+    bool goldish = LikenessIsLowerRgb(r, g, b, luma) &&
+                   b < 96 && r > b + 34 && g > b + 18;
+    return (warm_skin || pale_hair) && !goldish;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessIsHeadRgb
+static bool LikenessIsHeadRgb(int r, int g, int b, int luma)
+{
+    int mn = r < g ? r : g; if (b < mn) mn = b;
+    int mx = r > g ? r : g; if (b > mx) mx = b;
+    int chroma = mx - mn;
+    bool grey_hair = luma >= 94 && chroma <= 78 &&
+                     !LikenessIsBlueRgb(r, g, b, luma) &&
+                     !LikenessIsLowerRgb(r, g, b, luma);
+    return LikenessIsSkinRgb(r, g, b, luma) || grey_hair;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessPaletteSlotMatchesMaterial
+static bool LikenessPaletteSlotMatchesMaterial(PAL *pal, unsigned char ci,
+                                               LikenessMaterial material)
+{
+    if (!pal || ci == 0) return false;
+    if (material == LK_MATERIAL_ANY) return true;
+
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    switch (material) {
+    case LK_MATERIAL_HEAD:
+        return LikenessIsHeadPixel(pal, ci) || LikenessIsHeadRgb(r, g, b, luma);
+    case LK_MATERIAL_SKIN:
+        return LikenessIsHeadRgb(r, g, b, luma) ||
+               LikenessIsSkinRgb(r, g, b, luma);
+    case LK_MATERIAL_BLUE:
+        return LikenessIsBlueRgb(r, g, b, luma) ||
+               (LikenessIsBlackRgb(r, g, b, luma) && b >= r - 4);
+    case LK_MATERIAL_LOWER:
+        return LikenessIsGoldPixel(pal, ci) ||
+               LikenessIsLowerRgb(r, g, b, luma);
+    case LK_MATERIAL_BLACK:
+        return LikenessIsBlackRgb(r, g, b, luma);
+    default:
+        return true;
+    }
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessClassifyPaletteSlot
+static LikenessMaterial LikenessClassifyPaletteSlot(PAL *pal, unsigned char ci)
+{
+    if (!pal || ci == 0) return LK_MATERIAL_ANY;
+    int r, g, b, luma;
+    LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+    if (LikenessIsBlackRgb(r, g, b, luma)) return LK_MATERIAL_BLACK;
+    if (LikenessPaletteSlotMatchesMaterial(pal, ci, LK_MATERIAL_SKIN))
+        return LK_MATERIAL_SKIN;
+    if (LikenessPaletteSlotMatchesMaterial(pal, ci, LK_MATERIAL_BLUE))
+        return LK_MATERIAL_BLUE;
+    if (LikenessPaletteSlotMatchesMaterial(pal, ci, LK_MATERIAL_LOWER))
+        return LK_MATERIAL_LOWER;
+    return LK_MATERIAL_ANY;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessNearestMaterialSlot
+static int LikenessNearestMaterialSlot(PAL *pal, const bool used_slots[256],
+                                       LikenessMaterial material,
+                                       int r, int g, int b,
+                                       int prefer_r = -1,
+                                       int prefer_g = -1,
+                                       int prefer_b = -1,
+                                       bool forbid_bad_green = false)
+{
+    if (!pal || !pal->data_p || !used_slots) return 0;
+    r = LikenessClampByte(r);
+    g = LikenessClampByte(g);
+    b = LikenessClampByte(b);
+    int want_luma = LikenessRgbLuma8(r, g, b);
+    int prefer_luma = (prefer_r >= 0 && prefer_g >= 0 && prefer_b >= 0)
+        ? LikenessRgbLuma8(prefer_r, prefer_g, prefer_b)
+        : -1;
+
+    int count = pal->numc;
+    if (count > 256) count = 256;
+    int pass_count = forbid_bad_green ? 2 : 4;
+    for (int pass = 0; pass < pass_count; pass++) {
+        bool require_material = (pass == 0 || pass == 2) &&
+                                material != LK_MATERIAL_ANY;
+        bool avoid_green = forbid_bad_green || pass < 2;
+        int best = 0;
+        double best_score = DBL_MAX;
+        for (int i = 1; i < count; i++) {
+            if (!used_slots[i]) continue;
+            int pr, pg, pb, pl;
+            LikenessPaletteRgb(pal, (unsigned char)i, &pr, &pg, &pb, &pl);
+            bool bad_green = LikenessIsBadGreenRgb(pr, pg, pb, pl);
+            if (avoid_green && bad_green) continue;
+            bool material_match =
+                LikenessPaletteSlotMatchesMaterial(pal, (unsigned char)i, material);
+            if (require_material && !material_match) continue;
+
+            int dr = pr - r, dg = pg - g, db = pb - b;
+            int dl = pl - want_luma; if (dl < 0) dl = -dl;
+            double score = (double)dl * 6.0 +
+                           (double)(dr * dr + dg * dg + db * db) * 0.020;
+            if (prefer_luma >= 0) {
+                int pdr = pr - prefer_r, pdg = pg - prefer_g, pdb = pb - prefer_b;
+                int pdl = pl - prefer_luma; if (pdl < 0) pdl = -pdl;
+                score += (double)(pdr * pdr + pdg * pdg + pdb * pdb) * 0.010;
+                score += (double)pdl * 0.75;
+            }
+            if (!require_material && material != LK_MATERIAL_ANY && !material_match)
+                score += 160.0;
+            if (material == LK_MATERIAL_BLACK)
+                score += (double)pl * 2.5;
+            if (bad_green)
+                score += 9000.0;
+
+            if (score < best_score) {
+                best_score = score;
+                best = i;
+            }
+        }
+        if (best > 0) return best;
+    }
+
+    if (forbid_bad_green) return 0;
+    return LikenessNearestUsedSlot(pal, used_slots, r, g, b);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessSourceSampleMatches
+static bool LikenessSourceSampleMatches(const LikenessSample &s,
+                                        PAL *source_pal,
+                                        LikenessMaterial material,
+                                        const LikenessPartBox *source_head,
+                                        bool strict_head)
+{
+    if (s.idx == 0) return false;
+    if (material != LK_MATERIAL_ANY &&
+        LikenessIsBadGreenRgb(s.r, s.g, s.b, s.luma))
+        return false;
+
+    if (material == LK_MATERIAL_HEAD &&
+        source_head && source_head->valid && strict_head) {
+        return LikenessPointInPartBox(*source_head, s.x, s.y) &&
+               (LikenessIsHeadRgb(s.r, s.g, s.b, s.luma) ||
+                LikenessPaletteSlotMatchesMaterial(source_pal, s.idx,
+                                                   LK_MATERIAL_SKIN));
+    }
+
+    return LikenessPaletteSlotMatchesMaterial(source_pal, s.idx, material);
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessSampleMaterialSource
+static bool LikenessSampleMaterialSource(const std::vector<LikenessSample> &samples,
+                                         const std::vector<std::vector<int>> &bins,
+                                         PAL *source_pal,
+                                         LikenessMaterial material,
+                                         const LikenessPartBox *source_head,
+                                         float u, float v,
+                                         LikenessColor *out,
+                                         const LikenessSample **nearest_out)
+{
+    if (out) *out = {};
+    if (nearest_out) *nearest_out = NULL;
+    if (samples.empty() || !out) return false;
+
+    const int G = 32;
+    const float radii[] = { 0.052f, 0.088f, 0.145f, 0.24f, 0.39f, 0.66f };
+    int attempts = (material == LK_MATERIAL_HEAD &&
+                    source_head && source_head->valid) ? 2 : 1;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        bool strict_head = attempt == 0;
+        for (float radius : radii) {
+            float r2 = radius * radius;
+            int bx0 = (int)((u - radius) * G);
+            int bx1 = (int)((u + radius) * G);
+            int by0 = (int)((v - radius) * G);
+            int by1 = (int)((v + radius) * G);
+            if (bx0 < 0) bx0 = 0; if (bx1 >= G) bx1 = G - 1;
+            if (by0 < 0) by0 = 0; if (by1 >= G) by1 = G - 1;
+
+            double wr = 0.0, wg = 0.0, wb = 0.0, wl = 0.0, wsum = 0.0;
+            const LikenessSample *nearest = NULL;
+            float nearest_d2 = 9999.0f;
+            for (int by = by0; by <= by1; by++) {
+                for (int bx = bx0; bx <= bx1; bx++) {
+                    const std::vector<int> &bucket = bins[by * G + bx];
+                    for (int si : bucket) {
+                        const LikenessSample &s = samples[si];
+                        if (!LikenessSourceSampleMatches(s, source_pal, material,
+                                                         source_head, strict_head))
+                            continue;
+                        float dx = (s.u - u) * 1.10f;
+                        float dy = s.v - v;
+                        float d2 = dx * dx + dy * dy;
+                        if (d2 > r2) continue;
+                        if (d2 < nearest_d2) {
+                            nearest_d2 = d2;
+                            nearest = &s;
+                        }
+                        double wt = 1.0 / (0.0008 + (double)d2);
+                        wr += (double)s.r * wt;
+                        wg += (double)s.g * wt;
+                        wb += (double)s.b * wt;
+                        wl += (double)s.luma * wt;
+                        wsum += wt;
+                    }
+                }
+            }
+            if (wsum > 0.0) {
+                out->r = (float)(wr / wsum);
+                out->g = (float)(wg / wsum);
+                out->b = (float)(wb / wsum);
+                out->luma = (float)(wl / wsum);
+                if (nearest) {
+                    out->r = out->r * 0.56f + nearest->r * 0.44f;
+                    out->g = out->g * 0.56f + nearest->g * 0.44f;
+                    out->b = out->b * 0.56f + nearest->b * 0.44f;
+                    out->luma = out->luma * 0.56f + nearest->luma * 0.44f;
+                    out->idx = nearest->idx;
+                }
+                out->found = true;
+                if (nearest_out) *nearest_out = nearest;
+                return true;
+            }
+        }
+    }
+
+    const LikenessSample *nearest = NULL;
+    float best_d2 = 9999.0f;
+    for (const LikenessSample &s : samples) {
+        if (!LikenessSourceSampleMatches(s, source_pal, material,
+                                         source_head, false))
+            continue;
+        float dx = (s.u - u) * 1.10f;
+        float dy = s.v - v;
+        float d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            nearest = &s;
+        }
+    }
+    if (!nearest) return false;
+    out->r = (float)nearest->r;
+    out->g = (float)nearest->g;
+    out->b = (float)nearest->b;
+    out->luma = (float)nearest->luma;
+    out->idx = nearest->idx;
+    out->found = true;
+    if (nearest_out) *nearest_out = nearest;
+    return true;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessLocalSourceMeanLuma
+static int LikenessLocalSourceMeanLuma(const unsigned char *pix,
+                                       int w, int h, int stride,
+                                       PAL *pal,
+                                       const LikenessSample *sample,
+                                       LikenessMaterial material,
+                                       const LikenessPartBox *source_head)
+{
+    if (!pix || !pal || !sample) return 128;
+    int radius = (material == LK_MATERIAL_HEAD) ? 1 : 2;
+    int sum = 0, count = 0;
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            int x = sample->x + dx;
+            int y = sample->y + dy;
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            unsigned char ci = pix[(size_t)y * stride + x];
+            if (ci == 0) continue;
+            int r, g, b, luma;
+            LikenessPaletteRgb(pal, ci, &r, &g, &b, &luma);
+            LikenessSample temp = {};
+            temp.x = x; temp.y = y; temp.idx = ci;
+            temp.r = r; temp.g = g; temp.b = b; temp.luma = luma;
+            if (!LikenessSourceSampleMatches(temp, pal, material,
+                                             source_head, false))
+                continue;
+            sum += luma;
+            count++;
+        }
+    }
+    return count > 0 ? sum / count : sample->luma;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessBuildActorMasks
+static void LikenessBuildActorMasks(const unsigned char *target_original,
+                                    int w, int h, int stride,
+                                    PAL *target_pal,
+                                    const LikenessBBox &tb,
+                                    std::vector<unsigned char> &head_mask,
+                                    std::vector<unsigned char> &skin_mask,
+                                    int *head_pixels,
+                                    int *skin_pixels)
+{
+    size_t bytes = (size_t)stride * h;
+    head_mask.assign(bytes, 0);
+    skin_mask.assign(bytes, 0);
+    if (head_pixels) *head_pixels = 0;
+    if (skin_pixels) *skin_pixels = 0;
+    if (!target_original || !target_pal) return;
+
+    LikenessPartBox target_head = {};
+    LikenessFindHeadPart(target_original, w, h, stride, target_pal, tb,
+                         true, &target_head);
+    LikenessPartBox head_zone = target_head;
+    if (head_zone.valid)
+        LikenessExpandPartBox(&head_zone, w, h, 1, 1);
+
+    float span_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float span_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            size_t off = (size_t)y * stride + x;
+            unsigned char ci = target_original[off];
+            if (ci == 0) continue;
+            int r, g, b, luma;
+            LikenessPaletteRgb(target_pal, ci, &r, &g, &b, &luma);
+            float u = ((float)x - (float)tb.x1) / span_x;
+            float v = ((float)y - (float)tb.y1) / span_y;
+            bool headish = LikenessIsHeadRgb(r, g, b, luma) ||
+                            LikenessIsHeadPixel(target_pal, ci);
+            bool skinish = LikenessIsSkinRgb(r, g, b, luma);
+            bool in_head_zone = LikenessPointInPartBox(head_zone, x, y);
+            bool fallback_head = !head_zone.valid &&
+                                 v < 0.56f && u > 0.08f && u < 0.94f;
+            if (headish && (in_head_zone || fallback_head)) {
+                head_mask[off] = 1;
+                skin_mask[off] = 1;
+            } else if (skinish && v < 0.82f &&
+                       !LikenessIsBlueRgb(r, g, b, luma) &&
+                       !LikenessIsLowerRgb(r, g, b, luma)) {
+                skin_mask[off] = 1;
+            }
+        }
+    }
+
+    std::vector<unsigned char> dilated = head_mask;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            size_t off = (size_t)y * stride + x;
+            if (target_original[off] == 0 || head_mask[off]) continue;
+            if (head_zone.valid && !LikenessPointInPartBox(head_zone, x, y))
+                continue;
+            float v = ((float)y - (float)tb.y1) / span_y;
+            if (v > 0.72f) continue;
+            int r, g, b, luma;
+            LikenessPaletteRgb(target_pal, target_original[off], &r, &g, &b, &luma);
+            if (luma < 78 || LikenessIsBlueRgb(r, g, b, luma) ||
+                LikenessIsLowerRgb(r, g, b, luma) ||
+                LikenessIsBadGreenRgb(r, g, b, luma))
+                continue;
+            bool near_head = false;
+            for (int dy = -1; dy <= 1 && !near_head; dy++) {
+                for (int dx = -1; dx <= 1 && !near_head; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx, ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    if (head_mask[(size_t)ny * stride + nx]) near_head = true;
+                }
+            }
+            if (near_head) {
+                dilated[off] = 1;
+                skin_mask[off] = 1;
+            }
+        }
+    }
+    head_mask.swap(dilated);
+
+    int hc = 0, sc = 0;
+    for (size_t i = 0; i < bytes; i++) {
+        if (head_mask[i]) hc++;
+        if (skin_mask[i]) sc++;
+    }
+    if (head_pixels) *head_pixels = hc;
+    if (skin_pixels) *skin_pixels = sc;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessTargetMaterial
+static LikenessMaterial LikenessTargetMaterial(const unsigned char *target_original,
+                                               int w, int h, int stride,
+                                               PAL *target_pal,
+                                               int x, int y,
+                                               const std::vector<unsigned char> &head_mask,
+                                               const std::vector<unsigned char> &skin_mask,
+                                               float v)
+{
+    size_t off = (size_t)y * stride + x;
+    if (!target_original || target_original[off] == 0 || !target_pal)
+        return LK_MATERIAL_ANY;
+    if (off < head_mask.size() && head_mask[off])
+        return LK_MATERIAL_HEAD;
+    if (off < skin_mask.size() && skin_mask[off])
+        return LK_MATERIAL_SKIN;
+
+    unsigned char ci = target_original[off];
+    int r, g, b, luma;
+    LikenessPaletteRgb(target_pal, ci, &r, &g, &b, &luma);
+    int edge = LikenessTransparentNeighborCount(target_original, w, h, stride, x, y);
+    if (edge >= 4 && LikenessIsBlackRgb(r, g, b, luma))
+        return LK_MATERIAL_BLACK;
+    if (LikenessIsBlueRgb(r, g, b, luma))
+        return LK_MATERIAL_BLUE;
+    if (LikenessIsGoldPixel(target_pal, ci) ||
+        LikenessIsLowerRgb(r, g, b, luma))
+        return LK_MATERIAL_LOWER;
+    if (LikenessIsSkinRgb(r, g, b, luma) && v < 0.82f)
+        return LK_MATERIAL_SKIN;
+    if (v > 0.56f)
+        return LK_MATERIAL_LOWER;
+    if (luma < 48)
+        return LK_MATERIAL_BLUE;
+    return LK_MATERIAL_BLUE;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessScaleRgbToLuma
+static void LikenessScaleRgbToLuma(float r, float g, float b, float target_luma,
+                                   int *out_r, int *out_g, int *out_b)
+{
+    float src_luma = (float)LikenessRgbLuma8((int)(r + 0.5f),
+                                            (int)(g + 0.5f),
+                                            (int)(b + 0.5f));
+    float scale = target_luma / (src_luma < 1.0f ? 1.0f : src_luma);
+    *out_r = LikenessClampByte((int)(r * scale + 0.5f));
+    *out_g = LikenessClampByte((int)(g * scale + 0.5f));
+    *out_b = LikenessClampByte((int)(b * scale + 0.5f));
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessApplyActorComposite
+static int LikenessApplyActorComposite(const unsigned char *source_pix,
+                                       int sw, int sh, int ss,
+                                       const unsigned char *target_original,
+                                       int tw, int th, int ts,
+                                       unsigned char *target_pix,
+                                       PAL *source_pal, PAL *target_pal,
+                                       const LikenessBBox &sb,
+                                       const LikenessBBox &tb,
+                                       const std::vector<LikenessSample> &samples,
+                                       const std::vector<std::vector<int>> &bins,
+                                       const bool used_slots[256],
+                                       const LikenessPartBox &source_head,
+                                       const std::vector<unsigned char> &head_mask,
+                                       const std::vector<unsigned char> &skin_mask,
+                                       bool mirror,
+                                       bool palette_changed,
+                                       int *opaque_out,
+                                       int *edge_darkened_out)
+{
+    if (opaque_out) *opaque_out = 0;
+    if (edge_darkened_out) *edge_darkened_out = 0;
+    if (!source_pix || !target_original || !target_pix ||
+        !source_pal || !target_pal)
+        return 0;
+
+    float span_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float span_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    int changed = 0;
+    int opaque = 0;
+    int edge_darkened = 0;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            size_t off = (size_t)y * ts + x;
+            unsigned char old_ci = target_original[off];
+            if (old_ci == 0) continue;
+            opaque++;
+
+            float u = ((float)x - (float)tb.x1) / span_x;
+            float v = ((float)y - (float)tb.y1) / span_y;
+            float su = u;
+            float sv = v;
+            if (sb.anchor_ok && tb.anchor_ok) {
+                float src_anchor_u = mirror ? (1.0f - sb.anchor_u) : sb.anchor_u;
+                float anchor_u = src_anchor_u + (u - tb.anchor_u);
+                float anchor_v = sb.anchor_v + (v - tb.anchor_v);
+                su = u * 0.82f + anchor_u * 0.18f;
+                sv = v * 0.84f + anchor_v * 0.16f;
+            }
+            if (su < 0.0f) su = 0.0f; if (su > 1.0f) su = 1.0f;
+            if (sv < 0.0f) sv = 0.0f; if (sv > 1.0f) sv = 1.0f;
+
+            int tr, tg, tbv, tluma;
+            LikenessPaletteRgb(target_pal, old_ci, &tr, &tg, &tbv, &tluma);
+            LikenessMaterial material = LikenessTargetMaterial(target_original,
+                                                              tw, th, ts,
+                                                              target_pal,
+                                                              x, y,
+                                                              head_mask,
+                                                              skin_mask,
+                                                              v);
+            LikenessColor src_col = {};
+            const LikenessSample *nearest = NULL;
+            if (!LikenessSampleMaterialSource(samples, bins, source_pal,
+                                              material, &source_head,
+                                              su, sv, &src_col, &nearest)) {
+                if (!LikenessSampleMaterialSource(samples, bins, source_pal,
+                                                  LK_MATERIAL_ANY, NULL,
+                                                  su, sv, &src_col, &nearest))
+                    continue;
+            }
+            if (!src_col.found || src_col.idx == 0) continue;
+
+            int local_mean = LikenessLocalSourceMeanLuma(source_pix, sw, sh, ss,
+                                                        source_pal, nearest,
+                                                        material, &source_head);
+            float hi = src_col.luma - (float)local_mean;
+            float source_pull = 0.13f;
+            float texture_strength = 0.28f;
+            float target_rgb_keep = 0.10f;
+            switch (material) {
+            case LK_MATERIAL_HEAD:
+                source_pull = 0.10f;
+                texture_strength = 0.15f;
+                target_rgb_keep = 0.24f;
+                break;
+            case LK_MATERIAL_SKIN:
+                source_pull = 0.14f;
+                texture_strength = 0.18f;
+                target_rgb_keep = 0.18f;
+                break;
+            case LK_MATERIAL_BLUE:
+                source_pull = 0.13f;
+                texture_strength = 0.30f;
+                target_rgb_keep = 0.08f;
+                break;
+            case LK_MATERIAL_LOWER:
+                source_pull = 0.12f;
+                texture_strength = 0.34f;
+                target_rgb_keep = 0.07f;
+                break;
+            case LK_MATERIAL_BLACK:
+                source_pull = 0.08f;
+                texture_strength = 0.18f;
+                target_rgb_keep = 0.16f;
+                break;
+            default:
+                break;
+            }
+
+            float desired_luma = (float)tluma * (1.0f - source_pull) +
+                                 src_col.luma * source_pull +
+                                 hi * texture_strength;
+            int edge = LikenessTransparentNeighborCount(target_original,
+                                                        tw, th, ts, x, y);
+            unsigned int h = (unsigned int)(x * 73856093u) ^
+                             (unsigned int)(y * 19349663u) ^
+                             (unsigned int)(src_col.idx * 83492791u);
+            if (edge > 0 &&
+                material != LK_MATERIAL_HEAD &&
+                material != LK_MATERIAL_SKIN &&
+                (edge >= 5 || (edge >= 3 && (h & 15u) < 3u))) {
+                desired_luma *= edge >= 5 ? 0.72f : 0.84f;
+                edge_darkened++;
+            }
+            if (desired_luma < 6.0f) desired_luma = 6.0f;
+            if (desired_luma > 244.0f) desired_luma = 244.0f;
+
+            int rr, gg, bb;
+            LikenessScaleRgbToLuma(src_col.r, src_col.g, src_col.b,
+                                   desired_luma, &rr, &gg, &bb);
+            rr = (int)((float)rr * (1.0f - target_rgb_keep) +
+                       (float)tr * target_rgb_keep + 0.5f);
+            gg = (int)((float)gg * (1.0f - target_rgb_keep) +
+                       (float)tg * target_rgb_keep + 0.5f);
+            bb = (int)((float)bb * (1.0f - target_rgb_keep) +
+                       (float)tbv * target_rgb_keep + 0.5f);
+
+            int new_ci = LikenessNearestMaterialSlot(source_pal, used_slots,
+                                                     material, rr, gg, bb,
+                                                     (int)src_col.r,
+                                                     (int)src_col.g,
+                                                     (int)src_col.b);
+            if (new_ci <= 0) continue;
+            if (target_pix[off] != (unsigned char)new_ci || palette_changed) {
+                target_pix[off] = (unsigned char)new_ci;
+                changed++;
+            }
+        }
+    }
+    if (opaque_out) *opaque_out = opaque;
+    if (edge_darkened_out) *edge_darkened_out = edge_darkened;
+    return changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessApplyActorAccents
+static int LikenessApplyActorAccents(const unsigned char *source_pix,
+                                     int sw, int sh, int ss,
+                                     const unsigned char *target_original,
+                                     int tw, int th, int ts,
+                                     unsigned char *target_pix,
+                                     PAL *source_pal, PAL *target_pal,
+                                     const LikenessBBox &sb,
+                                     const LikenessBBox &tb,
+                                     bool mirror,
+                                     const bool used_slots[256],
+                                     const LikenessPartBox &source_head,
+                                     const std::vector<unsigned char> &head_mask,
+                                     const std::vector<unsigned char> &skin_mask,
+                                     std::vector<unsigned char> &accent_mask)
+{
+    if (!source_pix || !target_original || !target_pix ||
+        !source_pal || !target_pal)
+        return 0;
+
+    size_t bytes = (size_t)ts * th;
+    accent_mask.assign(bytes, 0);
+    std::vector<int> best_score(bytes, 0x7FFFFFFF);
+    float tspan_x = (tb.w > 1) ? (float)(tb.w - 1) : 1.0f;
+    float tspan_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    int changed = 0;
+
+    for (int sy = sb.y1; sy <= sb.y2; sy++) {
+        for (int sx = sb.x1; sx <= sb.x2; sx++) {
+            unsigned char sci = source_pix[(size_t)sy * ss + sx];
+            if (sci == 0 || LikenessIsBadGreenPixel(source_pal, sci))
+                continue;
+
+            float raw_u = ((float)sx - (float)sb.x1) /
+                          ((sb.w > 1) ? (float)(sb.w - 1) : 1.0f);
+            float raw_v = ((float)sy - (float)sb.y1) /
+                          ((sb.h > 1) ? (float)(sb.h - 1) : 1.0f);
+            LikenessMaterial sm = LikenessClassifyPaletteSlot(source_pal, sci);
+            bool contrast = LikenessHasLocalContrast(source_pix, sw, sh, ss,
+                                                     sx, sy, source_pal);
+            bool edge = LikenessTransparentNeighborCount(source_pix, sw, sh, ss,
+                                                         sx, sy) > 0;
+            bool in_source_head = LikenessPointInPartBox(source_head, sx, sy);
+            bool gold_accent = sm == LK_MATERIAL_LOWER &&
+                               raw_v < 0.82f &&
+                               (contrast || edge ||
+                                LikenessIsGoldPixel(source_pal, sci));
+            bool skin_accent = (sm == LK_MATERIAL_SKIN ||
+                                sm == LK_MATERIAL_HEAD) &&
+                               raw_v < 0.58f &&
+                               contrast && !in_source_head;
+            if (!gold_accent && !skin_accent)
+                continue;
+
+            float tu, tv;
+            if (!LikenessProjectSourceToTarget(raw_u, raw_v, sb, tb, mirror,
+                                               &tu, &tv))
+                continue;
+            int tx0 = LikenessClampInt((int)(tb.x1 + tu * tspan_x + 0.5f),
+                                       0, tw - 1);
+            int ty0 = LikenessClampInt((int)(tb.y1 + tv * tspan_y + 0.5f),
+                                       0, th - 1);
+            int search_radius = contrast ? 2 : 1;
+            if (gold_accent && raw_v > 0.46f) search_radius = 3;
+
+            int best_off = -1;
+            int best = 0x7FFFFFFF;
+            LikenessMaterial best_tm = LK_MATERIAL_ANY;
+            float best_v = 0.0f;
+            for (int dy = -search_radius; dy <= search_radius; dy++) {
+                for (int dx = -search_radius; dx <= search_radius; dx++) {
+                    int tx = tx0 + dx;
+                    int ty = ty0 + dy;
+                    if (tx < 0 || ty < 0 || tx >= tw || ty >= th) continue;
+                    size_t off = (size_t)ty * ts + tx;
+                    if (target_original[off] == 0 || accent_mask[off])
+                        continue;
+                    float tvn = ((float)ty - (float)tb.y1) / tspan_y;
+                    LikenessMaterial tm = LikenessTargetMaterial(target_original,
+                                                                 tw, th, ts,
+                                                                 target_pal,
+                                                                 tx, ty,
+                                                                 head_mask,
+                                                                 skin_mask,
+                                                                 tvn);
+                    bool allowed = false;
+                    if (gold_accent) {
+                        allowed = tm == LK_MATERIAL_BLUE ||
+                                  tm == LK_MATERIAL_LOWER ||
+                                  tm == LK_MATERIAL_BLACK;
+                    } else if (skin_accent) {
+                        allowed = tm == LK_MATERIAL_SKIN ||
+                                  tm == LK_MATERIAL_HEAD;
+                    }
+                    if (!allowed) continue;
+
+                    int dist2 = dx * dx + dy * dy;
+                    int mismatch = LikenessMaskMismatch(source_pix, sw, sh, ss,
+                                                        sx, sy,
+                                                        target_original,
+                                                        tw, th, ts, tx, ty);
+                    int target_edge = LikenessTransparentNeighborCount(
+                        target_original, tw, th, ts, tx, ty);
+                    int score = dist2 * 10 + mismatch * 8;
+                    if (gold_accent && tm == LK_MATERIAL_BLUE) score -= 7;
+                    if (gold_accent && tm == LK_MATERIAL_LOWER) score -= 5;
+                    if (skin_accent && tm == LK_MATERIAL_SKIN) score -= 6;
+                    if (target_edge > 0) score -= 2;
+                    if (score < best) {
+                        best = score;
+                        best_off = (int)off;
+                        best_tm = tm;
+                        best_v = tvn;
+                    }
+                }
+            }
+
+            int threshold = gold_accent ? 58 : 44;
+            if (best_off < 0 || best > threshold ||
+                best >= best_score[(size_t)best_off])
+                continue;
+            best_score[(size_t)best_off] = best;
+
+            unsigned char old_tci = target_original[(size_t)best_off];
+            int tr, tg, tbv, tluma;
+            LikenessPaletteRgb(target_pal, old_tci, &tr, &tg, &tbv, &tluma);
+            int sr, sg, sbc, sluma;
+            LikenessPaletteRgb(source_pal, sci, &sr, &sg, &sbc, &sluma);
+            float pull = gold_accent ? 0.38f : 0.28f;
+            if (best_tm == LK_MATERIAL_LOWER && best_v > 0.58f)
+                pull = 0.30f;
+            float want_luma = (float)tluma * (1.0f - pull) +
+                              (float)sluma * pull;
+            int rr, gg, bb;
+            LikenessScaleRgbToLuma((float)sr, (float)sg, (float)sbc,
+                                   want_luma, &rr, &gg, &bb);
+            int new_ci = LikenessNearestMaterialSlot(source_pal, used_slots,
+                                                     sm, rr, gg, bb,
+                                                     sr, sg, sbc);
+            if (new_ci <= 0 || target_pix[(size_t)best_off] == (unsigned char)new_ci)
+                continue;
+            target_pix[(size_t)best_off] = (unsigned char)new_ci;
+            accent_mask[(size_t)best_off] = 1;
+            changed++;
+        }
+    }
+    return changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: LikenessCleanActorPaletteOutliers
+static int LikenessCleanActorPaletteOutliers(unsigned char *target_pix,
+                                             const unsigned char *target_original,
+                                             int w, int h, int stride,
+                                             PAL *source_pal, PAL *target_pal,
+                                             const bool used_slots[256],
+                                             const LikenessBBox &tb,
+                                             const std::vector<unsigned char> &head_mask,
+                                             const std::vector<unsigned char> &skin_mask)
+{
+    if (!target_pix || !target_original || !source_pal || !target_pal)
+        return 0;
+
+    float span_y = (tb.h > 1) ? (float)(tb.h - 1) : 1.0f;
+    int changed = 0;
+    for (int y = tb.y1; y <= tb.y2; y++) {
+        for (int x = tb.x1; x <= tb.x2; x++) {
+            size_t off = (size_t)y * stride + x;
+            unsigned char ci = target_pix[off];
+            if (target_original[off] == 0 || ci == 0 ||
+                !LikenessIsBadGreenPixel(source_pal, ci))
+                continue;
+            float v = ((float)y - (float)tb.y1) / span_y;
+            LikenessMaterial material = LikenessTargetMaterial(target_original,
+                                                              w, h, stride,
+                                                              target_pal,
+                                                              x, y,
+                                                              head_mask,
+                                                              skin_mask,
+                                                              v);
+            int tr, tg, tbv, tluma;
+            LikenessPaletteRgb(target_pal, target_original[off],
+                               &tr, &tg, &tbv, &tluma);
+            int new_ci = LikenessNearestMaterialSlot(source_pal, used_slots,
+                                                     material,
+                                                     tr, tg, tbv,
+                                                     -1, -1, -1,
+                                                     true);
+            if (new_ci <= 0 || new_ci == ci)
+                continue;
+            target_pix[off] = (unsigned char)new_ci;
+            changed++;
+        }
+    }
+    return changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: ApplyMarkedLikenessToSelected
+int ApplyMarkedLikenessToSelected(void)
+
+{
+    int target_idx = g_doc->ilselected;
+    IMG *target = (target_idx >= 0) ? get_img(target_idx) : NULL;
+    if (!target || !target->data_p || target->w == 0 || target->h == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Select a target sprite first.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    int source_idx = -1;
+    int marked_sources = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (!(img->flags & 1) || idx == target_idx) continue;
+        source_idx = idx;
+        marked_sources++;
+    }
+    if (marked_sources != 1) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark exactly one source sprite, then select a different target sprite.");
+        g_restore_msg_timer = 5.0f;
+        return 0;
+    }
+
+    IMG *source = get_img(source_idx);
+    PAL *source_pal = source ? get_pal((int)source->palnum) : NULL;
+    PAL *target_pal = get_pal((int)target->palnum);
+    if (!source || !source->data_p || source->w == 0 || source->h == 0 ||
+        !source_pal || !source_pal->data_p || !target_pal || !target_pal->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Source and target sprites need valid palettes.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    LikenessBBox sb = {}, tb = {};
+    if (!LikenessOpaqueBBox(source, &sb) || !LikenessOpaqueBBox(target, &tb)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Source and target need non-transparent pixels.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    std::vector<LikenessSample> samples;
+    bool used_slots[256];
+    LikenessBuildSamples(source, source_pal, sb, samples, used_slots, NULL);
+    if (samples.empty()) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Marked source has no visible pixels to transfer.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    float normal_score = LikenessMaskScore(target, tb, samples, false);
+    float mirror_score = LikenessMaskScore(target, tb, samples, true);
+    bool mirror = mirror_score > normal_score * 1.08f;
+
+    const int G = 32;
+    std::vector<std::vector<int>> bins((size_t)G * G);
+    for (int i = 0; i < (int)samples.size(); i++) {
+        if (mirror) samples[i].u = 1.0f - samples[i].u;
+        int bx = (int)(samples[i].u * G);
+        int by = (int)(samples[i].v * G);
+        if (bx < 0) bx = 0; if (bx >= G) bx = G - 1;
+        if (by < 0) by = 0; if (by >= G) by = G - 1;
+        bins[by * G + bx].push_back(i);
+    }
+
+    if (!doc_undo_push()) return 0;
+    target = get_img(target_idx);
+    source = get_img(source_idx);
+    source_pal = source ? get_pal((int)source->palnum) : NULL;
+    target_pal = target ? get_pal((int)target->palnum) : NULL;
+    if (!target || !target->data_p || !source || !source_pal || !target_pal)
+        return 0;
+
+    int target_stride = (target->w + 3) & ~3;
+    unsigned char *target_pix = (unsigned char *)target->data_p;
+    size_t target_bytes = (size_t)target_stride * target->h;
+    std::vector<unsigned char> target_original(target_bytes);
+    memcpy(target_original.data(), target_pix, target_bytes);
+    int source_stride = (source->w + 3) & ~3;
+    const unsigned char *source_pix = (const unsigned char *)source->data_p;
+    bool palette_changed = target->palnum != source->palnum;
+    LikenessPartBox source_head = {};
+    LikenessFindHeadPart(source_pix, source->w, source->h, source_stride,
+                         source_pal, sb, true, &source_head);
+    if (source_head.valid)
+        LikenessExpandPartBox(&source_head, source->w, source->h, 1, 1);
+
+    LikenessActorStats stats = {};
+    std::vector<unsigned char> head_mask;
+    std::vector<unsigned char> skin_mask;
+    LikenessBuildActorMasks(target_original.data(),
+                            target->w, target->h, target_stride,
+                            target_pal, tb,
+                            head_mask, skin_mask,
+                            &stats.head_pixels, &stats.skin_pixels);
+
+    stats.remapped = LikenessApplyActorComposite(source_pix,
+                                                 source->w, source->h, source_stride,
+                                                 target_original.data(),
+                                                 target->w, target->h, target_stride,
+                                                 target_pix,
+                                                 source_pal, target_pal,
+                                                 sb, tb,
+                                                 samples, bins, used_slots,
+                                                 source_head,
+                                                 head_mask, skin_mask,
+                                                 mirror, palette_changed,
+                                                 &stats.opaque,
+                                                 &stats.edge_darkened);
+
+    std::vector<unsigned char> accent_mask;
+    stats.accents = LikenessApplyActorAccents(source_pix,
+                                              source->w, source->h, source_stride,
+                                              target_original.data(),
+                                              target->w, target->h, target_stride,
+                                              target_pix,
+                                              source_pal, target_pal,
+                                              sb, tb, mirror,
+                                              used_slots,
+                                              source_head,
+                                              head_mask, skin_mask,
+                                              accent_mask);
+    stats.cleaned = LikenessCleanActorPaletteOutliers(target_pix,
+                                                      target_original.data(),
+                                                      target->w, target->h,
+                                                      target_stride,
+                                                      source_pal, target_pal,
+                                                      used_slots, tb,
+                                                      head_mask, skin_mask);
+    int total_changed = stats.remapped + stats.accents + stats.cleaned;
+
+    target->palnum = source->palnum;
+    g_doc->plselected = source->palnum;
+    ApplyPalette(source->palnum);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    g_img_tex_idx = -2;
+    InvalidateThumb(target_idx);
+    mark_dirty();
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Applied %s likeness to %s: %d/%d remapped, %d accents, %d cleaned, %d head px%s.",
+             source->n_s, target->n_s,
+             stats.remapped, stats.opaque, stats.accents, stats.cleaned,
+             stats.head_pixels,
+             mirror ? " (mirrored source fit)" : "");
+    g_restore_msg_timer = 6.0f;
+    return total_changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: unlink_and_free_img
+void unlink_and_free_img(IMG *victim)
+{
+    if (!victim) return;
+    IMG *prev = NULL;
+    IMG *cur = (IMG *)g_doc->img_p;
+    while (cur && cur != victim) { prev = cur; cur = (IMG *)cur->nxt_p; }
+    if (cur == victim) {
+        if (prev) prev->nxt_p = cur->nxt_p;
+        else g_doc->img_p = cur->nxt_p;
+        g_doc->imgcnt--;
+    }
+    FreeImg(victim);
+}
+
+
+// Extracted from imgui_overlay.cpp: SplitSelectionToOverlayFrame
+void SplitSelectionToOverlayFrame(bool clear_source)
+{
+    IMG *src = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!src || !src->data_p || src->w == 0 || src->h == 0) return;
+    if (!g_grid_sel.active) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select pixels first, then split an overlay frame.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    int stride = (src->w + 3) & ~3;
+    unsigned int sz = (unsigned int)stride * src->h;
+    PixelHist snap = {};
+    bool have_snap = clear_source && pixel_hist_capture(&snap);
+
+    IMG *dst = (IMG *)AllocImg();
+    if (!dst) {
+        if (have_snap) pixel_hist_free(&snap);
+        return;
+    }
+
+    dst->w = src->w; dst->h = src->h;
+    dst->palnum = src->palnum; dst->flags = src->flags;
+    dst->anix = src->anix; dst->aniy = src->aniy;
+    dst->anix2 = src->anix2; dst->aniy2 = src->aniy2; dst->aniz2 = src->aniz2;
+    dst->opals = src->opals;
+    strncpy(dst->src_filename, src->src_filename, sizeof(dst->src_filename) - 1);
+    dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
+    snprintf(dst->n_s, sizeof(dst->n_s), "%.12sOVR", src->n_s);
+
+    dst->data_p = PoolAlloc(sz);
+    if (!dst->data_p) {
+        if (have_snap) pixel_hist_free(&snap);
+        unlink_and_free_img(dst);
+        return;
+    }
+
+    unsigned char *sp = (unsigned char *)src->data_p;
+    unsigned char *dp = (unsigned char *)dst->data_p;
+    int copied = 0;
+    for (int y = 0; y < src->h; y++) {
+        for (int x = 0; x < src->w; x++) {
+            if (!selection_contains_pixel(src, x, y)) continue;
+            unsigned char v = sp[y * stride + x];
+            if (v == 0) continue;
+            dp[y * stride + x] = v;
+            if (clear_source) sp[y * stride + x] = 0;
+            copied++;
+        }
+    }
+
+    if (copied == 0) {
+        if (have_snap) pixel_hist_free(&snap);
+        unlink_and_free_img(dst);
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No opaque selected pixels to split.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    if (have_snap) {
+        snap.seq = ++g_undo_seq;
+        if (g_pixel_hist.size() >= kPixelHistMax) {
+            pixel_hist_free(&g_pixel_hist.front());
+            g_pixel_hist.erase(g_pixel_hist.begin());
+        }
+        g_pixel_hist.push_back(snap);
+        for (auto &redo : g_pixel_redo) pixel_hist_free(&redo);
+        g_pixel_redo.clear();
+        ClearDocumentRedoStack();
+    }
+
+    g_doc->ilselected = (int)g_doc->imgcnt - 1;
+    g_img_tex_idx = -2;
+    mark_dirty();
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "%s %d px into overlay frame.",
+             clear_source ? "Split" : "Copied", copied);
+    g_restore_msg_timer = 4.0f;
+}
+
+
+// Extracted from imgui_overlay.cpp: RemoveHardStrokeFromImage
+static int RemoveHardStrokeFromImage(IMG *img, PAL *pal, int max_width, bool apply)
+{
+    if (!img || !img->data_p || !pal || !pal->data_p ||
+        img->w == 0 || img->h == 0)
+        return 0;
+    if (max_width < 1) max_width = 1;
+    if (max_width > 2) max_width = 2;
+
+    int w = img->w;
+    int h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    size_t bytes = (size_t)stride * h;
+    std::vector<unsigned char> work(bytes);
+    memcpy(work.data(), pixels, bytes);
+    int changed = 0;
+    std::vector<std::pair<int, unsigned char>> writes;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = work[(size_t)y * stride + x];
+            if (ci == 0) continue;
+
+            int trans = EdgeBufferTransparentNeighbors(work.data(), w, h, stride, x, y);
+            if (trans <= 0) continue;
+
+            unsigned short edge_word = pal_word_or_black(pal, ci);
+            int edge_luma = StrokeWordLuma8(edge_word);
+            int same_edge_neighbors = 0;
+            int interior_count = 0;
+            int interior_luma_sum = 0;
+            int min_dist = 0x7FFFFFFF;
+            unsigned char inward_ci = 0;
+            bool have_inward = FindInwardEdgeReplacement(work.data(), w, h, stride,
+                                                         x, y, pal, ci, max_width,
+                                                         &inward_ci);
+
+            for (int dy = -2; dy <= 2; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    unsigned char ni = work[(size_t)ny * stride + nx];
+                    if (ni == 0) continue;
+                    unsigned short nw = pal_word_or_black(pal, ni);
+                    int dist = PaletteColorDistance5(edge_word, nw);
+                    if (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1 &&
+                        dist <= 6)
+                        same_edge_neighbors++;
+
+                    if (dist <= 6) continue;
+                    interior_count++;
+                    interior_luma_sum += StrokeWordLuma8(nw);
+                    if (dist < min_dist) min_dist = dist;
+                }
+            }
+
+            if (interior_count <= 0 || !have_inward) continue;
+            int avg_luma = interior_luma_sum / interior_count;
+            int luma_delta = avg_luma - edge_luma;
+            if (luma_delta < 0) luma_delta = -luma_delta;
+
+            bool hard_color_step = min_dist >= 28 || luma_delta >= 34;
+            bool dark_outline = edge_luma + 20 < avg_luma && min_dist >= 12;
+            bool strong_inward = EdgeColorStrongVariant(pal, ci, inward_ci);
+            bool stroke_supported = same_edge_neighbors >= 1 || trans >= 3;
+            if (stroke_supported && strong_inward && (hard_color_step || dark_outline)) {
+                writes.push_back({(int)((size_t)y * stride + x), inward_ci});
+            }
+        }
+    }
+
+    for (const auto &wr : writes) {
+        if (work[(size_t)wr.first] != wr.second) {
+            work[(size_t)wr.first] = wr.second;
+            changed++;
+        }
+    }
+
+    if (apply && changed > 0)
+        memcpy(pixels, work.data(), bytes);
+    return changed;
+}
+
+
+// Extracted from imgui_overlay.cpp: RemoveHardStrokeFromTargets
+int RemoveHardStrokeFromTargets(int max_width)
+
+{
+    int marked = CountMarkedImages();
+    int selected = g_doc->ilselected;
+    if (marked == 0 && selected < 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark sprites, or select one sprite, before removing hard strokes.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    std::vector<int> changed_indices;
+    int expected_pixels = 0;
+    int scanned = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        bool target = marked > 0 ? ((img->flags & 1) != 0) : (idx == selected);
+        if (!target || !img->data_p || img->w == 0 || img->h == 0) continue;
+        scanned++;
+        PAL *pal = get_pal((int)img->palnum);
+        int n = RemoveHardStrokeFromImage(img, pal, max_width, false);
+        if (n > 0) {
+            changed_indices.push_back(idx);
+            expected_pixels += n;
+        }
+    }
+
+    if (expected_pixels <= 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No hard 1-2px stroke found in %d sprite%s.",
+                 scanned, scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 5.0f;
+        return 0;
+    }
+
+    doc_undo_push();
+    int changed_images = 0;
+    int changed_pixels = 0;
+    for (int changed_idx : changed_indices) {
+        IMG *img = get_img(changed_idx);
+        PAL *pal = img ? get_pal((int)img->palnum) : NULL;
+        int n = RemoveHardStrokeFromImage(img, pal, max_width, true);
+        if (n > 0) {
+            changed_images++;
+            changed_pixels += n;
+            InvalidateThumb(changed_idx);
+        }
+    }
+
+    if (changed_pixels > 0) {
+        g_img_tex_idx = -2;
+        mark_dirty();
+    }
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Removed %d hard-stroke pixel%s from %d/%d sprite%s.",
+             changed_pixels,
+             changed_pixels == 1 ? "" : "s",
+             changed_images,
+             scanned,
+             scanned == 1 ? "" : "s");
+    g_restore_msg_timer = 5.0f;
+    return changed_pixels;
+}
+
+
+// Extracted from imgui_overlay.cpp: StripMarkedImages
+void StripMarkedImages(int max_transparent_neighbors, int specific_color)
+{
+    if (max_transparent_neighbors < 1) max_transparent_neighbors = 1;
+    if (max_transparent_neighbors > 8) max_transparent_neighbors = 8;
+
+    bool undo_pushed = false;
+    int changed_images = 0;
+    int changed_pixels = 0;
+    int scanned = 0;
+    int idx = 0;
+    IMG *img = (IMG *)g_doc->img_p;
+    while (img) {
+        if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
+            scanned++;
+            int w = img->w;
+            int h = img->h;
+            int stride = (w + 3) & ~3;
+            unsigned char *pixels = (unsigned char *)img->data_p;
+            size_t bytes = (size_t)stride * h;
+
+            std::vector<unsigned char> original(bytes);
+            std::vector<unsigned char> flags(bytes, 0);
+            if (original.empty() || flags.empty()) {
+                img = (IMG *)img->nxt_p;
+                idx++;
+                continue;
+            }
+            memcpy(original.data(), pixels, bytes);
+
+            /* Bounds checking counts out-of-bounds as transparent (matches ASM logic) */
+            auto is_transparent = [&](int x, int y) -> bool {
+                if (x < 0 || x >= w || y < 0 || y >= h) return true;
+                return original[(size_t)y * stride + x] == 0;
+            };
+
+            /* Pass 1: flag the original outer ring, then repaint only those
+               saved edge pixels from a nearby inward color. This keeps the
+               operation from chasing its own freshly edited pixels inward. */
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    unsigned char c = original[(size_t)y * stride + x];
+                    if (c == 0) continue;
+                    if (specific_color >= 0 && c != specific_color) continue;
+
+                    int trans_count = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (dx == 0 && dy == 0) continue;
+                            if (is_transparent(x + dx, y + dy)) trans_count++;
+                        }
+                    }
+
+                    if (trans_count >= 2 && trans_count <= max_transparent_neighbors) {
+                        flags[(size_t)y * stride + x] = 1;
+                    }
+                }
+            }
+
+            PAL *pal = get_pal((int)img->palnum);
+            std::vector<std::pair<int, unsigned char>> edge_writes;
+            if (pal && pal->data_p) {
+                for (int y = 0; y < h; y++) {
+                    for (int x = 0; x < w; x++) {
+                        int off = y * stride + x;
+                        if (!flags[(size_t)off]) continue;
+                        unsigned char edge_ci = original[(size_t)off];
+                        unsigned char repl = 0;
+                        if (FindInwardEdgeReplacement(original.data(), w, h, stride,
+                                                      x, y, pal, edge_ci, 2, &repl) &&
+                            EdgeColorStrongVariant(pal, edge_ci, repl) &&
+                            repl != edge_ci) {
+                            edge_writes.push_back({off, repl});
+                        }
+                    }
+                }
+            }
+
+            if (!edge_writes.empty() && !undo_pushed) {
+                if (!doc_undo_push()) return;
+                undo_pushed = true;
+            }
+
+            int image_changes = 0;
+            for (const auto &wr : edge_writes) {
+                if (pixels[wr.first] != wr.second) {
+                    pixels[wr.first] = wr.second;
+                    image_changes++;
+                }
+            }
+
+            memset(flags.data(), 0, bytes);
+
+            /* Pass 2: Flag lonely pixels (stray dust specs) */
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    unsigned char c = pixels[(size_t)y * stride + x];
+                    if (c == 0) continue;
+                    if (specific_color >= 0 && c != specific_color) continue;
+
+                    int trans_count = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (dx == 0 && dy == 0) continue;
+                            if (x + dx < 0 || x + dx >= w ||
+                                y + dy < 0 || y + dy >= h ||
+                                pixels[(size_t)(y + dy) * stride + (x + dx)] == 0)
+                                trans_count++;
+                        }
+                    }
+                    if (trans_count == 8) flags[(size_t)y * stride + x] = 1;
+                }
+            }
+
+            /* Pass 2: Delete flagged lonely pixels */
+            bool has_lonely = false;
+            for (size_t i = 0; i < bytes; i++) {
+                if (flags[i]) { has_lonely = true; break; }
+            }
+            if (has_lonely && !undo_pushed) {
+                if (!doc_undo_push()) return;
+                undo_pushed = true;
+            }
+            for (size_t i = 0; i < bytes; i++) {
+                if (flags[i] && pixels[i] != 0) {
+                    pixels[i] = 0;
+                    image_changes++;
+                }
+            }
+
+            if (image_changes > 0) {
+                changed_images++;
+                changed_pixels += image_changes;
+                InvalidateThumb(idx);
+            }
+        }
+        img = (IMG *)img->nxt_p;
+        idx++;
+    }
+    if (changed_pixels > 0) {
+        mark_dirty();
+        g_img_tex_idx = -2; /* Force texture rebuild */
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Repainted %d edge pixel%s in %d/%d marked sprite%s.",
+                 changed_pixels,
+                 changed_pixels == 1 ? "" : "s",
+                 changed_images,
+                 scanned,
+                 scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    } else if (scanned == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark one or more sprites before stripping edges.");
+        g_restore_msg_timer = 4.0f;
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No replaceable edge stroke found in %d marked sprite%s.",
+                 scanned,
+                 scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    }
+}
+
+
+// Extracted from imgui_overlay.cpp: DitherReplaceMarkedImages
+void DitherReplaceMarkedImages(int specific_color)
+
+{
+    mark_dirty();
+    IMG *img = (IMG *)g_doc->img_p;
+    while (img) {
+        if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
+            int h = img->h;
+            int stride = (img->w + 3) & ~3;
+            unsigned char *pixels = (unsigned char *)img->data_p;
+            
+            for (int y = 0; y < h; y++) {
+                int start_x = y & 1; // 0 for even rows, 1 for odd rows
+                for (int x = start_x; x < stride; x += 2) {
+                    if (pixels[y * stride + x] != 0) {
+                        pixels[y * stride + x] = (unsigned char)specific_color;
+                    }
+                }
+            }
+        }
+        img = (IMG *)img->nxt_p;
+    }
+    g_img_tex_idx = -2; /* Force texture rebuild */
+}
+
+
+// Extracted from imgui_overlay.cpp: LeastSquaresReduceMarked
+void LeastSquaresReduceMarked()
+
+{
+    mark_dirty();
+    IMG *img = (IMG *)g_doc->img_p;
+    while (img) {
+        if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0) {
+            int w = img->w;
+            int h = img->h;
+            unsigned short stride = (w + 3) & ~3;
+            unsigned char *pixels = (unsigned char *)img->data_p;
+
+            int min_x = w, min_y = h, max_x = -1, max_y = -1;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    if (pixels[y * stride + x] != 0) {
+                        if (x < min_x) min_x = x;
+                        if (x > max_x) max_x = x;
+                        if (y < min_y) min_y = y;
+                        if (y > max_y) max_y = y;
+                    }
+                }
+            }
+
+            if (max_x == -1) {
+                /* Image is completely empty. Shrink to 1x1 transparent. */
+                img->w = 1; img->h = 1;
+                img->anix = 0; img->aniy = 0;
+                pixels[0] = 0;
+            } else if (min_x > 0 || min_y > 0 || max_x < w - 1 || max_y < h - 1) {
+                int new_w = max_x - min_x + 1;
+                int new_h = max_y - min_y + 1;
+                unsigned short new_stride = (new_w + 3) & ~3;
+
+                /* In-place compaction (safe because new_stride <= stride) */
+                for (int y = 0; y < new_h; y++) {
+                    for (int x = 0; x < new_w; x++) {
+                        pixels[y * new_stride + x] = pixels[(y + min_y) * stride + (x + min_x)];
+                    }
+                    /* Zero out the padding bytes to be safe */
+                    for (int x = new_w; x < new_stride; x++) {
+                        pixels[y * new_stride + x] = 0;
+                    }
+                }
+
+                img->w = (unsigned short)new_w;
+                img->h = (unsigned short)new_h;
+                img->anix -= (unsigned short)min_x;
+                img->aniy -= (unsigned short)min_y;
+            }
+        }
+        img = (IMG *)img->nxt_p;
+    }
+    g_img_tex_idx = -2; /* Force texture rebuild */
+}
+
