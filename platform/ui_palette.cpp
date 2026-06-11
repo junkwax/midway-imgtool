@@ -2894,22 +2894,24 @@ void DrawRightPanelPaletteEditor(float panel_h)
             }
             ImGui::EndListBox();
         }
-        if (ImGui::Button("+##addpal", ImVec2(30, 24))) { AddNewPalette(); }
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+        if (ImGui::Button("+##addpal", ImVec2(24, 20))) { AddNewPalette(); }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank 256-color palette");
         ImGui::SameLine();
 
         if (g_doc->plselected < 0) ImGui::BeginDisabled();
-        if (ImGui::Button("Dup##pal", ImVec2(50, 24))) DuplicatePalette();
+        if (ImGui::Button("Dup##pal", ImVec2(44, 20))) DuplicatePalette();
         if (g_doc->plselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate selected palette");
         ImGui::SameLine();
-        if (ImGui::Button("Del##pal", ImVec2(50, 24))) DeletePalette();
+        if (ImGui::Button("Del##pal", ImVec2(44, 20))) DeletePalette();
         if (g_doc->plselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Delete selected palette");
         if (g_doc->plselected < 0) ImGui::EndDisabled();
         ImGui::SameLine();
 
-        if (ImGui::Button("Operations...##palops", ImVec2(-1, 24))) {
+        if (ImGui::Button("Operations...##palops", ImVec2(-1, 20))) {
             ImGui::OpenPopup("palette_operations_popup");
         }
+        ImGui::PopStyleVar();
 
         if (ImGui::BeginPopup("palette_operations_popup")) {
             if (ImGui::BeginMenu("Marking")) {

@@ -848,8 +848,8 @@ void DrawMainLayout(void)
 
     /* ===== RIGHT PANEL STRIP ===== */
     float panel_x = sw - PANEL_W;
-    float panel_y = work_y;
-    float panel_h = work_h - PALETTE_H - TIMELINE_H;
+    float panel_y = work_y + 5.0f;
+    float panel_h = work_h - PALETTE_H - TIMELINE_H - 5.0f;
 
     ImGui::SetNextWindowPos(ImVec2(panel_x, panel_y));
     ImGui::SetNextWindowSize(ImVec2(PANEL_W, panel_h));
@@ -1211,39 +1211,51 @@ void DrawMainLayout(void)
                 }
                 ImGui::EndListBox();
             }
-            const char *sort_labels[] = { "Order", "Name", "Size" };
-            int img_sort_idx = (int)g_image_list_sort;
-            ImGui::TextUnformatted("Sort");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(92.0f);
-            if (ImGui::Combo("##imgsort", &img_sort_idx, sort_labels, 3))
-                g_image_list_sort = (ImageListSort)img_sort_idx;
-            ImGui::SameLine();
-            if (ImGui::SmallButton(g_image_list_sort_desc ? "v##imgsort" : "^##imgsort"))
-                g_image_list_sort_desc = !g_image_list_sort_desc;
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle image list sort direction");
+#if 0
+            /* Clean, space-saving Sort dropdown that fits inline */
+            char sort_desc[64];
+            snprintf(sort_desc, sizeof(sort_desc), "Sort: %s %s##imgsort_btn",
+                     g_image_list_sort == ImageListSort::Original ? "Order" :
+                     g_image_list_sort == ImageListSort::Name ? "Name" : "Size",
+                     g_image_list_sort_desc ? "v" : "^");
+            if (ImGui::SmallButton(sort_desc)) {
+                ImGui::OpenPopup("image_sort_popup");
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose image sorting criteria and direction");
+            if (ImGui::BeginPopup("image_sort_popup")) {
+                if (ImGui::MenuItem("Order", NULL, g_image_list_sort == ImageListSort::Original)) { g_image_list_sort = ImageListSort::Original; }
+                if (ImGui::MenuItem("Name", NULL, g_image_list_sort == ImageListSort::Name)) { g_image_list_sort = ImageListSort::Name; }
+                if (ImGui::MenuItem("Size", NULL, g_image_list_sort == ImageListSort::Size)) { g_image_list_sort = ImageListSort::Size; }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Ascending", NULL, !g_image_list_sort_desc)) { g_image_list_sort_desc = false; }
+                if (ImGui::MenuItem("Descending", NULL, g_image_list_sort_desc)) { g_image_list_sort_desc = true; }
+                ImGui::EndPopup();
+            }
+#endif
 
             /* Mark and edit buttons below list. Keep them in short rows so
                the fixed-width side panel never clips the rightmost actions. */
             int n_marked_imgs = CountMarkedImages();
             
-            /* Image List Toolbar & Operations */
-            if (ImGui::Button("+##addimg", ImVec2(30, 24))) { g_show_new_blank_dialog = true; }
+            /* Image List Toolbar & Operations (compact version) */
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+            if (ImGui::Button("+##addimg", ImVec2(24, 20))) { g_show_new_blank_dialog = true; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank image (W/H prompt)");
             ImGui::SameLine();
 
             if (g_doc->ilselected < 0) ImGui::BeginDisabled();
-            if (ImGui::Button("Dup##img", ImVec2(50, 24))) DuplicateImage();
+            if (ImGui::Button("Dup##img", ImVec2(44, 20))) DuplicateImage();
             if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate selected sprite (Ctrl+J)");
             ImGui::SameLine();
-            if (ImGui::Button("Del##img", ImVec2(50, 24))) RequestDeleteImage(g_doc->ilselected);
+            if (ImGui::Button("Del##img", ImVec2(44, 20))) RequestDeleteImage(g_doc->ilselected);
             if (g_doc->ilselected >= 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Delete selected sprite (Del)");
             if (g_doc->ilselected < 0) ImGui::EndDisabled();
             ImGui::SameLine();
 
-            if (ImGui::Button("Operations...##imgops", ImVec2(-1, 24))) {
+            if (ImGui::Button("Operations...##imgops", ImVec2(-1, 20))) {
                 ImGui::OpenPopup("image_operations_popup");
             }
+            ImGui::PopStyleVar();
 
             if (ImGui::BeginPopup("image_operations_popup")) {
                 if (ImGui::BeginMenu("Marking")) {
@@ -2531,7 +2543,7 @@ static void RequestCloseDocumentTab(int idx)
 
 float DrawDocumentTabBar(float y, float sw)
 {
-    const float tab_h = ImGui::GetFrameHeight() + 5.0f;
+    const float tab_h = ImGui::GetFrameHeight();
     ImGui::SetNextWindowPos(ImVec2(0, y));
     ImGui::SetNextWindowSize(ImVec2(sw, tab_h));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 2));
@@ -2539,7 +2551,8 @@ float DrawDocumentTabBar(float y, float sw)
     ImGui::Begin("##document_tabs", NULL,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoBackground);
 
     int activate_idx = -1;
     int close_idx = -1;
