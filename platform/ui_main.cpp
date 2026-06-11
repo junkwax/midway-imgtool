@@ -1873,3 +1873,479 @@ void DrawMainLayout(void)
 
     /* Flush to renderer */
 }
+
+
+/* =========================================================
+   Extracted list/image mutations from imgui_overlay.cpp
+   ========================================================= */
+
+// Extracted from imgui_overlay.cpp: RemapTimelineAfterImageDelete
+static void RemapTimelineAfterImageDelete(const std::vector<int> &deleted)
+{
+    if (deleted.empty()) return;
+
+    auto remap_index = [&](int idx) {
+        if (idx < 0) return -1;
+        if (std::binary_search(deleted.begin(), deleted.end(), idx)) return -1;
+        int shift = (int)(std::lower_bound(deleted.begin(), deleted.end(), idx) - deleted.begin());
+        return idx - shift;
+    };
+
+    EnsureTimelineHolds();
+    std::vector<int> remapped_frames;
+    std::vector<int> remapped_holds;
+    remapped_frames.reserve(g_timeline_frames.size());
+    remapped_holds.reserve(g_timeline_holds.size());
+    for (size_t i = 0; i < g_timeline_frames.size(); i++) {
+        int idx = remap_index(g_timeline_frames[i]);
+        if (idx < 0) continue;
+        remapped_frames.push_back(idx);
+        remapped_holds.push_back(g_timeline_holds[i]);
+    }
+    g_timeline_frames.swap(remapped_frames);
+    g_timeline_holds.swap(remapped_holds);
+
+    for (int i = 0; i < 2; i++) {
+        g_timeline_composite[i] = remap_index(g_timeline_composite[i]);
+        if (g_timeline_composite[i] < 0)
+            g_timeline_composite_locked[i] = false;
+    }
+    CompactTimelineCompositeSelection();
+    if (g_timeline_composite[0] < 0 || g_timeline_composite[1] < 0)
+        ClearTimelineCompositeSelection();
+
+    if (g_timeline_play_idx >= (int)g_timeline_frames.size())
+        g_timeline_play_idx = 0;
+    g_timeline_built_for_imgcnt = g_doc->imgcnt;
+    ClearTimelineThumbCache();
+}
+
+
+// Extracted from imgui_overlay.cpp: DeleteImagesByIndices
+int DeleteImagesByIndices(std::vector<int> indices)
+{
+    g_last_delete_removed_palettes = 0;
+    NormalizeImageDeleteIndices(&indices);
+    if (indices.empty()) return 0;
+
+    std::vector<int> candidate_palettes;
+    candidate_palettes.reserve(indices.size());
+    for (int delete_idx : indices) {
+        IMG *img = get_img(delete_idx);
+        if (img) candidate_palettes.push_back((int)img->palnum);
+    }
+    std::sort(candidate_palettes.begin(), candidate_palettes.end());
+    candidate_palettes.erase(std::unique(candidate_palettes.begin(), candidate_palettes.end()),
+                             candidate_palettes.end());
+
+    doc_undo_push();
+
+    IMG *prev = NULL;
+    IMG *curr = (IMG *)g_doc->img_p;
+    int idx = 0;
+    int deleted_count = 0;
+    int deleted_before_sel = 0;
+    bool sel_was_deleted = false;
+    int old_sel = g_doc->ilselected;
+
+    while (curr) {
+        bool delete_this = std::binary_search(indices.begin(), indices.end(), idx);
+        if (delete_this) {
+            IMG *to_delete = curr;
+            if (prev) prev->nxt_p = curr->nxt_p;
+            else g_doc->img_p = curr->nxt_p;
+            curr = (IMG *)curr->nxt_p;
+            g_doc->imgcnt--;
+            deleted_count++;
+
+            if (idx < old_sel) deleted_before_sel++;
+            else if (idx == old_sel) sel_was_deleted = true;
+
+            if (to_delete->data_p) free(to_delete->data_p);
+            if (to_delete->pttbl_p) free(to_delete->pttbl_p);
+            if (to_delete->baseline_p) free(to_delete->baseline_p);
+            free(to_delete);
+        } else {
+            prev = curr;
+            curr = (IMG *)curr->nxt_p;
+        }
+        idx++;
+    }
+
+    if (g_doc->imgcnt == 0) {
+        g_doc->ilselected = -1;
+    } else {
+        int new_sel = old_sel - deleted_before_sel;
+        if (sel_was_deleted && new_sel >= (int)g_doc->imgcnt)
+            new_sel = (int)g_doc->imgcnt - 1;
+        if (new_sel < 0) new_sel = 0;
+        if (new_sel >= (int)g_doc->imgcnt) new_sel = (int)g_doc->imgcnt - 1;
+        g_doc->ilselected = new_sel;
+    }
+
+    RemapTimelineAfterImageDelete(indices);
+    int deleted_palettes = 0;
+    if (!candidate_palettes.empty() && g_doc->palcnt > 0) {
+        std::vector<unsigned char> used((size_t)g_doc->palcnt, 0);
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+            int pal_idx = (int)img->palnum;
+            if (pal_idx >= 0 && (unsigned int)pal_idx < g_doc->palcnt)
+                used[(size_t)pal_idx] = 1;
+        }
+
+        std::sort(candidate_palettes.begin(), candidate_palettes.end(), std::greater<int>());
+        for (int pal_idx : candidate_palettes) {
+            if (pal_idx < 0 || (unsigned int)pal_idx >= g_doc->palcnt) continue;
+            if (used[(size_t)pal_idx]) continue;
+
+            PAL *prev_pal = NULL;
+            PAL *pal = (PAL *)g_doc->pal_p;
+            for (int i = 0; pal && i < pal_idx; i++) {
+                prev_pal = pal;
+                pal = (PAL *)pal->nxt_p;
+            }
+            if (!pal) continue;
+
+            if (prev_pal) prev_pal->nxt_p = pal->nxt_p;
+            else g_doc->pal_p = pal->nxt_p;
+            FreePal(pal);
+            g_doc->palcnt--;
+            deleted_palettes++;
+
+            for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+                if ((int)img->palnum > pal_idx)
+                    img->palnum--;
+            }
+            if (g_doc->plselected == pal_idx)
+                g_doc->plselected = -1;
+            else if (g_doc->plselected > pal_idx)
+                g_doc->plselected--;
+        }
+    }
+    g_last_delete_removed_palettes = deleted_palettes;
+
+    IMG *sel = get_img(g_doc->ilselected);
+    if (sel && (unsigned int)sel->palnum < g_doc->palcnt)
+        g_doc->plselected = (int)sel->palnum;
+    else if (g_doc->palcnt == 0)
+        g_doc->plselected = -1;
+    else if (g_doc->plselected < 0 || (unsigned int)g_doc->plselected >= g_doc->palcnt)
+        g_doc->plselected = (int)g_doc->palcnt - 1;
+    ApplyPalette(g_doc->plselected);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    InvalidatePaletteSync();
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_palette_nav = false;
+    if (deleted_palettes > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Deleted %d sprite%s and %d now-unused palette%s.",
+                 deleted_count, deleted_count == 1 ? "" : "s",
+                 deleted_palettes, deleted_palettes == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    }
+    return deleted_count;
+}
+
+
+// Extracted from imgui_overlay.cpp: DeleteImage
+static int DeleteImage(int idx)
+{
+    std::vector<int> indices;
+    indices.push_back(idx);
+    return DeleteImagesByIndices(indices);
+}
+
+
+// Extracted from imgui_overlay.cpp: DeleteMarkedImages
+static int DeleteMarkedImages(void)
+{
+    std::vector<int> indices;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img->flags & 1) indices.push_back(idx);
+    }
+    return DeleteImagesByIndices(indices);
+}
+
+
+// Extracted from imgui_overlay.cpp: CollectSubframeIndicesForParent
+static void CollectSubframeIndicesForParent(int parent_idx, std::vector<int> *out)
+{
+    if (!out) return;
+    out->clear();
+    IMG *parent = get_img(parent_idx);
+    if (!parent) return;
+
+    std::string parent_name = img_name_string(parent);
+    if (parent_name.empty()) return;
+    std::string parent_src = parent->src_filename[0] ? parent->src_filename : "Workspace";
+
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (idx == parent_idx) continue;
+        std::string src = img->src_filename[0] ? img->src_filename : "Workspace";
+        if (src != parent_src) continue;
+        std::string child_name = img_name_string(img);
+        if (InferSubframeParentName(child_name.c_str()) == parent_name)
+            out->push_back(idx);
+    }
+}
+
+
+// Extracted from imgui_overlay.cpp: CollectExtraSubframeIndices
+static void CollectExtraSubframeIndices(const std::vector<int> &base_indices,
+                                        std::vector<int> *extra_indices,
+                                        int *parent_count)
+{
+    if (extra_indices) extra_indices->clear();
+    if (parent_count) *parent_count = 0;
+    if (!extra_indices || base_indices.empty()) return;
+
+    std::vector<int> base = base_indices;
+    NormalizeImageDeleteIndices(&base);
+
+    for (int idx : base) {
+        std::vector<int> children;
+        CollectSubframeIndicesForParent(idx, &children);
+
+        bool parent_has_extra = false;
+        for (int child_idx : children) {
+            if (std::binary_search(base.begin(), base.end(), child_idx)) continue;
+            if (std::find(extra_indices->begin(), extra_indices->end(), child_idx) != extra_indices->end()) continue;
+            extra_indices->push_back(child_idx);
+            parent_has_extra = true;
+        }
+        if (parent_has_extra && parent_count) (*parent_count)++;
+    }
+
+    NormalizeImageDeleteIndices(extra_indices);
+}
+
+
+// Extracted from imgui_overlay.cpp: ClearPendingImageDelete
+void ClearPendingImageDelete(void)
+{
+    g_pending_delete_base_indices.clear();
+    g_pending_delete_subframe_indices.clear();
+    g_pending_delete_parent_name[0] = '\0';
+    g_show_delete_images_confirm = false;
+}
+
+
+// Extracted from imgui_overlay.cpp: RequestDeleteImage
+void RequestDeleteImage(int idx)
+{
+    if (idx < 0 || (unsigned int)idx >= g_doc->imgcnt) return;
+
+    std::vector<int> base;
+    std::vector<int> extra;
+    base.push_back(idx);
+    CollectExtraSubframeIndices(base, &extra, NULL);
+    if (extra.empty()) {
+        DeleteImage(idx);
+        return;
+    }
+
+    IMG *img = get_img(idx);
+    snprintf(g_pending_delete_parent_name, sizeof(g_pending_delete_parent_name),
+             "%.15s", img ? img->n_s : "sprite");
+    g_pending_delete_base_indices = base;
+    g_pending_delete_subframe_indices = extra;
+    g_show_delete_images_confirm = true;
+}
+
+
+// Extracted from imgui_overlay.cpp: RequestDeleteMarkedImages
+void RequestDeleteMarkedImages(void)
+{
+    std::vector<int> base;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img->flags & 1) base.push_back(idx);
+    }
+    NormalizeImageDeleteIndices(&base);
+    if (base.empty()) return;
+
+    std::vector<int> extra;
+    CollectExtraSubframeIndices(base, &extra, NULL);
+    if (extra.empty()) {
+        int deleted = DeleteMarkedImages();
+        if (g_last_delete_removed_palettes > 0) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Deleted %d marked sprite%s and %d now-unused palette%s.",
+                     deleted, deleted == 1 ? "" : "s",
+                     g_last_delete_removed_palettes,
+                     g_last_delete_removed_palettes == 1 ? "" : "s");
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Deleted %d marked sprite%s.", deleted, deleted == 1 ? "" : "s");
+        }
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    g_pending_delete_parent_name[0] = '\0';
+    g_pending_delete_base_indices = base;
+    g_pending_delete_subframe_indices = extra;
+    g_show_delete_images_confirm = true;
+}
+
+
+// Extracted from imgui_overlay.cpp: swap_adjacent_img
+static void swap_adjacent_img(IMG *before_a, IMG *a, IMG *b)
+{
+    a->nxt_p = b->nxt_p;
+    b->nxt_p = a;
+    if (before_a) before_a->nxt_p = b;
+    else g_doc->img_p = b;
+}
+
+
+// Extracted from imgui_overlay.cpp: MoveImageUp
+void MoveImageUp(void)
+
+{
+    if (g_doc->ilselected <= 0) return;
+    doc_undo_push();   /* reorders the image list — structural */
+
+    IMG *before_prev = NULL;
+    IMG *prev = (IMG *)g_doc->img_p;
+    for (int i = 0; prev && i < g_doc->ilselected - 1; i++) {
+        before_prev = prev;
+        prev = (IMG *)prev->nxt_p;
+    }
+    if (!prev || !prev->nxt_p) return;
+    swap_adjacent_img(before_prev, prev, (IMG *)prev->nxt_p);
+    g_doc->ilselected--;
+    g_img_tex_idx = -2;
+}
+
+
+// Extracted from imgui_overlay.cpp: MoveImageDown
+void MoveImageDown(void)
+
+{
+    if (g_doc->ilselected < 0) return;
+    doc_undo_push();   /* reorders the image list — structural */
+
+    IMG *before_curr = NULL;
+    IMG *curr = (IMG *)g_doc->img_p;
+    for (int i = 0; curr && i < g_doc->ilselected; i++) {
+        before_curr = curr;
+        curr = (IMG *)curr->nxt_p;
+    }
+    if (!curr || !curr->nxt_p) return;
+    swap_adjacent_img(before_curr, curr, (IMG *)curr->nxt_p);
+    g_doc->ilselected++;
+    g_img_tex_idx = -2;
+}
+
+
+// Extracted from imgui_overlay.cpp: TogglePointTable
+void TogglePointTable(void)
+
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img) return;
+    doc_undo_push();   /* pttbl alloc/free not captured by metadata undo */
+    if (img->pttbl_p) {
+        free(img->pttbl_p);
+        img->pttbl_p = NULL;
+    } else {
+        AddPointTable(g_doc->ilselected);  /* cdecl-safe wrapper around img_pttbladd */
+    }
+}
+
+
+// Extracted from imgui_overlay.cpp: ClearExtraData
+void ClearExtraData(void)
+
+{
+    if (!g_doc->img_p) return;
+    doc_undo_push();   /* clears anipoints + pttbl contents across all images */
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
+        clear_secondary_anipoint(p);
+        if (p->pttbl_p) {
+            /* PTTBL is 40 bytes per wmpstruc.inc: 8 dw header + 5 PTBOX
+               (4 b each) + 1 PTCBOX (4 b). */
+            memset(p->pttbl_p, 0, 40);
+        }
+    }
+    g_img_tex_idx = -2;
+}
+
+
+// Extracted from imgui_overlay.cpp: ClearAll
+void ClearAll(void)
+{
+    /* Delete all images (delete index 0 repeatedly, mirroring img_del(0) loop) */
+    while (g_doc->img_p) {
+        IMG *cur = (IMG *)g_doc->img_p;
+        g_doc->img_p = cur->nxt_p;
+        if (cur->data_p)  free(cur->data_p);
+        if (cur->pttbl_p) free(cur->pttbl_p);
+        if (cur->baseline_p) free(cur->baseline_p);
+        free(cur);
+    }
+    g_doc->imgcnt = 0;
+    g_doc->ilselected = -1;
+
+    /* Delete all palettes */
+    while (g_doc->pal_p) {
+        PAL *cur = (PAL *)g_doc->pal_p;
+        g_doc->pal_p = cur->nxt_p;
+        if (cur->data_p) free(cur->data_p);
+        free(cur);
+    }
+    g_doc->palcnt = 0;
+    g_doc->plselected = -1;
+
+    /* Free sequence/script memory */
+    if (g_doc->scrseqmem_p) {
+        free(g_doc->scrseqmem_p);
+        g_doc->scrseqmem_p = NULL;
+        g_doc->scrseqbytes  = 0;
+    }
+
+    g_doc->seqcnt = 0;
+    g_doc->scrcnt = 0;
+    g_doc->damcnt = 0;
+    g_doc->ilpalloaded = -1;
+
+    /* Reset second image list */
+    if (g_doc->img2_p) {
+        while (g_doc->img2_p) {
+            IMG *cur = (IMG *)g_doc->img2_p;
+            g_doc->img2_p = cur->nxt_p;
+            if (cur->data_p)  free(cur->data_p);
+            if (cur->pttbl_p) free(cur->pttbl_p);
+            if (cur->baseline_p) free(cur->baseline_p);
+            free(cur);
+        }
+    }
+    g_doc->img2cnt     = 0;
+    g_doc->il2selected = -1;
+    g_doc->il1stprt    = 0;
+    g_doc->il21stprt   = 0;
+
+    g_img_tex_idx = -2;
+    g_palette_nav = false;
+    reset_palette_adjust_sliders();
+    g_palette_baseline_nc = 0;
+    InvalidatePaletteSync();
+}
+
+
+// Extracted from imgui_overlay.cpp: SwitchImageList
+void SwitchImageList(void)
+
+{
+    void *tmp_p = g_doc->img_p;  g_doc->img_p = g_doc->img2_p;  g_doc->img2_p = tmp_p;
+    unsigned int tmp_cnt = g_doc->imgcnt;  g_doc->imgcnt = g_doc->img2cnt;  g_doc->img2cnt = tmp_cnt;
+    int tmp_sel = g_doc->ilselected;  g_doc->ilselected = g_doc->il2selected;  g_doc->il2selected = tmp_sel;
+    unsigned int tmp_prt = g_doc->il1stprt;  g_doc->il1stprt = g_doc->il21stprt;  g_doc->il21stprt = tmp_prt;
+    g_img_tex_idx = -2;
+}
+
