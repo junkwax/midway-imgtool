@@ -1818,7 +1818,19 @@ void DrawMainLayout(void)
     ImGui::PopStyleVar();
 
     /* ===== BOTTOM PALETTE BAR ===== */
-    DrawBottomPaletteBar(ImVec2(sw, PALETTE_H));
+    ImGui::SetNextWindowPos(ImVec2(0, sh - PALETTE_H));
+    ImGui::SetNextWindowSize(ImVec2(sw, PALETTE_H));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 4));
+    ImGui::Begin("##palette", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
+    {
+        DrawBottomPaletteBar(ImVec2(sw, PALETTE_H));
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+
 
     DrawRenameDialog();
 
