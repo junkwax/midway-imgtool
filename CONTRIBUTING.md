@@ -80,8 +80,8 @@ matching `CHANGELOG.md` section. Make sure CI is green before requesting review.
 ## Codebase orientation
 
 - `platform/` — the app: SDL2/ImGui UI, IMG/PAL I/O, DOS-compat shims.
-  - `imgui_overlay.cpp` is the large UI module currently being split up — see
-    [`refactoring_plan.md`](refactoring_plan.md) before adding to it.
+  - `imgui_overlay.cpp` is now a thin overlay coordinator. Prefer adding new UI
+    code to the owning `ui_*` module instead of growing the coordinator again.
   - `palette_math.{h,cpp}`, `img_io.cpp`, `load2_verify.cpp`, `lod_parser.cpp`,
     `mk2_hitbox.cpp`, `mk2_fatality.cpp` — focused modules.
   - `shim_*.c` emulate legacy DOS behaviors for the ported business logic.
@@ -90,18 +90,20 @@ matching `CHANGELOG.md` section. Make sure CI is green before requesting review.
 - Platform-specific code is guarded with `#ifdef _WIN32`; keep new OS-specific
   calls behind the same guards so the Linux/macOS builds stay green.
 
-## Working on the imgui_overlay split
+## Working on UI modules
 
-The overlay deconstruction follows a strict, low-risk loop so a half-finished
-attempt can never leave the tree broken. Per slice:
+Keep UI changes close to the module that owns the behavior:
 
-1. Pick one cohesive, low-coupling group of functions.
-2. Move it into a new `.cpp`/`.h` pair; un-`static` the moved symbols and
-   declare them in the new header.
-3. `#include` the new header from `imgui_overlay.cpp`; add the `.cpp` to
-   `CMakeLists.txt`.
-4. **Build green, then commit** — one slice per commit.
+- `ui_canvas.*` — canvas drawing, selection, paste/free-transform, World View,
+  and sprite interaction.
+- `ui_modals.*` — dialogs, import/export flows, and confirmation prompts.
+- `ui_palette.*` — palette panels, palette operations, color picking, and HSL
+  controls.
+- `ui_main.*` — main window layout, menu bar, image list, and high-level edit
+  actions.
+- `ui_tools.*`, `ui_timeline.*`, `ui_undo.*`, and `ui_autochop.*` own their
+  named subsystems.
 
-The compiler is the source of truth — do not extract symbols with regex/text
-scripts. See [`refactoring_plan.md`](refactoring_plan.md) for the slice
-checklist and ordering.
+When moving or adding UI code, build and run CTest before committing. The
+compiler is the source of truth; avoid one-off regex/text scripts for source
+rewrites.

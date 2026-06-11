@@ -2,8 +2,8 @@
  * platform/image_ops.h
  * Pure indexed-image analysis helpers (edge / stroke detection).
  *
- * Extracted from imgui_overlay.cpp (refactoring_plan.md, Phase A). These
- * helpers operate on raw indexed-pixel buffers and PAL color data; they touch
+ * Extracted from imgui_overlay.cpp. These helpers operate on raw indexed-pixel
+ * buffers and PAL color data; they touch
  * no UI globals, document state, or undo history. They back the Strip Edge and
  * Hard Stroke Remover operations, whose g_doc-walking wrappers stay in the
  * overlay.

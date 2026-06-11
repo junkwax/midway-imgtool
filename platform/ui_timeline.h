@@ -3,10 +3,9 @@
  * Animation-timeline frame model: the ordered list of frames and the
  * per-frame hold counts, plus the operations that mutate them.
  *
- * Phase C of the overlay split (refactoring_plan.md) — the first UI subsystem
- * lifted out of imgui_overlay.cpp. This is just the frame model: it has no
- * ImGui or document (g_doc) coupling. The timeline rendering, playback, and
- * composite-preview code stays in the overlay for now and calls in here.
+ * Extracted from the overlay split as the first UI subsystem lifted out of
+ * imgui_overlay.cpp. Timeline rendering, playback, and composite-preview code
+ * live here alongside the frame model.
  *************************************************************/
 #pragma once
 #include <vector>

@@ -3,7 +3,7 @@
  * Small pure helpers over IMG records: name extraction and the signed -> IMG
  * 16-bit word clamp used for anipoint / offset coordinates.
  *
- * Phase C of the overlay split (refactoring_plan.md). No g_doc / ImGui coupling.
+ * Extracted from the overlay split. No g_doc / ImGui coupling.
  *************************************************************/
 #pragma once
 #include <string>

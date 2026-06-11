@@ -2,8 +2,8 @@
  * platform/anipoint.h
  * Pure anipoint predicates + sprite-name sequence parsing.
  *
- * Phase C of the overlay split (refactoring_plan.md). These helpers classify
- * an IMG's secondary anipoint and parse animation-sequence names
+ * Extracted from the overlay split. These helpers classify an IMG's secondary
+ * anipoint and parse animation-sequence names
  * (e.g. JCWALK1 -> JCWALK), which the overlay's anipoint-propagation editing
  * builds on. No g_doc / ImGui / undo coupling, so they live here as standalone,
  * unit-testable logic.

@@ -2,8 +2,8 @@
  * platform/anipoint_edit.h
  * Anipoint editing with animation-sequence propagation.
  *
- * Phase C of the overlay split (refactoring_plan.md). Unlike the pure anipoint
- * module, these helpers mutate the active document (g_doc), push undo, mark
+ * Extracted from the overlay split. Unlike the pure anipoint module, these
+ * helpers mutate the active document (g_doc), push undo, mark
  * dirty, and invalidate thumbnails — so they sit a layer up, atop anipoint +
  * img_util + the ui_internal / ui_timeline services.
  *

@@ -2,12 +2,10 @@
  * platform/palette_math.h
  * Pure 15-bit palette-word color math helpers.
  *
- * Extracted from imgui_overlay.cpp as the first step of the
- * overlay modularization (see refactoring_plan.md, Phase 2:
- * decouple business logic from UI). These functions operate
- * purely on raw palette buffers / PAL structs and packed
- * 15-bit (5/5/5) color words — they touch no UI global state,
- * so they live here as a standalone, unit-testable unit.
+ * Extracted from imgui_overlay.cpp while decoupling business logic from UI.
+ * These functions operate purely on raw palette buffers / PAL structs and
+ * packed 15-bit (5/5/5) color words — they touch no UI global state, so they
+ * live here as a standalone, unit-testable unit.
  *************************************************************/
 #pragma once
 #include "img_format.h"   /* PAL, rgb8_to_pal_word */

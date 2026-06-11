@@ -2,8 +2,8 @@
  * platform/world_render.h
  * Sprite -> SDL texture rendering for the World View / composite previews.
  *
- * Phase C of the overlay split (refactoring_plan.md). These helpers turn an
- * indexed IMG (in a given Document's palette) into an ARGB SDL texture for
+ * Extracted from the overlay split. These helpers turn an indexed IMG (in a
+ * given Document's palette) into an ARGB SDL texture for
  * ImGui to draw, and manage the per-frame lifetime of those scratch textures.
  * Coupled to the SDL renderer and the active palette, but free of ImGui/panel
  * logic — the World View and composite-preview panels call in here.
