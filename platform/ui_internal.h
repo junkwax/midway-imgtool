@@ -367,6 +367,9 @@ struct WorldViewState;
 namespace mk2 {
     struct Document;
 }
+namespace mk2fatal {
+    struct Document;
+}
 
 extern bool g_anipoint_drag1;
 extern bool g_anipoint_drag2;
@@ -520,10 +523,67 @@ int ApplyMarkedLikenessToSelected(void);
 extern bool g_show_new_img_confirm;
 extern bool g_pending_quit;
 
+/* ---- Shared modal pending action state ---- */
+enum class PendingAction { None, Quit, OpenDialog, OpenPath, OpenLodDialog, CloseTab };
+extern bool          g_show_unsaved_confirm;
+extern PendingAction g_pending_action;
+extern std::string   g_pending_action_path;
+extern int           g_pending_tab_index;
+extern bool          g_show_delete_images_confirm;
+extern char          g_pending_delete_parent_name[16];
+extern std::vector<int> g_pending_delete_base_indices;
+extern std::vector<int> g_pending_delete_subframe_indices;
 
+void AddNewBlankImage(int w = 32, int h = 32);
 
+/* ---- Shared drift texture & ASM doc variables ---- */
+extern SDL_Texture  *g_load2_drift_tex;
+extern int           g_load2_drift_tex_w;
+extern int           g_load2_drift_tex_h;
+extern Document     *g_asm_anim_doc;
+extern int           g_asm_anim_doc_idx;
+extern bool          g_asm_lane_enabled;
+extern bool          g_asm_opp_enabled;
 
+void update_drift_texture(IMG *img);
+void Mk2SelectRecord(int rec_idx);
 
+struct SpriteLayer;
+void flip_layer_horizontal(SpriteLayer *L);
+void flip_layer_vertical(SpriteLayer *L);
+void flatten_img_layer(IMG *img);
+void delete_img_layer(IMG *img);
 
+/* ---- AutoChop / AutoSplit target structures ---- */
+struct AutoSplitTargetSummary {
+    AutoChopPreview selected_preview;
+    int target_count;
+    int split_count;
+    int skipped_count;
+    int bpp;
+    long long src_zcom_bits;
+    long long split_zcom_bits;
+};
 
+extern int g_last_delete_removed_palettes;
+extern bool g_show_mk2_unsaved_confirm;
+extern bool g_show_mk2_fatality_unsaved_confirm;
+extern const char *g_help_text;
 
+extern mk2fatal::Document g_mk2_fatality_doc;
+extern bool g_mk2_fatality_status_sticky;
+extern std::string g_mk2_fatality_status;
+
+void BuildAutoChopTargetSummary(AutoChopPreview *out);
+void BuildAutoSplitTargetSummary(bool vertical, AutoSplitTargetSummary *summary);
+void AutoChopSetThreeBandSize(void);
+int ApplyBestAutoSplitToTargets(bool vertical);
+void NormalizeImageDeleteIndices(std::vector<int> *indices);
+int DeleteImagesByIndices(std::vector<int> indices);
+void ClearPendingImageDelete(void);
+int FindDirtyDocumentIndex(void);
+
+static const int k_auto_split_min_side = 5;
+extern int g_mk2_char_idx;
+extern int g_mk2_move_idx;
+extern char g_mk2_path[1024];

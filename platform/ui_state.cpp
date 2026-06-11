@@ -1,3 +1,4 @@
+#include "mk2_fatality.h"
 /*************************************************************
  * platform/ui_state.cpp
  * Definitions for the overlay's shared file-scope state declared in
@@ -153,7 +154,33 @@ bool g_request_locate_opp_img = false;
 bool g_show_new_img_confirm = false;
 bool g_pending_quit = false;
 
+/* ---- Shared modal pending action state ---- */
+bool          g_show_unsaved_confirm = false;
+PendingAction g_pending_action = PendingAction::None;
+std::string   g_pending_action_path;
+int           g_pending_tab_index = -1;
+bool          g_show_delete_images_confirm = false;
+char          g_pending_delete_parent_name[16] = {0};
+std::vector<int> g_pending_delete_base_indices;
+std::vector<int> g_pending_delete_subframe_indices;
 
+/* ---- Shared drift texture & ASM doc variables ---- */
+SDL_Texture  *g_load2_drift_tex = NULL;
+int           g_load2_drift_tex_w = 0;
+int           g_load2_drift_tex_h = 0;
+Document     *g_asm_anim_doc = NULL;
+int           g_asm_anim_doc_idx = -1;
+bool          g_asm_lane_enabled = false;
+bool          g_asm_opp_enabled = false;
 
+int g_last_delete_removed_palettes = 0;
+bool g_show_mk2_unsaved_confirm = false;
+bool g_show_mk2_fatality_unsaved_confirm = false;
 
+mk2fatal::Document g_mk2_fatality_doc;
+bool g_mk2_fatality_status_sticky = false;
+std::string g_mk2_fatality_status;
 
+int g_mk2_char_idx = 0;
+int g_mk2_move_idx = 0;
+char g_mk2_path[1024] = "";

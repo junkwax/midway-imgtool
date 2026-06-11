@@ -271,14 +271,7 @@ static int          g_rename_start_number = 1;
 
 /* ImageListSort is defined in ui_internal.h and defined in ui_state.cpp */
 
-/* Unsaved changes confirmation */
-static bool g_show_unsaved_confirm = false;
-/* Deferred action that the unsaved-changes dialog should run after the user
-   picks Save or Discard. One of: quit, open-file-dialog, open-specific-path. */
-enum class PendingAction { None, Quit, OpenDialog, OpenPath, OpenLodDialog, CloseTab };
-static PendingAction g_pending_action      = PendingAction::None;
-static std::string   g_pending_action_path; /* only used when action == OpenPath */
-static int           g_pending_tab_index = -1;
+/* Unsaved changes confirmation — now defined in ui_state.cpp */
 int           g_doc_tab_select_request = 0;
 /* g_pending_quit defined in ui_state.cpp */
 
@@ -344,13 +337,7 @@ static int  g_new_blank_h = 32;
 
 
 
-/* Deferred sprite delete confirmation. When a parent sprite has inferred
-   subframes, the delete path pauses here so the user can choose parent-only
-   or parent+children without losing the normal one-key delete workflow. */
-static bool g_show_delete_images_confirm = false;
-static std::vector<int> g_pending_delete_base_indices;
-static std::vector<int> g_pending_delete_subframe_indices;
-static char g_pending_delete_parent_name[16] = {0};
+/* Deferred sprite delete confirmation variables now defined in ui_state.cpp */
 
 void InvalidatePaletteSync(void)
 {
@@ -418,7 +405,7 @@ void imgtool_toggle_timeline_play(void)
 
 void undo_push(void);
 
-static int  FindDirtyDocumentIndex(void);
+int FindDirtyDocumentIndex(void);
 static bool HasDirtyDocuments(void);
 static bool clipboard_secondary_anipoint_in_use(void);
 static void MakeDerivedImageName(const char *base, const char *suffix, char out[16]);
@@ -741,34 +728,34 @@ static int                g_palette_usage_low_colors = 0;    /* excludes #0 */
 static int                g_palette_usage_low_threshold = 8;
 
 /* ---- MK2 strike-table editor state ---- */
-static char          g_mk2_path[1024] = "";   /* user picks via Browse or types directly */
-static std::string   g_mk2_status;        /* last load/save message */
-static bool          g_mk2_status_sticky = false; /* errors stay until next action; success messages clear on edit */
-static int           g_mk2_char_idx = 0;  /* selected char-table index */
-static int           g_mk2_move_idx = 0;  /* selected move index within that table */
-static char          g_mk2_search[64] = ""; /* filter for the move list */
+
+        /* last load/save message */
+ /* errors stay until next action; success messages clear on edit */
+  /* selected char-table index */
+  /* selected move index within that table */
+ /* filter for the move list */
 
 /* ---- MK2 fatality lab state ---- */
 /* g_show_mk2_fatality defined in ui_state.cpp */
-static mk2fatal::Document   g_mk2_fatality_doc;
-static char                 g_mk2_fatality_root[1024] = "..\\mk2-main";
-static std::string          g_mk2_fatality_status;
-static bool                 g_mk2_fatality_status_sticky = false;
-static int                  g_mk2_fatality_command_idx = 0;
-static int                  g_mk2_fatality_combo_idx = 0;
-static int                  g_mk2_fatality_anim_idx = 0;
-static int                  g_mk2_fatality_selected_line = 0;
-static char                 g_mk2_fatality_filter[96] = "";
+
+
+
+
+
+
+
+
+
 static char                 g_mk2_fatality_insert_anim[256] = "\t.long\t0";
 static char                 g_mk2_fatality_insert_combo[256] = "\t.word\tsw_right";
-static bool                 g_mk2_fatality_body_only = false;
-static mk2fatal::AssetPlan  g_mk2_fatality_plan;
-static std::string          g_mk2_fatality_stage_status;
-static int                  g_mk2_fatality_fighter_idx = 0;
-static int                  g_mk2_fatality_selected_fatality = 0;
-static int                  g_mk2_fatality_attacker_anim_idx = 0;
-static int                  g_mk2_fatality_victim_anim_idx = 0;
-static float                g_mk2_fatality_preview_fps = 8.0f;
+
+
+
+
+
+
+
+
 
 /* Resolve the current MK2 record index, or -1 if no valid selection. */
 int Mk2CurrentRecord(void) {
@@ -836,7 +823,7 @@ void Mk2AutoSelectFromImg(void)
 
 /* Move the char/move selection to whichever character table contains
    the given record index, so the user sees the result of an undo/redo. */
-static void Mk2SelectRecord(int rec_idx) {
+void Mk2SelectRecord(int rec_idx) {
     if (rec_idx < 0 || rec_idx >= (int)g_mk2_doc.records.size()) return;
     const std::string &lbl = g_mk2_doc.records[rec_idx].label;
     for (int ci = 0; ci < (int)g_mk2_doc.char_tables.size(); ci++) {
@@ -862,8 +849,8 @@ static void Mk2SelectRecord(int rec_idx) {
 /* g_world_temp_textures + ClearWorldTempTextures + BuildWorldSpriteTexture +
    doc_get_pal now live in world_render.{h,cpp}. */
 static int   g_load2_selected_idx = -1;          /* index into g_load2_report.issues */
-static SDL_Texture *g_load2_drift_tex = NULL;
-static int   g_load2_drift_tex_w = 0, g_load2_drift_tex_h = 0;
+
+
 
 /* ---- ASM animation viewer ----
    Parses a MK2 per-character ASM (e.g. MKRD.ASM) and lets the user inspect /
@@ -872,27 +859,27 @@ static int   g_load2_drift_tex_w = 0, g_load2_drift_tex_h = 0;
    piece symbols (RNSTANCE1A,...,0) that resolve to IMG frames by name. */
 std::vector<AsmAnim> g_asm_anims;
 int          g_asm_anim_sel = -1;
-static std::string  g_asm_anim_file;
+
 bool         g_show_asm_anim = false;
-static bool         g_asm_anim_play = true;
-static float        g_asm_anim_fps = 12.0f;
-static float        g_asm_anim_timer = 0.0f;
-static int          g_asm_anim_frame = 0;
-static SDL_Texture *g_asm_anim_tex = NULL;
-static int          g_asm_anim_tex_w = 0, g_asm_anim_tex_h = 0;
-static int          g_asm_anim_canvas_w = 0, g_asm_anim_canvas_h = 0;
-static int          g_asm_anim_minx = 0, g_asm_anim_miny = 0; /* anipoint-anchored bbox origin */
-static int          g_asm_anim_last_drawn = -1;
-static Document    *g_asm_anim_doc = NULL;      /* doc the anim's frames resolved against */
-static int          g_asm_anim_doc_idx = -1;
-static bool         g_asm_lane_enabled = false; /* show the selected anim as a World View lane */
+
+
+
+
+
+
+
+ /* anipoint-anchored bbox origin */
+
+      /* doc the anim's frames resolved against */
+
+ /* show the selected anim as a World View lane */
 /* g_request_save_world_asm, g_request_load_asm, g_request_load_opp_asm, g_request_locate_img, g_request_locate_opp_img, g_request_asm_autoload, g_request_asm_opp_autoload defined in ui_state.cpp */
 std::vector<AsmAnim> g_asm_opp_anims;
 int          g_asm_opp_sel = -1;
-static std::string  g_asm_opp_file;
+
 Document    *g_asm_opp_doc = NULL;
 int          g_asm_opp_doc_idx = -1;
-static bool         g_asm_opp_enabled = false;
+
 bool         g_asm_dialog_opponent = false;
 bool         g_openimg_for_asm = false;
 bool         g_openimg_for_opp = false;
@@ -1132,7 +1119,7 @@ bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
  * sprite's current pixels at full color, then tints rows where the
  * baseline-vs-current zero-shape differs in semi-transparent red so the
  * user can see exactly which scanlines will shift LOAD2's destbits. */
-static void update_drift_texture(IMG *img)
+void update_drift_texture(IMG *img)
 {
     int baseline_w = img ? (img->baseline_w ? (int)img->baseline_w : (int)img->w) : 0;
     int baseline_h = img ? (img->baseline_h ? (int)img->baseline_h : (int)img->h) : 0;
@@ -1194,9 +1181,7 @@ static float g_histogram_data[256] = {0};
 static float g_histogram_max = 0.0f;
 static int   g_histogram_img_count = 0;
 
-/* ---- Bulk Restore Regex state ---- */
-/* g_show_restore_regex defined in ui_state.cpp */
-static const int k_auto_split_min_side = 5;
+
 
 static IMG *AutoChopPrimaryTarget(int *out_idx = NULL)
 {
@@ -1221,7 +1206,7 @@ static IMG *AutoChopPrimaryTarget(int *out_idx = NULL)
     return NULL;
 }
 
-static void AutoChopSetThreeBandSize(void)
+void AutoChopSetThreeBandSize(void)
 {
     int idx = -1;
     IMG *img = AutoChopPrimaryTarget(&idx);
@@ -1236,7 +1221,8 @@ static void AutoChopSetThreeBandSize(void)
         g_doc->ilselected = idx;
 }
 
-void OpenAutoChopDialog(void)
+void OpenAutoChopDialog(void)
+
 {
     AutoChopSetThreeBandSize();
     g_show_auto_chop = true;
@@ -1584,7 +1570,7 @@ bool SelectedImageWillAutoChop(void)
     return img && (img->flags & 1);
 }
 
-static void BuildAutoChopTargetSummary(AutoChopPreview *out)
+void BuildAutoChopTargetSummary(AutoChopPreview *out)
 {
     if (!out) return;
     AutoChopPreviewClear(out);
@@ -1627,15 +1613,7 @@ static void CollectAutoChopTargets(std::vector<AutoChopTargetRef> &targets)
     }
 }
 
-struct AutoSplitTargetSummary {
-    AutoChopPreview selected_preview;
-    int target_count;
-    int split_count;
-    int skipped_count;
-    int bpp;
-    long long src_zcom_bits;
-    long long split_zcom_bits;
-};
+
 
 static void AutoSplitTargetSummaryClear(AutoSplitTargetSummary *s)
 {
@@ -1649,7 +1627,7 @@ static void AutoSplitTargetSummaryClear(AutoSplitTargetSummary *s)
     s->split_zcom_bits = 0;
 }
 
-static void BuildAutoSplitTargetSummary(bool vertical,
+void BuildAutoSplitTargetSummary(bool vertical,
                                         AutoSplitTargetSummary *summary)
 {
     if (!summary) return;
@@ -1735,7 +1713,7 @@ static bool CreateAutoSplitPiece(IMG *master,
     return true;
 }
 
-static int ApplyBestAutoSplitToTargets(bool vertical)
+int ApplyBestAutoSplitToTargets(bool vertical)
 {
     std::vector<AutoChopTargetRef> targets;
     CollectAutoChopTargets(targets);
@@ -1852,9 +1830,9 @@ static bool g_restore_regex_error = false;
  * edits to the master, leaving every untouched pixel alone). Diff is the
  * right choice when adding a small detail to a master sprite. */
 static int g_restore_diff_mode = 1;
-static int g_last_delete_removed_palettes = 0;
 
-static void NormalizeImageDeleteIndices(std::vector<int> *indices)
+
+void NormalizeImageDeleteIndices(std::vector<int> *indices)
 {
     if (!indices) return;
     indices->erase(std::remove_if(indices->begin(), indices->end(),
@@ -1904,7 +1882,7 @@ static void RemapTimelineAfterImageDelete(const std::vector<int> &deleted)
     ClearTimelineThumbCache();
 }
 
-static int DeleteImagesByIndices(std::vector<int> indices)
+int DeleteImagesByIndices(std::vector<int> indices)
 {
     g_last_delete_removed_palettes = 0;
     NormalizeImageDeleteIndices(&indices);
@@ -2097,7 +2075,7 @@ static void CollectExtraSubframeIndices(const std::vector<int> &base_indices,
     NormalizeImageDeleteIndices(extra_indices);
 }
 
-static void ClearPendingImageDelete(void)
+void ClearPendingImageDelete(void)
 {
     g_pending_delete_base_indices.clear();
     g_pending_delete_subframe_indices.clear();
@@ -2171,7 +2149,8 @@ static void swap_adjacent_img(IMG *before_a, IMG *a, IMG *b)
     else g_doc->img_p = b;
 }
 
-void MoveImageUp(void)
+void MoveImageUp(void)
+
 {
     if (g_doc->ilselected <= 0) return;
     doc_undo_push();   /* reorders the image list — structural */
@@ -2188,7 +2167,8 @@ void MoveImageUp(void)
     g_img_tex_idx = -2;
 }
 
-void MoveImageDown(void)
+void MoveImageDown(void)
+
 {
     if (g_doc->ilselected < 0) return;
     doc_undo_push();   /* reorders the image list — structural */
@@ -2318,7 +2298,8 @@ static void SetPaletteOfMarked(void)
 /* Toggle the selected image's point table: allocate via the asm pool when
    absent (so mem_free can release it later), free when present. No "are you
    sure" — matches DeleteImage's no-confirm behavior. */
-void TogglePointTable(void)
+void TogglePointTable(void)
+
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img) return;
@@ -2334,7 +2315,8 @@ void TogglePointTable(void)
 /* Clear all "extra" anipt/pttbl data on every image. Mirrors ilst_clrxdata:
    clears the secondary anipoint sentinel and the contents of any attached
    PTTBL (without freeing the PTTBL itself, so toggle state is preserved). */
-void ClearExtraData(void)
+void ClearExtraData(void)
+
 {
     if (!g_doc->img_p) return;
     doc_undo_push();   /* clears anipoints + pttbl contents across all images */
@@ -2610,7 +2592,8 @@ void ClearAll(void)
 
 /* Swap to the alternate (second) image list.  Purely swaps globals —
    no ASM dependencies. */
-void SwitchImageList(void)
+void SwitchImageList(void)
+
 {
     void *tmp_p = g_doc->img_p;  g_doc->img_p = g_doc->img2_p;  g_doc->img2_p = tmp_p;
     unsigned int tmp_cnt = g_doc->imgcnt;  g_doc->imgcnt = g_doc->img2cnt;  g_doc->img2cnt = tmp_cnt;
@@ -2621,7 +2604,8 @@ void SwitchImageList(void)
 
 /* Set the selected image's PTTBL.ID to (g_doc->il2selected + 1).  If no PTTBL
    exists for the image, allocate one via the ASM memory pool. */
-void SetIDFromSecondList(void)
+void SetIDFromSecondList(void)
+
 {
     mark_dirty();
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -2756,7 +2740,7 @@ err:
  * Width and height are clamped to 1..1024 — the IMAGE_disk fields are 16-bit
  * but the legacy toolchain breaks well below that, and a 1024×1024 sprite is
  * already four MiB so larger sizes are unlikely to be useful for authoring. */
-static void AddNewBlankImage(int w = 32, int h = 32)
+void AddNewBlankImage(int w, int h)
 {
     if (w < 1)    w = 1;
     if (w > 1024) w = 1024;
@@ -5045,7 +5029,8 @@ static int LikenessCleanActorPaletteOutliers(unsigned char *target_pix,
     return changed;
 }
 
-int ApplyMarkedLikenessToSelected(void)
+int ApplyMarkedLikenessToSelected(void)
+
 {
     int target_idx = g_doc->ilselected;
     IMG *target = (target_idx >= 0) ? get_img(target_idx) : NULL;
@@ -5384,7 +5369,8 @@ static int RemoveHardStrokeFromImage(IMG *img, PAL *pal, int max_width, bool app
     return changed;
 }
 
-int RemoveHardStrokeFromTargets(int max_width)
+int RemoveHardStrokeFromTargets(int max_width)
+
 {
     int marked = CountMarkedImages();
     int selected = g_doc->ilselected;
@@ -5613,7 +5599,8 @@ void StripMarkedImages(int max_transparent_neighbors, int specific_color)
 }
 
 /* ---- Dither Replace ---- */
-void DitherReplaceMarkedImages(int specific_color)
+void DitherReplaceMarkedImages(int specific_color)
+
 {
     mark_dirty();
     IMG *img = (IMG *)g_doc->img_p;
@@ -5638,7 +5625,8 @@ void DitherReplaceMarkedImages(int specific_color)
 }
 
 /* ---- Least-Squares Reduce (Shrink Palette/Auto-Crop) ---- */
-void LeastSquaresReduceMarked()
+void LeastSquaresReduceMarked()
+
 {
     mark_dirty();
     IMG *img = (IMG *)g_doc->img_p;
@@ -5697,7 +5685,7 @@ void LeastSquaresReduceMarked()
 
 /* Help modal */
 /* g_show_help, g_show_debug, and g_show_about are defined in ui_state.cpp */
-static const char *g_help_text =
+const char *g_help_text =
     R"IMA(IMAGE TOOL HELP
 ================================================================================
 
@@ -6337,7 +6325,8 @@ static void undo_apply(int idx)
 }
 
 /* ---- Copy/Paste helpers (pixel data only) ---- */
-void copy_image(bool cut)
+void copy_image(bool cut)
+
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
@@ -6487,7 +6476,8 @@ void copy_image(bool cut)
     }
 }
 
-void PasteClipboardAsNewImage(void)
+void PasteClipboardAsNewImage(void)
+
 {
     if (!g_clipboard.valid || !g_clipboard.data_p || g_clipboard.w == 0 || g_clipboard.h == 0) return;
 
@@ -6555,14 +6545,16 @@ void PasteClipboardAsNewImage(void)
     g_restore_msg_timer = 4.0f;
 }
 
-void CutSelectionToNewImage(void)
+void CutSelectionToNewImage(void)
+
 {
     if (g_doc->ilselected < 0) return;
     copy_image(true);
     if (g_clipboard.valid) PasteClipboardAsNewImage();
 }
 
-void CopySelectionToNewImage(void)
+void CopySelectionToNewImage(void)
+
 {
     if (g_doc->ilselected < 0) return;
     copy_image(false);
@@ -6824,7 +6816,8 @@ bool paste_preview_rgba(unsigned char src_ci, unsigned char dst_ci,
    is committed with Enter. Operates on palette indices, so it is lossless.
    The floating overlay is drawn straight from the clipboard each frame, so the
    preview updates immediately. */
-void flip_clipboard_horizontal(void)
+void flip_clipboard_horizontal(void)
+
 {
     if (!g_clipboard.valid || !g_clipboard.data_p) return;
     int w = g_clipboard.w, h = g_clipboard.h, stride = g_clipboard.stride;
@@ -6839,7 +6832,8 @@ void flip_clipboard_horizontal(void)
     }
 }
 
-void flip_clipboard_vertical(void)
+void flip_clipboard_vertical(void)
+
 {
     if (!g_clipboard.valid || !g_clipboard.data_p) return;
     int w = g_clipboard.w, h = g_clipboard.h, stride = g_clipboard.stride;
@@ -6854,7 +6848,7 @@ void flip_clipboard_vertical(void)
 }
 
 /* Permanently merge the layer into the host image's pixels and drop it. */
-static void flatten_img_layer(IMG *img)
+void flatten_img_layer(IMG *img)
 {
     SpriteLayer *L = img_layer(img);
     if (!L || !img->data_p) { if (L) { free(img->layer_p); img->layer_p = NULL; } return; }
@@ -6867,12 +6861,12 @@ static void flatten_img_layer(IMG *img)
     g_img_tex_idx = -2;
 }
 
-static void delete_img_layer(IMG *img)
+void delete_img_layer(IMG *img)
 {
     if (img && img->layer_p) { free(img->layer_p); img->layer_p = NULL; g_img_tex_idx = -2; }
 }
 
-static void flip_layer_horizontal(SpriteLayer *L)
+void flip_layer_horizontal(SpriteLayer *L)
 {
     if (!L) return;
     unsigned char *p = layer_pixels(L);
@@ -6883,7 +6877,7 @@ static void flip_layer_horizontal(SpriteLayer *L)
         }
     }
 }
-static void flip_layer_vertical(SpriteLayer *L)
+void flip_layer_vertical(SpriteLayer *L)
 {
     if (!L) return;
     unsigned char *p = layer_pixels(L);
@@ -6898,7 +6892,8 @@ static void flip_layer_vertical(SpriteLayer *L)
    clipboard indices are remapped to the host palette first (same nearest-color
    mapping a normal paste uses) so the layer composites with a plain copy.
    Replaces any existing layer (single-overlay model). */
-void drop_paste_to_layer(void)
+void drop_paste_to_layer(void)
+
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
@@ -7126,7 +7121,8 @@ static void scale_clipboard_to_fit(int max_w, int max_h)
 
 /* Marquee-select the entire current sprite. Adobe's Ctrl+A. Stored as a
    rectangle (not a mask) since "everything" is trivially representable. */
-void select_all(void)
+void select_all(void)
+
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || img->w == 0 || img->h == 0) return;
@@ -7142,7 +7138,8 @@ void select_all(void)
 /* Clear any active marquee / lasso / wand selection. Adobe's Ctrl+D. Does
    NOT cancel a floating paste — that's Esc's job, and overloading Ctrl+D
    to do both would be surprising. */
-void deselect_all(void)
+void deselect_all(void)
+
 {
     g_grid_sel.active   = false;
     g_grid_sel.dragging = false;
@@ -7156,7 +7153,8 @@ void deselect_all(void)
 
 /* Invert the current selection. Adobe's Shift+Ctrl+I. Promotes a rect
    selection to a pixel mask so the inversion can be expressed precisely. */
-void invert_selection(void)
+void invert_selection(void)
+
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || img->w == 0 || img->h == 0) return;
@@ -7308,7 +7306,8 @@ void selection_finish_add_drag(int sw, int sh)
     g_selection_add_mask.clear();
 }
 
-void paste_image(void)
+void paste_image(void)
+
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
@@ -7962,7 +7961,8 @@ static bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool tri
     return true;
 }
 
-void OpenBulkResizeDialog(void)
+void OpenBulkResizeDialog(void)
+
 {
     g_bulk_resize_scale_x = 100;
     g_bulk_resize_scale_y = 100;
@@ -8407,8 +8407,8 @@ int imgui_overlay_wants_keyboard(void)
 /* MK2 strike-table unsaved-changes confirm. Independent of the IMG
    unsaved-changes flow because it writes a completely different file
    (MKSTK.ASM, not the IMG container). */
-static bool g_show_mk2_unsaved_confirm = false;
-static bool g_show_mk2_fatality_unsaved_confirm = false;
+
+
 
 int imgui_overlay_check_unsaved_and_quit(void)
 {
@@ -8450,3293 +8450,6 @@ void imgui_overlay_mark_saved(void)
 /* =========================================================
    Main render function — called each frame
    ========================================================= */
-void OpenRenameImage(void)
-{
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img) return;
-    g_rename_target = RenameTarget::Image;
-    g_rename_idx = g_doc->ilselected;
-    strncpy(g_rename_buf, img->n_s, 15);
-    g_rename_buf[15] = '\0';
-    g_show_rename = true;
-}
-
-void OpenRenamePalette(int idx)
-{
-    PAL *pal = get_pal(idx);
-    if (!pal) return;
-    g_rename_target = RenameTarget::Palette;
-    g_rename_idx = idx;
-    strncpy(g_rename_buf, pal->n_s, 9);
-    g_rename_buf[9] = '\0';
-    g_show_rename = true;
-}
-
-void OpenRenameMarkedImages(void)
-{
-    /* Find first marked image to seed the buffer with its name. */
-    IMG *first = NULL;
-    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
-        if (p->flags & 1) { first = p; break; }
-    }
-    if (!first) return;
-    g_rename_target = RenameTarget::MarkedImages;
-    g_rename_idx = -1;
-    strncpy(g_rename_buf, first->n_s, 12);
-    g_rename_buf[12] = '\0';
-    g_rename_tail_existing = false;
-    g_rename_start_number = 1;
-    g_show_rename = true;
-}
-
-static void ApplyMarkedImageRename(const char *base)
-{
-    if (!base || (!*base && !g_rename_tail_existing)) return;
-    doc_undo_push();
-    bool prepend = (base[0] == '+') && !g_rename_tail_existing;
-    const char *core = prepend ? base + 1 : base;
-    int n = g_rename_start_number;
-    if (n < 0) n = 0;
-    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
-        if (!(p->flags & 1)) continue;
-        char old[16];
-        strncpy(old, p->n_s, 15); old[15] = '\0';
-        if (g_rename_tail_existing) {
-            snprintf(p->n_s, sizeof(p->n_s), "%s%s%d", old, core, n);
-        } else if (prepend) {
-            snprintf(p->n_s, sizeof(p->n_s), "%s%s", core, old);
-        } else {
-            snprintf(p->n_s, sizeof(p->n_s), "%s%d", core, n);
-        }
-        n++;
-        p->n_s[15] = '\0';
-    }
-}
-
-void DrawRenameDialog(void)
-{
-    const char *rename_title =
-        g_rename_target == RenameTarget::Image          ? "Rename Image" :
-        g_rename_target == RenameTarget::Palette        ? "Rename Palette" :
-                                                          "Rename Marked Images";
-    if (g_show_rename) ImGui::OpenPopup(rename_title);
-    if (!ImGui::BeginPopupModal(rename_title, &g_show_rename, ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    if (g_rename_target == RenameTarget::MarkedImages) {
-        ImGui::TextWrapped("Base text for a numbered sequence. Tail mode keeps each current name and appends this text plus the number.");
-    } else if (g_rename_target == RenameTarget::Image) {
-        IMG *img = get_img(g_rename_idx);
-        if (img) ImGui::Text("Rename: %s", img->n_s);
-    } else {
-        PAL *pal = get_pal(g_rename_idx);
-        if (pal) ImGui::Text("Rename: %s", pal->n_s);
-    }
-    const int maxlen = g_rename_target == RenameTarget::Palette ? 10 : 16;
-    ImGui::InputText("##rn", g_rename_buf,
-                     (size_t)maxlen < sizeof(g_rename_buf) ? maxlen : sizeof(g_rename_buf));
-    if (g_rename_target == RenameTarget::MarkedImages) {
-        ImGui::Checkbox("Tail existing names", &g_rename_tail_existing);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::InputInt("Start", &g_rename_start_number, 1, 10)) {
-            if (g_rename_start_number < 0) g_rename_start_number = 0;
-        }
-    }
-    if (ImGui::Button("OK", ImVec2(100, 0))) {
-        if (g_rename_target == RenameTarget::Image) {
-            IMG *img = get_img(g_rename_idx);
-            if (img) {
-                doc_undo_push();   /* EditSnapshot doesn't store n_s */
-                strncpy(img->n_s, g_rename_buf, 15);
-                img->n_s[15] = '\0';
-            }
-        } else if (g_rename_target == RenameTarget::Palette) {
-            PAL *pal = get_pal(g_rename_idx);
-            if (pal) {
-                doc_undo_push();
-                strncpy(pal->n_s, g_rename_buf, 9);
-                pal->n_s[9] = '\0';
-            }
-        } else {
-            ApplyMarkedImageRename(g_rename_buf);
-        }
-        g_show_rename = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-        g_show_rename = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-void DrawLoad2VerifyDialog(void)
-{
-    if (g_show_load2_verify) ImGui::OpenPopup("LOAD2 Packing Verify");
-    if (!ImGui::BeginPopupModal("LOAD2 Packing Verify", &g_show_load2_verify,
-                                ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    ImGui::Text("Checked %d image%s against pristine baseline",
-                g_load2_report.imgs_checked,
-                g_load2_report.imgs_checked == 1 ? "" : "s");
-    if (g_load2_report.imgs_no_baseline > 0) {
-        ImGui::TextDisabled("(%d had no baseline — new/duplicated, "
-                            "skipped shape check)",
-                            g_load2_report.imgs_no_baseline);
-    }
-    ImGui::Separator();
-    ImGui::Text("PPP: %d  (palette-colors limit = %d)",
-                g_load2_ppp,
-                g_load2_ppp > 0 ? (1 << g_load2_ppp) : 0);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80.0f);
-    if (ImGui::InputInt("##ppp", &g_load2_ppp, 1, 0)) {
-        if (g_load2_ppp < 0) g_load2_ppp = 0;
-        if (g_load2_ppp > 8) g_load2_ppp = 8;
-    }
-    ImGui::SameLine();
-    ImGui::Checkbox("/3 Limit (Max Scales)", &g_load2_limit_scales_to_3);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Warns if any image uses an eighth scale (M_COPIES=3).");
-    ImGui::SameLine();
-    if (ImGui::Button("Re-check")) {
-        g_load2_report = VerifyLoad2Packing(g_load2_ppp, g_load2_limit_scales_to_3);
-        g_load2_selected_idx = -1;
-    }
-    ImGui::Separator();
-
-    if (g_load2_report.issues.empty()) {
-        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
-                           "OK — no SAG-breaking edits detected.");
-    } else {
-        ImGui::Text("Breaking: %d   Warnings: %d",
-                    g_load2_report.break_count,
-                    g_load2_report.warn_count);
-        ImGui::Spacing();
-        ImGui::BeginChild("l2_issues", ImVec2(640, 280), true);
-        for (size_t i = 0; i < g_load2_report.issues.size(); i++) {
-            auto &iss = g_load2_report.issues[i];
-            bool is_sel = ((int)i == g_load2_selected_idx);
-            ImVec4 col = iss.sev == L2Severity::Break
-                ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f)
-                : ImVec4(1.0f, 0.85f, 0.4f,  1.0f);
-            ImGui::PushID((int)i);
-            char hdr[40];
-            snprintf(hdr, sizeof(hdr), "[%4d] %-15s", iss.img_idx, iss.img_name.c_str());
-            if (ImGui::Selectable("##row", is_sel, ImGuiSelectableFlags_AllowItemOverlap,
-                                  ImVec2(0, 0))) {
-                g_load2_selected_idx = (int)i;
-                if (iss.img_idx >= 0) g_doc->ilselected = iss.img_idx;
-                if (iss.sev == L2Severity::Break) {
-                    update_drift_texture(get_img(iss.img_idx));
-                }
-            }
-            ImGui::SameLine();
-            ImGui::TextColored(col, "%s", hdr);
-            ImGui::SameLine();
-            ImGui::TextWrapped("%s", iss.message.c_str());
-            ImGui::PopID();
-            ImGui::Separator();
-        }
-        ImGui::EndChild();
-
-        if (g_load2_selected_idx >= 0
-            && g_load2_selected_idx < (int)g_load2_report.issues.size())
-        {
-            auto &sel = g_load2_report.issues[g_load2_selected_idx];
-            IMG *si = get_img(sel.img_idx);
-            if (sel.sev == L2Severity::Break && si && si->baseline_p) {
-                if (!g_load2_drift_tex
-                    || g_load2_drift_tex_w != (int)si->w
-                    || g_load2_drift_tex_h != (int)si->h)
-                {
-                    update_drift_texture(si);
-                }
-                if (g_load2_drift_tex) {
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("Red rows = zero-shape drift "
-                                        "(silhouette differs from baseline)");
-                    float scale = (si->w < 64) ? 4.0f : (si->w < 128) ? 3.0f : 2.0f;
-                    ImVec2 sz((float)si->w * scale, (float)si->h * scale);
-                    ImGui::Image((ImTextureID)(intptr_t)g_load2_drift_tex, sz);
-                }
-            } else if (sel.sev != L2Severity::Break) {
-                ImGui::Spacing();
-                ImGui::TextDisabled("(no drift visualization for warnings)");
-            }
-        }
-    }
-
-    ImGui::Spacing();
-    if (ImGui::Button("Close")) {
-        g_show_load2_verify = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-/* ---- ASM animation viewer implementation ---- */
-
-static std::string asm_trim(const std::string &s)
-{
-    size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos) return "";
-    size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
-
-static bool asm_is_control_token(const std::string &t)
-{
-    /* MK2 naming: opcodes/anim refs are lowercase (ani_jump, a_xxx); frame
-       data symbols are uppercase (RNSTANCE1, RNSTANCE1A). */
-    return !t.empty() && (t[0] == '_' || (t[0] >= 'a' && t[0] <= 'z'));
-}
-
-/* Parse a TI-asm integer operand: optional '-', decimal, or hex (trailing 'h',
-   often with a leading 0 e.g. "0ah", "-020h"). */
-static int asm_parse_int(const std::string &tok)
-{
-    std::string s = asm_trim(tok);
-    if (s.empty()) return 0;
-    bool neg = false; size_t i = 0;
-    if (s[0] == '-') { neg = true; i = 1; } else if (s[0] == '+') i = 1;
-    std::string num = s.substr(i);
-    long v = 0;
-    if (!num.empty() && (num.back() == 'h' || num.back() == 'H')) {
-        v = strtol(num.c_str(), NULL, 16);
-    } else {
-        char *end = NULL;
-        v = strtol(num.c_str(), &end, 10);
-        if (end && *end) v = strtol(num.c_str(), NULL, 16); /* bare hex fallback */
-    }
-    return neg ? -(int)v : (int)v;
-}
-
-/* Operand count for the known MK2 animation opcodes (token after the opcode). */
-static int asm_opcode_operands(const std::string &op)
-{
-    if (op == "ani_jump")       return 1;  /* target */
-    if (op == "ani_adjustx")    return 1;  /* dx */
-    if (op == "ani_adjustxy")   return 2;  /* dx, dy */
-    if (op == "ani_calla")      return 1;  /* routine */
-    if (op == "ani_sound")      return 1;  /* sound id */
-    if (op == "ani_ochar_jump") return 2;  /* cond, target */
-    if (op == "ani_flip")       return 0;
-    if (op == "ani_flip_v")     return 0;
-    if (op == "ani_nosleep")    return 0;
-    return -1;                              /* unknown opcode */
-}
-
-static void asm_split_operands(const std::string &rest, std::vector<std::string> &out)
-{
-    std::string cur;
-    for (char c : rest) {
-        if (c == ',') { std::string t = asm_trim(cur); if (!t.empty()) out.push_back(t); cur.clear(); }
-        else cur.push_back(c);
-    }
-    std::string t = asm_trim(cur);
-    if (!t.empty()) out.push_back(t);
-}
-
-static void ClearAsmAnimTexture(void)
-{
-    if (g_asm_anim_tex) { SDL_DestroyTexture(g_asm_anim_tex); g_asm_anim_tex = NULL; }
-    g_asm_anim_tex_w = g_asm_anim_tex_h = 0;
-    g_asm_anim_last_drawn = -1;
-}
-
-/* Build a name->IMG-index map (case-insensitive) for the current document. */
-static void AsmBuildNameMap(std::unordered_map<std::string,int> &m)
-{
-    m.clear();
-    int idx = 0;
-    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
-        std::string n = img_name_string(img);
-        for (char &c : n) c = (char)toupper((unsigned char)c);
-        if (!n.empty()) m.emplace(n, idx);
-    }
-}
-
-static int AsmResolveSym(const std::unordered_map<std::string,int> &m, const std::string &sym)
-{
-    std::string key = sym;
-    /* drop any "+offset" suffix and uppercase */
-    size_t plus = key.find('+');
-    if (plus != std::string::npos) key = key.substr(0, plus);
-    for (char &c : key) c = (char)toupper((unsigned char)c);
-    auto it = m.find(key);
-    return (it != m.end()) ? it->second : -1;
-}
-
-/* Normalize a piece symbol to its IMG-frame name key (drop "+offset", uppercase). */
-static std::string AsmSymKey(const std::string &sym)
-{
-    std::string key = sym;
-    size_t plus = key.find('+');
-    if (plus != std::string::npos) key = key.substr(0, plus);
-    for (char &c : key) c = (char)toupper((unsigned char)c);
-    return key;
-}
-
-/* Build a name -> (document, local index) map spanning EVERY open tab. A
-   character's sprites are split across many IMG files (e.g. CAGE1..CAGE10.IMG),
-   so a single animation only resolves fully when its pieces are looked up across
-   all loaded documents. The active doc is inserted last so it wins name ties. */
-static void AsmBuildGlobalNameMap(
-        std::unordered_map<std::string, std::pair<Document*,int>> &m)
-{
-    m.clear();
-    int active = document_active_index();
-    int ntabs  = document_tab_count();
-    /* pass 0: every non-active doc; pass 1: the active doc (overwrites ties). */
-    for (int pass = 0; pass < 2; pass++) {
-        for (int t = 0; t < ntabs; t++) {
-            bool is_active = (t == active);
-            if ((pass == 1) != is_active) continue;
-            Document *d = document_get(t);
-            if (!d) continue;
-            int idx = 0;
-            for (IMG *img = (IMG *)d->img_p; img; img = (IMG *)img->nxt_p, idx++) {
-                std::string n = img_name_string(img);
-                for (char &c : n) c = (char)toupper((unsigned char)c);
-                if (!n.empty()) m[n] = std::make_pair(d, idx);
-            }
-        }
-    }
-}
-
-/* Resolve every piece of an animation against all open documents, filling both
-   the doc-local index (piece_img) and the owning document (piece_doc). */
-static void AsmResolveAnimGlobal(AsmAnim &a)
-{
-    std::unordered_map<std::string, std::pair<Document*,int>> m;
-    AsmBuildGlobalNameMap(m);
-    a.missing = 0;
-    for (auto &fr : a.frames) {
-        fr.piece_img.assign(fr.piece_syms.size(), -1);
-        fr.piece_doc.assign(fr.piece_syms.size(), (Document*)NULL);
-        for (size_t p = 0; p < fr.piece_syms.size(); p++) {
-            auto it = m.find(AsmSymKey(fr.piece_syms[p]));
-            if (it != m.end()) {
-                fr.piece_doc[p] = it->second.first;
-                fr.piece_img[p] = it->second.second;
-            } else {
-                a.missing++;
-            }
-        }
-    }
-}
-
-/* Pure parse of a character/exported ASM into a list of animations (no globals,
-   no IMG load, no resolution against a specific doc beyond a best-effort first
-   pass against the active doc). Shared by the player and opponent loaders. */
-static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
-{
-    out.clear();
-    if (!path || !path[0]) return false;
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        snprintf(g_restore_msg, sizeof(g_restore_msg), "Could not open ASM: %s", path);
-        g_restore_msg_timer = 4.0f;
-        return false;
-    }
-
-    /* Pass 1: gather label bodies (.long token lists) and per-entry comments. */
-    std::unordered_map<std::string, std::vector<std::string>> body;
-    std::unordered_map<std::string, std::vector<int>> word_body; /* .word ints, for *_local_anipts */
-    std::vector<std::string> label_order;               /* labels in file order */
-    std::unordered_map<std::string, std::string> comment_for; /* token -> comment */
-    std::vector<std::string> anitab_labels;             /* directory tables, in order */
-
-    char line[1024];
-    std::string cur_label;
-    while (fgets(line, sizeof(line), f)) {
-        std::string raw(line);
-        /* split off trailing comment */
-        std::string comment;
-        size_t sc = raw.find(';');
-        if (sc != std::string::npos) { comment = asm_trim(raw.substr(sc + 1)); raw = raw.substr(0, sc); }
-        /* full-line comment markers */
-        std::string lead = asm_trim(raw);
-        if (lead.empty()) continue;
-        if (lead[0] == '*') continue;
-
-        bool has_label = (line[0] != ' ' && line[0] != '\t');
-        std::string label, directive, rest;
-        std::string work = raw;
-        if (has_label) {
-            size_t ws = work.find_first_of(" \t");
-            label = asm_trim(work.substr(0, ws == std::string::npos ? work.size() : ws));
-            work = (ws == std::string::npos) ? "" : work.substr(ws);
-            if (!label.empty()) {
-                cur_label = label;
-                if (body.find(cur_label) == body.end()) { body[cur_label]; label_order.push_back(cur_label); }
-            }
-        }
-        work = asm_trim(work);
-        if (!work.empty()) {
-            size_t ws = work.find_first_of(" \t");
-            directive = asm_trim(work.substr(0, ws == std::string::npos ? work.size() : ws));
-            rest = (ws == std::string::npos) ? "" : asm_trim(work.substr(ws));
-        }
-
-        if (directive == ".long" && !cur_label.empty()) {
-            std::vector<std::string> ops;
-            asm_split_operands(rest, ops);
-            for (auto &t : ops) body[cur_label].push_back(t);
-            /* capture comment for a single anim-ref entry (anitab rows) */
-            if (ops.size() == 1 && !comment.empty()) comment_for[ops[0]] = comment;
-        } else if (directive == ".word" && !cur_label.empty()) {
-            std::vector<std::string> ops;
-            asm_split_operands(rest, ops);
-            for (auto &t : ops) word_body[cur_label].push_back(asm_parse_int(t));
-        }
-        /* directory tables are named "*anitab*" */
-        if (has_label && !label.empty()) {
-            std::string low = label; for (char &c : low) c = (char)tolower((unsigned char)c);
-            if (low.find("anitab") != std::string::npos) anitab_labels.push_back(label);
-        }
-    }
-    fclose(f);
-
-    /* Pass 2: build the ordered animation list. Prefer directory order. */
-    std::unordered_map<std::string,int> name_map;
-    AsmBuildNameMap(name_map);
-
-    std::vector<std::string> anim_labels;
-    std::unordered_map<std::string,bool> seen;
-    auto ends_with = [](const std::string &s, const char *suf) {
-        size_t n = strlen(suf);
-        return s.size() >= n && s.compare(s.size() - n, n, suf) == 0;
-    };
-    auto add_anim_label = [&](const std::string &lbl) {
-        if (lbl.empty() || seen.count(lbl)) return;
-        if (body.find(lbl) == body.end()) return;        /* defined here only */
-        if (ends_with(lbl, "_local_anipts")) return;     /* data table, not an anim */
-        seen[lbl] = true; anim_labels.push_back(lbl);
-    };
-    for (auto &tab : anitab_labels)
-        for (auto &tok : body[tab]) add_anim_label(tok);
-    for (auto &lbl : label_order)
-        if (lbl.size() > 2 && lbl[0] == 'a' && lbl[1] == '_') add_anim_label(lbl);
-
-    for (auto &lbl : anim_labels) {
-        AsmAnim a;
-        a.label = lbl;
-        auto cit = comment_for.find(lbl);
-        a.name = (cit != comment_for.end() && !cit->second.empty()) ? cit->second : lbl;
-        a.missing = 0;
-
-        const std::vector<std::string> &toks = body[lbl];
-        int cur_dx = 0, cur_dy = 0; bool cur_mirror = false;
-        bool stop = false;
-        for (size_t ti = 0; ti < toks.size() && !stop; ti++) {
-            const std::string &tok = toks[ti];
-            if (tok == "0") break;             /* ani_end terminator */
-            if (asm_is_control_token(tok)) {
-                int nops = asm_opcode_operands(tok);
-                if (tok == "ani_jump") {
-                    std::string tgt = (ti + 1 < toks.size()) ? toks[ti + 1] : "";
-                    a.control.push_back("loops" + (tgt.empty() ? "" : " to " + tgt));
-                    stop = true;               /* loop point — frames captured */
-                } else if (tok == "ani_adjustx" && ti + 1 < toks.size()) {
-                    cur_dx += asm_parse_int(toks[ti + 1]); ti += 1;
-                } else if (tok == "ani_adjustxy" && ti + 2 < toks.size()) {
-                    cur_dx += asm_parse_int(toks[ti + 1]);
-                    cur_dy += asm_parse_int(toks[ti + 2]); ti += 2;
-                } else if (tok == "ani_flip") {
-                    cur_mirror = !cur_mirror;
-                    if (std::find(a.control.begin(), a.control.end(), "flip") == a.control.end())
-                        a.control.push_back("flip");
-                } else if (tok == "ani_flip_v") {
-                    a.control.push_back("vflip");
-                } else if (nops >= 0) {
-                    a.control.push_back(tok);  /* known opcode: note + skip operands */
-                    ti += (size_t)nops;
-                } else {
-                    a.control.push_back(tok + "?");  /* unknown: note and stop safely */
-                    stop = true;
-                }
-                continue;
-            }
-            /* uppercase token = a frame-group label (or lone piece symbol) */
-            AsmAnimFrame fr;
-            fr.dx = cur_dx; fr.dy = cur_dy; fr.mirror = cur_mirror;
-            auto bit = body.find(tok);
-            if (bit != body.end()) {
-                for (auto &p : bit->second) { if (p == "0") break; fr.piece_syms.push_back(p); }
-            } else {
-                fr.piece_syms.push_back(tok);  /* treat as a lone piece symbol */
-            }
-            for (auto &p : fr.piece_syms) {
-                int ri = AsmResolveSym(name_map, p);
-                fr.piece_img.push_back(ri);
-                if (ri < 0) a.missing++;
-            }
-            a.frames.push_back(fr);
-        }
-        /* Round-trip local anipoints from a paired "<label>_local_anipts" .word
-           table (emitted by imgtool's ASM export), one dx,dy pair per frame. */
-        auto wit = word_body.find(lbl + "_local_anipts");
-        if (wit != word_body.end()) {
-            const std::vector<int> &w = wit->second;
-            for (size_t fi = 0; fi < a.frames.size() && fi * 2 + 1 < w.size(); fi++) {
-                a.frames[fi].dx = w[fi * 2];
-                a.frames[fi].dy = w[fi * 2 + 1];
-            }
-        }
-        if (!a.frames.empty() || !a.control.empty())
-            out.push_back(std::move(a));
-    }
-    return !out.empty();
-}
-
-/* Build a name->IMG-index map (case-insensitive) for an arbitrary document. */
-/* Resolve an animation's piece symbols across every open document. The doc
-   argument is kept for call-site compatibility but no longer constrains lookup:
-   a character's frames are split across many IMGs, so resolution must span them. */
-void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc)
-{
-    (void)doc;
-    AsmResolveAnimGlobal(a);
-}
-
-/* Open every IMG (as a tab) needed to cover this animation's piece symbols that
-   no currently-open document already provides. Scans the ASM folder, sibling
-   data/ dirs, every open tab's folder and $IMGDIR. Greedy set-cover, so a
-   character whose sprites span several files (CAGE1..CAGE10) gets each opened.
-   Returns the number of IMGs opened. */
-static int AsmAutoOpenImgsForAnim(const AsmAnim &a, const char *asm_path)
-{
-    std::unordered_map<std::string,bool> need;
-    for (auto &fr : a.frames)
-        for (auto &s : fr.piece_syms) {
-            std::string u = AsmSymKey(s);
-            if (!u.empty()) need[u] = true;
-        }
-    if (need.empty()) return 0;
-
-    /* Drop symbols any already-open document provides. */
-    {
-        std::unordered_map<std::string, std::pair<Document*,int>> m;
-        AsmBuildGlobalNameMap(m);
-        for (auto it = need.begin(); it != need.end(); ) {
-            if (m.count(it->first)) it = need.erase(it);
-            else ++it;
-        }
-    }
-    if (need.empty()) return 0;
-
-    std::string asmdir = asm_path ? asm_path : "";
-    size_t sl = asmdir.find_last_of("\\/");
-    asmdir = (sl != std::string::npos) ? asmdir.substr(0, sl) : ".";
-
-    /* Collect every plausible folder an IMG could live in, deduped. ASM files
-       commonly sit in a src/ tree while the IMGs live in a sibling data/ dir,
-       so probe those relatives plus every open tab's folder and IMGDIR. */
-    std::vector<std::string> dirs;
-    auto add_dir = [&](const std::string &d) {
-        if (d.empty()) return;
-        std::string low = d; for (char &c : low) c = (char)tolower((unsigned char)c);
-        for (auto &ex : dirs) {
-            std::string el = ex; for (char &c : el) c = (char)tolower((unsigned char)c);
-            if (el == low) return;
-        }
-        dirs.push_back(d);
-    };
-    add_dir(asmdir);
-    add_dir(asmdir + "\\data");
-    add_dir(asmdir + "\\..\\data");
-    add_dir(asmdir + "\\..\\DATA");
-    add_dir(asmdir + "\\..");
-    add_dir(asmdir + "\\..\\..\\data");
-    for (int t = 0; t < document_tab_count(); t++) {
-        Document *d = document_get(t);
-        if (d && d->fpath_s[0]) add_dir(d->fpath_s);
-    }
-    if (g_doc->fpath_s[0]) add_dir(g_doc->fpath_s);
-    const char *imgdir = getenv("IMGDIR");
-    if (imgdir && imgdir[0]) add_dir(imgdir);
-
-    /* Probe every candidate IMG once, recording its uppercased frame names. */
-    struct ImgCand { std::string path; std::vector<std::string> names; };
-    std::vector<ImgCand> cands;
-    for (auto &d : dirs) {
-        std::vector<FileEntry> entries;
-        GetDirectoryFiles(d, entries, "IMG");
-        for (auto &e : entries) {
-            if (e.is_dir) continue;
-            ImgCand c;
-            c.path = PathCombine(d, e.name);
-            std::vector<std::string> names;
-            ProbeImgFrameNames(c.path.c_str(), names);
-            for (auto &nm : names) {
-                std::string u = nm; for (char &ch : u) ch = (char)toupper((unsigned char)ch);
-                c.names.push_back(u);
-            }
-            cands.push_back(std::move(c));
-        }
-    }
-
-    /* Greedy set-cover: repeatedly open the IMG covering the most still-missing
-       symbols until everything resolves or no remaining file helps. */
-    int opened = 0, guard = 0;
-    while (!need.empty() && guard++ < 64) {
-        int best = -1, best_hits = 0;
-        for (size_t i = 0; i < cands.size(); i++) {
-            int hits = 0;
-            for (auto &u : cands[i].names) if (need.count(u)) hits++;
-            if (hits > best_hits) { best_hits = hits; best = (int)i; }
-        }
-        if (best < 0) break;
-        OpenImgFile(cands[best].path);
-        opened++;
-        for (auto &u : cands[best].names) need.erase(u);
-        cands[best].names.clear();   /* don't pick the same file again */
-    }
-    return opened;
-}
-
-bool LoadAsmAnimations(const char *path)   /* player */
-{
-    if (!ParseAsmAnimFile(path, g_asm_anims)) {
-        if (g_asm_anims.empty())
-            snprintf(g_restore_msg, sizeof(g_restore_msg), "No animations found in ASM.");
-        g_restore_msg_timer = 4.0f;
-        return false;
-    }
-    g_asm_anim_file = path;
-    AsmAnimSelect(g_asm_anims.empty() ? -1 : 0);
-    /* Defer IMG loading to the main loop: opening tabs mid-parse is avoided, and
-       the handler opens every IMG the selected anim needs, then re-resolves. */
-    if (g_asm_anim_sel >= 0) g_request_asm_autoload = true;
-
-    const char *base = (strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path);
-    snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "Loaded %d animation%s from %s; opening its sprites...",
-             (int)g_asm_anims.size(), g_asm_anims.size() == 1 ? "" : "s", base);
-    g_restore_msg_timer = 4.0f;
-    return !g_asm_anims.empty();
-}
-
-bool LoadAsmOpponent(const char *path)      /* fatality opponent */
-{
-    if (!ParseAsmAnimFile(path, g_asm_opp_anims)) {
-        snprintf(g_restore_msg, sizeof(g_restore_msg), "No animations found in opponent ASM.");
-        g_restore_msg_timer = 4.0f;
-        return false;
-    }
-    g_asm_opp_file = path;
-    g_asm_opp_doc = g_doc;
-    g_asm_opp_doc_idx = document_active_index();
-    g_asm_opp_sel = g_asm_opp_anims.empty() ? -1 : 0;
-    if (g_asm_opp_sel >= 0)
-        AsmResolveAnimGlobal(g_asm_opp_anims[g_asm_opp_sel]);
-    g_asm_opp_enabled = true;
-    /* Defer opening the opponent's sprite IMGs to the main loop. */
-    if (g_asm_opp_sel >= 0) g_request_asm_opp_autoload = true;
-
-    /* Default the opponent to face the player (mirror = opposite of the player
-       ASM lane); only set here so the user can still flip it. */
-    {
-        bool *pf = WorldMarkedMirrorFlag(g_world_marked_state, kWorldAsmSlot);
-        bool *of = WorldMarkedMirrorFlag(g_world_marked_state, kWorldAsmOpponentSlot);
-        if (of) *of = pf ? !*pf : true;
-    }
-
-    const char *base = (strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path);
-    snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "Loaded opponent: %d animation%s from %s; opening its sprites...",
-             (int)g_asm_opp_anims.size(), g_asm_opp_anims.size() == 1 ? "" : "s", base);
-    g_restore_msg_timer = 4.0f;
-    return !g_asm_opp_anims.empty();
-}
-
-/* Re-resolve the selected anim against the current IMG and size the playback
-   canvas to the anipoint-anchored union of all its frame pieces. */
-void AsmAnimSelect(int i)
-{
-    g_asm_anim_sel = i;
-    g_asm_anim_frame = 0;
-    g_asm_anim_timer = 0.0f;
-    ClearAsmAnimTexture();
-    if (i < 0 || i >= (int)g_asm_anims.size()) return;
-
-    g_asm_anim_doc = g_doc;                         /* representative doc for lane fallback */
-    g_asm_anim_doc_idx = document_active_index();
-
-    AsmAnim &a = g_asm_anims[i];
-    AsmResolveAnimGlobal(a);                         /* resolve across all open IMGs */
-    int minx = 0x3FFFFFFF, miny = 0x3FFFFFFF, maxx = -0x3FFFFFFF, maxy = -0x3FFFFFFF;
-    bool any = false;
-    for (auto &fr : a.frames) {
-        for (size_t p = 0; p < fr.piece_syms.size(); p++) {
-            int ri = fr.piece_img[p];
-            if (ri < 0) continue;
-            IMG *img = doc_get_img(fr.piece_doc[p], ri);
-            if (!img) continue;
-            int x0 = -(int)(short)img->anix + fr.dx, y0 = -(int)(short)img->aniy + fr.dy;
-            int x1 = x0 + img->w, y1 = y0 + img->h;
-            if (x0 < minx) minx = x0; if (y0 < miny) miny = y0;
-            if (x1 > maxx) maxx = x1; if (y1 > maxy) maxy = y1;
-            any = true;
-        }
-    }
-    if (!any) { g_asm_anim_canvas_w = g_asm_anim_canvas_h = 0; return; }
-    g_asm_anim_minx = minx; g_asm_anim_miny = miny;
-    int cw = maxx - minx, ch = maxy - miny;
-    if (cw < 1) cw = 1; if (ch < 1) ch = 1;
-    if (cw > 1024) cw = 1024; if (ch > 1024) ch = 1024;
-    g_asm_anim_canvas_w = cw; g_asm_anim_canvas_h = ch;
-}
-
-/* Deferred (main-loop) handler: open every IMG the selected player anim needs as
-   tabs, then re-resolve and re-size against them. If nothing resolves even after
-   the scan, fall back to prompting the user to locate an IMG. */
-void AsmProcessAutoload(void)
-{
-    if (g_asm_anim_sel < 0 || g_asm_anim_sel >= (int)g_asm_anims.size()) return;
-    AsmAutoOpenImgsForAnim(g_asm_anims[g_asm_anim_sel], g_asm_anim_file.c_str());
-    AsmAnimSelect(g_asm_anim_sel);   /* re-resolve against the now-open IMGs */
-
-    int resolved = 0;
-    for (auto &fr : g_asm_anims[g_asm_anim_sel].frames)
-        for (int ri : fr.piece_img) if (ri >= 0) resolved++;
-    if (resolved == 0) g_request_locate_img = true;
-}
-
-/* Same as above for the fatality opponent ASM. */
-void AsmProcessOppAutoload(void)
-{
-    if (g_asm_opp_sel < 0 || g_asm_opp_sel >= (int)g_asm_opp_anims.size()) return;
-    AsmAutoOpenImgsForAnim(g_asm_opp_anims[g_asm_opp_sel], g_asm_opp_file.c_str());
-    AsmResolveAnimGlobal(g_asm_opp_anims[g_asm_opp_sel]);
-    g_asm_opp_doc = g_doc;
-    g_asm_opp_doc_idx = document_active_index();
-
-    int resolved = 0;
-    for (auto &fr : g_asm_opp_anims[g_asm_opp_sel].frames)
-        for (int ri : fr.piece_img) if (ri >= 0) resolved++;
-    if (resolved == 0) g_request_locate_opp_img = true;
-}
-
-/* (Re)fill the playback texture with the current frame's composited pieces. */
-static void AsmAnimRefillTexture(void)
-{
-    if (g_asm_anim_sel < 0 || g_asm_anim_sel >= (int)g_asm_anims.size()) return;
-    if (g_asm_anim_canvas_w <= 0 || g_asm_anim_canvas_h <= 0) return;
-    AsmAnim &a = g_asm_anims[g_asm_anim_sel];
-    if (a.frames.empty()) return;
-    int fi = g_asm_anim_frame % (int)a.frames.size();
-
-    int w = g_asm_anim_canvas_w, h = g_asm_anim_canvas_h;
-    if (!g_asm_anim_tex || g_asm_anim_tex_w != w || g_asm_anim_tex_h != h) {
-        if (g_asm_anim_tex) SDL_DestroyTexture(g_asm_anim_tex);
-        g_asm_anim_tex = SDL_CreateTexture(g_imgui_renderer, SDL_PIXELFORMAT_ARGB8888,
-                                           SDL_TEXTUREACCESS_STREAMING, w, h);
-        if (!g_asm_anim_tex) return;
-        SDL_SetTextureBlendMode(g_asm_anim_tex, SDL_BLENDMODE_BLEND);
-        SDL_SetTextureScaleMode(g_asm_anim_tex, SDL_ScaleModeNearest);
-        g_asm_anim_tex_w = w; g_asm_anim_tex_h = h;
-    }
-
-    void *pixels; int pitch;
-    if (SDL_LockTexture(g_asm_anim_tex, NULL, &pixels, &pitch) != 0) return;
-    Uint32 *dst = (Uint32 *)pixels;
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w; x++)
-            dst[y * (pitch / 4) + x] = 0x00000000u;   /* transparent */
-
-    AsmAnimFrame &fr = a.frames[fi];
-    for (size_t p = 0; p < fr.piece_img.size(); p++) {
-        int ri = fr.piece_img[p];
-        if (ri < 0) continue;
-        Document *pdoc = (p < fr.piece_doc.size() && fr.piece_doc[p]) ? fr.piece_doc[p]
-                                                                      : g_asm_anim_doc;
-        IMG *img = doc_get_img(pdoc, ri);
-        if (!img || !img->data_p) continue;
-        PAL *pal = doc_get_pal(pdoc, img->palnum);
-        const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
-        int stride = (img->w + 3) & ~3;
-        const unsigned char *sp = (const unsigned char *)img->data_p;
-        int ox = -(int)(short)img->anix + fr.dx - g_asm_anim_minx;
-        int oy = -(int)(short)img->aniy + fr.dy - g_asm_anim_miny;
-        for (int y = 0; y < img->h; y++) {
-            int dy = oy + y; if (dy < 0 || dy >= h) continue;
-            for (int x = 0; x < img->w; x++) {
-                /* ani_flip mirrors horizontally about the piece's anipoint */
-                int srcx = fr.mirror ? (img->w - 1 - x) : x;
-                int dx = ox + x; if (dx < 0 || dx >= w) continue;
-                unsigned char ci = sp[y * stride + srcx];
-                if (ci == 0) continue;
-                Uint32 r = 200, g = 200, b = 200;
-                if (pd) {
-                    unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
-                    r = ((w15 >> 10) & 0x1F) << 3; g = ((w15 >> 5) & 0x1F) << 3; b = (w15 & 0x1F) << 3;
-                }
-                dst[dy * (pitch / 4) + dx] = (0xFFu << 24) | (r << 16) | (g << 8) | b;
-            }
-        }
-    }
-    SDL_UnlockTexture(g_asm_anim_tex);
-    g_asm_anim_last_drawn = fi;
-}
-
-void DrawAsmAnimWindow(void)
-{
-    if (!g_show_asm_anim) return;
-    ImGui::SetNextWindowSize(ImVec2(420, 480), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("ASM Animations", &g_show_asm_anim)) { ImGui::End(); return; }
-
-    if (ImGui::Button("Load Character ASM...")) OpenFileDialog(FileDialogMode::LoadAsmAnim);
-    if (!g_asm_anim_file.empty()) {
-        ImGui::SameLine();
-        const char *base = strrchr(g_asm_anim_file.c_str(), '\\');
-        ImGui::TextDisabled("%s", base ? base + 1 : g_asm_anim_file.c_str());
-    }
-
-    if (g_asm_anims.empty()) {
-        ImGui::TextWrapped("Load a per-character ASM (e.g. MKRD.ASM for Raiden) to list its "
-                           "animations. Selecting one automatically opens every sprite IMG "
-                           "it needs (a character's frames are split across several files) "
-                           "and plays it composited across them.");
-        ImGui::End();
-        return;
-    }
-
-    /* Animation chooser */
-    const char *cur = (g_asm_anim_sel >= 0 && g_asm_anim_sel < (int)g_asm_anims.size())
-                    ? g_asm_anims[g_asm_anim_sel].name.c_str() : "(none)";
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::BeginCombo("##asm_anim_sel", cur)) {
-        for (int i = 0; i < (int)g_asm_anims.size(); i++) {
-            bool sel = (i == g_asm_anim_sel);
-            char lbl[96];
-            snprintf(lbl, sizeof(lbl), "%s  (%s)", g_asm_anims[i].name.c_str(), g_asm_anims[i].label.c_str());
-            if (ImGui::Selectable(lbl, sel)) { AsmAnimSelect(i); g_request_asm_autoload = true; }
-            if (sel) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    if (g_asm_anim_sel < 0) { ImGui::End(); return; }
-    AsmAnim &a = g_asm_anims[g_asm_anim_sel];
-
-    if (ImGui::Checkbox("Play in World View lane", &g_asm_lane_enabled) && g_asm_lane_enabled) {
-        g_world_state.enabled = true;
-        g_world_marked_state.marked_play = true;
-        WorldMarkedRestart(g_world_marked_state);
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Render this animation as a lane in World View, using the script's\n"
-                          "ticks, local anipoints, anipoint placement and loop.");
-    ImGui::Separator();
-
-    ImGui::Checkbox("Play", &g_asm_anim_play);
-    ImGui::SameLine(); ImGui::SetNextItemWidth(120);
-    ImGui::SliderFloat("fps", &g_asm_anim_fps, 1.0f, 30.0f, "%.0f");
-    int nframes = (int)a.frames.size();
-    if (nframes > 0) {
-        ImGui::SameLine(); ImGui::SetNextItemWidth(140);
-        int disp = g_asm_anim_frame % nframes + 1;
-        if (ImGui::SliderInt("##asm_frame", &disp, 1, nframes, "frame %d")) {
-            g_asm_anim_frame = disp - 1; g_asm_anim_play = false;
-        }
-    }
-
-    /* advance playback */
-    if (g_asm_anim_play && nframes > 0 && g_asm_anim_fps > 0.0f) {
-        g_asm_anim_timer += ImGui::GetIO().DeltaTime;
-        float step = 1.0f / g_asm_anim_fps;
-        while (g_asm_anim_timer >= step) { g_asm_anim_timer -= step; g_asm_anim_frame = (g_asm_anim_frame + 1) % nframes; }
-    }
-    if (nframes > 0 && (g_asm_anim_frame % nframes) != g_asm_anim_last_drawn)
-        AsmAnimRefillTexture();
-
-    /* preview */
-    if (g_asm_anim_tex && g_asm_anim_canvas_w > 0) {
-        float avail = ImGui::GetContentRegionAvail().x;
-        float scale = (g_asm_anim_canvas_w > 0) ? (avail / (float)g_asm_anim_canvas_w) : 1.0f;
-        if (scale > 4.0f) scale = 4.0f; if (scale < 0.25f) scale = 0.25f;
-        ImVec2 sz((float)g_asm_anim_canvas_w * scale, (float)g_asm_anim_canvas_h * scale);
-        ImGui::Image((ImTextureID)(intptr_t)g_asm_anim_tex, sz);
-    } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f),
-                           "No frames of this animation resolve to the loaded IMG.");
-    }
-
-    /* missing-data report */
-    ImGui::Separator();
-    ImGui::Text("Frames: %d   Pieces missing in IMG: %d", nframes, a.missing);
-    if (!a.control.empty()) {
-        std::string ctl;
-        for (auto &c : a.control) { if (!ctl.empty()) ctl += ", "; ctl += c; }
-        ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "Control / opcodes: %s", ctl.c_str());
-    }
-    if (a.missing > 0 && ImGui::TreeNode("Unresolved symbols")) {
-        for (auto &fr : a.frames)
-            for (size_t p = 0; p < fr.piece_syms.size(); p++)
-                if (p < fr.piece_img.size() && fr.piece_img[p] < 0)
-                    ImGui::BulletText("%s", fr.piece_syms[p].c_str());
-        ImGui::TreePop();
-    }
-
-    /* ---- Fatality opponent (second ASM, drawn in the opponent lane) ---- */
-    ImGui::SeparatorText("Fatality opponent");
-    if (ImGui::Button("Load Johnny Cage")) {
-        /* Default opponent: MKJC.ASM in the same folder as the player ASM. */
-        std::string dir = g_asm_anim_file;
-        size_t sl = dir.find_last_of("\\/");
-        dir = (sl != std::string::npos) ? dir.substr(0, sl) : ".";
-        std::string jc = dir + "\\MKJC.ASM";
-        FILE *probe = fopen(jc.c_str(), "rb");
-        if (probe) { fclose(probe); LoadAsmOpponent(jc.c_str()); }
-        else       { g_request_load_opp_asm = true; }   /* not found -> pick manually */
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Load MKJC.ASM (Johnny Cage) from the player ASM's folder as the opponent.");
-    ImGui::SameLine();
-    if (ImGui::Button("Load Opponent ASM...")) g_request_load_opp_asm = true;
-
-    if (!g_asm_opp_anims.empty()) {
-        if (!g_asm_opp_file.empty()) {
-            const char *ob = strrchr(g_asm_opp_file.c_str(), '\\');
-            ImGui::SameLine(); ImGui::TextDisabled("%s", ob ? ob + 1 : g_asm_opp_file.c_str());
-        }
-        ImGui::Checkbox("Play opponent in World View lane", &g_asm_opp_enabled);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Draw the opponent animation in its own lane, facing the player.");
-        if (g_asm_opp_enabled) { g_world_state.enabled = true; g_world_marked_state.marked_play = true; }
-
-        const char *ocur = (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
-                         ? g_asm_opp_anims[g_asm_opp_sel].name.c_str() : "(none)";
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::BeginCombo("##asm_opp_sel", ocur)) {
-            for (int i = 0; i < (int)g_asm_opp_anims.size(); i++) {
-                bool seld = (i == g_asm_opp_sel);
-                char lbl[96];
-                snprintf(lbl, sizeof(lbl), "%s  (%s)", g_asm_opp_anims[i].name.c_str(),
-                         g_asm_opp_anims[i].label.c_str());
-                if (ImGui::Selectable(lbl, seld)) {
-                    g_asm_opp_sel = i;
-                    AsmResolveAnimGlobal(g_asm_opp_anims[i]);
-                    g_request_asm_opp_autoload = true;
-                    WorldMarkedRestart(g_world_marked_state);
-                }
-                if (seld) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
-        }
-        if (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
-            ImGui::Text("Opponent frames: %d   missing: %d",
-                        (int)g_asm_opp_anims[g_asm_opp_sel].frames.size(),
-                        g_asm_opp_anims[g_asm_opp_sel].missing);
-    }
-
-    ImGui::End();
-}
-
-/* Controls for the selected sprite's non-destructive overlay layer. Only shown
-   when the current sprite actually has a layer (created via Drop Paste to
-   Layer). Move/flip/flatten/delete; the layer bakes onto the sprite on save. */
-void DrawSpriteLayerPanel(void)
-{
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    SpriteLayer *L = img_layer(img);
-    if (!L) return;
-
-    ImGui::SetNextWindowSize(ImVec2(270, 0), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Sprite Layer")) {
-        ImGui::Text("On %.15s   layer %dx%d", img->n_s, L->w, L->h);
-        bool vis = L->visible != 0;
-        if (ImGui::Checkbox("Visible", &vis)) { L->visible = vis ? 1 : 0; mark_dirty(); g_img_tex_idx = -2; }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(bakes onto sprite on save)");
-
-        ImGui::Separator();
-        int pos[2] = { L->x, L->y };
-        if (ImGui::DragInt2("Offset", pos, 0.5f)) { L->x = pos[0]; L->y = pos[1]; mark_dirty(); g_img_tex_idx = -2; }
-        if (ImGui::Button("Left"))  { L->x--; mark_dirty(); g_img_tex_idx = -2; } ImGui::SameLine();
-        if (ImGui::Button("Right")) { L->x++; mark_dirty(); g_img_tex_idx = -2; } ImGui::SameLine();
-        if (ImGui::Button("Up"))    { L->y--; mark_dirty(); g_img_tex_idx = -2; } ImGui::SameLine();
-        if (ImGui::Button("Down"))  { L->y++; mark_dirty(); g_img_tex_idx = -2; }
-
-        ImGui::Separator();
-        if (ImGui::Button("Flip H")) { doc_undo_push(); flip_layer_horizontal(L); g_img_tex_idx = -2; }
-        ImGui::SameLine();
-        if (ImGui::Button("Flip V")) { doc_undo_push(); flip_layer_vertical(L); g_img_tex_idx = -2; }
-
-        ImGui::Separator();
-        if (ImGui::Button("Flatten Now")) { doc_undo_push(); flatten_img_layer(img); }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Merge the layer into the sprite now (permanent).");
-        ImGui::SameLine();
-        if (ImGui::Button("Delete Layer")) { doc_undo_push(); delete_img_layer(img); }
-    }
-    ImGui::End();
-}
-
-
-/* MK2 strike-table (hitbox) editor. Reads/writes mk2-main/src/MKSTK.ASM
-   directly — the source-of-truth for the strike tables. The MAME stk.bin
-   path is intentionally not used here; rebuilding through the ASM is the
-   permanent route. */
-void DrawMk2HitboxWindow(void)
-{
-    if (!g_show_mk2) return;
-
-    ImGui::SetNextWindowSize(ImVec2(760, 560), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("MK2 Hitboxes (MKSTK.ASM)", &g_show_mk2)) {
-        ImGui::End();
-        return;
-    }
-
-    /* Auto-clear the "Loaded N moves" / "Saved" success message once the
-       user has started editing again. Errors keep their sticky flag so
-       they stay visible until the next action explicitly resolves them. */
-    if (!g_mk2_status_sticky && g_mk2_doc.dirty && !g_mk2_status.empty())
-        g_mk2_status.clear();
-
-    /* Window-scoped shortcuts. RouteFocused makes these fire only when
-       the MK2 panel (or one of its child widgets) holds focus, so they
-       don't hijack the pixel-undo path on the main canvas. */
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteFocused)) {
-        int rec = mk2::undo_pop(&g_mk2_doc);
-        if (rec >= 0) Mk2SelectRecord(rec);
-    }
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteFocused)) {
-        int rec = mk2::redo_pop(&g_mk2_doc);
-        if (rec >= 0) Mk2SelectRecord(rec);
-    }
-
-    /* --- Path / Browse / Load / Save row --- */
-    ImGui::SetNextItemWidth(-280);
-    ImGui::InputTextWithHint("##mk2path", "path to MKSTK.ASM (use Browse...)", g_mk2_path, sizeof(g_mk2_path));
-    ImGui::SameLine();
-    if (ImGui::Button("Browse...")) {
-#ifdef _WIN32
-        char buf[1024];
-        /* Seed the filename buffer with the current path so the dialog
-           opens at the last location. lpstrFile doubles as input on
-           open-mode. */
-        size_t cur = strlen(g_mk2_path);
-        if (cur >= sizeof(buf)) cur = sizeof(buf) - 1;
-        memcpy(buf, g_mk2_path, cur); buf[cur] = '\0';
-        /* Initial directory from the persisted last-dir, used only when
-           lpstrFile doesn't already contain a directory component. */
-        char init_dir[MAX_PATH] = "";
-        load_last_dir_cat(init_dir, sizeof(init_dir), "mk2");
-        OPENFILENAMEA ofn = {};
-        ofn.lStructSize     = sizeof(ofn);
-        ofn.lpstrFilter     = "ASM source\0*.ASM;*.asm\0All files\0*.*\0";
-        ofn.lpstrFile       = buf;
-        ofn.nMaxFile        = sizeof(buf);
-        ofn.lpstrInitialDir = init_dir[0] ? init_dir : NULL;
-        ofn.lpstrTitle      = "Select MKSTK.ASM";
-        ofn.Flags           = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-        if (GetOpenFileNameA(&ofn)) {
-            strncpy(g_mk2_path, buf, sizeof(g_mk2_path) - 1);
-            g_mk2_path[sizeof(g_mk2_path) - 1] = '\0';
-            /* Persist the directory (everything up to the last separator). */
-            const char *last_sep = NULL;
-            for (const char *p = buf; *p; p++)
-                if (*p == '\\' || *p == '/') last_sep = p;
-            if (last_sep && last_sep > buf) {
-                char dir[MAX_PATH];
-                size_t n = (size_t)(last_sep - buf);
-                if (n >= sizeof(dir)) n = sizeof(dir) - 1;
-                memcpy(dir, buf, n); dir[n] = '\0';
-                save_last_dir_cat(dir, "mk2");
-            }
-        }
-#else
-        g_mk2_status = "Browse not implemented on this platform - type the path manually";
-        g_mk2_status_sticky = true;
-#endif
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pick MKSTK.ASM from disk");
-    ImGui::SameLine();
-    if (ImGui::Button("Load")) {
-        std::string err;
-        if (mk2::load(&g_mk2_doc, g_mk2_path, &err)) {
-            char buf[160];
-            snprintf(buf, sizeof(buf), "Loaded %d moves, %d char tables",
-                     (int)g_mk2_doc.records.size(), (int)g_mk2_doc.char_tables.size());
-            g_mk2_status = buf;
-            g_mk2_status_sticky = false;
-            g_mk2_char_idx = 0;
-            g_mk2_move_idx = 0;
-            g_mk2_search[0] = '\0';
-            /* Fresh load wipes any prior undo/redo history — those entries
-               referenced records that may no longer match the new doc. */
-            g_mk2_doc.undo_stack.clear();
-            g_mk2_doc.redo_stack.clear();
-            /* If an IMG is already loaded, pre-select the matching
-               character so the panel comes up pointing at the right
-               fighter without an extra click. */
-            Mk2AutoSelectFromImg();
-        } else {
-            g_mk2_status = std::string("Load failed: ") + err;
-            g_mk2_status_sticky = true;
-        }
-    }
-    ImGui::SameLine();
-    bool can_save = g_mk2_doc.dirty && !g_mk2_doc.source_path.empty();
-    if (!can_save) ImGui::BeginDisabled();
-    if (ImGui::Button("Save")) {
-        std::string err;
-        if (mk2::save(&g_mk2_doc, &err)) { g_mk2_status = "Saved MKSTK.ASM"; g_mk2_status_sticky = false; }
-        else { g_mk2_status = std::string("Save failed: ") + err; g_mk2_status_sticky = true; }
-    }
-    if (!can_save) ImGui::EndDisabled();
-    ImGui::SameLine();
-    bool can_reload = !g_mk2_doc.source_path.empty();
-    if (!can_reload) ImGui::BeginDisabled();
-    if (ImGui::Button("Reload")) {
-        /* Re-read MKSTK.ASM from disk, discarding any in-memory edits.
-           Uses the previously-resolved source_path rather than the input
-           box content so a stray edit there can't redirect the reload. */
-        std::string err;
-        std::string path = g_mk2_doc.source_path;
-        if (mk2::load(&g_mk2_doc, path.c_str(), &err)) {
-            char buf[160];
-            snprintf(buf, sizeof(buf), "Reloaded %d moves, %d char tables",
-                     (int)g_mk2_doc.records.size(), (int)g_mk2_doc.char_tables.size());
-            g_mk2_status = buf;
-            g_mk2_status_sticky = false;
-            /* Keep the selection if the labels still resolve, otherwise
-               fall back to the first move. */
-            int new_char = g_mk2_char_idx;
-            if (new_char >= (int)g_mk2_doc.char_tables.size()) new_char = 0;
-            g_mk2_char_idx = new_char;
-            if (g_mk2_move_idx >= (int)g_mk2_doc.char_tables[new_char].moves.size())
-                g_mk2_move_idx = 0;
-        } else {
-            g_mk2_status = std::string("Reload failed: ") + err;
-            g_mk2_status_sticky = true;
-        }
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Re-read MKSTK.ASM from disk, discarding unsaved edits");
-    if (!can_reload) ImGui::EndDisabled();
-
-    ImGui::SameLine();
-    bool can_undo_mk2 = mk2::can_undo(&g_mk2_doc);
-    if (!can_undo_mk2) ImGui::BeginDisabled();
-    if (ImGui::Button("Undo")) {
-        int rec = mk2::undo_pop(&g_mk2_doc);
-        if (rec >= 0) Mk2SelectRecord(rec);
-    }
-    if (!can_undo_mk2) ImGui::EndDisabled();
-
-    ImGui::SameLine();
-    bool can_redo_mk2 = mk2::can_redo(&g_mk2_doc);
-    if (!can_redo_mk2) ImGui::BeginDisabled();
-    if (ImGui::Button("Redo")) {
-        int rec = mk2::redo_pop(&g_mk2_doc);
-        if (rec >= 0) Mk2SelectRecord(rec);
-    }
-    if (!can_redo_mk2) ImGui::EndDisabled();
-
-    if (!g_mk2_status.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", g_mk2_status.c_str());
-    }
-
-    /* If no document loaded yet, stop here. */
-    if (g_mk2_doc.char_tables.empty()) {
-        ImGui::Spacing();
-        ImGui::TextWrapped("Click Browse... to pick MKSTK.ASM, then click Load.");
-        ImGui::End();
-        return;
-    }
-
-    ImGui::Separator();
-
-    /* --- Three-pane layout: chars | moves | fields --- */
-    const float row_h = ImGui::GetContentRegionAvail().y - 8.0f;
-    ImGui::BeginChild("##mk2_chars", ImVec2(120, row_h), true);
-    ImGui::TextDisabled("Character");
-    for (int i = 0; i < (int)g_mk2_doc.char_tables.size(); i++) {
-        const auto &t = g_mk2_doc.char_tables[i];
-        char label[40];
-        snprintf(label, sizeof(label), "%s (%d)", t.name.c_str(), (int)t.moves.size());
-        if (ImGui::Selectable(label, g_mk2_char_idx == i)) {
-            g_mk2_char_idx = i;
-            g_mk2_move_idx = 0;
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-    ImGui::BeginChild("##mk2_moves", ImVec2(260, row_h), true);
-    ImGui::TextDisabled("Move");
-    /* Substring filter — case-insensitive. Empty box matches everything. */
-    ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##mk2_search", "filter...", g_mk2_search, sizeof(g_mk2_search));
-    auto match_filter = [](const std::string &s, const char *needle) {
-        if (!needle || !needle[0]) return true;
-        std::string a = s; for (auto &c : a) c = (char)std::tolower((unsigned char)c);
-        std::string b = needle; for (auto &c : b) c = (char)std::tolower((unsigned char)c);
-        return a.find(b) != std::string::npos;
-    };
-    if (g_mk2_char_idx >= 0 && g_mk2_char_idx < (int)g_mk2_doc.char_tables.size()) {
-        const auto &moves = g_mk2_doc.char_tables[g_mk2_char_idx].moves;
-        for (int i = 0; i < (int)moves.size(); i++) {
-            if (!match_filter(moves[i], g_mk2_search)) continue;
-            char label[80];
-            snprintf(label, sizeof(label), "%2d  %s", i, moves[i].c_str());
-            if (ImGui::Selectable(label, g_mk2_move_idx == i))
-                g_mk2_move_idx = i;
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-    ImGui::BeginChild("##mk2_fields", ImVec2(0, row_h), true);
-    /* Resolve selected move to a record index. */
-    int rec_idx = -1;
-    if (g_mk2_char_idx >= 0 && g_mk2_char_idx < (int)g_mk2_doc.char_tables.size()) {
-        const auto &moves = g_mk2_doc.char_tables[g_mk2_char_idx].moves;
-        if (g_mk2_move_idx >= 0 && g_mk2_move_idx < (int)moves.size())
-            rec_idx = mk2::find_record(&g_mk2_doc, moves[g_mk2_move_idx].c_str());
-    }
-    if (rec_idx < 0) {
-        ImGui::TextDisabled("Select a move on the left.");
-    } else {
-        const mk2::StrikeRecord &rec = g_mk2_doc.records[rec_idx];
-        ImGui::Text("%s", rec.label.c_str());
-        ImGui::TextDisabled("MKSTK.ASM line %d", rec.label_line);
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        /* x_offset / y_offset / x_size / y_size — int editors. */
-        for (int fi = mk2::F_X_OFFSET; fi <= mk2::F_Y_SIZE; fi++) {
-            int v = rec.fields[fi].has_value ? (int)rec.fields[fi].value : 0;
-            ImGui::SetNextItemWidth(140);
-            char id[40]; snprintf(id, sizeof(id), "%s##mk2_%d", mk2::kFieldNames[fi], fi);
-            if (ImGui::InputInt(id, &v, 1, 8)) {
-                if (v < -0x8000) v = -0x8000;
-                if (v > 0x7FFF)  v = 0x7FFF;
-                mk2::undo_push(&g_mk2_doc, rec_idx, false);
-                mk2::set_value(&g_mk2_doc, rec_idx, fi, (int32_t)v);
-            }
-        }
-
-        ImGui::Spacing();
-        /* Strike routine and sound — raw token editors (may be symbolic). */
-        for (int fi : { (int)mk2::F_STRIKE, (int)mk2::F_SOUND }) {
-            char buf[64];
-            const std::string &raw = rec.fields[fi].raw;
-            size_t n = raw.size() < sizeof(buf) - 1 ? raw.size() : sizeof(buf) - 1;
-            memcpy(buf, raw.data(), n); buf[n] = '\0';
-            ImGui::SetNextItemWidth(180);
-            char id[40]; snprintf(id, sizeof(id), "%s##mk2_%d", mk2::kFieldNames[fi], fi);
-            if (ImGui::InputText(id, buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
-                mk2::undo_push(&g_mk2_doc, rec_idx, false);
-                mk2::set_raw(&g_mk2_doc, rec_idx, fi, buf);
-            }
-        }
-
-        ImGui::Spacing();
-        /* Damage word: split into hit (hi byte) and block (lo byte). */
-        int dmg = rec.fields[mk2::F_DAMAGE].has_value ? (int)rec.fields[mk2::F_DAMAGE].value : 0;
-        int hit = mk2::damage_hit(dmg), blk = mk2::damage_block(dmg);
-        ImGui::SetNextItemWidth(80);
-        if (ImGui::InputInt("damage_hit##mk2", &hit, 1, 4)) {
-            if (hit < 0) hit = 0; if (hit > 255) hit = 255;
-            mk2::undo_push(&g_mk2_doc, rec_idx, false);
-            mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_DAMAGE, mk2::pack_damage(hit, blk));
-        }
-        ImGui::SetNextItemWidth(80);
-        if (ImGui::InputInt("damage_block##mk2", &blk, 1, 4)) {
-            if (blk < 0) blk = 0; if (blk > 255) blk = 255;
-            mk2::undo_push(&g_mk2_doc, rec_idx, false);
-            mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_DAMAGE, mk2::pack_damage(hit, blk));
-        }
-        ImGui::TextDisabled("damage word = 0x%04X", dmg & 0xFFFF);
-
-        ImGui::Spacing();
-        /* Score — 32-bit. */
-        int score = rec.fields[mk2::F_SCORE].has_value ? (int)rec.fields[mk2::F_SCORE].value : 0;
-        ImGui::SetNextItemWidth(160);
-        if (ImGui::InputInt("score##mk2", &score, 100, 1000)) {
-            mk2::undo_push(&g_mk2_doc, rec_idx, false);
-            mk2::set_value(&g_mk2_doc, rec_idx, mk2::F_SCORE, (int32_t)score);
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::End();
-}
-
-static bool Mk2FatalityFilterMatch(const std::string &text, const char *filter)
-{
-    if (!filter || !filter[0]) return true;
-    std::string a = text;
-    std::string b = filter;
-    for (char &c : a) c = (char)std::tolower((unsigned char)c);
-    for (char &c : b) c = (char)std::tolower((unsigned char)c);
-    return a.find(b) != std::string::npos;
-}
-
-struct Mk2FatalityFighterDef {
-    const char *name;
-    const char *source_file;
-    const char *command_prefix[4];
-    const char *img_files[24];
-    const char *fatal_anims[10];
-    const char *db1_anim;
-    const char *db2_anim;
-    const char *db1_victim;
-    const char *db2_victim;
-};
-
-static const char *g_mk2_fatality_cage_deaths[] = {
-    "a_torso_ripped", "a_decapfall", "a_head", "a_headhole", "a_swipe_torso",
-    "a_nutcrunched", "a_bike_kicked", "a_drained", "a_banged", "a_impaled",
-    "a_back_broke", "a_jc_arms_ripped", NULL
-};
-
-static const Mk2FatalityFighterDef g_mk2_fatality_fighters[] = {
-    { "Johnny Cage", "MKJC.ASM", { "jc_", NULL },
-      { "data/CAGE1.IMG", "data/CAGE2.IMG", "data/CAGE3.IMG", "data/CAGE4.IMG", "data/CAGE5.IMG",
-        "data/CAGE6.IMG", "data/CAGE7.IMG", "data/CAGE8.IMG", "data/CAGE9.IMG", "data/CAGE10.IMG", NULL },
-      { "a_jcrip", "a_jc_pp", "a_jc_headhole", "a_splits", NULL },
-      "a_jcrip", "a_jc_pp", "a_torso_ripped", "a_head" },
-
-    { "Liu Kang", "MKLK.ASM", { "lk_", NULL },
-      { "data/KANG1.IMG", "data/KANG2.IMG", "data/KANG3.IMG", "data/KANG4.IMG", "data/KANG5.IMG",
-        "data/KANG6.IMG", "data/KANG7.IMG", "data/KANG8.IMG", "data/KANG9.IMG", "data/KANG10.IMG",
-        "data/LKBFIST.IMG", NULL },
-      { "a_lkdragon", "a_lkwheel", "a_lkbike", NULL },
-      "a_lkdragon", "a_lkwheel", "a_torso_ripped", "a_decapfall" },
-
-    { "Raiden", "MKRD.ASM", { "rd_", NULL },
-      { "data/RAID1.IMG", "data/RAID2.IMG", "data/RAID3.IMG", "data/RAID4.IMG", "data/RAID5.IMG",
-        "data/RAID6.IMG", "data/RAID7.IMG", "data/RAID8.IMG", "data/RAID9.IMG", "data/RAIDWALK.IMG",
-        "data/RADBOLT1.IMG", "data/RADBOLT2.IMG", NULL },
-      { "a_death_zap1", "a_death_bolt1", "a_death_zap2", "a_death_shock", NULL },
-      "a_death_zap1", "a_death_zap2", "a_torso_ripped", "a_decapfall" },
-
-    { "Shang Tsung", "MKST.ASM", { "st_", NULL },
-      { "data/TSUNG1.IMG", "data/TSUNG2.IMG", "data/TSUNG3.IMG", "data/TSUNG4.IMG", "data/TSUNG5.IMG",
-        "data/TSUNG6.IMG", "data/TSUNG7.IMG", "data/TSUNG8.IMG", "data/TSUNG9.IMG", "data/TSUNG10.IMG",
-        "data/TSUNG1G.IMG", "data/OLDSHNG.IMG", NULL },
-      { "a_st_kano_morph", "a_st_kano_roll", "a_st_kano_back", "a_st_2_jc", NULL },
-      "a_st_kano_roll", "a_st_kano_morph", "a_decapfall", "a_drained" },
-
-    { "Baraka", "MKSA.ASM", { "sa_", NULL },
-      { "data/UGMO1.IMG", "data/UGMO2.IMG", "data/UGMO3.IMG", "data/UGMO4.IMG", "data/UGMO5.IMG",
-        "data/UGMO6.IMG", "data/UGMO7.IMG", "data/UGMO8.IMG", "data/UGMO9.IMG", "data/UGMO10.IMG",
-        "data/UGMO1SHO.IMG", NULL },
-      { "a_sashred", "a_sastab", "a_swipe", NULL },
-      "a_sashred", "a_sastab", "a_decapfall", "a_impaled" },
-
-    { "Kitana", "MKFN.ASM", { "fn1_", NULL },
-      { "data/KAT1.IMG", "data/KAT2.IMG", "data/KAT3.IMG", "data/KAT4.IMG", "data/KAT5.IMG",
-        "data/KAT6.IMG", "data/KAT7.IMG", "data/KAT8.IMG", "data/KAT9.IMG", "data/KAT10.IMG",
-        "data/KAT11.IMG", NULL },
-      { "a_death_kiss1", "a_fan_swipe", NULL },
-      "a_death_kiss1", "a_fan_swipe", "a_drained", "a_decapfall" },
-
-    { "Mileena", "MKFN.ASM", { "fn2_", NULL },
-      { "data/KAT1.IMG", "data/KAT2.IMG", "data/KAT3.IMG", "data/KAT4.IMG", "data/KAT5.IMG",
-        "data/KAT6.IMG", "data/KAT7.IMG", "data/KAT8.IMG", "data/KAT9.IMG", "data/KAT10.IMG",
-        "data/KAT11.IMG", NULL },
-      { "a_fn2_stab", "a_death_kiss2", NULL },
-      "a_fn2_stab", "a_death_kiss2", "a_impaled", "a_drained" },
-
-    { "Sub-Zero", "MKNJ.ASM", { "sz_", NULL },
-      { "data/NINJAS1.IMG", "data/NINJAS2.IMG", "data/NINJAS3.IMG", "data/NINJAS4.IMG", "data/NINJAS5.IMG",
-        "data/NINJAS6.IMG", "data/NINJAS7.IMG", "data/NINJAS8.IMG", "data/NINJAS9.IMG", "data/NINJAS10.IMG",
-        "data/NINJAS11.IMG", "data/NINJAS12.IMG", "data/FREEZE1.IMG", "data/FROZEN.IMG", "data/SNOBALL.IMG", NULL },
-      { "a_sz_tornado", "a_pitch", "a_ice_ball", NULL },
-      "a_sz_tornado", "a_pitch", "a_torso_ripped", "a_decapfall" },
-
-    { "Scorpion", "MKNJ.ASM", { "sc_", NULL },
-      { "data/NINJAS1.IMG", "data/NINJAS2.IMG", "data/NINJAS3.IMG", "data/NINJAS4.IMG", "data/NINJAS5.IMG",
-        "data/NINJAS6.IMG", "data/NINJAS7.IMG", "data/NINJAS8.IMG", "data/NINJAS9.IMG", "data/NINJAS10.IMG",
-        "data/NINJAS11.IMG", "data/NINJAS12.IMG", "data/NEWROPE.IMG", NULL },
-      { "a_scortch", "a_scorpion_skull", "a_sc_swipe", "a_death_spear", NULL },
-      "a_scortch", "a_sc_swipe", "a_torso_ripped", "a_swipe_torso" },
-
-    { "Reptile", "MKNJ.ASM", { "rp_", NULL },
-      { "data/NINJAS1.IMG", "data/NINJAS2.IMG", "data/NINJAS3.IMG", "data/NINJAS4.IMG", "data/NINJAS5.IMG",
-        "data/NINJAS6.IMG", "data/NINJAS7.IMG", "data/NINJAS8.IMG", "data/NINJAS9.IMG", "data/NINJAS10.IMG",
-        "data/NINJAS11.IMG", "data/NINJAS12.IMG", "data/ACID1.IMG", NULL },
-      { "a_eat_head", "a_spit", "a_slow_proj", NULL },
-      "a_eat_head", "a_eat_head", "a_head", "a_head" },
-
-    { "Jax", "MKJX.ASM", { "jx_", NULL },
-      { "data/NUJAX1.IMG", "data/NUJAX2.IMG", "data/NUJAX3.IMG", "data/NUJAX4.IMG", "data/NUJAX5.IMG",
-        "data/NUJAX6.IMG", "data/NUJAX7.IMG", "data/NUJAX8.IMG", "data/NUJAX9.IMG", "data/NUJAX10.IMG",
-        "data/JAXPRO.IMG", "data/MKJXARMS.IMG", NULL },
-      { "a_clap", "a_back_breaker", "a_arm_rip", NULL },
-      "a_clap", "a_arm_rip", "a_head", "a_jc_arms_ripped" },
-
-    { "Kung Lao", "MKHH.ASM", { "hh_", NULL },
-      { "data/HATHED1.IMG", "data/HATHED2.IMG", "data/HATHED3.IMG", "data/HATHED4.IMG", "data/HATHED5.IMG",
-        "data/HATHED6.IMG", "data/HATHED7.IMG", "data/HATHED8.IMG", "data/HATHED9.IMG", "data/HATHED10.IMG",
-        "data/HATHED11.IMG", "data/HATHED12.IMG", NULL },
-      { "a_spin", "a_hh_hat_swipe", NULL },
-      "a_spin", "a_hh_hat_swipe", "a_torso_ripped", "a_decapfall" },
-};
-
-static const int kMk2FatalityFighterCount =
-    (int)(sizeof(g_mk2_fatality_fighters) / sizeof(g_mk2_fatality_fighters[0]));
-
-static void Mk2FatalityClampSelections(void)
-{
-    if (g_mk2_fatality_command_idx < 0) g_mk2_fatality_command_idx = 0;
-    if (g_mk2_fatality_combo_idx < 0) g_mk2_fatality_combo_idx = 0;
-    if (g_mk2_fatality_anim_idx < 0) g_mk2_fatality_anim_idx = 0;
-    if (g_mk2_fatality_command_idx >= (int)g_mk2_fatality_doc.commands.size())
-        g_mk2_fatality_command_idx = (int)g_mk2_fatality_doc.commands.size() - 1;
-    if (g_mk2_fatality_combo_idx >= (int)g_mk2_fatality_doc.combos.size())
-        g_mk2_fatality_combo_idx = (int)g_mk2_fatality_doc.combos.size() - 1;
-    if (g_mk2_fatality_anim_idx >= (int)g_mk2_fatality_doc.animations.size())
-        g_mk2_fatality_anim_idx = (int)g_mk2_fatality_doc.animations.size() - 1;
-    if (g_mk2_fatality_command_idx < 0) g_mk2_fatality_command_idx = 0;
-    if (g_mk2_fatality_combo_idx < 0) g_mk2_fatality_combo_idx = 0;
-    if (g_mk2_fatality_anim_idx < 0) g_mk2_fatality_anim_idx = 0;
-}
-
-static void Mk2FatalityLoadRoot(const char *root)
-{
-    std::string err;
-    if (mk2fatal::load(&g_mk2_fatality_doc, root, &err)) {
-        char buf[192];
-        snprintf(buf, sizeof(buf), "Loaded %d command blocks, %d combos, %d animation blocks",
-                 (int)g_mk2_fatality_doc.commands.size(),
-                 (int)g_mk2_fatality_doc.combos.size(),
-                 (int)g_mk2_fatality_doc.animations.size());
-        g_mk2_fatality_status = buf;
-        g_mk2_fatality_status_sticky = false;
-        g_mk2_fatality_command_idx = 0;
-        g_mk2_fatality_combo_idx = 0;
-        g_mk2_fatality_anim_idx = 0;
-        g_mk2_fatality_selected_line = 0;
-        g_mk2_fatality_filter[0] = '\0';
-    } else {
-        g_mk2_fatality_status = std::string("Load failed: ") + err;
-        g_mk2_fatality_status_sticky = true;
-    }
-}
-
-static bool DrawMk2FatalitySourceEditor(const char *id, int file_idx, int start_line, int end_line,
-                                        int *selected_line, char *insert_buf,
-                                        size_t insert_buf_size, bool allow_insert_delete)
-{
-    const mk2fatal::SourceFile *sf = mk2fatal::get_file(&g_mk2_fatality_doc, file_idx);
-    if (!sf) {
-        ImGui::TextDisabled("Source file unavailable.");
-        return false;
-    }
-    if (start_line <= 0) start_line = 1;
-    if (end_line > (int)sf->lines.size()) end_line = (int)sf->lines.size();
-    if (end_line < start_line) {
-        ImGui::TextDisabled("No source lines in this block.");
-        return false;
-    }
-    if (*selected_line < start_line || *selected_line > end_line) *selected_line = start_line;
-
-    ImGui::TextDisabled("%s  lines %d-%d", sf->rel_path.c_str(), start_line, end_line);
-    const float footer_h = allow_insert_delete ? 64.0f : 0.0f;
-    bool changed = false;
-    bool structural = false;
-
-    ImGui::BeginChild(id, ImVec2(0, -footer_h), true);
-    if (ImGui::BeginTable("##mk2fatal_src_table", 2,
-                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
-                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
-        ImGui::TableSetupColumn("Line", ImGuiTableColumnFlags_WidthFixed, 54.0f);
-        ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthStretch);
-        for (int line = start_line; line <= end_line; line++) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::PushID(line);
-            char lbuf[24];
-            snprintf(lbuf, sizeof(lbuf), "%d", line);
-            if (ImGui::Selectable(lbuf, *selected_line == line))
-                *selected_line = line;
-            ImGui::TableSetColumnIndex(1);
-            char buf[1024];
-            const std::string &src = sf->lines[line - 1];
-            size_t n = src.size() < sizeof(buf) - 1 ? src.size() : sizeof(buf) - 1;
-            memcpy(buf, src.data(), n);
-            buf[n] = '\0';
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::InputText("##src", buf, sizeof(buf))) {
-                if (mk2fatal::set_line(&g_mk2_fatality_doc, file_idx, line, buf))
-                    changed = true;
-            }
-            ImGui::PopID();
-        }
-        ImGui::EndTable();
-    }
-    ImGui::EndChild();
-
-    if (allow_insert_delete) {
-        ImGui::SetNextItemWidth(-220);
-        ImGui::InputTextWithHint("##mk2fatal_insert", "assembly line to insert", insert_buf, insert_buf_size);
-        ImGui::SameLine();
-        bool can_insert = insert_buf && insert_buf[0] && *selected_line >= start_line && *selected_line <= end_line;
-        if (!can_insert) ImGui::BeginDisabled();
-        if (ImGui::Button("Insert Before")) {
-            if (mk2fatal::insert_line(&g_mk2_fatality_doc, file_idx, *selected_line, insert_buf)) {
-                structural = true;
-                end_line++;
-            }
-        }
-        if (!can_insert) ImGui::EndDisabled();
-        ImGui::SameLine();
-        bool can_delete = *selected_line > start_line && *selected_line <= end_line;
-        if (!can_delete) ImGui::BeginDisabled();
-        if (ImGui::Button("Delete Line")) {
-            if (mk2fatal::delete_line(&g_mk2_fatality_doc, file_idx, *selected_line)) {
-                structural = true;
-                if (*selected_line > start_line) (*selected_line)--;
-            }
-        }
-        if (!can_delete) ImGui::EndDisabled();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The label line is protected; select a .long/.word line to delete.");
-    }
-
-    if (changed || structural) {
-        std::string err;
-        mk2fatal::reparse(&g_mk2_fatality_doc, &err);
-        if (!g_mk2_fatality_status_sticky && !g_mk2_fatality_status.empty())
-            g_mk2_fatality_status.clear();
-        Mk2FatalityClampSelections();
-    }
-    return changed || structural;
-}
-
-static bool Mk2FatalityFileExists(const std::string &path)
-{
-    FILE *f = fopen(path.c_str(), "rb");
-    if (!f) return false;
-    fclose(f);
-    return true;
-}
-
-static std::string Mk2FatalityResolveProjectAsset(const std::string &rel_path)
-{
-    std::string root = g_mk2_fatality_doc.root_path.empty()
-                     ? std::string(g_mk2_fatality_root)
-                     : g_mk2_fatality_doc.root_path;
-    std::string p = PathCombine(root, rel_path);
-    if (Mk2FatalityFileExists(p)) return p;
-
-    std::string parent = GetParentDirectory(root);
-    p = PathCombine(parent, rel_path);
-    if (Mk2FatalityFileExists(p)) return p;
-
-    return PathCombine(root, rel_path);
-}
-
-static bool Mk2FatalityNameEquals(const std::string &a, const std::string &b)
-{
-    size_t na = a.size();
-    size_t nb = b.size();
-    while (na > 0 && a[na - 1] == '\0') na--;
-    while (nb > 0 && b[nb - 1] == '\0') nb--;
-    if (na != nb) return false;
-    for (size_t i = 0; i < na; i++)
-        if (std::toupper((unsigned char)a[i]) != std::toupper((unsigned char)b[i]))
-            return false;
-    return true;
-}
-
-static bool Mk2FatalityVectorHas(const std::vector<std::string> &items, const std::string &value)
-{
-    for (const std::string &item : items)
-        if (Mk2FatalityNameEquals(item, value)) return true;
-    return false;
-}
-
-static void Mk2FatalityPushUnique(std::vector<std::string> *items, const std::string &value)
-{
-    if (value.empty()) return;
-    if (Mk2FatalityVectorHas(*items, value)) return;
-    items->push_back(value);
-}
-
-static void Mk2FatalityMergePlan(mk2fatal::AssetPlan *dst, const mk2fatal::AssetPlan &src)
-{
-    if (!dst) return;
-    if (dst->root_label.empty()) dst->root_label = src.root_label;
-    if (dst->resolved_label.empty()) dst->resolved_label = src.resolved_label;
-    if (dst->preferred_file.empty()) dst->preferred_file = src.preferred_file;
-    for (const std::string &s : src.animation_labels) Mk2FatalityPushUnique(&dst->animation_labels, s);
-    for (const std::string &s : src.sprite_labels) Mk2FatalityPushUnique(&dst->sprite_labels, s);
-    for (const std::string &s : src.missing_labels) Mk2FatalityPushUnique(&dst->missing_labels, s);
-    for (const std::string &s : src.img_files) Mk2FatalityPushUnique(&dst->img_files, s);
-}
-
-static int Mk2FatalityFindImageBySpriteLabel(Document *doc, const std::string &label)
-{
-    if (!doc) return -1;
-    for (int i = 0; i < (int)doc->imgcnt; i++) {
-        IMG *img = doc_get_img(doc, i);
-        if (!img) continue;
-        if (Mk2FatalityNameEquals(img_name_string(img), label)) return i;
-    }
-    return -1;
-}
-
-static int Mk2FatalityFindImageBySpriteLabel(const std::string &label)
-{
-    return Mk2FatalityFindImageBySpriteLabel(g_doc, label);
-}
-
-static mk2fatal::AssetPlan Mk2FatalityBuildPlanForLabels(const std::vector<std::string> &labels,
-                                                         const char *preferred_file,
-                                                         const char *const *img_files)
-{
-    mk2fatal::AssetPlan plan;
-    plan.root_label = labels.empty() ? "" : labels[0];
-    plan.preferred_file = preferred_file ? preferred_file : "";
-    for (const std::string &label : labels) {
-        mk2fatal::AssetPlan part;
-        std::string err;
-        if (mk2fatal::build_asset_plan(&g_mk2_fatality_doc, label.c_str(), preferred_file, &part, &err))
-            Mk2FatalityMergePlan(&plan, part);
-        else
-            Mk2FatalityPushUnique(&plan.missing_labels, label);
-    }
-    if (img_files) {
-        for (int i = 0; img_files[i]; i++)
-            Mk2FatalityPushUnique(&plan.img_files, img_files[i]);
-    }
-    return plan;
-}
-
-static bool Mk2FatalityCommandMatchesFighter(const mk2fatal::CommandBlock &cmd,
-                                             const Mk2FatalityFighterDef &fighter)
-{
-    for (int i = 0; i < 4 && fighter.command_prefix[i]; i++) {
-        const char *p = fighter.command_prefix[i];
-        size_t n = strlen(p);
-        if (cmd.label.size() >= n) {
-            bool match = true;
-            for (size_t j = 0; j < n; j++) {
-                if (std::tolower((unsigned char)cmd.label[j]) !=
-                    std::tolower((unsigned char)p[j])) {
-                    match = false;
-                    break;
-                }
-            }
-            if (match) return true;
-        }
-        if (!cmd.combo_label.empty() && Mk2FatalityFilterMatch(cmd.combo_label, p))
-            return true;
-    }
-    return false;
-}
-
-static std::vector<int> Mk2FatalityFighterCommandIndices(const Mk2FatalityFighterDef &fighter)
-{
-    std::vector<int> out;
-    for (int i = 0; i < (int)g_mk2_fatality_doc.commands.size(); i++) {
-        const mk2fatal::CommandBlock &cmd = g_mk2_fatality_doc.commands[i];
-        if (Mk2FatalityCommandMatchesFighter(cmd, fighter))
-            out.push_back(i);
-    }
-    return out;
-}
-
-static int Mk2FatalityAnimListIndex(const char *const *items, const char *label)
-{
-    if (!items || !label || !label[0]) return 0;
-    for (int i = 0; items[i]; i++)
-        if (Mk2FatalityNameEquals(items[i], label)) return i;
-    return 0;
-}
-
-static const char *Mk2FatalitySelectedAttackerAnim(const Mk2FatalityFighterDef &fighter)
-{
-    int count = 0;
-    while (count < 10 && fighter.fatal_anims[count]) count++;
-    if (count == 0) return NULL;
-    if (g_mk2_fatality_attacker_anim_idx < 0) g_mk2_fatality_attacker_anim_idx = 0;
-    if (g_mk2_fatality_attacker_anim_idx >= count) g_mk2_fatality_attacker_anim_idx = count - 1;
-    return fighter.fatal_anims[g_mk2_fatality_attacker_anim_idx];
-}
-
-static const char *Mk2FatalitySelectedVictimAnim(void)
-{
-    int count = 0;
-    while (g_mk2_fatality_cage_deaths[count]) count++;
-    if (g_mk2_fatality_victim_anim_idx < 0) g_mk2_fatality_victim_anim_idx = 0;
-    if (g_mk2_fatality_victim_anim_idx >= count) g_mk2_fatality_victim_anim_idx = count - 1;
-    return g_mk2_fatality_cage_deaths[g_mk2_fatality_victim_anim_idx];
-}
-
-static std::string Mk2FatalityInferAnimationFromRoutine(const std::string &routine)
-{
-    if (routine.size() <= 3) return std::string();
-    std::string lower = routine;
-    for (char &c : lower) c = (char)std::tolower((unsigned char)c);
-    if (lower.find("do_") != 0) return std::string();
-
-    std::string candidate = std::string("a_") + routine.substr(3);
-    std::string err;
-    mk2fatal::AssetPlan tmp;
-    if (mk2fatal::build_asset_plan(&g_mk2_fatality_doc, candidate.c_str(), "MKJC.ASM", &tmp, &err))
-        return candidate;
-    return std::string();
-}
-
-static void Mk2FatalityApplyTimelineFromPlan(const mk2fatal::AssetPlan &plan,
-                                             int *matched_sprites,
-                                             int *missing_sprites)
-{
-    if (matched_sprites) *matched_sprites = 0;
-    if (missing_sprites) *missing_sprites = 0;
-    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p)
-        img->flags &= ~1u;
-
-    TimelineClearFrames();
-    g_timeline_play_dir = 1;
-    ClearTimelineCompositeSelection();
-
-    for (const std::string &sprite : plan.sprite_labels) {
-        int idx = Mk2FatalityFindImageBySpriteLabel(sprite);
-        if (idx >= 0) {
-            IMG *img = get_img(idx);
-            if (img) img->flags |= 1u;
-            if (std::find(g_timeline_frames.begin(), g_timeline_frames.end(), idx) == g_timeline_frames.end())
-                TimelinePushFrame(idx);
-            if (matched_sprites) (*matched_sprites)++;
-        } else if (missing_sprites) {
-            (*missing_sprites)++;
-        }
-    }
-
-    g_timeline_built_for_imgcnt = g_doc->imgcnt;
-    if (!g_timeline_frames.empty()) {
-        g_doc->ilselected = g_timeline_frames[0];
-        g_is_playing = true;
-        g_play_speed = 8.0f;
-        g_zoom_reset = true;
-    }
-}
-
-static void Mk2FatalityLoadPlanImagesIntoActiveDoc(const mk2fatal::AssetPlan &plan,
-                                                   int *loaded_files,
-                                                   int *missing_files)
-{
-    if (loaded_files) *loaded_files = 0;
-    if (missing_files) *missing_files = 0;
-    for (const std::string &rel : plan.img_files) {
-        std::string full = Mk2FatalityResolveProjectAsset(rel);
-        if (!Mk2FatalityFileExists(full)) {
-            if (missing_files) (*missing_files)++;
-            continue;
-        }
-        unsigned int before = g_doc->imgcnt;
-        SetActiveDocumentPath(full);
-        LoadImgFile();
-        if (g_doc->imgcnt > before) {
-            if (loaded_files) (*loaded_files)++;
-            RecentAdd(full);
-        }
-    }
-    g_dirty = false;
-}
-
-static void Mk2FatalityMarkPlanInDoc(Document *doc, const mk2fatal::AssetPlan &plan,
-                                     std::vector<int> *marked_indices,
-                                     int *matched_sprites,
-                                     int *missing_sprites)
-{
-    if (marked_indices) marked_indices->clear();
-    if (matched_sprites) *matched_sprites = 0;
-    if (missing_sprites) *missing_sprites = 0;
-    if (!doc) return;
-    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p)
-        img->flags &= ~1u;
-
-    for (const std::string &sprite : plan.sprite_labels) {
-        int idx = Mk2FatalityFindImageBySpriteLabel(doc, sprite);
-        if (idx >= 0) {
-            IMG *img = doc_get_img(doc, idx);
-            if (img) img->flags |= 1u;
-            if (marked_indices &&
-                std::find(marked_indices->begin(), marked_indices->end(), idx) == marked_indices->end())
-                marked_indices->push_back(idx);
-            if (matched_sprites) (*matched_sprites)++;
-        } else if (missing_sprites) {
-            (*missing_sprites)++;
-        }
-    }
-}
-
-static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
-                                      const mk2fatal::AssetPlan &attacker_plan,
-                                      const mk2fatal::AssetPlan &victim_plan)
-{
-    PrepareDocumentForOpenedFile();
-    int attacker_doc_idx = document_active_index();
-    int attacker_loaded = 0, attacker_missing_files = 0;
-    Mk2FatalityLoadPlanImagesIntoActiveDoc(attacker_plan, &attacker_loaded, &attacker_missing_files);
-    Document *attacker_doc = document_get(attacker_doc_idx);
-
-    std::vector<int> attacker_marked;
-    int attacker_matched = 0, attacker_missing_sprites = 0;
-    Mk2FatalityMarkPlanInDoc(attacker_doc, attacker_plan, &attacker_marked,
-                             &attacker_matched, &attacker_missing_sprites);
-    if (attacker_doc) attacker_doc->dirty = 0;
-
-    int victim_doc_idx = document_new_tab();
-    ClearAll();
-    int victim_loaded = 0, victim_missing_files = 0;
-    Mk2FatalityLoadPlanImagesIntoActiveDoc(victim_plan, &victim_loaded, &victim_missing_files);
-    Document *victim_doc = document_get(victim_doc_idx);
-
-    std::vector<int> victim_marked;
-    int victim_matched = 0, victim_missing_sprites = 0;
-    Mk2FatalityMarkPlanInDoc(victim_doc, victim_plan, &victim_marked,
-                             &victim_matched, &victim_missing_sprites);
-    if (victim_doc) victim_doc->dirty = 0;
-
-    document_set_active(attacker_doc_idx);
-    TimelineSetFrames(attacker_marked);
-    g_timeline_play_idx = 0;
-    g_timeline_play_dir = 1;
-    g_timeline_built_for_imgcnt = g_doc->imgcnt;
-    if (!g_timeline_frames.empty())
-        g_doc->ilselected = g_timeline_frames[0];
-
-    g_world_state.enabled = true;
-    g_world_marked_state.marked_play = true;
-    g_world_marked_state.fps = g_mk2_fatality_preview_fps;
-    g_play_speed = g_mk2_fatality_preview_fps;
-    g_is_playing = true;
-    g_world_marked_state.mirror_active = false;
-    g_world_marked_state.mirror_other = true;
-    g_world_marked_state.mirror_extra[0] = false;
-    g_world_marked_state.mirror_extra[1] = false;
-    g_world_marked_state.mirror_extra[2] = false;
-    for (int i = 0; i < kWorldMarkedMaxTabs; i++)
-        g_world_marked_state.hold_end[i] = false;
-    g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
-    g_world_marked_state.dummy_decap_body = false;
-    g_world_marked_state.dummy_decap_reset = true;
-    g_world_marked_state.dummy_decap_manual = false;
-    g_world_marked_state.dummy_decap_doc_idx = -1;
-    g_world_marked_state.dummy_decap_prefix.clear();
-    g_world_marked_state.paused = false;
-    WorldMarkedRestart(g_world_marked_state);
-    g_zoom_reset = true;
-
-    char buf[320];
-    snprintf(buf, sizeof(buf),
-             "%s staged: attacker %d IMG/%d sprite%s, Cage victim %d IMG/%d sprite%s%s%s.",
-             fighter.name,
-             attacker_loaded, attacker_matched, attacker_matched == 1 ? "" : "s",
-             victim_loaded, victim_matched, victim_matched == 1 ? "" : "s",
-             (attacker_missing_sprites || victim_missing_sprites) ? " (some sprite refs missing)" : "",
-             (attacker_missing_files || victim_missing_files) ? " (some IMG files missing)" : "");
-    g_mk2_fatality_stage_status = buf;
-}
-
-static mk2fatal::AssetPlan Mk2FatalityBuildCageDeathPlan(const std::vector<std::string> &labels)
-{
-    static const char *kCageImgs[] = {
-        "data/CAGE1.IMG", "data/CAGE2.IMG", "data/CAGE3.IMG", "data/CAGE4.IMG", "data/CAGE5.IMG",
-        "data/CAGE6.IMG", "data/CAGE7.IMG", "data/CAGE8.IMG", "data/CAGE9.IMG", "data/CAGE10.IMG", NULL
-    };
-    return Mk2FatalityBuildPlanForLabels(labels, "MKJC.ASM", kCageImgs);
-}
-
-static void Mk2FatalityStageFighterWorkspace(void)
-{
-    if (g_mk2_fatality_fighter_idx < 0 || g_mk2_fatality_fighter_idx >= kMk2FatalityFighterCount)
-        return;
-    const Mk2FatalityFighterDef &fighter = g_mk2_fatality_fighters[g_mk2_fatality_fighter_idx];
-
-    std::vector<std::string> attacker_labels;
-    for (int i = 0; i < 10 && fighter.fatal_anims[i]; i++)
-        attacker_labels.push_back(fighter.fatal_anims[i]);
-    mk2fatal::AssetPlan attacker_plan =
-        Mk2FatalityBuildPlanForLabels(attacker_labels, fighter.source_file, fighter.img_files);
-
-    std::vector<std::string> victim_labels;
-    for (int i = 0; g_mk2_fatality_cage_deaths[i]; i++)
-        victim_labels.push_back(g_mk2_fatality_cage_deaths[i]);
-    mk2fatal::AssetPlan victim_plan = Mk2FatalityBuildCageDeathPlan(victim_labels);
-
-    g_mk2_fatality_plan = victim_plan;
-    Mk2FatalityStageDualPlans(fighter, attacker_plan, victim_plan);
-}
-
-static void Mk2FatalityApplyFatalityDefaults(const mk2fatal::CommandBlock &cmd,
-                                             const Mk2FatalityFighterDef &fighter)
-{
-    const char *attacker = fighter.fatal_anims[0];
-    const char *victim = "a_torso_ripped";
-    if (cmd.routine == "do_fatality_1") {
-        attacker = fighter.db1_anim ? fighter.db1_anim : attacker;
-        victim = fighter.db1_victim ? fighter.db1_victim : victim;
-    } else if (cmd.routine == "do_fatality_2") {
-        attacker = fighter.db2_anim ? fighter.db2_anim : attacker;
-        victim = fighter.db2_victim ? fighter.db2_victim : victim;
-    } else if (Mk2FatalityFilterMatch(cmd.routine, "headhole")) {
-        attacker = "a_jc_headhole";
-        victim = "a_headhole";
-    } else if (Mk2FatalityFilterMatch(cmd.routine, "raiden_lift")) {
-        attacker = "a_death_zap1";
-        victim = "a_torso_ripped";
-    } else if (Mk2FatalityFilterMatch(cmd.routine, "decap")) {
-        victim = "a_decapfall";
-    } else if (Mk2FatalityFilterMatch(cmd.routine, "rip")) {
-        victim = "a_torso_ripped";
-    } else if (Mk2FatalityFilterMatch(cmd.routine, "head")) {
-        victim = "a_head";
-    }
-
-    g_mk2_fatality_attacker_anim_idx = Mk2FatalityAnimListIndex(fighter.fatal_anims, attacker);
-    g_mk2_fatality_victim_anim_idx = Mk2FatalityAnimListIndex(g_mk2_fatality_cage_deaths, victim);
-}
-
-static void Mk2FatalityStageSelectedFatality(void)
-{
-    if (g_mk2_fatality_fighter_idx < 0 || g_mk2_fatality_fighter_idx >= kMk2FatalityFighterCount)
-        return;
-    const Mk2FatalityFighterDef &fighter = g_mk2_fatality_fighters[g_mk2_fatality_fighter_idx];
-
-    std::vector<std::string> attacker_labels;
-    const char *attacker_anim = Mk2FatalitySelectedAttackerAnim(fighter);
-    if (attacker_anim) attacker_labels.push_back(attacker_anim);
-    mk2fatal::AssetPlan attacker_plan =
-        Mk2FatalityBuildPlanForLabels(attacker_labels, fighter.source_file, fighter.img_files);
-
-    std::vector<std::string> victim_labels;
-    const char *victim_anim = Mk2FatalitySelectedVictimAnim();
-    if (victim_anim) victim_labels.push_back(victim_anim);
-    mk2fatal::AssetPlan victim_plan = Mk2FatalityBuildCageDeathPlan(victim_labels);
-
-    g_mk2_fatality_plan = victim_plan;
-    Mk2FatalityStageDualPlans(fighter, attacker_plan, victim_plan);
-}
-
-static void Mk2FatalityStageAssetPlan(const mk2fatal::AssetPlan &plan)
-{
-    if (plan.img_files.empty()) {
-        g_mk2_fatality_stage_status = "No IMG libraries were resolved for this plan.";
-        return;
-    }
-
-    PrepareDocumentForOpenedFile();
-    int loaded_files = 0;
-    int missing_files = 0;
-    for (const std::string &rel : plan.img_files) {
-        std::string full = Mk2FatalityResolveProjectAsset(rel);
-        if (!Mk2FatalityFileExists(full)) {
-            missing_files++;
-            continue;
-        }
-        unsigned int before = g_doc->imgcnt;
-        SetActiveDocumentPath(full);
-        LoadImgFile();
-        if (g_doc->imgcnt > before) {
-            loaded_files++;
-            RecentAdd(full);
-        }
-    }
-
-    int matched = 0;
-    int missing_sprites = 0;
-    Mk2FatalityApplyTimelineFromPlan(plan, &matched, &missing_sprites);
-    g_dirty = false;
-    g_img_tex_idx = -2;
-
-    char buf[256];
-    snprintf(buf, sizeof(buf),
-             "Staged %d IMG file%s, %d/%d referenced sprite%s matched%s%s.",
-             loaded_files, loaded_files == 1 ? "" : "s",
-             matched, (int)plan.sprite_labels.size(),
-             plan.sprite_labels.size() == 1 ? "" : "s",
-             missing_sprites ? " (some missing)" : "",
-             missing_files ? " (some IMG files missing)" : "");
-    g_mk2_fatality_stage_status = buf;
-}
-
-static void Mk2FatalityBuildAndStage(const char *animation_label)
-{
-    if (!animation_label || !animation_label[0]) return;
-    std::string err;
-    mk2fatal::AssetPlan plan;
-    if (!mk2fatal::build_asset_plan(&g_mk2_fatality_doc, animation_label, "MKJC.ASM", &plan, &err)) {
-        g_mk2_fatality_stage_status = std::string("Stage failed: ") + err;
-        return;
-    }
-    g_mk2_fatality_plan = plan;
-    Mk2FatalityStageAssetPlan(g_mk2_fatality_plan);
-}
-
-static void DrawMk2FatalityPlanSummary(void)
-{
-    if (g_mk2_fatality_plan.root_label.empty()) return;
-    ImGui::Separator();
-    ImGui::TextDisabled("Staged plan: %s via %s",
-                        g_mk2_fatality_plan.resolved_label.empty()
-                            ? g_mk2_fatality_plan.root_label.c_str()
-                            : g_mk2_fatality_plan.resolved_label.c_str(),
-                        g_mk2_fatality_plan.preferred_file.empty()
-                            ? "source" : g_mk2_fatality_plan.preferred_file.c_str());
-    ImGui::TextDisabled("%d animation label%s, %d sprite label%s, %d IMG librar%s",
-                        (int)g_mk2_fatality_plan.animation_labels.size(),
-                        g_mk2_fatality_plan.animation_labels.size() == 1 ? "" : "s",
-                        (int)g_mk2_fatality_plan.sprite_labels.size(),
-                        g_mk2_fatality_plan.sprite_labels.size() == 1 ? "" : "s",
-                        (int)g_mk2_fatality_plan.img_files.size(),
-                        g_mk2_fatality_plan.img_files.size() == 1 ? "y" : "ies");
-    if (!g_mk2_fatality_stage_status.empty())
-        ImGui::TextDisabled("%s", g_mk2_fatality_stage_status.c_str());
-}
-
-void DrawMk2FatalityWindow(void)
-{
-    if (!g_show_mk2_fatality) return;
-
-    ImGui::SetNextWindowSize(ImVec2(980, 640), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("MK2 Fatality Lab", &g_show_mk2_fatality)) {
-        ImGui::End();
-        return;
-    }
-
-    if (!g_mk2_fatality_status_sticky && g_mk2_fatality_doc.dirty && !g_mk2_fatality_status.empty())
-        g_mk2_fatality_status.clear();
-
-    ImGui::SetNextItemWidth(-360);
-    ImGui::InputTextWithHint("##mk2fatal_root", "path to mk2-main or its src folder", g_mk2_fatality_root, sizeof(g_mk2_fatality_root));
-    ImGui::SameLine();
-    if (ImGui::Button("Browse...")) {
-#ifdef _WIN32
-        char path[MAX_PATH] = "";
-        BROWSEINFOA bi = {};
-        bi.lpszTitle = "Select mk2-main folder";
-        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI;
-        LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
-        if (pidl) {
-            if (SHGetPathFromIDListA(pidl, path) && path[0]) {
-                strncpy(g_mk2_fatality_root, path, sizeof(g_mk2_fatality_root) - 1);
-                g_mk2_fatality_root[sizeof(g_mk2_fatality_root) - 1] = '\0';
-                save_last_dir_cat(path, "mk2fatal");
-            }
-            CoTaskMemFree(pidl);
-        }
-#else
-        g_mk2_fatality_status = "Browse not implemented on this platform - type the path manually";
-        g_mk2_fatality_status_sticky = true;
-#endif
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Use ../mk2-main")) {
-        strncpy(g_mk2_fatality_root, "..\\mk2-main", sizeof(g_mk2_fatality_root) - 1);
-        g_mk2_fatality_root[sizeof(g_mk2_fatality_root) - 1] = '\0';
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Load")) {
-        Mk2FatalityLoadRoot(g_mk2_fatality_root);
-    }
-    ImGui::SameLine();
-    bool can_save = g_mk2_fatality_doc.dirty && !g_mk2_fatality_doc.files.empty();
-    if (!can_save) ImGui::BeginDisabled();
-    if (ImGui::Button("Save")) {
-        std::string err;
-        if (mk2fatal::save(&g_mk2_fatality_doc, &err)) {
-            g_mk2_fatality_status = "Saved MK2 fatality source edits";
-            g_mk2_fatality_status_sticky = false;
-        } else {
-            g_mk2_fatality_status = std::string("Save failed: ") + err;
-            g_mk2_fatality_status_sticky = true;
-        }
-    }
-    if (!can_save) ImGui::EndDisabled();
-    ImGui::SameLine();
-    bool can_reload = !g_mk2_fatality_doc.root_path.empty();
-    if (!can_reload) ImGui::BeginDisabled();
-    if (ImGui::Button("Reload")) {
-        std::string root = g_mk2_fatality_doc.root_path;
-        Mk2FatalityLoadRoot(root.c_str());
-    }
-    if (!can_reload) ImGui::EndDisabled();
-
-    if (!g_mk2_fatality_status.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", g_mk2_fatality_status.c_str());
-    }
-
-    if (g_mk2_fatality_doc.files.empty()) {
-        ImGui::Spacing();
-        ImGui::TextWrapped("Load an MK2 source root to browse fatality command blocks, controller combo tables, and body-ending animation sequences.");
-        ImGui::End();
-        return;
-    }
-
-    Mk2FatalityClampSelections();
-    ImGui::Separator();
-    ImGui::TextDisabled("%d files loaded. Dirty files save back to the same ASM paths.",
-                        (int)g_mk2_fatality_doc.files.size());
-
-    if (g_mk2_fatality_fighter_idx < 0) g_mk2_fatality_fighter_idx = 0;
-    if (g_mk2_fatality_fighter_idx >= kMk2FatalityFighterCount)
-        g_mk2_fatality_fighter_idx = kMk2FatalityFighterCount - 1;
-    const Mk2FatalityFighterDef &fighter = g_mk2_fatality_fighters[g_mk2_fatality_fighter_idx];
-    std::vector<int> fighter_cmds = Mk2FatalityFighterCommandIndices(fighter);
-    if (g_mk2_fatality_selected_fatality < 0) g_mk2_fatality_selected_fatality = 0;
-    if (g_mk2_fatality_selected_fatality >= (int)fighter_cmds.size())
-        g_mk2_fatality_selected_fatality = (int)fighter_cmds.size() - 1;
-    if (g_mk2_fatality_selected_fatality < 0) g_mk2_fatality_selected_fatality = 0;
-    if (!fighter_cmds.empty() &&
-        std::find(fighter_cmds.begin(), fighter_cmds.end(), g_mk2_fatality_command_idx) == fighter_cmds.end())
-        g_mk2_fatality_command_idx = fighter_cmds[g_mk2_fatality_selected_fatality];
-
-    ImGui::SetNextItemWidth(210);
-    if (ImGui::BeginCombo("Fighter##mk2fatal_fighter", fighter.name)) {
-        for (int i = 0; i < kMk2FatalityFighterCount; i++) {
-            bool selected = (g_mk2_fatality_fighter_idx == i);
-            if (ImGui::Selectable(g_mk2_fatality_fighters[i].name, selected)) {
-                g_mk2_fatality_fighter_idx = i;
-                g_mk2_fatality_selected_fatality = 0;
-                g_mk2_fatality_attacker_anim_idx = 0;
-                g_mk2_fatality_victim_anim_idx = 0;
-                std::vector<int> new_cmds = Mk2FatalityFighterCommandIndices(g_mk2_fatality_fighters[i]);
-                if (!new_cmds.empty())
-                    Mk2FatalityApplyFatalityDefaults(g_mk2_fatality_doc.commands[new_cmds[0]],
-                                                     g_mk2_fatality_fighters[i]);
-                Mk2FatalityStageFighterWorkspace();
-            }
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Load Fighter")) {
-        Mk2FatalityStageFighterWorkspace();
-    }
-    ImGui::SameLine();
-    if (g_mk2_fatality_preview_fps < 1.0f) g_mk2_fatality_preview_fps = 1.0f;
-    if (g_mk2_fatality_preview_fps > 30.0f) g_mk2_fatality_preview_fps = 30.0f;
-    ImGui::SetNextItemWidth(86);
-    if (ImGui::InputFloat("FPS##mk2fatal_fps", &g_mk2_fatality_preview_fps, 1.0f, 4.0f, "%.1f")) {
-        if (g_mk2_fatality_preview_fps < 1.0f) g_mk2_fatality_preview_fps = 1.0f;
-        if (g_mk2_fatality_preview_fps > 30.0f) g_mk2_fatality_preview_fps = 30.0f;
-        g_world_marked_state.fps = g_mk2_fatality_preview_fps;
-        g_play_speed = g_mk2_fatality_preview_fps;
-    }
-
-    const char *fatality_preview = fighter_cmds.empty()
-        ? "(none found)"
-        : g_mk2_fatality_doc.commands[fighter_cmds[g_mk2_fatality_selected_fatality]].label.c_str();
-    ImGui::SetNextItemWidth(260);
-    if (ImGui::BeginCombo("Fatality##mk2fatal_pick", fatality_preview)) {
-        for (int i = 0; i < (int)fighter_cmds.size(); i++) {
-            const mk2fatal::CommandBlock &cmd = g_mk2_fatality_doc.commands[fighter_cmds[i]];
-            char label[192];
-            snprintf(label, sizeof(label), "%s  %s", cmd.label.c_str(),
-                     cmd.routine.empty() ? "" : cmd.routine.c_str());
-            bool selected = (g_mk2_fatality_selected_fatality == i);
-            if (ImGui::Selectable(label, selected)) {
-                g_mk2_fatality_selected_fatality = i;
-                Mk2FatalityApplyFatalityDefaults(cmd, fighter);
-            }
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    if (!fighter_cmds.empty()) {
-        const mk2fatal::CommandBlock &cmd = g_mk2_fatality_doc.commands[fighter_cmds[g_mk2_fatality_selected_fatality]];
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s  %s",
-                            cmd.combo_label.empty() ? "combo?" : cmd.combo_label.c_str(),
-                            cmd.range_note.empty() ? "" : cmd.range_note.c_str());
-    }
-
-    ImGui::SetNextItemWidth(220);
-    const char *attacker_preview = Mk2FatalitySelectedAttackerAnim(fighter);
-    if (ImGui::BeginCombo("Attacker Animation##mk2fatal_attacker_anim",
-                          attacker_preview ? attacker_preview : "(none)")) {
-        for (int i = 0; i < 10 && fighter.fatal_anims[i]; i++) {
-            bool selected = (g_mk2_fatality_attacker_anim_idx == i);
-            if (ImGui::Selectable(fighter.fatal_anims[i], selected))
-                g_mk2_fatality_attacker_anim_idx = i;
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(220);
-    const char *victim_preview = Mk2FatalitySelectedVictimAnim();
-    if (ImGui::BeginCombo("Cage Victim Animation##mk2fatal_victim_anim", victim_preview)) {
-        for (int i = 0; g_mk2_fatality_cage_deaths[i]; i++) {
-            bool selected = (g_mk2_fatality_victim_anim_idx == i);
-            if (ImGui::Selectable(g_mk2_fatality_cage_deaths[i], selected))
-                g_mk2_fatality_victim_anim_idx = i;
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    if (fighter_cmds.empty()) ImGui::BeginDisabled();
-    if (ImGui::Button("Animate Fatality")) {
-        Mk2FatalityStageSelectedFatality();
-    }
-    if (fighter_cmds.empty()) ImGui::EndDisabled();
-    if (!g_mk2_fatality_stage_status.empty())
-        ImGui::TextDisabled("%s", g_mk2_fatality_stage_status.c_str());
-    ImGui::Separator();
-
-    if (ImGui::BeginTabBar("##mk2fatal_tabs")) {
-        if (ImGui::BeginTabItem("Fatalities")) {
-            const float h = ImGui::GetContentRegionAvail().y - 4.0f;
-            ImGui::BeginChild("##mk2fatal_cmd_list", ImVec2(300, h), true);
-            ImGui::TextDisabled("Command Blocks");
-            ImGui::SetNextItemWidth(-1);
-            ImGui::InputTextWithHint("##mk2fatal_filter_cmd", "filter...", g_mk2_fatality_filter, sizeof(g_mk2_fatality_filter));
-            for (int ci = 0; ci < (int)fighter_cmds.size(); ci++) {
-                int i = fighter_cmds[ci];
-                const auto &cmd = g_mk2_fatality_doc.commands[i];
-                std::string hay = cmd.label + " " + cmd.routine + " " + cmd.combo_label + " " + cmd.trigger;
-                if (!Mk2FatalityFilterMatch(hay, g_mk2_fatality_filter)) continue;
-                char label[192];
-                snprintf(label, sizeof(label), "%s  %s", cmd.label.c_str(),
-                         cmd.routine.empty() ? "(routine?)" : cmd.routine.c_str());
-                if (ImGui::Selectable(label, g_mk2_fatality_command_idx == i)) {
-                    g_mk2_fatality_command_idx = i;
-                    g_mk2_fatality_selected_fatality = ci;
-                    Mk2FatalityApplyFatalityDefaults(cmd, fighter);
-                    g_mk2_fatality_selected_line = 0;
-                }
-            }
-            ImGui::EndChild();
-
-            ImGui::SameLine();
-            ImGui::BeginChild("##mk2fatal_cmd_detail", ImVec2(0, h), true);
-            if (fighter_cmds.empty()) {
-                ImGui::TextDisabled("No fatality command blocks found for this fighter.");
-            } else {
-                if (g_mk2_fatality_command_idx < 0 ||
-                    g_mk2_fatality_command_idx >= (int)g_mk2_fatality_doc.commands.size())
-                    g_mk2_fatality_command_idx = fighter_cmds[0];
-                mk2fatal::CommandBlock cmd = g_mk2_fatality_doc.commands[g_mk2_fatality_command_idx];
-                ImGui::Text("%s", cmd.label.c_str());
-                ImGui::TextDisabled("Routine: %s   Transfer: %s   Finish Him: %s",
-                                    cmd.routine.empty() ? "(not detected)" : cmd.routine.c_str(),
-                                    cmd.transfer.empty() ? "(not detected)" : cmd.transfer.c_str(),
-                                    cmd.finish_him_only ? "yes" : "no");
-                ImGui::TextDisabled("Combo: %s   Trigger: %s",
-                                    cmd.combo_label.empty() ? "(direct / timing)" : cmd.combo_label.c_str(),
-                                    cmd.trigger.empty() ? "(not detected)" : cmd.trigger.c_str());
-                if (!cmd.range_note.empty()) ImGui::TextDisabled("%s", cmd.range_note.c_str());
-                std::string inferred_anim = Mk2FatalityInferAnimationFromRoutine(cmd.routine);
-                if (!inferred_anim.empty()) {
-                    if (ImGui::Button("Use Routine Animation")) {
-                        g_mk2_fatality_attacker_anim_idx =
-                            Mk2FatalityAnimListIndex(fighter.fatal_anims, inferred_anim.c_str());
-                        Mk2FatalityStageSelectedFatality();
-                    }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("%s", inferred_anim.c_str());
-                } else {
-                    ImGui::TextDisabled("No direct victim animation mapping.");
-                }
-                DrawMk2FatalityPlanSummary();
-                ImGui::Separator();
-                if (ImGui::CollapsingHeader("Command Source", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    DrawMk2FatalitySourceEditor("##mk2fatal_cmd_src", cmd.file_idx, cmd.start_line, cmd.end_line,
-                                                &g_mk2_fatality_selected_line, NULL, 0, false);
-                }
-                int combo_idx = cmd.combo_label.empty() ? -1 : mk2fatal::find_combo(&g_mk2_fatality_doc, cmd.combo_label.c_str());
-                if (combo_idx >= 0) {
-                    mk2fatal::ComboBlock combo = g_mk2_fatality_doc.combos[combo_idx];
-                    if (ImGui::CollapsingHeader("Controller Combo", ImGuiTreeNodeFlags_DefaultOpen)) {
-                        ImGui::TextDisabled("%s   time %s   %d words",
-                                            combo.label.c_str(),
-                                            combo.time_token.empty() ? "?" : combo.time_token.c_str(),
-                                            (int)combo.words.size());
-                        DrawMk2FatalitySourceEditor("##mk2fatal_cmd_combo_src", combo.file_idx, combo.start_line, combo.end_line,
-                                                    &g_mk2_fatality_selected_line,
-                                                    g_mk2_fatality_insert_combo, sizeof(g_mk2_fatality_insert_combo), true);
-                    }
-                }
-            }
-            ImGui::EndChild();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Animations")) {
-            const float h = ImGui::GetContentRegionAvail().y - 4.0f;
-            ImGui::BeginChild("##mk2fatal_anim_list", ImVec2(320, h), true);
-            ImGui::TextDisabled("Animation / Body Blocks");
-            ImGui::SetNextItemWidth(-1);
-            ImGui::InputTextWithHint("##mk2fatal_filter_anim", "filter...", g_mk2_fatality_filter, sizeof(g_mk2_fatality_filter));
-            ImGui::Checkbox("Body endings only", &g_mk2_fatality_body_only);
-            for (int i = 0; i < (int)g_mk2_fatality_doc.animations.size(); i++) {
-                const auto &anim = g_mk2_fatality_doc.animations[i];
-                if (!Mk2FatalityFilterMatch(anim.file_rel, fighter.source_file)) continue;
-                if (g_mk2_fatality_body_only && !anim.body_ending) continue;
-                std::string hay = anim.label + " " + anim.file_rel;
-                if (!Mk2FatalityFilterMatch(hay, g_mk2_fatality_filter)) continue;
-                char label[224];
-                snprintf(label, sizeof(label), "%s  [%s]", anim.label.c_str(), anim.file_rel.c_str());
-                if (ImGui::Selectable(label, g_mk2_fatality_anim_idx == i)) {
-                    g_mk2_fatality_anim_idx = i;
-                    g_mk2_fatality_selected_line = 0;
-                }
-            }
-            ImGui::EndChild();
-
-            ImGui::SameLine();
-            ImGui::BeginChild("##mk2fatal_anim_detail", ImVec2(0, h), true);
-            if (g_mk2_fatality_doc.animations.empty()) {
-                ImGui::TextDisabled("No animation blocks found.");
-            } else {
-                mk2fatal::AnimationBlock anim = g_mk2_fatality_doc.animations[g_mk2_fatality_anim_idx];
-                ImGui::Text("%s", anim.label.c_str());
-                ImGui::TextDisabled("%s   .long tokens %d   .word tokens %d   adjustxy %d",
-                                    anim.file_rel.c_str(), anim.long_count, anim.word_count, anim.adjust_count);
-                if (anim.body_ending) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("body ending");
-                }
-                if (ImGui::Button("Animate With Cage")) {
-                    std::vector<std::string> attacker_labels;
-                    attacker_labels.push_back(anim.label);
-                    mk2fatal::AssetPlan attacker_plan =
-                        Mk2FatalityBuildPlanForLabels(attacker_labels, fighter.source_file, fighter.img_files);
-                    std::vector<std::string> victim_labels;
-                    victim_labels.push_back(Mk2FatalitySelectedVictimAnim());
-                    mk2fatal::AssetPlan victim_plan = Mk2FatalityBuildCageDeathPlan(victim_labels);
-                    g_mk2_fatality_plan = victim_plan;
-                    Mk2FatalityStageDualPlans(fighter, attacker_plan, victim_plan);
-                }
-                ImGui::SameLine();
-                ImGui::TextDisabled("Johnny Cage");
-                DrawMk2FatalityPlanSummary();
-                ImGui::Separator();
-                DrawMk2FatalitySourceEditor("##mk2fatal_anim_src", anim.file_idx, anim.start_line, anim.end_line,
-                                            &g_mk2_fatality_selected_line,
-                                            g_mk2_fatality_insert_anim, sizeof(g_mk2_fatality_insert_anim), true);
-            }
-            ImGui::EndChild();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Controller")) {
-            const float h = ImGui::GetContentRegionAvail().y - 4.0f;
-            ImGui::BeginChild("##mk2fatal_combo_list", ImVec2(300, h), true);
-            ImGui::TextDisabled("scom_* Tables");
-            ImGui::SetNextItemWidth(-1);
-            ImGui::InputTextWithHint("##mk2fatal_filter_combo", "filter...", g_mk2_fatality_filter, sizeof(g_mk2_fatality_filter));
-            for (int i = 0; i < (int)g_mk2_fatality_doc.combos.size(); i++) {
-                const auto &combo = g_mk2_fatality_doc.combos[i];
-                std::string hay = combo.label + " " + combo.time_token;
-                if (!Mk2FatalityFilterMatch(hay, g_mk2_fatality_filter)) continue;
-                char label[160];
-                snprintf(label, sizeof(label), "%s  (%s)", combo.label.c_str(),
-                         combo.time_token.empty() ? "time?" : combo.time_token.c_str());
-                if (ImGui::Selectable(label, g_mk2_fatality_combo_idx == i)) {
-                    g_mk2_fatality_combo_idx = i;
-                    g_mk2_fatality_selected_line = 0;
-                }
-            }
-            ImGui::EndChild();
-
-            ImGui::SameLine();
-            ImGui::BeginChild("##mk2fatal_combo_detail", ImVec2(0, h), true);
-            if (g_mk2_fatality_doc.combos.empty()) {
-                ImGui::TextDisabled("No controller combo tables found.");
-            } else {
-                mk2fatal::ComboBlock combo = g_mk2_fatality_doc.combos[g_mk2_fatality_combo_idx];
-                ImGui::Text("%s", combo.label.c_str());
-                ImGui::TextDisabled("time %s   %d words",
-                                    combo.time_token.empty() ? "?" : combo.time_token.c_str(),
-                                    (int)combo.words.size());
-                ImGui::Separator();
-                DrawMk2FatalitySourceEditor("##mk2fatal_combo_src", combo.file_idx, combo.start_line, combo.end_line,
-                                            &g_mk2_fatality_selected_line,
-                                            g_mk2_fatality_insert_combo, sizeof(g_mk2_fatality_insert_combo), true);
-            }
-            ImGui::EndChild();
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
-
-    ImGui::End();
-}
-
-
-static void DrawAutoSplitSummaryLine(const char *label,
-                                     const AutoSplitTargetSummary &summary)
-{
-    if (summary.split_count <= 0) {
-        ImGui::TextColored(ImVec4(1.0f, 0.66f, 0.30f, 1.0f),
-                           "%s: no legal split", label);
-        return;
-    }
-
-    long long delta = summary.src_zcom_bits - summary.split_zcom_bits;
-    double pct = summary.src_zcom_bits > 0
-        ? (double)delta * 100.0 / (double)summary.src_zcom_bits
-        : 0.0;
-    ImVec4 col = delta >= 0
-        ? ImVec4(0.42f, 0.90f, 0.55f, 1.0f)
-        : ImVec4(1.0f, 0.66f, 0.30f, 1.0f);
-    ImGui::TextColored(col, "%s: %lld -> %lld bits (%+.1f%%)",
-                       label, summary.src_zcom_bits,
-                       summary.split_zcom_bits, pct);
-    if (summary.selected_preview.best_split_valid &&
-        summary.selected_preview.target_count > 0) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("selected cut %s=%d",
-                            summary.selected_preview.best_split_vertical ? "x" : "y",
-                            summary.selected_preview.best_split_pos);
-    }
-    ImGui::TextDisabled("%d split-ready target%s, %d skipped below/empty threshold",
-                        summary.split_count,
-                        summary.split_count == 1 ? "" : "s",
-                        summary.skipped_count);
-}
-
-void DrawAutoChopDialog(void)
-{
-    if (g_show_auto_chop) ImGui::OpenPopup("Break into Subframes");
-    if (!ImGui::BeginPopupModal("Break into Subframes", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    ImGui::TextWrapped("Breaks marked sprites, or the selected sprite if none are marked,\n"
-                       "into Midway-style A/B pieces and recalculates ANIX/ANIY.");
-    ImGui::Spacing();
-
-    AutoSplitTargetSummary horizontal_summary;
-    AutoSplitTargetSummary vertical_summary;
-    BuildAutoSplitTargetSummary(false, &horizontal_summary);
-    BuildAutoSplitTargetSummary(true, &vertical_summary);
-
-    ImGui::RadioButton("Best Horizontal Cut", &g_chop_mode,
-                       AutoChopMode_BestHorizontal);
-    ImGui::SameLine();
-    ImGui::RadioButton("Best Vertical Cut", &g_chop_mode,
-                       AutoChopMode_BestVertical);
-    ImGui::SameLine();
-    ImGui::RadioButton("Manual Grid", &g_chop_mode, AutoChopMode_ManualGrid);
-    ImGui::Checkbox("Trim empty space (Highly recommended)", &g_chop_trim);
-
-    ImGui::Spacing();
-    ImGui::TextDisabled("Best cuts require both sides to be greater than %dpx.",
-                        k_auto_split_min_side);
-    DrawAutoSplitSummaryLine("Horizontal", horizontal_summary);
-    DrawAutoSplitSummaryLine("Vertical", vertical_summary);
-
-    if (g_chop_mode == AutoChopMode_ManualGrid) {
-        ImGui::Spacing();
-        if (ImGui::Button("Auto 3 Subframes", ImVec2(140, 0))) AutoChopSetThreeBandSize();
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100);
-        if (ImGui::InputInt("Piece Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
-        ImGui::SetNextItemWidth(100);
-        if (ImGui::InputInt("Piece Height", &g_chop_h)) { if (g_chop_h < 1) g_chop_h = 1; }
-
-        AutoChopPreview summary;
-        BuildAutoChopTargetSummary(&summary);
-        if (summary.target_count > 0) {
-            if (summary.pieces.empty()) {
-                ImGui::TextColored(ImVec4(1.0f, 0.66f, 0.30f, 1.0f),
-                                   "LOAD2 ZCOM: no non-empty pieces");
-            } else {
-                long long delta = summary.src_zcom_bits - summary.split_zcom_bits;
-                double pct = summary.src_zcom_bits > 0
-                    ? (double)delta * 100.0 / (double)summary.src_zcom_bits
-                    : 0.0;
-                ImVec4 col = delta >= 0
-                    ? ImVec4(0.42f, 0.90f, 0.55f, 1.0f)
-                    : ImVec4(1.0f, 0.66f, 0.30f, 1.0f);
-                ImGui::TextColored(col, "Manual grid LOAD2 ZCOM: %lld -> %lld bits (%+.1f%%)",
-                                   summary.src_zcom_bits, summary.split_zcom_bits, pct);
-            }
-            char bpp_buf[32];
-            if (summary.bpp > 0) snprintf(bpp_buf, sizeof(bpp_buf), "%d bpp", summary.bpp);
-            else snprintf(bpp_buf, sizeof(bpp_buf), "mixed bpp");
-            ImGui::TextDisabled("%d target%s, %d piece%s, %d empty cell%s skipped, %s",
-                                summary.target_count,
-                                summary.target_count == 1 ? "" : "s",
-                                (int)summary.pieces.size(),
-                                summary.pieces.size() == 1 ? "" : "s",
-                                summary.empty_cells,
-                                summary.empty_cells == 1 ? "" : "s",
-                                bpp_buf);
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    bool best_horizontal = (g_chop_mode == AutoChopMode_BestHorizontal);
-    bool best_vertical = (g_chop_mode == AutoChopMode_BestVertical);
-    bool can_best = best_horizontal ? (horizontal_summary.split_count > 0)
-                                    : (vertical_summary.split_count > 0);
-    if (g_chop_mode == AutoChopMode_ManualGrid) can_best = true;
-    ImGui::BeginDisabled(!can_best);
-    if (ImGui::Button("Break", ImVec2(100, 0))) {
-        int count = 0;
-        if (best_horizontal || best_vertical)
-            count = ApplyBestAutoSplitToTargets(best_vertical);
-        else
-            count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim);
-        if (count > 0) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg), "Broke into %d subframe piece(s).", count);
-        } else {
-            snprintf(g_restore_msg, sizeof(g_restore_msg), "No pieces generated (mark or select a sprite).");
-        }
-        g_restore_msg_timer = 4.0f;
-        g_show_auto_chop = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-        g_show_auto_chop = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-void DrawBulkRestoreRegexDialog(void)
-{
-    if (g_show_restore_regex) ImGui::OpenPopup("Bulk Restore via Regex");
-    if (!ImGui::BeginPopupModal("Bulk Restore via Regex", &g_show_restore_regex, ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    ImGui::TextWrapped("Uses a regex to map child names to parent names across the entire file.\n"
-                       "Capture group 1 (\\1) is used as the parent name.\n"
-                       "Example: ^(.+)[A-Z]$ maps JCJUMPFLIP1A -> JCJUMPFLIP1");
-    ImGui::Spacing();
-
-    ImGui::Text("Mode:");
-    ImGui::SameLine();
-    ImGui::RadioButton("Diff (preserve hand-tuning)", &g_restore_diff_mode, 1);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Only the pixels you EDITED on the master are\n"
-                          "propagated into children. Every untouched\n"
-                          "pixel in each child stays as-is.\n"
-                          "(Right choice for adding a logo, edge tweak, etc.)");
-    ImGui::SameLine();
-    ImGui::RadioButton("Replace (overwrite child bbox)", &g_restore_diff_mode, 0);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Wipes each child to zero, then fills its bbox\n"
-                          "with parent pixels. Clobbers hand-tuned\n"
-                          "per-piece details.");
-    ImGui::SameLine();
-    ImGui::RadioButton("Reconstruct from Parent", &g_restore_diff_mode, 2);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Treats parent as ground truth. For every child\n"
-                          "pixel that diverges from the parent (after\n"
-                          "anipoint-relative shift), copies the parent's\n"
-                          "value into the child.\n"
-                          "Use to restore censored / blacked-out regions\n"
-                          "where the master still has the original detail.");
-    ImGui::Spacing();
-
-    bool pattern_changed = ImGui::InputText("Regex Pattern", g_restore_regex_buf, sizeof(g_restore_regex_buf));
-    if (pattern_changed) {
-        g_restore_regex_tested = false;
-        g_restore_regex_error = false;
-        g_restore_matches.clear();
-    }
-
-    if (!g_restore_regex_tested) {
-        if (ImGui::Button("Preview Matches", ImVec2(120, 0))) {
-            g_restore_matches.clear();
-            g_restore_regex_error = false;
-            std::regex re;
-            try {
-                re = std::regex(g_restore_regex_buf);
-                for (IMG *child = (IMG *)g_doc->img_p; child; child = (IMG *)child->nxt_p) {
-                    if (!child->data_p || child->w == 0 || child->h == 0) continue;
-                    std::string name(child->n_s);
-                    std::smatch match;
-                    if (std::regex_match(name, match, re) && match.size() > 1) {
-                        std::string parent_name = match[1].str();
-                        IMG *parent = NULL;
-                        for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
-                            if (parent_name == p->n_s) {
-                                parent = p;
-                                break;
-                            }
-                        }
-                        if (parent && parent->data_p && parent->w > 0 && parent->h > 0 && parent != child
-                            && parent->palnum == child->palnum) {
-                            g_restore_matches.push_back({child, parent, true, 0, 0});
-                        }
-                    }
-                }
-                std::sort(g_restore_matches.begin(), g_restore_matches.end(), [](const BulkRestoreMatch& a, const BulkRestoreMatch& b) {
-                    int cmp = strcmp(a.parent->n_s, b.parent->n_s);
-                    if (cmp != 0) return cmp < 0;
-                    return strcmp(a.child->n_s, b.child->n_s) < 0;
-                });
-                ComputeBulkRestoreCoverage(g_restore_matches);
-                g_restore_regex_tested = true;
-            } catch (const std::regex_error&) {
-                g_restore_regex_error = true;
-            }
-        }
-        if (g_restore_regex_error) {
-            ImGui::TextColored(ImVec4(1, 0, 0, 1), "Regex Error: invalid pattern");
-        }
-    } else {
-        int partial_count = 0;
-        for (auto& m : g_restore_matches) {
-            if (m.total_pixels > 0 && m.covered_pixels < m.total_pixels) partial_count++;
-        }
-        ImGui::Text("Found %d match(es). Select items to restore:", (int)g_restore_matches.size());
-        if (partial_count > 0) {
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
-                "%d match%s with partial coverage (anipoint shift pushes parent rect "
-                "out of bounds). Pairs mode will zero-fill the uncovered area.",
-                partial_count, partial_count == 1 ? "" : "es");
-        }
-        ImGui::BeginChild("MatchesList", ImVec2(520, 220), true);
-        std::string last_parent = "";
-        for (size_t i = 0; i < g_restore_matches.size(); i++) {
-            BulkRestoreMatch& m = g_restore_matches[i];
-            std::string current_parent = m.parent->n_s;
-            if (current_parent != last_parent) {
-                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", current_parent.c_str());
-                last_parent = current_parent;
-            }
-            ImGui::Indent(16.0f);
-            char label[128];
-            snprintf(label, sizeof(label), "%s##%zu", m.child->n_s, i);
-            bool partial = m.total_pixels > 0 && m.covered_pixels < m.total_pixels;
-            if (partial) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.55f, 1.0f));
-            ImGui::Checkbox(label, &m.selected);
-            if (partial) ImGui::PopStyleColor();
-            if (m.total_pixels > 0) {
-                ImGui::SameLine();
-                int pct = (int)((100.0 * m.covered_pixels) / m.total_pixels + 0.5);
-                if (partial) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f),
-                                       "(%d%% covered)", pct);
-                } else {
-                    ImGui::TextDisabled("(100%%)");
-                }
-            }
-            ImGui::Unindent(16.0f);
-        }
-        ImGui::EndChild();
-
-        if (ImGui::Button("Select All")) {
-            for (auto& m : g_restore_matches) m.selected = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Deselect All")) {
-            for (auto& m : g_restore_matches) m.selected = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Deselect Partial")) {
-            for (auto& m : g_restore_matches) {
-                if (m.total_pixels > 0 && m.covered_pixels < m.total_pixels) m.selected = false;
-            }
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    ImGui::BeginDisabled(!g_restore_regex_tested || g_restore_matches.empty());
-    if (ImGui::Button("Start Restore", ImVec2(120, 0))) {
-        int n = 0;
-        const char *verb_done = "Restored";
-        const char *verb_zero = "restored";
-        switch (g_restore_diff_mode) {
-            case 1:
-                n = ExecuteBulkRestoreDiff(g_restore_matches);
-                verb_done = "Diff-restored"; verb_zero = "diffed";
-                break;
-            case 2:
-                n = ExecuteBulkRestoreReconstruct(g_restore_matches);
-                verb_done = "Reconstructed"; verb_zero = "reconstructed";
-                break;
-            default:
-                n = ExecuteBulkRestorePairs(g_restore_matches);
-                break;
-        }
-        if (n > 0) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "%s %d child image(s) from their parents.",
-                     verb_done, n);
-        } else {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "0 images %s.", verb_zero);
-        }
-        g_restore_msg_timer = 6.0f;
-
-        g_show_restore_regex = false;
-        g_restore_regex_tested = false;
-        g_restore_matches.clear();
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndDisabled();
-
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-        g_show_restore_regex = false;
-        g_restore_regex_tested = false;
-        g_restore_matches.clear();
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-void DrawDeleteImagesConfirm(void)
-{
-    if (g_show_delete_images_confirm) ImGui::OpenPopup("Delete Sprite Subframes");
-    if (!ImGui::BeginPopupModal("Delete Sprite Subframes", &g_show_delete_images_confirm,
-                                ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    std::vector<int> base = g_pending_delete_base_indices;
-    std::vector<int> extra = g_pending_delete_subframe_indices;
-    NormalizeImageDeleteIndices(&base);
-    NormalizeImageDeleteIndices(&extra);
-
-    int base_count = (int)base.size();
-    int extra_count = (int)extra.size();
-    bool bulk = base_count > 1 || g_pending_delete_parent_name[0] == '\0';
-
-    if (bulk) {
-        ImGui::TextWrapped("Delete %d marked sprite%s?", base_count,
-                           base_count == 1 ? "" : "s");
-        ImGui::TextWrapped("%d subframe%s belong to marked parent sprite%s.",
-                           extra_count,
-                           extra_count == 1 ? "" : "s",
-                           base_count == 1 ? "" : "s");
-    } else {
-        ImGui::TextWrapped("\"%s\" has %d subframe%s.",
-                           g_pending_delete_parent_name,
-                           extra_count,
-                           extra_count == 1 ? "" : "s");
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    const char *base_label = bulk ? "Delete Marked Only" : "Delete Parent Only";
-    if (ImGui::Button(base_label, ImVec2(150, 0))) {
-        int deleted = DeleteImagesByIndices(base);
-        if (g_last_delete_removed_palettes > 0) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Deleted %d sprite%s and %d now-unused palette%s.",
-                     deleted, deleted == 1 ? "" : "s",
-                     g_last_delete_removed_palettes,
-                     g_last_delete_removed_palettes == 1 ? "" : "s");
-        } else {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Deleted %d sprite%s.", deleted, deleted == 1 ? "" : "s");
-        }
-        g_restore_msg_timer = 4.0f;
-        ClearPendingImageDelete();
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-
-    std::vector<int> all = base;
-    all.insert(all.end(), extra.begin(), extra.end());
-    const char *all_label = bulk ? "Delete Marked + Subframes" : "Delete Parent + Subframes";
-    if (ImGui::Button(all_label, ImVec2(210, 0))) {
-        int deleted = DeleteImagesByIndices(all);
-        if (g_last_delete_removed_palettes > 0) {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Deleted %d sprite%s and %d now-unused palette%s.",
-                     deleted, deleted == 1 ? "" : "s",
-                     g_last_delete_removed_palettes,
-                     g_last_delete_removed_palettes == 1 ? "" : "s");
-        } else {
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Deleted %d sprite%s.", deleted, deleted == 1 ? "" : "s");
-        }
-        g_restore_msg_timer = 4.0f;
-        ClearPendingImageDelete();
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-
-    if (ImGui::Button("Cancel", ImVec2(90, 0))) {
-        ClearPendingImageDelete();
-        ImGui::CloseCurrentPopup();
-    }
-
-    ImGui::EndPopup();
-}
-
-void DrawDebugInfoModal(void)
-{
-    if (g_show_debug) ImGui::OpenPopup("Debug Info");
-    if (!ImGui::BeginPopupModal("Debug Info", &g_show_debug, ImGuiWindowFlags_NoMove)) return;
-    ImGui::SetNextWindowSize(ImVec2(520, 580), ImGuiCond_Always);
-
-    if (ImGui::CollapsingHeader("LIB_HDR", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text("IMGCNT:  %u",     g_doc->imgcnt);
-        ImGui::Text("PALCNT:  %u",     g_doc->palcnt);
-        ImGui::Text("SEQCNT:  %u",     g_doc->seqcnt);
-        ImGui::Text("SCRCNT:  %u",     g_doc->scrcnt);
-        ImGui::Text("DAMCNT:  %u",     g_doc->damcnt);
-        ImGui::Text("VERSION: 0x%04X", g_doc->fileversion);
-        ImGui::Separator();
-        ImGui::TextDisabled("SEQSCR/ENTRY blob (load-time, round-trips on save):");
-        if (g_doc->scrseqmem_p && g_doc->scrseqbytes > 0) {
-            ImGui::Text("SCRSEQBYTES:  %u bytes", g_doc->scrseqbytes);
-        } else {
-            ImGui::TextDisabled("SCRSEQBYTES:  0  (no seq/scr in file)");
-        }
-    }
-
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (ImGui::CollapsingHeader("IMAGE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (img) {
-            ImGui::Text("NXT_p:    %p",       img->nxt_p);
-            ImGui::Text("N_s:      %.15s",    img->n_s);
-            ImGui::Text("FLAGS:    0x%04X",   (int)img->flags);
-            ImGui::Text("ANIX:     %d",       (int)(short)img->anix);
-            ImGui::Text("ANIY:     %d",       (int)(short)img->aniy);
-            ImGui::Text("W:        %d",       (int)img->w);
-            ImGui::Text("H:        %d",       (int)img->h);
-            ImGui::Text("PALNUM:   %d",       (int)img->palnum);
-            ImGui::Text("DATA_p:   %p",       img->data_p);
-            if (img->pttbl_p) ImGui::Text("PTTBL_p:  %p", img->pttbl_p);
-            else ImGui::TextDisabled("PTTBL_p:  NULL");
-            ImGui::Text("ANIX2:    %d",       (int)(short)img->anix2);
-            ImGui::Text("ANIY2:    %d",       (int)(short)img->aniy2);
-            ImGui::Text("ANIZ2:    %d",       (int)(short)img->aniz2);
-            ImGui::Text("OPALS:    0x%04X",   (int)img->opals);
-            ImGui::Text("TEMP:     %p",       img->temp);
-        } else {
-            ImGui::TextDisabled("No image selected");
-        }
-    }
-    if (ImGui::CollapsingHeader("IMAGE_disk (load-time)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (img) {
-            ImGui::Text("FILE_OSET:    0x%X (%u)", img->file_oset, img->file_oset);
-            ImGui::Text("FILE_LIB:     %u",        (unsigned)img->file_lib);
-            ImGui::Text("FILE_FRM:     %u",        (unsigned)img->file_frm);
-            if (img->file_pttblnum == 0xFFFF)
-                ImGui::TextDisabled("FILE_PTTBLNUM: 0xFFFF (none)");
-            else
-                ImGui::Text("FILE_PTTBLNUM: %u",  (unsigned)img->file_pttblnum);
-            if (!(img->flags & 0x0080)) {
-                unsigned int stride = ((unsigned int)img->w + 3u) & ~3u;
-                ImGui::Text("PIX_SIZE:     %u bytes (uncompressed, %ux%u)",
-                            stride * (unsigned)img->h,
-                            (unsigned)img->w, (unsigned)img->h);
-            } else {
-                ImGui::TextDisabled("PIX_SIZE:     CMP — variable per row");
-            }
-        } else {
-            ImGui::TextDisabled("No image selected");
-        }
-    }
-
-    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
-    if (ImGui::CollapsingHeader("PALETTE (runtime)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (pal) {
-            ImGui::Text("NXT_p:    %p",       pal->nxt_p);
-            ImGui::Text("N_s:      %.9s",     pal->n_s);
-            ImGui::Text("FLAGS:    0x%02X",   pal->flags);
-            ImGui::Text("BITSPIX:  %u",       pal->bitspix);
-            ImGui::Text("NUMC:     %u",       pal->numc);
-            ImGui::Text("PAD:      0x%04X",   pal->pad);
-            ImGui::Text("DATA_p:   %p",       pal->data_p);
-            ImGui::Text("TEMP:     %p",       pal->temp);
-            ImGui::Separator();
-            ImGui::TextDisabled("PALETTE_disk fields (lib/colind/cmap/oset)");
-            ImGui::TextDisabled("are not currently retained at load.");
-        } else {
-            ImGui::TextDisabled("No palette selected");
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    if (ImGui::Button("Close", ImVec2(120, 0))) {
-        g_show_debug = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("F9 to toggle");
-    ImGui::EndPopup();
-}
-
-void DrawNewImgConfirm(void)
-{
-    if (g_show_new_img_confirm) ImGui::OpenPopup("New IMG");
-    if (!ImGui::BeginPopupModal("New IMG", &g_show_new_img_confirm, ImGuiWindowFlags_AlwaysAutoResize)) return;
-    ImGui::Text("Create a fresh IMG tab?");
-    ImGui::Text("Starts with one blank palette and one 32x32 image.");
-    ImGui::Spacing();
-    ImGui::Separator();
-    if (ImGui::Button("New", ImVec2(80, 0))) {
-        PrepareDocumentForOpenedFile();
-        g_doc->fileversion = 0x0634;
-        g_doc->fname_s[0]  = 0;
-        /* Bootstrap: a fresh doc with zero palettes/images is unusable —
-           the user can't paint, can't import a TGA target, can't even
-           see the editor properly. Seed one default palette and one
-           blank image so the UI is immediately functional. AddNewPalette
-           handles undo+dirty internally; clear those again so the new
-           doc starts pristine. */
-        AddNewPalette();
-        AddNewBlankImage();
-        g_dirty = false;
-        ResetPerDocumentUiState(false);
-        g_show_new_img_confirm = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-        g_show_new_img_confirm = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-/* "Add new blank image" — small modal that prompts for width and height
-   before allocating, replacing the previous fixed 32x32 path. */
-void DrawNewBlankImageDialog(void)
-{
-    if (g_show_new_blank_dialog) ImGui::OpenPopup("Add Blank Image");
-    if (!ImGui::BeginPopupModal("Add Blank Image", &g_show_new_blank_dialog,
-                                ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    ImGui::Text("Pick the size of the new image.");
-    ImGui::Spacing();
-    ImGui::SetNextItemWidth(120);
-    if (ImGui::InputInt("Width",  &g_new_blank_w)) {
-        if (g_new_blank_w < 1)    g_new_blank_w = 1;
-        if (g_new_blank_w > 1024) g_new_blank_w = 1024;
-    }
-    ImGui::SetNextItemWidth(120);
-    if (ImGui::InputInt("Height", &g_new_blank_h)) {
-        if (g_new_blank_h < 1)    g_new_blank_h = 1;
-        if (g_new_blank_h > 1024) g_new_blank_h = 1024;
-    }
-    ImGui::Spacing();
-    ImGui::Separator();
-    /* Enter commits, Esc cancels — matches the rest of the modals. */
-    bool commit = ImGui::Button("Add", ImVec2(80, 0))
-               || ImGui::IsKeyPressed(ImGuiKey_Enter);
-    if (commit) {
-        AddNewBlankImage(g_new_blank_w, g_new_blank_h);
-        g_show_new_blank_dialog = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-        g_show_new_blank_dialog = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-/* Run whatever action queued the unsaved-changes confirm. Called once the
-   user has chosen Save or Discard. After running, g_pending_action is reset
-   to None so the dialog never re-fires. */
-static void RunPendingAction(void)
-{
-    PendingAction act = g_pending_action;
-    std::string   path = g_pending_action_path;
-    int           tab_idx = g_pending_tab_index;
-    g_pending_action = PendingAction::None;
-    g_pending_action_path.clear();
-    g_pending_tab_index = -1;
-    switch (act) {
-        case PendingAction::Quit: {
-            int dirty_idx = FindDirtyDocumentIndex();
-            if (dirty_idx >= 0) {
-                ActivateDocumentTab(dirty_idx);
-                g_pending_action = PendingAction::Quit;
-                g_show_unsaved_confirm = true;
-            }
-            break;
-        }
-        case PendingAction::OpenDialog:     OpenFileDialog(FileDialogMode::OpenImg); break;
-        case PendingAction::OpenPath:       OpenImgFile(path); break;
-        case PendingAction::OpenLodDialog:  OpenFileDialog(FileDialogMode::OpenLod); break;
-        case PendingAction::CloseTab:
-            if (tab_idx < 0) tab_idx = document_active_index();
-            document_close_tab(tab_idx);
-            ResetPerDocumentUiState(false);
-            g_doc_tab_select_request = document_active_index();
-            break;
-        case PendingAction::None: default:  break;
-    }
-}
-
-void DrawUnsavedChangesConfirm(void)
-{
-    /* Legacy: g_pending_quit is set by Esc/window-close; treat it as the
-       Quit pending action if nothing else queued. */
-    if (g_pending_quit && g_pending_action == PendingAction::None && !g_show_unsaved_confirm) {
-        int dirty_idx = FindDirtyDocumentIndex();
-        if (dirty_idx >= 0) {
-            ActivateDocumentTab(dirty_idx);
-            g_pending_action = PendingAction::Quit;
-            g_show_unsaved_confirm = true;
-        }
-    }
-    if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
-    if (!ImGui::BeginPopupModal("Unsaved Changes", &g_show_unsaved_confirm, ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    const char *verb =
-        (g_pending_action == PendingAction::OpenDialog ||
-         g_pending_action == PendingAction::OpenPath  ||
-         g_pending_action == PendingAction::OpenLodDialog) ? "before opening another file"
-        : (g_pending_action == PendingAction::CloseTab) ? "before closing this tab"
-                                                        : "before quitting";
-    ImGui::Text("You have unsaved changes.");
-    ImGui::Text("Do you want to save %s?", verb);
-    ImGui::Spacing();
-    ImGui::Separator();
-    if (ImGui::Button("Save", ImVec2(80, 0))) {
-        g_show_unsaved_confirm = false;
-        ImGui::CloseCurrentPopup();
-        if (g_doc->fname_s[0] != '\0') {
-            SaveImgFile();
-            g_dirty = false;
-            RunPendingAction();
-        } else {
-            /* No filename yet — fall through to Save dialog, and discard the
-               pending action since the user needs to drive that flow manually.
-               (Avoids racing a fresh Save dialog against an Open dialog.) */
-            g_pending_quit = false;
-            g_pending_action = PendingAction::None;
-            g_pending_action_path.clear();
-            g_pending_tab_index = -1;
-            OpenFileDialog(FileDialogMode::SaveImg);
-        }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Discard", ImVec2(80, 0))) {
-        g_show_unsaved_confirm = false;
-        ImGui::CloseCurrentPopup();
-        g_dirty = false; /* user chose to throw the edits away */
-        RunPendingAction();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-        g_show_unsaved_confirm = false;
-        if (g_pending_action == PendingAction::Quit) g_pending_quit = false;
-        g_pending_action = PendingAction::None;
-        g_pending_action_path.clear();
-        g_pending_tab_index = -1;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-/* MK2-side unsaved-changes confirm. Fires when the user tries to quit
-   with edits pending in MKSTK.ASM. Independent of the IMG dirty flow
-   so the two doc types each get their own prompt. */
-void DrawMk2UnsavedChangesConfirm(void)
-{
-    if (g_show_mk2_unsaved_confirm) ImGui::OpenPopup("MK2 Hitboxes - Unsaved");
-    if (!ImGui::BeginPopupModal("MK2 Hitboxes - Unsaved", &g_show_mk2_unsaved_confirm,
-                                ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    ImGui::Text("You have unsaved edits in MKSTK.ASM.");
-    ImGui::Text("Do you want to save them before quitting?");
-    ImGui::Spacing();
-    ImGui::Separator();
-    if (ImGui::Button("Save", ImVec2(80, 0))) {
-        std::string err;
-        if (mk2::save(&g_mk2_doc, &err)) {
-            g_mk2_status = "Saved MKSTK.ASM";
-            g_mk2_status_sticky = false;
-            g_show_mk2_unsaved_confirm = false;
-            ImGui::CloseCurrentPopup();
-        } else {
-            g_mk2_status = std::string("Save failed: ") + err;
-            g_mk2_status_sticky = true;
-        }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Discard", ImVec2(80, 0))) {
-        g_mk2_doc.dirty = false; /* user chose to throw the MK2 edits away */
-        g_show_mk2_unsaved_confirm = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-        g_show_mk2_unsaved_confirm = false;
-        g_pending_quit = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-void DrawMk2FatalityUnsavedChangesConfirm(void)
-{
-    if (g_show_mk2_fatality_unsaved_confirm) ImGui::OpenPopup("MK2 Fatality Lab - Unsaved");
-    if (!ImGui::BeginPopupModal("MK2 Fatality Lab - Unsaved", &g_show_mk2_fatality_unsaved_confirm,
-                                ImGuiWindowFlags_AlwaysAutoResize)) return;
-
-    ImGui::Text("You have unsaved edits in MK2 fatality source files.");
-    ImGui::Text("Do you want to save them before quitting?");
-    ImGui::Spacing();
-    ImGui::Separator();
-    if (ImGui::Button("Save", ImVec2(80, 0))) {
-        std::string err;
-        if (mk2fatal::save(&g_mk2_fatality_doc, &err)) {
-            g_mk2_fatality_status = "Saved MK2 fatality source edits";
-            g_mk2_fatality_status_sticky = false;
-            g_show_mk2_fatality_unsaved_confirm = false;
-            ImGui::CloseCurrentPopup();
-        } else {
-            g_mk2_fatality_status = std::string("Save failed: ") + err;
-            g_mk2_fatality_status_sticky = true;
-        }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Discard", ImVec2(80, 0))) {
-        g_mk2_fatality_doc.dirty = false;
-        for (auto &sf : g_mk2_fatality_doc.files) sf.dirty = false;
-        g_show_mk2_fatality_unsaved_confirm = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-        g_show_mk2_fatality_unsaved_confirm = false;
-        g_pending_quit = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-void DrawHelpModal(void)
-{
-    if (g_show_help) ImGui::OpenPopup("Help");
-    if (!ImGui::BeginPopupModal("Help", &g_show_help,
-            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) return;
-    ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_Always);
-    if (ImGui::BeginChild("##helpscroll", ImVec2(680, 420), true)) {
-        ImGui::TextUnformatted(g_help_text);
-        ImGui::EndChild();
-    }
-    ImGui::Spacing();
-    ImGui::Separator();
-    if (ImGui::Button("Close", ImVec2(120, 0))) {
-        g_show_help = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
-void DrawAboutModal(void)
-{
-    if (g_show_about) ImGui::OpenPopup("About IMGTOOL");
-    if (ImGui::BeginPopupModal("About IMGTOOL", &g_show_about, ImGuiWindowFlags_AlwaysAutoResize)) {
-        /* Headline: name + version in a slightly larger font weight. */
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.2f, 1.0f));
-        ImGui::Text("IMGTOOL  v%s", IMGTOOL_VERSION);
-        ImGui::PopStyleColor();
-        ImGui::Separator();
-
-        ImGui::TextWrapped("A modern port of the 1992 Midway Image Tool. "
-                           "Sprite + palette editor for the .IMG container files "
-                           "shipped with Mortal Kombat, NBA Jam, NBA Hangtime, "
-                           "and other Williams/Midway arcade titles of the era.");
-        ImGui::Spacing();
-
-        /* Two-column key/value table so the values line up regardless of
-           the proportional-font widths of the labels. ImGui::Text uses a
-           variable-width font, so space-padding inside the format string
-           can't be relied on for alignment. */
-        SDL_version sdlv;
-        SDL_GetVersion(&sdlv);
-        if (ImGui::BeginTable("##about_kv", 2,
-                              ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoBordersInBody)) {
-            auto row = [](const char *k, const char *fmt, ...) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(k);
-                ImGui::TableSetColumnIndex(1);
-                va_list ap; va_start(ap, fmt);
-                char buf[256];
-                vsnprintf(buf, sizeof(buf), fmt, ap);
-                va_end(ap);
-                ImGui::TextUnformatted(buf);
-            };
-            row("Version",    "%s",          IMGTOOL_VERSION);
-            row("Built",      "%s %s",       __DATE__, __TIME__);
-#ifdef IMGTOOL_GIT_REV
-            row("Commit",     "%s",          IMGTOOL_GIT_REV);
-#endif
-            row("Dear ImGui", "%s",          IMGUI_VERSION);
-            row("SDL2",       "%d.%d.%d",    sdlv.major, sdlv.minor, sdlv.patch);
-            ImGui::EndTable();
-        }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::TextDisabled("Original tool: Shawn Liptak, Williams Electronics, 1992");
-        ImGui::TextDisabled("SDL/ImGui modernization & feature work: see git history");
-
-        ImGui::Spacing();
-        ImGui::TextLinkOpenURL("https://github.com/junkwax/midway-imgtool");
-        ImGui::SameLine();
-        ImGui::TextDisabled(" (issues + releases)");
-        ImGui::Spacing();
-        if (ImGui::Button("Close", ImVec2(120, 0))) {
-            g_show_about = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-}
-
-void DrawVerboseLogWindow(void)
-{
-    if (!g_verbose) return;
-    ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Verbose Logging", &g_verbose)) {
-        if (ImGui::Button("Clear")) { g_log_lines.clear(); }
-        ImGui::SameLine();
-        if (ImGui::Button("Copy to Clipboard")) {
-            std::string all_logs;
-            for (const auto& s : g_log_lines) all_logs += s + "\n";
-            ImGui::SetClipboardText(all_logs.c_str());
-        }
-        ImGui::Separator();
-        ImGui::BeginChild("scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-        for (const auto& s : g_log_lines) {
-            ImGui::TextUnformatted(s.c_str());
-        }
-        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
-        ImGui::EndChild();
-    }
-    ImGui::End();
-}
-
-void DrawTransientToast(float dt)
-{
-    if (g_restore_msg_timer <= 0.0f) return;
-    g_restore_msg_timer -= dt;
-    ImGuiIO &io = ImGui::GetIO();
-    float sw = io.DisplaySize.x;
-    float sh = io.DisplaySize.y;
-    ImGui::SetNextWindowBgAlpha(0.85f);
-    ImGui::SetNextWindowPos(ImVec2(sw * 0.5f, sh - 60), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
-    if (ImGui::Begin("##toast", NULL,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
-            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing)) {
-        ImGui::TextUnformatted(g_restore_msg);
-    }
-    ImGui::End();
-}
 
 /* Unified Undo/Redo helpers used by the global shortcut, the Edit menu,
    and the toolbar buttons. Pixel strokes, document/palette snapshots, and
@@ -11864,7 +8577,7 @@ void DoRedo(void)
         DoLegacyRedo();
 }
 
-static int FindDirtyDocumentIndex(void)
+int FindDirtyDocumentIndex(void)
 {
     int active = document_active_index();
     Document *cur = document_get(active);
