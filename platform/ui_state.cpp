@@ -292,4 +292,24 @@ bool push_pixel_history_entry(PixelHist *snap)
     return true;
 }
 
+/* Shared Resizing State */
+bool g_show_resize_sprite = false;
+int  g_resize_source_idx = -1;
+int  g_resize_source_w = 0;
+int  g_resize_source_h = 0;
+int  g_resize_w = 32;
+int  g_resize_h = 32;
+int  g_resize_scale_x = 100;
+int  g_resize_scale_y = 100;
+bool g_resize_lock_aspect = true;
+int  g_resize_mode = 0;
+bool g_resize_trim_bounds = false;
+bool g_show_bulk_resize = false;
+int  g_bulk_resize_scale_x = 100;
+int  g_bulk_resize_scale_y = 100;
+bool g_bulk_resize_lock_aspect = true;
+int  g_bulk_resize_mode = 0;
+bool g_bulk_resize_trim_bounds = false;
+
+
 

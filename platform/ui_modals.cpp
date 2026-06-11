@@ -5320,3 +5320,246 @@ NBA Jam, NBA Hangtime, etc.).  Originally a 1992 DOS tool by Shawn Liptak
 (Williams Electronics), now a pure C/C++ + SDL2 + Dear ImGui port.
 SDL-main branch -- 64-bit build.  github.com/junkwax/midway-imgtool
 )IMA";
+
+
+/* =========================================================
+   Sprite Resizing Dialog Modals
+   ========================================================= */
+
+void OpenResizeSpriteDialog(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+    g_resize_source_idx = g_doc->ilselected;
+    g_resize_source_w = img->w;
+    g_resize_source_h = img->h;
+    g_resize_w = img->w;
+    g_resize_h = img->h;
+    g_resize_scale_x = 100;
+    g_resize_scale_y = 100;
+    g_show_resize_sprite = true;
+}
+
+void OpenBulkResizeDialog(void)
+
+{
+    g_bulk_resize_scale_x = 100;
+    g_bulk_resize_scale_y = 100;
+    g_bulk_resize_lock_aspect = true;
+    g_bulk_resize_mode = (int)SpriteResizeMode::IndexNearest;
+    g_bulk_resize_trim_bounds = false;
+    g_show_bulk_resize = true;
+}
+
+void DrawResizeSpriteDialog(void)
+{
+    if (g_show_resize_sprite) ImGui::OpenPopup("Resize Sprite");
+    if (!ImGui::BeginPopupModal("Resize Sprite", &g_show_resize_sprite,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    IMG *img = (g_resize_source_idx >= 0) ? get_img(g_resize_source_idx) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) {
+        ImGui::TextDisabled("No sprite selected");
+        if (ImGui::Button("Close", ImVec2(100, 0))) {
+            g_show_resize_sprite = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    if (g_resize_source_w <= 0 || g_resize_source_h <= 0 ||
+        g_resize_source_idx != g_doc->ilselected) {
+        g_resize_source_idx = g_doc->ilselected;
+        g_resize_source_w = img->w;
+        g_resize_source_h = img->h;
+        g_resize_w = img->w;
+        g_resize_h = img->h;
+        g_resize_scale_x = g_resize_scale_y = 100;
+    }
+
+    ImGui::Text("%s  %dx%d", img->n_s, g_resize_source_w, g_resize_source_h);
+    ImGui::Separator();
+
+    ImGui::Checkbox("Constrain Aspect Ratio", &g_resize_lock_aspect);
+    ImGui::SetNextItemWidth(110);
+    int w = g_resize_w;
+    if (ImGui::InputInt("Width", &w, 1, 16)) {
+        g_resize_w = clamp_int(w, 1, 4096);
+        if (g_resize_lock_aspect && g_resize_source_w > 0)
+            g_resize_h = clamp_int(round_to_int((double)g_resize_w * (double)g_resize_source_h / (double)g_resize_source_w), 1, 4096);
+        resize_sync_scale_from_dims();
+    }
+    ImGui::SetNextItemWidth(110);
+    int h = g_resize_h;
+    if (ImGui::InputInt("Height", &h, 1, 16)) {
+        g_resize_h = clamp_int(h, 1, 4096);
+        if (g_resize_lock_aspect && g_resize_source_h > 0)
+            g_resize_w = clamp_int(round_to_int((double)g_resize_h * (double)g_resize_source_w / (double)g_resize_source_h), 1, 4096);
+        resize_sync_scale_from_dims();
+    }
+
+    ImGui::SetNextItemWidth(110);
+    if (g_resize_lock_aspect) {
+        int pct = g_resize_scale_x;
+        if (ImGui::InputInt("Scale %", &pct, 1, 10)) {
+            g_resize_scale_x = g_resize_scale_y = clamp_int(pct, 1, 3200);
+            resize_sync_dims_from_scale();
+        }
+    } else {
+        int sx = g_resize_scale_x;
+        if (ImGui::InputInt("Scale X %", &sx, 1, 10)) {
+            g_resize_scale_x = clamp_int(sx, 1, 3200);
+            resize_sync_dims_from_scale();
+        }
+        ImGui::SetNextItemWidth(110);
+        int sy = g_resize_scale_y;
+        if (ImGui::InputInt("Scale Y %", &sy, 1, 10)) {
+            g_resize_scale_y = clamp_int(sy, 1, 3200);
+            resize_sync_dims_from_scale();
+        }
+    }
+
+    const char *mode_names[] = {
+        "Lossless Palette IDs",
+        "Max Quality",
+        "Quality + Smallest Bytes"
+    };
+    ImGui::SetNextItemWidth(220);
+    ImGui::Combo("Mode", &g_resize_mode, mode_names, 3);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Lossless Palette IDs keeps existing indices exact with nearest-neighbor.\n"
+                          "Max Quality resamples RGB from the active palette and remaps.\n"
+                          "Quality + Smallest Bytes also trims transparent bounds.");
+    }
+
+    bool force_trim = (g_resize_mode == (int)SpriteResizeMode::QualitySmallBytes);
+    bool trim_box = force_trim ? true : g_resize_trim_bounds;
+    if (force_trim) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("Trim Transparent Bounds", &trim_box) && !force_trim)
+        g_resize_trim_bounds = trim_box;
+    if (force_trim) ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    int old_bytes = ((g_resize_source_w + 3) & ~3) * g_resize_source_h;
+    int new_bytes = ((g_resize_w + 3) & ~3) * g_resize_h;
+    ImGui::TextDisabled("IMG data: %d B -> %d B", old_bytes, new_bytes);
+
+    bool same_size = (g_resize_w == g_resize_source_w && g_resize_h == g_resize_source_h);
+    bool can_apply = !same_size || g_resize_trim_bounds || force_trim;
+    ImGui::BeginDisabled(!can_apply);
+    if (ImGui::Button("Resize", ImVec2(100, 0))) {
+        SpriteResizeMode mode = (SpriteResizeMode)clamp_int(g_resize_mode, 0, 2);
+        if (ResizeSelectedSprite(g_resize_w, g_resize_h, mode, g_resize_trim_bounds)) {
+            g_show_resize_sprite = false;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_resize_sprite = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void DrawBulkResizeDialog(void)
+{
+    if (g_show_bulk_resize) ImGui::OpenPopup("Bulk Resize Marked");
+    if (!ImGui::BeginPopupModal("Bulk Resize Marked", &g_show_bulk_resize,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    int marked = CountMarkedImages();
+    if (marked <= 0) {
+        ImGui::TextDisabled("No marked sprites");
+        if (ImGui::Button("Close", ImVec2(100, 0))) {
+            g_show_bulk_resize = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    ImGui::Text("%d marked sprite%s", marked, marked == 1 ? "" : "s");
+    ImGui::Separator();
+
+    ImGui::Checkbox("Constrain Aspect Ratio", &g_bulk_resize_lock_aspect);
+    ImGui::SetNextItemWidth(110);
+    if (g_bulk_resize_lock_aspect) {
+        int pct = g_bulk_resize_scale_x;
+        if (ImGui::InputInt("Scale %", &pct, 1, 10)) {
+            g_bulk_resize_scale_x = g_bulk_resize_scale_y = clamp_int(pct, 1, 3200);
+        }
+    } else {
+        int sx = g_bulk_resize_scale_x;
+        if (ImGui::InputInt("Scale X %", &sx, 1, 10))
+            g_bulk_resize_scale_x = clamp_int(sx, 1, 3200);
+        ImGui::SetNextItemWidth(110);
+        int sy = g_bulk_resize_scale_y;
+        if (ImGui::InputInt("Scale Y %", &sy, 1, 10))
+            g_bulk_resize_scale_y = clamp_int(sy, 1, 3200);
+    }
+
+    const char *mode_names[] = {
+        "Lossless Palette IDs",
+        "Max Quality",
+        "Quality + Smallest Bytes"
+    };
+    ImGui::SetNextItemWidth(220);
+    ImGui::Combo("Mode", &g_bulk_resize_mode, mode_names, 3);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Lossless Palette IDs keeps existing indices exact with nearest-neighbor.\n"
+                          "Max Quality resamples RGB from each sprite palette and remaps.\n"
+                          "Quality + Smallest Bytes also trims transparent bounds.");
+    }
+
+    bool force_trim = (g_bulk_resize_mode == (int)SpriteResizeMode::QualitySmallBytes);
+    bool trim_box = force_trim ? true : g_bulk_resize_trim_bounds;
+    if (force_trim) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("Trim Transparent Bounds", &trim_box) && !force_trim)
+        g_bulk_resize_trim_bounds = trim_box;
+    if (force_trim) ImGui::EndDisabled();
+
+    int preview_changed = 0;
+    long long old_bytes = 0;
+    long long new_bytes = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (!(img->flags & 1) || !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+        int nw = clamp_int(round_to_int((double)img->w * (double)g_bulk_resize_scale_x / 100.0), 1, 4096);
+        int nh = clamp_int(round_to_int((double)img->h * (double)g_bulk_resize_scale_y / 100.0), 1, 4096);
+        old_bytes += (long long)(((int)img->w + 3) & ~3) * (long long)img->h;
+        new_bytes += (long long)((nw + 3) & ~3) * (long long)nh;
+        if (nw != (int)img->w || nh != (int)img->h || g_bulk_resize_trim_bounds || force_trim)
+            preview_changed++;
+    }
+    ImGui::TextDisabled("IMG data before trim: %lld B -> %lld B", old_bytes, new_bytes);
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(preview_changed <= 0);
+    if (ImGui::Button("Resize Marked", ImVec2(120, 0))) {
+        SpriteResizeMode mode = (SpriteResizeMode)clamp_int(g_bulk_resize_mode, 0, 2);
+        int n = BulkResizeMarkedSprites(g_bulk_resize_scale_x,
+                                        g_bulk_resize_scale_y,
+                                        mode,
+                                        g_bulk_resize_trim_bounds);
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 n > 0 ? "Bulk resized %d marked sprite%s."
+                       : "No marked sprites resized.",
+                 n, n == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+        if (n > 0) {
+            g_show_bulk_resize = false;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_bulk_resize = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+

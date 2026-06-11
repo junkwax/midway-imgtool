@@ -225,7 +225,28 @@ bool CanRedo(void);
 void DoUndo(void);
 void DoRedo(void);
 void OpenResizeSpriteDialog(void);
+void OpenBulkResizeDialog(void);
 void MakeDerivedImageName(const char *base, const char *suffix, char out[16]);
+
+/* Shared Resizing State */
+extern bool g_show_resize_sprite;
+extern int  g_resize_source_idx;
+extern int  g_resize_source_w;
+extern int  g_resize_source_h;
+extern int  g_resize_w;
+extern int  g_resize_h;
+extern int  g_resize_scale_x;
+extern int  g_resize_scale_y;
+extern bool g_resize_lock_aspect;
+extern int  g_resize_mode;
+extern bool g_resize_trim_bounds;
+extern bool g_show_bulk_resize;
+extern int  g_bulk_resize_scale_x;
+extern int  g_bulk_resize_scale_y;
+extern bool g_bulk_resize_lock_aspect;
+extern int  g_bulk_resize_mode;
+extern bool g_bulk_resize_trim_bounds;
+
 
 
 /* ---- Clipboard, transform and hitbox shared state ---- */
@@ -302,6 +323,12 @@ struct FreeTransform {
     float        ref_aspect;
 };
 
+enum class SpriteResizeMode {
+    IndexNearest = 0,
+    MaxQuality = 1,
+    QualitySmallBytes = 2
+};
+
 enum class SpriteTransformOp {
     FlipHorizontal = 0,
     FlipVertical,
@@ -309,6 +336,7 @@ enum class SpriteTransformOp {
     Rotate90CCW,
     Rotate180
 };
+
 
 enum AutoChopMode {
     AutoChopMode_BestHorizontal = 0,
@@ -363,6 +391,19 @@ bool BuildBestAutoSplitPreviewForImage(const IMG *img, bool vertical, AutoChopPr
 bool BuildAutoChopPreviewForImage(const IMG *img, AutoChopPreview *out);
 void DrawAutoChopPreviewRects(ImDrawList *dl, const AutoChopPreview &out, ImVec2 img_pos, float sx, float sy, bool fill);
 bool TransformSelectedSprite(SpriteTransformOp op);
+bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool trim_bounds);
+int AutoCalculateTimelineAnipointsFromLock(void);
+void DrawResizeSpriteDialog(void);
+void DrawBulkResizeDialog(void);
+void DrawSpriteTransformMenuItems(void);
+
+void resize_sync_scale_from_dims(void);
+void resize_sync_dims_from_scale(void);
+int BulkResizeMarkedSprites(int scale_x, int scale_y, SpriteResizeMode mode, bool trim_bounds);
+
+int clamp_int(int v, int lo, int hi);
+int round_to_int(double v);
+
 
 /* ---- Shared canvas variables and functions ---- */
 struct WorldViewState;

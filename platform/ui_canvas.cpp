@@ -20,6 +20,7 @@
 #include "shim_vid.h"       /* g_palette */
 #include "ui_timeline.h"    /* ClampTimelineHold */
 #include "world_render.h"   /* doc_get_img */
+#include "sprite_resize_ops.h"
 
 #include <algorithm>
 #include <cctype>
@@ -8306,4 +8307,577 @@ bool clipboard_secondary_anipoint_in_use(void)
 }
 
 
+
+
+
+/* =========================================================
+   Sprite Resizing and Transformations (Logic)
+   ========================================================= */
+
+int clamp_int(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+int round_to_int(double v)
+{
+    return (int)(v >= 0.0 ? v + 0.5 : v - 0.5);
+}
+
+void default_anipoints_to_center(IMG *img)
+{
+    if (!img) return;
+    img->anix = signed_to_img_word((int)img->w / 2);
+    img->aniy = signed_to_img_word((int)img->h / 2);
+    clear_secondary_anipoint(img);
+}
+
+int scaled_coord(unsigned short coord, int old_dim, int new_dim)
+{
+    if (old_dim <= 0) return (int)(short)coord;
+    return round_to_int((double)(short)coord * (double)new_dim / (double)old_dim);
+}
+
+void resize_sync_scale_from_dims(void)
+{
+    if (g_resize_source_w > 0)
+        g_resize_scale_x = clamp_int(round_to_int((double)g_resize_w * 100.0 / (double)g_resize_source_w), 1, 3200);
+    if (g_resize_source_h > 0)
+        g_resize_scale_y = clamp_int(round_to_int((double)g_resize_h * 100.0 / (double)g_resize_source_h), 1, 3200);
+}
+
+void resize_sync_dims_from_scale(void)
+{
+    if (g_resize_source_w > 0)
+        g_resize_w = clamp_int(round_to_int((double)g_resize_source_w * (double)g_resize_scale_x / 100.0), 1, 4096);
+    if (g_resize_source_h > 0)
+        g_resize_h = clamp_int(round_to_int((double)g_resize_source_h * (double)g_resize_scale_y / 100.0), 1, 4096);
+}
+
+bool trim_image_to_content(IMG *img, bool shrink_empty,
+                                  int *out_trim_x, int *out_trim_y,
+                                  bool adjust_hitbox = true)
+{
+    if (out_trim_x) *out_trim_x = 0;
+    if (out_trim_y) *out_trim_y = 0;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *src = (unsigned char *)img->data_p;
+    int min_x = w, min_y = h, max_x = -1, max_y = -1;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (src[y * stride + x] != 0) {
+                if (x < min_x) min_x = x;
+                if (x > max_x) max_x = x;
+                if (y < min_y) min_y = y;
+                if (y > max_y) max_y = y;
+            }
+        }
+    }
+
+    if (max_x < 0) {
+        if (!shrink_empty || (w == 1 && h == 1)) return false;
+        unsigned char *dst = (unsigned char *)PoolAlloc(4);
+        if (!dst) return false;
+        free(img->data_p);
+        img->data_p = dst;
+        img->w = 1;
+        img->h = 1;
+        img->anix = 0;
+        img->aniy = 0;
+        clear_secondary_anipoint(img);
+        return true;
+    }
+
+    if (min_x == 0 && min_y == 0 && max_x == w - 1 && max_y == h - 1) return false;
+
+    int new_w = max_x - min_x + 1;
+    int new_h = max_y - min_y + 1;
+    int new_stride = (new_w + 3) & ~3;
+    unsigned char *dst = (unsigned char *)PoolAlloc((size_t)new_stride * new_h);
+    if (!dst) return false;
+    for (int y = 0; y < new_h; y++)
+        memcpy(dst + y * new_stride, src + (y + min_y) * stride + min_x, new_w);
+
+    free(img->data_p);
+    img->data_p = dst;
+    img->w = (unsigned short)new_w;
+    img->h = (unsigned short)new_h;
+    img->anix = signed_to_img_word((int)(short)img->anix - min_x);
+    img->aniy = signed_to_img_word((int)(short)img->aniy - min_y);
+    if (secondary_anipoint_in_use(img)) {
+        img->anix2 = signed_to_img_word((int)(short)img->anix2 - min_x);
+        img->aniy2 = signed_to_img_word((int)(short)img->aniy2 - min_y);
+    }
+    if (adjust_hitbox) {
+        g_hitbox_x -= min_x;
+        g_hitbox_y -= min_y;
+    }
+    if (out_trim_x) *out_trim_x = min_x;
+    if (out_trim_y) *out_trim_y = min_y;
+    return true;
+}
+
+const char *sprite_transform_name(SpriteTransformOp op)
+{
+    switch (op) {
+    case SpriteTransformOp::FlipHorizontal: return "Flipped horizontal";
+    case SpriteTransformOp::FlipVertical:   return "Flipped vertical";
+    case SpriteTransformOp::Rotate90CW:     return "Rotated 90 CW";
+    case SpriteTransformOp::Rotate90CCW:    return "Rotated 90 CCW";
+    case SpriteTransformOp::Rotate180:      return "Rotated 180";
+    }
+    return "Transformed";
+}
+
+bool sprite_transform_preserves_anipoints(SpriteTransformOp op)
+{
+    return op == SpriteTransformOp::Rotate90CW ||
+           op == SpriteTransformOp::Rotate90CCW;
+}
+
+void transform_hitbox(SpriteTransformOp op, int old_w, int old_h)
+{
+    if (g_hitbox_w <= 0 || g_hitbox_h <= 0) return;
+
+    int x = g_hitbox_x;
+    int y = g_hitbox_y;
+    int w = g_hitbox_w;
+    int h = g_hitbox_h;
+
+    switch (op) {
+    case SpriteTransformOp::FlipHorizontal:
+        g_hitbox_x = old_w - (x + w);
+        break;
+    case SpriteTransformOp::FlipVertical:
+        g_hitbox_y = old_h - (y + h);
+        break;
+    case SpriteTransformOp::Rotate90CW:
+        g_hitbox_x = old_h - (y + h);
+        g_hitbox_y = x;
+        g_hitbox_w = h;
+        g_hitbox_h = w;
+        break;
+    case SpriteTransformOp::Rotate90CCW:
+        g_hitbox_x = y;
+        g_hitbox_y = old_w - (x + w);
+        g_hitbox_w = h;
+        g_hitbox_h = w;
+        break;
+    case SpriteTransformOp::Rotate180:
+        g_hitbox_x = old_w - (x + w);
+        g_hitbox_y = old_h - (y + h);
+        break;
+    }
+}
+
+void transform_anipoint(SpriteTransformOp op, int old_w, int old_h,
+                               unsigned short *x, unsigned short *y)
+{
+    int sx = (int)(short)*x;
+    int sy = (int)(short)*y;
+    int dx = sx;
+    int dy = sy;
+
+    switch (op) {
+    case SpriteTransformOp::FlipHorizontal:
+        dx = old_w - sx;
+        dy = sy;
+        break;
+    case SpriteTransformOp::FlipVertical:
+        dx = sx;
+        dy = old_h - sy;
+        break;
+    case SpriteTransformOp::Rotate90CW:
+        dx = old_h - sy;
+        dy = sx;
+        break;
+    case SpriteTransformOp::Rotate90CCW:
+        dx = sy;
+        dy = old_w - sx;
+        break;
+    case SpriteTransformOp::Rotate180:
+        dx = old_w - sx;
+        dy = old_h - sy;
+        break;
+    }
+
+    *x = signed_to_img_word(dx);
+    *y = signed_to_img_word(dy);
+}
+
+int rounded_half_delta(int current_dim, int reference_dim)
+{
+    return round_to_int(((double)current_dim - (double)reference_dim) * 0.5);
+}
+
+bool timeline_image_locked(int img_idx)
+{
+    for (int i = 0; i < 2; i++) {
+        if (g_timeline_composite_locked[i] && g_timeline_composite[i] == img_idx)
+            return true;
+    }
+    return false;
+}
+
+int locked_timeline_anchor_position(void)
+{
+    if (!TimelineAnyCompositeLocked()) return -1;
+
+    for (int slot = 0; slot < 2; slot++) {
+        if (g_timeline_composite_locked[slot] &&
+            g_timeline_composite[slot] == g_doc->ilselected) {
+            return TimelineFramePosition(g_timeline_composite[slot]);
+        }
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        if (g_timeline_composite_locked[slot])
+            return TimelineFramePosition(g_timeline_composite[slot]);
+    }
+    return -1;
+}
+
+int AutoCalculateTimelineAnipointsFromLock(void)
+{
+    int n = (int)g_timeline_frames.size();
+    int anchor_pos = locked_timeline_anchor_position();
+    if (n < 2 || anchor_pos < 0 || anchor_pos >= n) return 0;
+
+    struct FrameAnipointState {
+        int img_idx;
+        int w, h;
+        int anix, aniy;
+        bool valid;
+        bool locked;
+    };
+
+    std::vector<FrameAnipointState> states;
+    states.reserve(g_timeline_frames.size());
+    for (int img_idx : g_timeline_frames) {
+        IMG *img = get_img(img_idx);
+        FrameAnipointState st = {};
+        st.img_idx = img_idx;
+        st.valid = img && img->w > 0 && img->h > 0;
+        st.locked = timeline_image_locked(img_idx);
+        if (st.valid) {
+            st.w = img->w;
+            st.h = img->h;
+            st.anix = (int)(short)img->anix;
+            st.aniy = (int)(short)img->aniy;
+        }
+        states.push_back(st);
+    }
+    if (!states[anchor_pos].valid) return 0;
+
+    for (int i = anchor_pos + 1; i < n; i++) {
+        if (!states[i].valid || !states[i - 1].valid || states[i].locked) continue;
+        states[i].anix = states[i - 1].anix + rounded_half_delta(states[i].w, states[i - 1].w);
+        states[i].aniy = states[i - 1].aniy + rounded_half_delta(states[i].h, states[i - 1].h);
+    }
+
+    for (int i = anchor_pos - 1; i >= 0; i--) {
+        if (!states[i].valid || !states[i + 1].valid || states[i].locked) continue;
+        states[i].anix = states[i + 1].anix + rounded_half_delta(states[i].w, states[i + 1].w);
+        states[i].aniy = states[i + 1].aniy + rounded_half_delta(states[i].h, states[i + 1].h);
+    }
+
+    int changed = 0;
+    for (const FrameAnipointState &st : states) {
+        if (!st.valid || st.locked) continue;
+        IMG *img = get_img(st.img_idx);
+        if (!img) continue;
+        if ((short)img->anix != st.anix || (short)img->aniy != st.aniy)
+            changed++;
+    }
+    if (changed == 0) return 0;
+    if (!doc_undo_push()) return 0;
+
+    for (const FrameAnipointState &st : states) {
+        if (!st.valid || st.locked) continue;
+        IMG *img = get_img(st.img_idx);
+        if (!img) continue;
+        img->anix = signed_to_img_word(st.anix);
+        img->aniy = signed_to_img_word(st.aniy);
+    }
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    return changed;
+}
+
+bool TransformSelectedSprite(SpriteTransformOp op)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+
+    int old_w = img->w;
+    int old_h = img->h;
+    int old_stride = (old_w + 3) & ~3;
+    int new_w = old_w;
+    int new_h = old_h;
+    if (op == SpriteTransformOp::Rotate90CW || op == SpriteTransformOp::Rotate90CCW) {
+        new_w = old_h;
+        new_h = old_w;
+    }
+
+    PixelHist snap = {};
+    if (!pixel_hist_capture(&snap, true)) return false;
+
+    unsigned int new_stride = ((unsigned int)new_w + 3) & ~3u;
+    unsigned char *dst = (unsigned char *)PoolAlloc((size_t)new_stride * new_h);
+    if (!dst) {
+        pixel_hist_free(&snap);
+        return false;
+    }
+    memset(dst, 0, (size_t)new_stride * new_h);
+
+    const unsigned char *src = (const unsigned char *)img->data_p;
+    for (int sy = 0; sy < old_h; sy++) {
+        for (int sx = 0; sx < old_w; sx++) {
+            int dx = sx, dy = sy;
+            switch (op) {
+            case SpriteTransformOp::FlipHorizontal:
+                dx = old_w - 1 - sx;
+                dy = sy;
+                break;
+            case SpriteTransformOp::FlipVertical:
+                dx = sx;
+                dy = old_h - 1 - sy;
+                break;
+            case SpriteTransformOp::Rotate90CW:
+                dx = old_h - 1 - sy;
+                dy = sx;
+                break;
+            case SpriteTransformOp::Rotate90CCW:
+                dx = sy;
+                dy = old_w - 1 - sx;
+                break;
+            case SpriteTransformOp::Rotate180:
+                dx = old_w - 1 - sx;
+                dy = old_h - 1 - sy;
+                break;
+            }
+            dst[dy * new_stride + dx] = src[sy * old_stride + sx];
+        }
+    }
+
+    free(img->data_p);
+    img->data_p = dst;
+    img->w = (unsigned short)new_w;
+    img->h = (unsigned short)new_h;
+    if (!sprite_transform_preserves_anipoints(op)) {
+        transform_anipoint(op, old_w, old_h, &img->anix, &img->aniy);
+        if (secondary_anipoint_in_use(img))
+            transform_anipoint(op, old_w, old_h, &img->anix2, &img->aniy2);
+    }
+    transform_hitbox(op, old_w, old_h);
+
+    push_pixel_history_entry(&snap);
+    mark_dirty();
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+    g_xform.active = false;
+    deselect_all();
+    InvalidateThumb(g_doc->ilselected);
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             sprite_transform_preserves_anipoints(op)
+                 ? "%s: %s (%dx%d -> %dx%d), anipoints preserved."
+                 : "%s: %s (%dx%d -> %dx%d).",
+             sprite_transform_name(op), img->n_s, old_w, old_h, new_w, new_h);
+    g_restore_msg_timer = 4.0f;
+    return true;
+}
+
+bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool trim_bounds)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+    nw = clamp_int(nw, 1, 4096);
+    nh = clamp_int(nh, 1, 4096);
+
+    int old_w = img->w;
+    int old_h = img->h;
+    bool optimize_bytes = (mode == SpriteResizeMode::QualitySmallBytes);
+    bool use_quality = (mode != SpriteResizeMode::IndexNearest);
+
+    if (nw == old_w && nh == old_h && !(trim_bounds || optimize_bytes)) return false;
+
+    PixelHist snap = {};
+    if (!pixel_hist_capture(&snap, true)) return false;
+
+    PAL *pal = get_pal(img->palnum);
+    unsigned int new_stride = 0;
+    unsigned char *new_pixels = NULL;
+    if (use_quality) {
+        ResizeRgb fallback_rgb[256];
+        for (int i = 0; i < 256; i++) {
+            fallback_rgb[i].r = g_palette[i].r;
+            fallback_rgb[i].g = g_palette[i].g;
+            fallback_rgb[i].b = g_palette[i].b;
+        }
+        new_pixels = ResizeSpritePixelsQuality(img, pal, fallback_rgb, nw, nh,
+                                               optimize_bytes, &new_stride);
+    } else {
+        new_pixels = ResizeSpritePixelsNearest(img, nw, nh, &new_stride);
+    }
+    if (!new_pixels) {
+        pixel_hist_free(&snap);
+        return false;
+    }
+
+    free(img->data_p);
+    img->data_p = new_pixels;
+    img->w = (unsigned short)nw;
+    img->h = (unsigned short)nh;
+    img->anix = signed_to_img_word(scaled_coord(snap.anix, old_w, nw));
+    img->aniy = signed_to_img_word(scaled_coord(snap.aniy, old_h, nh));
+    if (secondary_anipoint_words_in_use(snap.anix2, snap.aniy2, snap.aniz2)) {
+        img->anix2 = signed_to_img_word(scaled_coord(snap.anix2, old_w, nw));
+        img->aniy2 = signed_to_img_word(scaled_coord(snap.aniy2, old_h, nh));
+        img->aniz2 = snap.aniz2;
+    } else {
+        clear_secondary_anipoint(img);
+    }
+    if (g_hitbox_w > 0 && g_hitbox_h > 0) {
+        g_hitbox_x = scaled_coord((unsigned short)(short)g_hitbox_x, old_w, nw);
+        g_hitbox_y = scaled_coord((unsigned short)(short)g_hitbox_y, old_h, nh);
+        g_hitbox_w = clamp_int(round_to_int((double)g_hitbox_w * (double)nw / (double)old_w), 1, 4096);
+        g_hitbox_h = clamp_int(round_to_int((double)g_hitbox_h * (double)nh / (double)old_h), 1, 4096);
+    }
+
+    int trim_x = 0, trim_y = 0;
+    bool did_trim = false;
+    if (trim_bounds || optimize_bytes)
+        did_trim = trim_image_to_content(img, optimize_bytes, &trim_x, &trim_y);
+
+    push_pixel_history_entry(&snap);
+    mark_dirty();
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+    g_xform.active = false;
+    deselect_all();
+    InvalidateThumb(g_doc->ilselected);
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             did_trim ? "Resized %s: %dx%d -> %dx%d (trimmed %d,%d)."
+                      : "Resized %s: %dx%d -> %dx%d.",
+             img->n_s, old_w, old_h, (int)img->w, (int)img->h, trim_x, trim_y);
+    g_restore_msg_timer = 4.0f;
+    (void)new_stride;
+    return true;
+}
+
+void BuildResizeFallbackRgb(ResizeRgb fallback_rgb[256])
+{
+    for (int i = 0; i < 256; i++) {
+        fallback_rgb[i].r = g_palette[i].r;
+        fallback_rgb[i].g = g_palette[i].g;
+        fallback_rgb[i].b = g_palette[i].b;
+    }
+}
+
+int BulkResizeMarkedSprites(int scale_x, int scale_y,
+                                   SpriteResizeMode mode, bool trim_bounds)
+{
+    scale_x = clamp_int(scale_x, 1, 3200);
+    scale_y = clamp_int(scale_y, 1, 3200);
+
+    struct BulkResizeTarget {
+        IMG *img;
+        int idx;
+        int nw;
+        int nh;
+    };
+    std::vector<BulkResizeTarget> targets;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (!(img->flags & 1) || !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+        int nw = clamp_int(round_to_int((double)img->w * (double)scale_x / 100.0), 1, 4096);
+        int nh = clamp_int(round_to_int((double)img->h * (double)scale_y / 100.0), 1, 4096);
+        bool force_trim = (mode == SpriteResizeMode::QualitySmallBytes);
+        if (nw == (int)img->w && nh == (int)img->h && !(trim_bounds || force_trim))
+            continue;
+        targets.push_back({img, idx, nw, nh});
+    }
+    if (targets.empty()) return 0;
+    if (!doc_undo_push()) return 0;
+
+    bool optimize_bytes = (mode == SpriteResizeMode::QualitySmallBytes);
+    bool use_quality = (mode != SpriteResizeMode::IndexNearest);
+    ResizeRgb fallback_rgb[256];
+    BuildResizeFallbackRgb(fallback_rgb);
+
+    int changed = 0;
+    for (const BulkResizeTarget &target : targets) {
+        IMG *img = target.img;
+        int old_w = img->w;
+        int old_h = img->h;
+        unsigned short old_anix = img->anix;
+        unsigned short old_aniy = img->aniy;
+        unsigned short old_anix2 = img->anix2;
+        unsigned short old_aniy2 = img->aniy2;
+        unsigned short old_aniz2 = img->aniz2;
+
+        PAL *pal = get_pal(img->palnum);
+        unsigned int new_stride = 0;
+        unsigned char *new_pixels = use_quality
+            ? ResizeSpritePixelsQuality(img, pal, fallback_rgb,
+                                        target.nw, target.nh,
+                                        optimize_bytes, &new_stride)
+            : ResizeSpritePixelsNearest(img, target.nw, target.nh,
+                                        &new_stride);
+        if (!new_pixels) continue;
+
+        free(img->data_p);
+        img->data_p = new_pixels;
+        img->w = (unsigned short)target.nw;
+        img->h = (unsigned short)target.nh;
+        img->anix = signed_to_img_word(scaled_coord(old_anix, old_w, target.nw));
+        img->aniy = signed_to_img_word(scaled_coord(old_aniy, old_h, target.nh));
+        if (secondary_anipoint_words_in_use(old_anix2, old_aniy2, old_aniz2)) {
+            img->anix2 = signed_to_img_word(scaled_coord(old_anix2, old_w, target.nw));
+            img->aniy2 = signed_to_img_word(scaled_coord(old_aniy2, old_h, target.nh));
+            img->aniz2 = old_aniz2;
+        } else {
+            clear_secondary_anipoint(img);
+        }
+
+        bool selected = (target.idx == g_doc->ilselected);
+        if (selected && g_hitbox_w > 0 && g_hitbox_h > 0) {
+            g_hitbox_x = scaled_coord((unsigned short)(short)g_hitbox_x, old_w, target.nw);
+            g_hitbox_y = scaled_coord((unsigned short)(short)g_hitbox_y, old_h, target.nh);
+            g_hitbox_w = clamp_int(round_to_int((double)g_hitbox_w * (double)target.nw / (double)old_w), 1, 4096);
+            g_hitbox_h = clamp_int(round_to_int((double)g_hitbox_h * (double)target.nh / (double)old_h), 1, 4096);
+        }
+
+        if (trim_bounds || optimize_bytes) {
+            int trim_x = 0, trim_y = 0;
+            trim_image_to_content(img, optimize_bytes, &trim_x, &trim_y, selected);
+        }
+
+        InvalidateThumb(target.idx);
+        changed++;
+        (void)new_stride;
+    }
+
+    if (changed > 0) {
+        mark_dirty();
+        g_img_tex_idx = -2;
+        g_zoom_reset = true;
+        g_pasted.active = false;
+        g_pasted.dragging = false;
+        g_xform.active = false;
+        deselect_all();
+    }
+    return changed;
+}
 

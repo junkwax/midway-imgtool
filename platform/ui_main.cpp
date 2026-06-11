@@ -2349,3 +2349,34 @@ void SwitchImageList(void)
     g_img_tex_idx = -2;
 }
 
+
+
+/* =========================================================
+   Sprite Transformations Menu Items
+   ========================================================= */
+
+void DrawSpriteTransformMenuItems(void)
+{
+    if (ImGui::MenuItem("Rotate 90 Clockwise"))
+        TransformSelectedSprite(SpriteTransformOp::Rotate90CW);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Rotates pixels and hitbox; preserves existing anim points.");
+    if (ImGui::MenuItem("Rotate 90 Counterclockwise"))
+        TransformSelectedSprite(SpriteTransformOp::Rotate90CCW);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Rotates pixels and hitbox; preserves existing anim points.");
+    if (ImGui::MenuItem("Rotate 180"))
+        TransformSelectedSprite(SpriteTransformOp::Rotate180);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Rotates pixels, anipoints, and hitbox together.");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Flip Horizontal / Mirror"))
+        TransformSelectedSprite(SpriteTransformOp::FlipHorizontal);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Mirrors pixels, anipoints, and hitbox together.");
+    if (ImGui::MenuItem("Flip Vertical"))
+        TransformSelectedSprite(SpriteTransformOp::FlipVertical);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Flips pixels, anipoints, and hitbox together.");
+}
+
