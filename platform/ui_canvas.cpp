@@ -2,6 +2,13 @@
  * platform/ui_canvas.cpp
  * Canvas/World-View helpers declared in ui_canvas.h.
  *************************************************************/
+#include <imgui_internal.h>
+#include "ui_internal.h"
+#include "image_ops.h"
+#include "img_io.h"
+#include "mk2_fatality.h"
+#include "mk2_hitbox.h"
+#include "load2_verify.h"
 #include "ui_canvas.h"
 
 #include "anipoint.h"       /* secondary_anipoint_in_use */
@@ -9,7 +16,6 @@
 #include "img_format.h"     /* get_img */
 #include "img_util.h"       /* img_name_string */
 #include "shim_vid.h"       /* g_palette */
-#include "ui_internal.h"    /* g_imgui_renderer */
 #include "ui_timeline.h"    /* ClampTimelineHold */
 #include "world_render.h"   /* doc_get_img */
 
@@ -3243,4 +3249,1258 @@ void ClearCanvasUiTextures(void)
     s_world_onion_tex_w = 0;
     s_world_onion_tex_h = 0;
     s_world_onion_idx = -1;
+}
+
+void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canvas_h)
+{
+    ImGui::SetNextWindowPos(ImVec2(canvas_x, canvas_y));
+    ImGui::SetNextWindowSize(ImVec2(canvas_w, canvas_h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0x06, 0x06, 0x06, 0xFF));
+    ImGui::Begin("##canvas", NULL,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
+    {
+        ImGuiIO &io = ImGui::GetIO();
+        ImVec2 avail   = ImGui::GetContentRegionAvail();
+        ImVec2 img_pos = ImGui::GetCursorScreenPos();
+        ImVec2 canvas_origin = img_pos;
+        ImVec2 img_sz(0, 0);
+        float sx = 1.0f, sy = 1.0f;
+        bool timeline_composite_preview_active = false;
+        bool rotate_buttons_visible = false;
+        bool rotate_button_hovered = false;
+        int rotate_button_hover_idx = -1;
+        ImVec2 rotate_button_min[2] = {};
+        ImVec2 rotate_button_max[2] = {};
+
+        /* ---- World View mode (DOS-style anipoint alignment workspace) ----
+         * Renders the sprite inside a fixed black canvas, sprite anchored at
+         * (world origin - sprite.anipoint). Left-drag adjusts anix/aniy.
+         * Up/Down (handled in the global shortcut block) flicks frames.
+         * When this branch runs, the rest of the canvas pipeline (pixel
+         * paint, marquee, anim-point handles, hitboxes, DMA overlay,
+         * grid-selection) is skipped. */
+        if (g_world_state.enabled) {
+            bool drew_dual_marked = DrawWorldMarkedTabs(avail, img_pos, io);
+            if (!drew_dual_marked && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+                IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+                /* Single-sprite World View now lives in ui_canvas.{h,cpp};
+                   the larger marked-tab World View path remains above. */
+                DrawWorldViewSingleSprite(avail, img_pos, io,
+                                          cimg, g_img_texture,
+                                          g_doc->ilselected, (int)g_doc->imgcnt,
+                                          g_world_state.w, g_world_state.h,
+                                          g_world_state.origin_x, g_world_state.origin_y,
+                                          g_world_state.onion, g_world_marked_state.mirror_active);
+            }
+        }
+        else if ((timeline_composite_preview_active = DrawTimelineCompositePreview(avail, img_pos))) {
+            /* Composite preview is read-only: the canvas is showing two
+               timeline frames in shared anipoint space, not one editable IMG. */
+        }
+        else if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+            if (g_zoom_reset) ResetZoomToFit();
+
+            auto apply_canvas_zoom_step = [&](int dir, ImVec2 anchor) {
+                ImVec2 old_pos, old_size;
+                float old_scale = 1.0f;
+                ZoomImageRectForAvailable(avail, canvas_origin,
+                                          &old_pos, &old_size, &old_scale);
+                float new_scale = ZoomNextLevel(old_scale, dir);
+                if (fabsf(new_scale - old_scale) < 0.001f) return;
+                ApplyZoomScale(old_scale, new_scale, anchor, old_pos, old_size, avail);
+            };
+
+            if (g_zoom_pending_fit) {
+                ResetZoomToFit();
+                g_zoom_pending_fit = false;
+            }
+
+            ImVec2 canvas_center(canvas_origin.x + avail.x * 0.5f,
+                                 canvas_origin.y + avail.y * 0.5f);
+
+            /* ---- Mouse wheel: scroll normally, Ctrl+wheel zooms from center ---- */
+            if (ImGui::IsWindowHovered()) {
+                if (io.KeyCtrl) {
+                    g_zoom_wheel_accum += io.MouseWheel;
+                    while (g_zoom_wheel_accum >= 1.0f) {
+                        apply_canvas_zoom_step(1, canvas_center);
+                        g_zoom_wheel_accum -= 1.0f;
+                    }
+                    while (g_zoom_wheel_accum <= -1.0f) {
+                        apply_canvas_zoom_step(-1, canvas_center);
+                        g_zoom_wheel_accum += 1.0f;
+                    }
+                } else {
+                    if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f) {
+                        const float wheel_pan_step = 80.0f;
+                        float dx = io.MouseWheelH * wheel_pan_step;
+                        float dy = io.MouseWheel * wheel_pan_step;
+                        if (io.KeyShift && io.MouseWheel != 0.0f && io.MouseWheelH == 0.0f) {
+                            dx = io.MouseWheel * wheel_pan_step;
+                            dy = 0.0f;
+                        }
+                        ZoomPanBy(avail, dx, dy);
+                    }
+                    g_zoom_wheel_accum = 0.0f;
+                }
+            }
+
+            while (g_zoom_pending_steps > 0) {
+                apply_canvas_zoom_step(1, canvas_center);
+                g_zoom_pending_steps--;
+            }
+            while (g_zoom_pending_steps < 0) {
+                apply_canvas_zoom_step(-1, canvas_center);
+                g_zoom_pending_steps++;
+            }
+            ZoomClampPanForAvailable(avail);
+
+            float scale = 1.0f;
+            ZoomImageRectForAvailable(avail, canvas_origin, &img_pos, &img_sz, &scale);
+            ImGui::SetCursorScreenPos(img_pos);
+
+            float tw = img_sz.x;
+            float th = img_sz.y;
+            img_sz  = ImVec2(tw, th);
+            sx = tw / (float)g_img_tex_w;
+            sy = th / (float)g_img_tex_h;
+            rotate_buttons_visible = true;
+            CanvasRotateButtonRects(img_pos, img_sz, canvas_origin, avail,
+                                    rotate_button_min, rotate_button_max);
+
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            DrawCanvasCheckerboard(dl, img_pos, img_sz, scale);
+            /* Timeline onion-skin: draw prev/next frames of the current
+               timeline order behind the live sprite, anipoint-aligned and
+               faint, so the user can scrub or play and see motion arcs. */
+            if (g_timeline_onion && !g_timeline_frames.empty()
+                && g_timeline_play_idx >= 0
+                && g_timeline_play_idx < (int)g_timeline_frames.size()
+                && g_doc->ilselected >= 0)
+            {
+                IMG *cur_img = get_img(g_doc->ilselected);
+                if (cur_img) {
+                    int cur_ax = (int)(short)cur_img->anix;
+                    int cur_ay = (int)(short)cur_img->aniy;
+                    int neighbors[2] = {
+                        g_timeline_play_idx == 0
+                            ? (int)g_timeline_frames.size() - 1
+                            : g_timeline_play_idx - 1,
+                        (g_timeline_play_idx + 1) % (int)g_timeline_frames.size()
+                    };
+                    ImU32 tints[2] = {
+                        IM_COL32(120, 180, 255, 70), /* prev: cool */
+                        IM_COL32(255, 160, 120, 70)  /* next: warm */
+                    };
+                    for (int side = 0; side < 2; side++) {
+                        if (neighbors[side] == g_timeline_play_idx) continue;
+                        int img_idx = g_timeline_frames[neighbors[side]];
+                        if (img_idx == g_doc->ilselected) continue;
+                        IMG *nimg = get_img(img_idx);
+                        if (!nimg) continue;
+                        TimelineThumb *t = EnsureThumb(img_idx);
+                        if (!t || !t->tex) continue;
+                        /* Place the neighbor so that its anipoint coincides
+                           with the current sprite's anipoint on screen. */
+                        int n_ax = (int)(short)nimg->anix;
+                        int n_ay = (int)(short)nimg->aniy;
+                        float scale_x = sx * ((float)nimg->w / (float)t->w);
+                        float scale_y = sy * ((float)nimg->h / (float)t->h);
+                        float nw_screen = t->w * scale_x;
+                        float nh_screen = t->h * scale_y;
+                        ImVec2 npos(img_pos.x + (cur_ax - n_ax) * sx,
+                                    img_pos.y + (cur_ay - n_ay) * sy);
+                        dl->AddImage((ImTextureID)(intptr_t)t->tex,
+                                     npos,
+                                     ImVec2(npos.x + nw_screen, npos.y + nh_screen),
+                                     ImVec2(0,0), ImVec2(1,1),
+                                     tints[side]);
+                    }
+                }
+            }
+
+            AutoChopPreview auto_chop_preview;
+            bool show_auto_chop_preview =
+                g_show_auto_chop && SelectedImageWillAutoChop();
+            if (show_auto_chop_preview) {
+                IMG *chop_img = get_img(g_doc->ilselected);
+                if (g_chop_mode == AutoChopMode_BestHorizontal ||
+                    g_chop_mode == AutoChopMode_BestVertical) {
+                    bool vertical = (g_chop_mode == AutoChopMode_BestVertical);
+                    show_auto_chop_preview =
+                        BuildBestAutoSplitPreviewForImage(chop_img, vertical,
+                                                          &auto_chop_preview) &&
+                        !auto_chop_preview.pieces.empty();
+                } else {
+                    show_auto_chop_preview =
+                        BuildAutoChopPreviewForImage(chop_img, &auto_chop_preview) &&
+                        !auto_chop_preview.pieces.empty();
+                }
+                if (show_auto_chop_preview) {
+                    DrawAutoChopPreviewRects(dl, auto_chop_preview,
+                                             img_pos, sx, sy, false);
+                }
+            }
+
+            ImGui::Image((ImTextureID)(intptr_t)g_img_texture, img_sz);
+
+            /* Color isolation: dim everything that isn't in the "kept" set.
+               The set is either (a) the single Alt-clicked isolate index, or
+               (b) the multi-selected swatch set (yellow rings in the palette
+               grid). Alt-isolate wins when both are active.
+               Scanline-coalesced so a 256x256 sprite emits at most ~256 rects
+               per row of contiguous non-target pixels, not 65k per-pixel. */
+            bool kept[256];
+            bool any_kept = false;
+            if (g_isolate_color >= 0) {
+                memset(kept, 0, sizeof(kept));
+                kept[g_isolate_color] = true;
+                any_kept = true;
+            } else {
+                for (int ki = 0; ki < 256; ki++) {
+                    kept[ki] = g_palette_selection[ki];
+                    if (kept[ki]) any_kept = true;
+                }
+            }
+            if (any_kept && g_doc->ilselected >= 0) {
+                IMG *iimg = get_img(g_doc->ilselected);
+                DrawCanvasColorIsolationOverlay(dl, iimg, kept, img_pos, sx, sy);
+            }
+
+            if (g_show_dma_comp) {
+                IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+                DrawCanvasDmaCompressionOverlay(dl, img, img_pos, sx, sy);
+            }
+
+            DrawCanvasPixelGrid(dl, img_pos, img_sz, g_img_tex_w, g_img_tex_h, scale);
+
+            if (show_auto_chop_preview) {
+                DrawAutoChopPreviewRects(dl, auto_chop_preview,
+                                         img_pos, sx, sy, true);
+            }
+
+            DrawCanvasZoomIndicator(g_zoom_fit, g_zoom);
+        } else {
+            g_zoom_pending_steps = 0;
+            g_zoom_pending_fit = false;
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + avail.y * 0.45f);
+            float tw = ImGui::CalcTextSize("No image selected").x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail.x - tw) * 0.5f);
+            ImGui::TextDisabled("No image selected");
+        }
+
+        ImVec2 mouse = io.MousePos;
+        bool   mbdn  = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+
+        /* When a modal or popup window is on top, ImGui sets WantCaptureMouse —
+         * suppress all canvas interaction (paint, eyedropper, highlight, drag,
+         * marquee, anim-point handles, etc.) so clicks meant for the modal
+         * don't bleed through to the sprite underneath. */
+        bool canvas_input_blocked = io.WantCaptureMouse && !ImGui::IsWindowHovered();
+        if (canvas_input_blocked) mbdn = false;
+
+        /* Set when an overlay widget (anim point, hitbox corner) eats this frame's
+           click, so the grid-selection block below doesn't also start a selection. */
+        bool widget_consumed_click = false;
+        bool blank_marquee_click = false;
+
+        if (rotate_buttons_visible && !canvas_input_blocked && !timeline_composite_preview_active) {
+            for (int i = 0; i < 1; i++) {
+                if (CanvasPointInRect(mouse, rotate_button_min[i], rotate_button_max[i])) {
+                    rotate_button_hovered = true;
+                    rotate_button_hover_idx = i;
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    ImGui::SetTooltip("Rotate 90 Clockwise (preserve anim points)");
+                    widget_consumed_click = true;
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        TransformSelectedSprite(SpriteTransformOp::Rotate90CW);
+                    }
+                    break;
+                }
+            }
+        }
+
+        /* Pixel highlight at high zoom */
+        if (!canvas_input_blocked && !timeline_composite_preview_active) {
+            DrawCanvasPixelHoverHighlight(ImGui::GetWindowDrawList(),
+                                          mouse, img_pos, img_sz, sx, sy,
+                                          rotate_button_hovered);
+        }
+
+        /* ---- Pencil + eyedropper + fill + pan tools ---- */
+        if (!canvas_input_blocked && !timeline_composite_preview_active) {
+            IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+            bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
+                        mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y &&
+                        !rotate_button_hovered;
+
+            /* Pan: middle-mouse drag or spacebar+drag or right-drag at zoom */
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
+                ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Middle, 0.0f);
+                ZoomPanBy(avail, d.x, d.y);
+                ImGui::ResetMouseDragDelta(ImGuiMouseButton_Middle);
+                widget_consumed_click = true;
+            }
+            if (ImGui::IsKeyDown(ImGuiKey_Space) && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+                ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+                ZoomPanBy(avail, d.x, d.y);
+                ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+                widget_consumed_click = true;
+            }
+            if (g_active_tool == ActiveTool::None && g_zoom > 1.0f &&
+                ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0f) && over) {
+                ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right, 0.0f);
+                ZoomPanBy(avail, d.x, d.y);
+                ImGui::ResetMouseDragDelta(ImGuiMouseButton_Right);
+                widget_consumed_click = true;
+            }
+
+            if (cimg && cimg->data_p && cimg->w > 0 && cimg->h > 0 && over) {
+                int px = (int)((mouse.x - img_pos.x) / sx);
+                int py = (int)((mouse.y - img_pos.y) / sy);
+                if (px >= 0 && px < (int)cimg->w && py >= 0 && py < (int)cimg->h) {
+                    unsigned short stride = (cimg->w + 3) & ~3;
+                    unsigned char *pix = (unsigned char *)cimg->data_p + py * stride + px;
+
+                    /* Right-click: eyedropper (works in any tool mode) */
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                        g_sel_color = *pix;
+                        widget_consumed_click = true;
+                    }
+                    /* Eyedropper tool active: left-click also picks color.
+                       Consumes the click so the pencil branch below is skipped. */
+                    if (g_active_tool == ActiveTool::Eyedropper &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        g_sel_color = *pix;
+                        widget_consumed_click = true;
+                    }
+                    /* Left-click: pencil, paint bucket, background eraser, clone stamp, or smart remap.
+                       Suppress when the cursor is over (or dragging) an anipoint or hitbox
+                       handle. The anipoint render block runs *after* this branch, so the
+                       in-progress drag flag isn't enough on the first click frame — we
+                       need to also detect "about to start dragging" via a fresh hover test. */
+                    bool over_anipoint = false;
+                    if (g_show_points && cimg) {
+                        over_anipoint =
+                            CanvasAnipointHitTest(cimg, img_pos, sx, sy,
+                                                  mouse, NULL, NULL);
+                    }
+                    if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 &&
+                        g_hitbox_drag_corner < 0 && g_active_tool == ActiveTool::None &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && *pix == 0 &&
+                        !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
+                        blank_marquee_click = true;
+                        g_active_tool = ActiveTool::Marquee;
+                    }
+                    if (!blank_marquee_click && !g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
+                        && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::PaintBucket || g_active_tool == ActiveTool::VariantPaint || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
+                        /* Stroke begin: capture a pre-stroke snapshot of the
+                           image's pixel buffer on the first frame of left-mouse
+                           down for any paint tool. Skipped for Clone Stamp's
+                           Alt-click "set source" which doesn't modify pixels. */
+                        bool stroke_begin = ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                            && !(g_active_tool == ActiveTool::CloneStamp && io.KeyAlt);
+                        if (stroke_begin) {
+                            if (g_active_tool == ActiveTool::VariantPaint && g_sel_color > 0)
+                                doc_undo_push();
+                            else if (g_active_tool != ActiveTool::VariantPaint)
+                                pixel_hist_push_stroke();
+                        }
+                        if (g_active_tool == ActiveTool::CloneStamp) {
+                            if (io.KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                g_clone_src_x = px;
+                                g_clone_src_y = py;
+                                g_clone_source_set = true;
+                                g_clone_offset_set = false;
+                                widget_consumed_click = true;
+                            } else if (!io.KeyAlt && ImGui::IsMouseDown(ImGuiMouseButton_Left) && g_clone_source_set) {
+                                if (!g_clone_offset_set) {
+                                    g_clone_dx = g_clone_src_x - px;
+                                    g_clone_dy = g_clone_src_y - py;
+                                    g_clone_offset_set = true;
+                                }
+                                if (g_pixel_undo_img != g_doc->ilselected) {
+                                    free(g_pixel_undo); g_pixel_undo = NULL;
+                                    unsigned short s = (cimg->w + 3) & ~3;
+                                    unsigned int sz = (unsigned int)s * cimg->h;
+                                    g_pixel_undo = (unsigned char *)malloc(sz);
+                                    if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
+                                    g_pixel_undo_img = g_doc->ilselected;
+                                }
+                                /* Round-brush stamp. g_clone_brush is the radius;
+                                   1 = single pixel (kept for sharp work), >1 = soft disc. */
+                                int r = g_clone_brush > 0 ? g_clone_brush : 1;
+                                int r2 = (r - 1) * (r - 1);
+                                unsigned short stride = (cimg->w + 3) & ~3;
+                                unsigned char *cdata = (unsigned char *)cimg->data_p;
+                                for (int by = -(r - 1); by <= (r - 1); by++) {
+                                    for (int bx = -(r - 1); bx <= (r - 1); bx++) {
+                                        if (r > 1 && bx * bx + by * by > r2) continue;
+                                        int dx_px = px + bx;
+                                        int dy_px = py + by;
+                                        if (dx_px < 0 || dy_px < 0 ||
+                                            dx_px >= (int)cimg->w || dy_px >= (int)cimg->h) continue;
+                                        int src_px = dx_px + g_clone_dx;
+                                        int src_py = dy_px + g_clone_dy;
+                                        if (src_px < 0 || src_py < 0 ||
+                                            src_px >= (int)cimg->w || src_py >= (int)cimg->h) continue;
+                                        unsigned char src_col = cdata[src_py * stride + src_px];
+                                        cdata[dy_px * stride + dx_px] = src_col;
+                                    }
+                                }
+                                mark_dirty();
+                                g_img_tex_idx = -2;
+                                widget_consumed_click = true;
+                            }
+                        } else if (g_active_tool == ActiveTool::PaintBucket) {
+                            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                int changed = PaintBucketFill(cimg, px, py,
+                                                              (unsigned char)g_sel_color,
+                                                              g_bucket_tolerance,
+                                                              g_bucket_contiguous);
+                                if (changed > 0) {
+                                    mark_dirty();
+                                    g_img_tex_idx = -2;
+                                }
+                                if (changed > 0) {
+                                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                             "Paint bucket filled %d pixel%s.",
+                                             changed, changed == 1 ? "" : "s");
+                                } else {
+                                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                             "Paint bucket: no pixels changed.");
+                                }
+                                g_restore_msg_timer = 3.0f;
+                                widget_consumed_click = true;
+                            }
+                        } else if (g_active_tool == ActiveTool::VariantPaint) {
+                            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                                VariantPaintResult vr = ApplyVariantBrush(cimg, px, py, g_variant_brush);
+                                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                    if (g_sel_color == 0) {
+                                        snprintf(g_restore_msg, sizeof(g_restore_msg), "Variant paint needs an opaque target color.");
+                                        g_restore_msg_timer = 4.0f;
+                                    } else if (vr.skipped_no_slot > 0 && vr.pixels == 0) {
+                                        snprintf(g_restore_msg, sizeof(g_restore_msg), "No free palette index for variant shadow.");
+                                        g_restore_msg_timer = 4.0f;
+                                    }
+                                }
+                                widget_consumed_click = true;
+                            }
+                        } else if (g_active_tool == ActiveTool::SmartRemap) {
+                            /* On the first click of a stroke, capture the target
+                               color. Hold to paint replacement over every pixel
+                               within tolerance of that target. The target sticks
+                               until mouse-up so a single drag has consistent
+                               behavior even as the brush crosses varied pixels. */
+                            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                g_remap_target_color = *pix;
+                            }
+                            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && g_remap_target_color != -1) {
+                                int diff = (int)*pix - g_remap_target_color;
+                                if (diff < 0) diff = -diff;
+                                if (diff <= g_remap_tolerance) {
+                                    if (g_pixel_undo_img != g_doc->ilselected) {
+                                        free(g_pixel_undo); g_pixel_undo = NULL;
+                                        unsigned short s = (cimg->w + 3) & ~3;
+                                        unsigned int sz = (unsigned int)s * cimg->h;
+                                        g_pixel_undo = (unsigned char *)malloc(sz);
+                                        if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
+                                        g_pixel_undo_img = g_doc->ilselected;
+                                    }
+                                    *pix = (unsigned char)g_sel_color;
+                                    mark_dirty();
+                                    g_img_tex_idx = -2;
+                                }
+                                widget_consumed_click = true;
+                            }
+                            /* Release: forget the target so the next click can pick
+                               a different reference color. */
+                            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                                g_remap_target_color = -1;
+                            }
+                        } else if (g_active_tool == ActiveTool::BackgroundEraser
+                                       ? ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                                       : ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                            if (g_pixel_undo_img != g_doc->ilselected) {
+                                free(g_pixel_undo); g_pixel_undo = NULL;
+                                unsigned short s = (cimg->w + 3) & ~3;
+                                unsigned int sz = (unsigned int)s * cimg->h;
+                                g_pixel_undo = (unsigned char *)malloc(sz);
+                                if (g_pixel_undo) memcpy(g_pixel_undo, cimg->data_p, sz);
+                                g_pixel_undo_img = g_doc->ilselected;
+                            }
+                            if (g_active_tool == ActiveTool::BackgroundEraser) {
+                                mark_dirty();
+                                SmartErase(cimg, px, py,
+                                           g_eraser_tolerance,
+                                           g_eraser_contiguous,
+                                           g_eraser_defringe);
+                            } else if (io.KeyShift) {
+                                mark_dirty();
+                                FloodFill(cimg, px, py, (unsigned char)g_sel_color);
+                            } else {
+                                mark_dirty();
+                                /* Pencil with radius >1 stamps a disc. r=1 keeps
+                                   the single-pixel behavior the underlying paint
+                                   path has always had. */
+                                int r = (g_active_tool == ActiveTool::Pencil && g_pencil_brush > 1)
+                                            ? g_pencil_brush : 1;
+                                if (r == 1) {
+                                    *pix = (unsigned char)g_sel_color;
+                                } else {
+                                    int r2 = (r - 1) * (r - 1);
+                                    unsigned short stride = (cimg->w + 3) & ~3;
+                                    unsigned char *cdata = (unsigned char *)cimg->data_p;
+                                    for (int by = -(r - 1); by <= (r - 1); by++)
+                                    for (int bx = -(r - 1); bx <= (r - 1); bx++) {
+                                        if (bx * bx + by * by > r2) continue;
+                                        int dx_px = px + bx, dy_px = py + by;
+                                        if (dx_px < 0 || dy_px < 0
+                                            || dx_px >= (int)cimg->w
+                                            || dy_px >= (int)cimg->h) continue;
+                                        cdata[dy_px * stride + dx_px] = (unsigned char)g_sel_color;
+                                    }
+                                }
+                            }
+                            g_img_tex_idx = -2;
+                            widget_consumed_click = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* --- Anim point overlay + dragging --- */
+        /* Anipoints + IMG hitbox don't render in World View. The World
+           View canvas anchors the sprite at world-origin-minus-anipoint
+           so the on-sprite anipoint marker would land outside or at the
+           wrong spot, and the IMG hitbox box would visually float
+           detached from the playfield rectangle. Both stay reachable
+           via their normal modes when World View is off. */
+        if (g_show_points && !canvas_input_blocked && !g_world_state.enabled && !timeline_composite_preview_active) {
+            IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+            if (img && img->w > 0) {
+                ImDrawList *dl = ImGui::GetWindowDrawList();
+                bool h1 = false;
+                bool h2 = false;
+                IMG *prev = (g_timeline_onion && g_doc->ilselected > 0)
+                    ? get_img(g_doc->ilselected - 1)
+                    : NULL;
+                DrawCanvasAnipointOverlay(dl, img, prev,
+                                          img_pos, sx, sy, mouse,
+                                          &h1, &h2);
+
+                if (h1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag1 = true; widget_consumed_click = true; }
+                if (g_anipoint_drag1 && mbdn) {
+                    int nx = (int)((mouse.x - img_pos.x) / sx);
+                    int ny = (int)((mouse.y - img_pos.y) / sy);
+                    set_primary_anipoint_with_sequence(img, nx, ny);
+                    widget_consumed_click = true;
+                } else if (!mbdn && g_anipoint_drag1) { g_anipoint_drag1 = false; }
+
+                /* Secondary anipoint drag/editing stays here; drawing and
+                   hover detection live in ui_canvas. */
+                if (secondary_anipoint_in_use(img)) {
+                    if (h2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { g_anipoint_drag2 = true; widget_consumed_click = true; }
+                    if (g_anipoint_drag2 && mbdn) {
+                        int nx = (int)((mouse.x - img_pos.x) / sx);
+                        int ny = (int)((mouse.y - img_pos.y) / sy);
+                        set_secondary_anipoint_with_sequence(img, nx, ny);
+                        widget_consumed_click = true;
+                    } else if (!mbdn && g_anipoint_drag2) { g_anipoint_drag2 = false; }
+                }
+            }
+        }
+
+        /* --- Hitbox overlay + corner dragging ---
+           Suppressed when the MK2 strike-table overlay is showing a move,
+           so the two hitbox systems don't pile on top of each other. */
+        bool mk2_overlay_active = g_show_mk2 && Mk2CurrentRecord() >= 0;
+        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active && !g_world_state.enabled && !timeline_composite_preview_active) {
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            bool hovering[4] = {false, false, false, false};
+            DrawCanvasHitboxOverlay(dl, img_pos, sx, sy,
+                                    g_hitbox_x, g_hitbox_y,
+                                    g_hitbox_w, g_hitbox_h,
+                                    mouse, hovering);
+            for (int c = 0; c < 4; c++) {
+                if (hovering[c] && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    g_hitbox_drag_corner = c;
+                    undo_push();
+                    widget_consumed_click = true;
+                }
+            }
+            if (g_hitbox_drag_corner >= 0 && mbdn) {
+                int mx = (int)((mouse.x - img_pos.x) / sx);
+                int my = (int)((mouse.y - img_pos.y) / sy);
+                CanvasResizeRectFromCorner(g_hitbox_drag_corner, mx, my,
+                                           &g_hitbox_x, &g_hitbox_y,
+                                           &g_hitbox_w, &g_hitbox_h);
+            } else if (!mbdn && g_hitbox_drag_corner >= 0) {
+                undo_push();
+                g_hitbox_drag_corner = -1;
+            }
+        }
+
+        /* --- MK2 strike-table overlay (separate from IMG hitbox) ---
+           Draws the currently-selected MKSTK.ASM move's collision box on
+           the sprite, with corner handles for drag-to-resize. Magenta to
+           distinguish from the cyan IMG-hitbox overlay.
+           Drawing always runs whenever a move is selected — the editor
+           panel can hold focus (which sets canvas_input_blocked) without
+           hiding the box. Only the corner-drag interaction is gated. */
+        int mk2_rec = (g_show_mk2 && !g_world_state.enabled && !timeline_composite_preview_active) ? Mk2CurrentRecord() : -1;
+        if (mk2_rec >= 0) {
+            const mk2::StrikeRecord &rec = g_mk2_doc.records[mk2_rec];
+            int hx = rec.fields[mk2::F_X_OFFSET].has_value ? (int)rec.fields[mk2::F_X_OFFSET].value : 0;
+            int hy = rec.fields[mk2::F_Y_OFFSET].has_value ? (int)rec.fields[mk2::F_Y_OFFSET].value : 0;
+            int hw = rec.fields[mk2::F_X_SIZE  ].has_value ? (int)rec.fields[mk2::F_X_SIZE  ].value : 0;
+            int hh = rec.fields[mk2::F_Y_SIZE  ].has_value ? (int)rec.fields[mk2::F_Y_SIZE  ].value : 0;
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            char tag[80];
+            snprintf(tag, sizeof(tag), "%s  (%d,%d %dx%d)", rec.label.c_str(), hx, hy, hw, hh);
+            bool  hovering[4] = { false, false, false, false };
+            DrawCanvasStrikeBoxOverlay(dl, img_pos, sx, sy,
+                                       hx, hy, hw, hh,
+                                       tag, mouse, !canvas_input_blocked,
+                                       hovering);
+            if (!canvas_input_blocked) {
+                for (int c = 0; c < 4; c++) {
+                    if (hovering[c] && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        /* Snapshot the pre-drag state once. Subsequent
+                           per-pixel updates during the drag coalesce. */
+                        mk2::undo_push(&g_mk2_doc, mk2_rec, false);
+                        g_mk2_drag_corner = c;
+                        widget_consumed_click = true;
+                    }
+                }
+            }
+            if (g_mk2_drag_corner >= 0 && mbdn) {
+                int mx = (int)((mouse.x - img_pos.x) / sx);
+                int my = (int)((mouse.y - img_pos.y) / sy);
+                int nx = hx, ny = hy, nw = hw, nh = hh;
+                CanvasResizeRectFromCorner(g_mk2_drag_corner, mx, my,
+                                           &nx, &ny, &nw, &nh);
+                /* Push values through the document so the .ASM line buffer
+                   stays in sync and Save picks them up. */
+                if (nx != hx) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_X_OFFSET, nx);
+                if (ny != hy) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_Y_OFFSET, ny);
+                if (nw != hw) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_X_SIZE,   nw);
+                if (nh != hh) mk2::set_value(&g_mk2_doc, mk2_rec, mk2::F_Y_SIZE,   nh);
+                widget_consumed_click = true;
+            } else if (!mbdn && g_mk2_drag_corner >= 0) {
+                g_mk2_drag_corner = -1;
+            }
+        }
+
+        /* --- Grid selection tool (for copy/paste) --- */
+        if (!timeline_composite_preview_active && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+
+            /* Mouse-over-sprite test — clicks outside this rect must NOT start a selection. */
+            bool mouse_over_sprite =
+                mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
+                mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y &&
+                !rotate_button_hovered;
+
+            /* Pencil cursor indicator — color tracks the currently-selected
+               palette entry so the user previews what they're about to paint.
+               Index 0 (transparent) falls back to white. Two render modes:
+                 brush > 1: ring around the round-disc stamp footprint.
+                 brush = 1: small offset crosshair so the single target pixel
+                            stays visible underneath. The crosshair lives
+                            outside the pixel rect itself so it never hides
+                            the pixel it points at. */
+            if (g_active_tool == ActiveTool::Pencil && mouse_over_sprite) {
+                int mx = (int)((mouse.x - img_pos.x) / sx);
+                int my = (int)((mouse.y - img_pos.y) / sy);
+                ImU32 col;
+                if (g_sel_color > 0) {
+                    SDL_Color &c = g_palette[g_sel_color];
+                    col = IM_COL32(c.r, c.g, c.b, 230);
+                } else {
+                    col = IM_COL32(255, 255, 255, 200);
+                }
+                DrawCanvasPencilCursor(dl, img_pos, sx, sy, mx, my,
+                                       g_pencil_brush, col);
+            }
+
+            /* Clone Stamp visual aids: source crosshair and destination brush ring. */
+            if (g_active_tool == ActiveTool::CloneStamp && g_clone_source_set) {
+                bool show_dest_brush = mouse_over_sprite && g_clone_brush > 1;
+                int mx = 0;
+                int my = 0;
+                if (show_dest_brush) {
+                    mx = (int)((mouse.x - img_pos.x) / sx);
+                    my = (int)((mouse.y - img_pos.y) / sy);
+                }
+                DrawCanvasCloneStampAids(dl, img_pos, sx, sy,
+                                         g_clone_src_x, g_clone_src_y,
+                                         show_dest_brush, mx, my,
+                                         g_clone_brush);
+            }
+
+            /* Start a new selection only on a fresh click that lands on the sprite
+               and isn't already being consumed by an anim-point or hitbox-corner drag.
+               Once a drag is in progress we keep updating x2/y2 wherever the mouse
+               goes (clamped) until the button is released. */
+            /* Block selection when:
+               - the mouse is over a hovered ImGui widget (menu item, button)
+                 OR an active item is being interacted with;
+               - any popup/menu is open (its dropdown can overlap the canvas
+                 and clicking through it must not start a marquee).
+               Geometric mouse_over_sprite still has to be true. */
+            bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+            bool ui_blocking = ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive() || any_popup;
+            if (!g_pasted.active && (g_active_tool == ActiveTool::Marquee || g_active_tool == ActiveTool::MagicWand || g_active_tool == ActiveTool::Lasso)) {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                        && mouse_over_sprite
+                        && !widget_consumed_click
+                        && !ui_blocking) {
+                    int mx = (int)((mouse.x - img_pos.x) / sx);
+                    int my = (int)((mouse.y - img_pos.y) / sy);
+                    if (mx < 0) mx = 0; if (mx >= (int)g_img_tex_w) mx = g_img_tex_w - 1;
+                    if (my < 0) my = 0; if (my >= (int)g_img_tex_h) my = g_img_tex_h - 1;
+                    
+                    if (g_active_tool == ActiveTool::MagicWand && g_doc->ilselected >= 0) {
+                        IMG* simg = get_img(g_doc->ilselected);
+                        if (simg && simg->data_p) {
+                            int sw = simg->w;
+                            int sh = simg->h;
+                            int stride = (sw + 3) & ~3;
+                            unsigned char* pdata = (unsigned char*)simg->data_p;
+                            int target_color = pdata[my * stride + mx];
+                            int tol = g_wand_tolerance;
+                            selection_begin_add_drag(sw, sh, ImGui::GetIO().KeyCtrl);
+
+                            g_grid_sel.active = true;
+                            g_grid_sel.is_mask = true;
+                            g_grid_sel.mask_w = sw;
+                            g_grid_sel.mask_h = sh;
+                            g_grid_sel.pixel_mask.assign((size_t)sw * sh, false);
+
+                            int min_x = mx, max_x = mx;
+                            int min_y = my, max_y = my;
+
+                            if (g_wand_contiguous) {
+                                std::vector<std::pair<int, int>> stack;
+                                stack.push_back({mx, my});
+                                g_grid_sel.pixel_mask[my * sw + mx] = true;
+
+                                while(!stack.empty()) {
+                                    std::pair<int, int> pt = stack.back();
+                                    stack.pop_back();
+                                    int cx = pt.first;
+                                    int cy = pt.second;
+
+                                    if (cx < min_x) min_x = cx;
+                                    if (cx > max_x) max_x = cx;
+                                    if (cy < min_y) min_y = cy;
+                                    if (cy > max_y) max_y = cy;
+
+                                    const int dx[] = {0, 1, 0, -1};
+                                    const int dy[] = {-1, 0, 1, 0};
+                                    for(int i = 0; i < 4; i++) {
+                                        int nx = cx + dx[i];
+                                        int ny = cy + dy[i];
+                                        if (nx >= 0 && nx < sw && ny >= 0 && ny < sh) {
+                                            int diff = (int)pdata[ny * stride + nx] - target_color;
+                                            if (diff < 0) diff = -diff;
+                                            if (!g_grid_sel.pixel_mask[ny * sw + nx] && diff <= tol) {
+                                                g_grid_sel.pixel_mask[ny * sw + nx] = true;
+                                                stack.push_back({nx, ny});
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                /* Global non-contiguous: every pixel in image within tolerance */
+                                bool first = true;
+                                for (int y = 0; y < sh; y++) {
+                                    for (int x = 0; x < sw; x++) {
+                                        int diff = (int)pdata[y * stride + x] - target_color;
+                                        if (diff < 0) diff = -diff;
+                                        if (diff <= tol) {
+                                            g_grid_sel.pixel_mask[y * sw + x] = true;
+                                            if (first) {
+                                                min_x = max_x = x; min_y = max_y = y;
+                                                first = false;
+                                            } else {
+                                                if (x < min_x) min_x = x;
+                                                if (x > max_x) max_x = x;
+                                                if (y < min_y) min_y = y;
+                                                if (y > max_y) max_y = y;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            g_grid_sel.x1 = min_x;
+                            g_grid_sel.y1 = min_y;
+                            g_grid_sel.x2 = max_x;
+                            g_grid_sel.y2 = max_y;
+                            g_grid_sel.dragging = false;
+                            selection_finish_add_drag(sw, sh);
+                        }
+                    } else if (g_active_tool == ActiveTool::Lasso) {
+                        selection_begin_add_drag(g_img_tex_w, g_img_tex_h, ImGui::GetIO().KeyCtrl);
+                        g_lasso_points.clear();
+                        g_lasso_points.push_back({mx, my});
+                        g_grid_sel.active = true;
+                        g_grid_sel.dragging = true;
+                        g_grid_sel.is_mask = false; /* becomes a mask on release */
+                        g_grid_sel.x1 = g_grid_sel.x2 = mx;
+                        g_grid_sel.y1 = g_grid_sel.y2 = my;
+                    } else {
+                        selection_begin_add_drag(g_img_tex_w, g_img_tex_h, ImGui::GetIO().KeyCtrl);
+                        g_grid_sel.active = true;
+                        g_grid_sel.dragging = true;
+                        g_grid_sel.is_mask = false;
+                        g_grid_sel.x1 = g_grid_sel.x2 = mx;
+                        g_grid_sel.y1 = g_grid_sel.y2 = my;
+                    }
+                } else if (g_grid_sel.dragging && mbdn) {
+                    /* Only extend the rect while we're in the user-initiated
+                       drag — not on every frame the button happens to be
+                       down (e.g. a click on a menu would otherwise reposition
+                       the marquee to wherever the menu click landed). */
+                    int mx = (int)((mouse.x - img_pos.x) / sx);
+                    int my = (int)((mouse.y - img_pos.y) / sy);
+                    if (mx < 0) mx = 0; if (mx >= (int)g_img_tex_w) mx = g_img_tex_w - 1;
+                    if (my < 0) my = 0; if (my >= (int)g_img_tex_h) my = g_img_tex_h - 1;
+                    if (g_active_tool == ActiveTool::Lasso) {
+                        /* Append point if it moved at least 1 pixel from the last vertex */
+                        if (g_lasso_points.empty() ||
+                            g_lasso_points.back().first != mx ||
+                            g_lasso_points.back().second != my) {
+                            g_lasso_points.push_back({mx, my});
+                        }
+                    } else {
+                        g_grid_sel.x2 = mx;
+                        g_grid_sel.y2 = my;
+                    }
+                } else if (g_grid_sel.dragging && !mbdn) {
+                    g_grid_sel.dragging = false;
+                    if (g_active_tool == ActiveTool::Lasso && g_doc->ilselected >= 0 && g_lasso_points.size() >= 3) {
+                        /* Rasterize the polygon into a pixel mask using a scanline
+                           even-odd test. */
+                        IMG *simg = get_img(g_doc->ilselected);
+                        if (simg && simg->data_p) {
+                            int sw = simg->w, sh = simg->h;
+                            int min_x = sw, max_x = -1, min_y = sh, max_y = -1;
+                            for (auto &p : g_lasso_points) {
+                                if (p.first  < min_x) min_x = p.first;
+                                if (p.first  > max_x) max_x = p.first;
+                                if (p.second < min_y) min_y = p.second;
+                                if (p.second > max_y) max_y = p.second;
+                            }
+                            if (min_x < 0) min_x = 0;
+                            if (min_y < 0) min_y = 0;
+                            if (max_x >= sw) max_x = sw - 1;
+                            if (max_y >= sh) max_y = sh - 1;
+
+                            g_grid_sel.is_mask = true;
+                            g_grid_sel.mask_w = sw;
+                            g_grid_sel.mask_h = sh;
+                            g_grid_sel.pixel_mask.assign((size_t)sw * sh, false);
+
+                            int n = (int)g_lasso_points.size();
+                            for (int y = min_y; y <= max_y; y++) {
+                                /* Crossings at half-pixel y */
+                                float yf = y + 0.5f;
+                                std::vector<float> xs;
+                                for (int i = 0; i < n; i++) {
+                                    float ax = (float)g_lasso_points[i].first;
+                                    float ay = (float)g_lasso_points[i].second;
+                                    float bx = (float)g_lasso_points[(i + 1) % n].first;
+                                    float by = (float)g_lasso_points[(i + 1) % n].second;
+                                    if ((ay <= yf) != (by <= yf)) {
+                                        float t = (yf - ay) / (by - ay);
+                                        xs.push_back(ax + t * (bx - ax));
+                                    }
+                                }
+                                std::sort(xs.begin(), xs.end());
+                                for (size_t i = 0; i + 1 < xs.size(); i += 2) {
+                                    int x0 = (int)ceilf(xs[i]);
+                                    int x1 = (int)floorf(xs[i + 1]);
+                                    if (x0 < min_x) x0 = min_x;
+                                    if (x1 > max_x) x1 = max_x;
+                                    for (int x = x0; x <= x1; x++) {
+                                        g_grid_sel.pixel_mask[y * sw + x] = true;
+                                    }
+                                }
+                            }
+                            g_grid_sel.x1 = min_x;
+                            g_grid_sel.y1 = min_y;
+                            g_grid_sel.x2 = max_x < min_x ? min_x : max_x;
+                            g_grid_sel.y2 = max_y < min_y ? min_y : max_y;
+                        }
+                        g_lasso_points.clear();
+                    } else if (g_active_tool == ActiveTool::Lasso) {
+                        /* Aborted / too few points */
+                        g_lasso_points.clear();
+                        g_grid_sel.active = false;
+                    }
+                    if (ImGui::GetIO().KeyShift && !g_grid_sel.is_mask && g_doc->ilselected >= 0) {
+                        IMG *simg = get_img(g_doc->ilselected);
+                        if (simg && simg->data_p) {
+                            int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
+                            int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
+                            if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+                            if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+                            int min_x = x2, max_x = x1, min_y = y2, max_y = y1;
+                            bool found = false;
+                            unsigned short stride = (simg->w + 3) & ~3;
+                            unsigned char *pdata = (unsigned char *)simg->data_p;
+                            for (int y = y1; y <= y2; y++) {
+                                for (int x = x1; x <= x2; x++) {
+                                    if (pdata[y * stride + x] != 0) {
+                                        if (x < min_x) min_x = x;
+                                        if (x > max_x) max_x = x;
+                                        if (y < min_y) min_y = y;
+                                        if (y > max_y) max_y = y;
+                                        found = true;
+                                    }
+                                }
+                            }
+                            if (found) {
+                                g_grid_sel.x1 = min_x;
+                                g_grid_sel.y1 = min_y;
+                                g_grid_sel.x2 = max_x;
+                                g_grid_sel.y2 = max_y;
+                            }
+                        }
+                    }
+                    if (g_selection_add_drag && g_doc->ilselected >= 0) {
+                        IMG *simg = get_img(g_doc->ilselected);
+                        if (simg) selection_finish_add_drag(simg->w, simg->h);
+                    }
+                }
+            }
+
+            /* Draw selection rectangle only when the marquee tool is on. Toggling
+               the tool off via the toolbar/R also clears g_grid_sel, but this
+               extra gate makes sure no stray green box renders if some other
+               code path leaves g_grid_sel.active=true with the tool off. */
+            /* Live lasso path while drawing */
+            if (g_active_tool == ActiveTool::Lasso && g_grid_sel.dragging && g_lasso_points.size() >= 2) {
+                DrawCanvasLassoPath(dl, img_pos, sx, sy, g_lasso_points);
+            }
+
+            if (g_grid_sel.active && (g_active_tool == ActiveTool::Marquee || g_active_tool == ActiveTool::MagicWand || g_active_tool == ActiveTool::Lasso)) {
+                DrawCanvasSelectionOverlay(dl, img_pos, sx, sy,
+                                           g_grid_sel.x1, g_grid_sel.y1,
+                                           g_grid_sel.x2, g_grid_sel.y2,
+                                           g_grid_sel.is_mask,
+                                           g_grid_sel.mask_w,
+                                           &g_grid_sel.pixel_mask);
+            }
+
+            /* Defensive: transform mode can't exist without a floating paste.
+               Several state-clearing paths (ClearAll, file-open, etc.) drop
+               g_pasted.active without knowing about the transform, so latch
+               g_xform off here rather than scatter g_xform.active = false
+               across every site. */
+            if (g_xform.active && !g_pasted.active) {
+                g_xform.active = false;
+                g_xform.handle = TransformHandle::None;
+            }
+
+            /* Paste overlay with pixel preview */
+            if (g_pasted.active && g_clipboard.valid && g_clipboard.w > 0 && g_clipboard.h > 0) {
+                CanvasPasteGeometry paste_geom = CanvasPasteGeometryForState(
+                    img_pos, sx, sy, img_sz, mouse,
+                    g_xform.active,
+                    g_xform.rx, g_xform.ry, g_xform.rw, g_xform.rh,
+                    g_xform.angle_deg,
+                    g_pasted.paste_x, g_pasted.paste_y,
+                    g_clipboard.w, g_clipboard.h);
+                int px = paste_geom.x;
+                int py = paste_geom.y;
+                int pw = paste_geom.w;
+                int ph = paste_geom.h;
+                unsigned short cs = g_clipboard.stride;
+
+                const CanvasTransform2D &paste_xf = paste_geom.transform;
+                CanvasPasteControlsLayout paste_controls =
+                    CanvasPasteControlsLayoutFor(canvas_origin, mouse);
+                bool paste_controls_block = paste_controls.blocks_mouse;
+                bool hovering = paste_geom.hit.hovering;
+                bool over_sprite = paste_geom.hit.over_sprite;
+
+                /* Render clipboard pixel preview, including live scale/rotation
+                   while Free Transform is active. At Normal/100 this is fully
+                   opaque so the pasted sprite is visible; opacity/blend choices
+                   preview the same RGB composite used by final commit. */
+                IMG *simg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+                PAL *spal = simg ? get_pal(simg->palnum) : NULL;
+                const unsigned char *dst_pixels = simg ? (const unsigned char *)simg->data_p : NULL;
+                int dst_stride = simg ? ((int)simg->w + 3) & ~3 : 0;
+                const unsigned char *src = (const unsigned char *)g_clipboard.data_p;
+                unsigned char paste_pal_map[256];
+                bool paste_remap = BuildClipboardPaletteMap(spal, paste_pal_map);
+                int cw = g_clipboard.w;
+                int ch = g_clipboard.h;
+                for (int y = 0; y < ch; y++) {
+                    for (int x = 0; x < cw; x++) {
+                        unsigned char ci = src[y * cs + x];
+                        if (ci == 0) continue;
+                        CanvasPastePreviewCell cell =
+                            CanvasPastePreviewCellForPixel(
+                                paste_xf, px, py, pw, ph, cw, ch, x, y);
+                        unsigned char dst_ci = 0;
+                        if (dst_pixels && simg && cell.target_x >= 0 &&
+                            cell.target_y >= 0 &&
+                            cell.target_x < (int)simg->w &&
+                            cell.target_y < (int)simg->h)
+                            dst_ci = dst_pixels[cell.target_y * dst_stride +
+                                                cell.target_x];
+                        int rr = 255, gg = 255, bb = 255, aa = 255;
+                        if (!paste_preview_rgba(ci, dst_ci, spal, paste_pal_map,
+                                                paste_remap,
+                                                cell.target_x, cell.target_y,
+                                                &rr, &gg, &bb, &aa))
+                            continue;
+                        ImU32 col = IM_COL32((unsigned char)rr,
+                                             (unsigned char)gg,
+                                             (unsigned char)bb,
+                                             (unsigned char)aa);
+                        dl->AddQuadFilled(cell.quad[0], cell.quad[1],
+                                          cell.quad[2], cell.quad[3], col);
+                    }
+                }
+
+                DrawCanvasPasteBorder(dl, paste_geom.corners,
+                                      g_xform.active, hovering);
+
+                /* Snap guides — drawn while a snap is active this frame so
+                   the user sees exactly which edge their paste locked onto. */
+                DrawCanvasPasteSnapGuides(dl, img_pos, sx, sy,
+                                          g_img_tex_w, g_img_tex_h,
+                                          g_pasted.dragging,
+                                          g_snap_hit_x, g_snap_guide_x,
+                                          g_snap_hit_y, g_snap_guide_y);
+
+                CanvasPasteHint paste_hint =
+                    CanvasPasteHintForState(g_xform.active, g_xform.handle,
+                                            g_pasted.dragging);
+                DrawCanvasPasteHint(dl, img_pos,
+                                    paste_hint.text, paste_hint.color);
+
+                dl->AddRectFilled(paste_controls.min, paste_controls.max,
+                                  IM_COL32(18, 20, 24, 230), 4.0f);
+                dl->AddRect(paste_controls.min, paste_controls.max,
+                            IM_COL32(90, 130, 180, 210), 4.0f, 0, 1.0f);
+                ImGui::PushID("paste_controls");
+                ImGui::SetCursorScreenPos(paste_controls.blend_label_pos);
+                ImGui::TextUnformatted("Blend");
+                ImGui::SetCursorScreenPos(paste_controls.blend_control_pos);
+                ImGui::SetNextItemWidth(paste_controls.item_width);
+                if (ImGui::BeginCombo("##blend", PasteBlendModeName(g_paste_blend_mode))) {
+                    for (PasteBlendMode mode : k_paste_blend_modes) {
+                        bool selected = (g_paste_blend_mode == mode);
+                        if (ImGui::Selectable(PasteBlendModeName(mode), selected))
+                            g_paste_blend_mode = mode;
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SetCursorScreenPos(paste_controls.opacity_label_pos);
+                ImGui::TextUnformatted("Opacity");
+                ImGui::SetCursorScreenPos(paste_controls.opacity_control_pos);
+                ImGui::SetNextItemWidth(paste_controls.item_width);
+                ImGui::SliderInt("##opacity", &g_paste_opacity, 0, 100, "%d%%");
+                ImGui::PopID();
+
+                /* ----- Free Transform handles + interaction ----- */
+                if (g_xform.active && !canvas_input_blocked) {
+                    CanvasTransformHandleOverlay handle_overlay =
+                        DrawCanvasTransformHandles(dl, paste_geom.corners,
+                                                   mouse,
+                                                   g_xform.handle,
+                                                   g_xform.aspect_locked);
+                    TransformHandle hover_h = handle_overlay.hover;
+                    float center_sx = handle_overlay.center.x;
+                    float center_sy = handle_overlay.center.y;
+                    ImVec2 ch1 = handle_overlay.chain_min;
+                    ImVec2 ch2 = handle_overlay.chain_max;
+                    bool chain_hov = handle_overlay.chain_hover;
+                    if (handle_overlay.rotate_hover)
+                        ImGui::SetTooltip("Rotate paste");
+
+                    if (chain_hov) {
+                        ImGui::SetTooltip(g_xform.aspect_locked
+                            ? "Aspect ratio locked. Click to unlock (free scale)."
+                            : "Aspect ratio free. Click to lock (proportional scale).");
+                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                            g_xform.aspect_locked = !g_xform.aspect_locked;
+                        }
+                    }
+
+                    /* Handle drag: pick on click, scale on drag, release commits. */
+                    if (!paste_controls_block &&
+                        g_xform.handle == TransformHandle::None && hover_h != TransformHandle::None &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        g_xform.handle  = hover_h;
+                        g_xform.drag_mx = mouse.x;
+                        g_xform.drag_my = mouse.y;
+                        g_xform.drag_rx = g_xform.rx;
+                        g_xform.drag_ry = g_xform.ry;
+                        g_xform.drag_rw = g_xform.rw;
+                        g_xform.drag_rh = g_xform.rh;
+                        g_xform.drag_angle_deg = g_xform.angle_deg;
+                        g_xform.ref_aspect = (g_xform.rh > 0)
+                            ? (float)g_xform.rw / (float)g_xform.rh
+                            : 1.0f;
+                    }
+                    if (!paste_controls_block &&
+                        g_xform.handle == TransformHandle::None && hover_h == TransformHandle::None &&
+                        hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        g_xform.handle  = TransformHandle::Move;
+                        g_xform.drag_mx = mouse.x;
+                        g_xform.drag_my = mouse.y;
+                        g_xform.drag_rx = g_xform.rx;
+                        g_xform.drag_ry = g_xform.ry;
+                        g_xform.drag_rw = g_xform.rw;
+                        g_xform.drag_rh = g_xform.rh;
+                        g_xform.drag_angle_deg = g_xform.angle_deg;
+                    }
+                    if (g_xform.handle != TransformHandle::None && mbdn) {
+                        CanvasTransformDragStart drag_start;
+                        drag_start.handle = g_xform.handle;
+                        drag_start.mouse = ImVec2(g_xform.drag_mx,
+                                                  g_xform.drag_my);
+                        drag_start.x = g_xform.drag_rx;
+                        drag_start.y = g_xform.drag_ry;
+                        drag_start.w = g_xform.drag_rw;
+                        drag_start.h = g_xform.drag_rh;
+                        drag_start.angle_deg = g_xform.drag_angle_deg;
+                        drag_start.ref_aspect = g_xform.ref_aspect;
+                        CanvasTransformDragResult drag =
+                            CanvasResolveTransformDrag(
+                                drag_start, mouse, sx, sy,
+                                ImVec2(center_sx, center_sy),
+                                g_xform.aspect_locked,
+                                ImGui::GetIO().KeyShift);
+                        g_xform.rx = drag.x;
+                        g_xform.ry = drag.y;
+                        g_xform.rw = drag.w;
+                        g_xform.rh = drag.h;
+                        g_xform.angle_deg = drag.angle_deg;
+                    }
+                    if (g_xform.handle != TransformHandle::None && !mbdn) {
+                        g_xform.handle = TransformHandle::None;
+                    }
+
+                    /* Click outside the transform rect (but on the sprite,
+                       not on a handle and not on the chain icon) commits the
+                       transform AND applies the paste — matches Photoshop's
+                       "click anywhere outside the bbox to commit" behavior.
+                       Without this, every paste would require an extra
+                       Enter / Ctrl+T keystroke before the user could click
+                       to drop it, because paste auto-enters transform now. */
+                    if (!paste_controls_block &&
+                        g_xform.handle == TransformHandle::None && !hovering &&
+                        over_sprite && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    {
+                        /* Skip if the click landed on the chain icon — that
+                           click is consumed by the chain toggle above. */
+                        bool on_chain = mouse.x >= ch1.x && mouse.x <= ch2.x &&
+                                        mouse.y >= ch1.y && mouse.y <= ch2.y;
+                        if (!on_chain) {
+                            xform_commit();
+                            apply_pasted_region();
+                            g_pasted.active = false;
+                            g_pasted.dragging = false;
+                        }
+                    }
+                }
+
+                if (!canvas_input_blocked && !g_xform.active) {
+                    /* Start drag: click inside paste rect */
+                    if (!paste_controls_block && hovering && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        g_pasted.dragging = true;
+                        g_pasted.drag_start_mx = mouse.x;
+                        g_pasted.drag_start_my = mouse.y;
+                        g_pasted.drag_start_px = g_pasted.paste_x;
+                        g_pasted.drag_start_py = g_pasted.paste_y;
+                    }
+
+                    /* Drag to move */
+                    if (g_pasted.dragging && mbdn) {
+                        IMG *snap_img = (g_doc->ilselected >= 0)
+                            ? get_img(g_doc->ilselected) : NULL;
+                        CanvasContentBounds snap_bounds;
+                        bool snap_to_content = false;
+                        if (ImGui::GetIO().KeyShift && g_doc->ilselected >= 0) {
+                            /* Cache the content bbox of the underlying sprite
+                               on the first frame Shift is held during this
+                               drag; recompute only on image change. */
+                            if (!g_snap_bbox.valid || g_snap_bbox.img_idx != g_doc->ilselected) {
+                                CanvasContentBounds bounds = CanvasFindOpaqueBounds(snap_img);
+                                if (bounds.valid) {
+                                    g_snap_bbox = {true, bounds.min_x, bounds.min_y,
+                                                   bounds.max_x, bounds.max_y,
+                                                   g_doc->ilselected};
+                                }
+                            }
+                            if (g_snap_bbox.valid && snap_img) {
+                                snap_bounds.valid = true;
+                                snap_bounds.min_x = g_snap_bbox.min_x;
+                                snap_bounds.min_y = g_snap_bbox.min_y;
+                                snap_bounds.max_x = g_snap_bbox.max_x;
+                                snap_bounds.max_y = g_snap_bbox.max_y;
+                                snap_to_content = true;
+                            }
+                        } else {
+                            g_snap_bbox.valid = false;
+                        }
+
+                        /* Passive centering guide: even without Shift, show a
+                           magenta center line when the paste rect's center
+                           lands exactly on the sprite's center axis. Lets the
+                           user see "I'm centered" without engaging snap. */
+                        CanvasPasteDragResult drag = CanvasResolvePasteDrag(
+                            ImVec2(g_pasted.drag_start_mx,
+                                   g_pasted.drag_start_my),
+                            mouse, sx, sy,
+                            g_pasted.drag_start_px,
+                            g_pasted.drag_start_py,
+                            pw, ph,
+                            g_img_tex_w, g_img_tex_h,
+                            snap_img ? snap_img->w : 0,
+                            snap_img ? snap_img->h : 0,
+                            snap_to_content, snap_bounds, snap_img != NULL);
+                        g_snap_hit_x = drag.hit_x;
+                        g_snap_hit_y = drag.hit_y;
+                        g_snap_guide_x = drag.guide_x;
+                        g_snap_guide_y = drag.guide_y;
+                        g_pasted.paste_x = drag.x;
+                        g_pasted.paste_y = drag.y;
+                    }
+
+                    /* Stop drag on release — keep floating */
+                    if (g_pasted.dragging && !mbdn)
+                        g_pasted.dragging = false;
+
+                    /* Click outside paste rect (but on sprite) to confirm */
+                    if (!paste_controls_block && !hovering && over_sprite && !g_pasted.dragging &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    {
+                        apply_pasted_region();
+                        g_pasted.active = false;
+                    }
+                }
+            }
+            if (rotate_buttons_visible)
+                DrawCanvasRotateButtons(dl, rotate_button_min, rotate_button_max, rotate_button_hover_idx);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
 }

@@ -7,6 +7,17 @@
  * into sibling translation units that share this state via ui_internal.h.
  *************************************************************/
 #include "ui_internal.h"
+#include "ui_canvas.h"
+#include "mk2_hitbox.h"
+
+bool g_anipoint_drag1 = false;
+bool g_anipoint_drag2 = false;
+bool g_show_mk2 = false;
+WorldViewState &g_world_state = WorldView();
+mk2::Document g_mk2_doc;
+int g_mk2_drag_corner = -1;
+bool g_selection_add_drag = false;
+
 
 /* ---- SDL state ---- */
 SDL_Window   *g_imgui_window   = NULL;
@@ -81,5 +92,32 @@ bool g_eraser_defringe = true;
 std::vector<std::pair<int,int>> g_lasso_points;
 bool g_show_points = true;
 bool g_show_hitbox = false;
+
+/* ---- Clipboard, transform and hitbox shared state ---- */
+CopiedImage g_clipboard = {false};
+PastedImage g_pasted = {false};
+FreeTransform g_xform = {false, true, 0,0,0,0, 0,0,0,0, 0.0f,0.0f, TransformHandle::None, 0,0, 0,0,0,0, 0.0f, 1.0f};
+PasteBlendMode g_paste_blend_mode = PasteBlendMode::Normal;
+int g_paste_opacity = 100;
+int g_hitbox_x = 0;
+int g_hitbox_y = 0;
+int g_hitbox_w = 32;
+int g_hitbox_h = 32;
+int g_hitbox_drag_corner = -1;
+
+bool g_show_auto_chop = false;
+int g_chop_mode = 0; // AutoChopMode_BestHorizontal
+int g_chop_w = 64;
+int g_chop_h = 64;
+bool g_chop_trim = true;
+
+SnapBBox g_snap_bbox = {false, 0,0,0,0, -1};
+bool g_snap_hit_x = false;
+bool g_snap_hit_y = false;
+int  g_snap_guide_x = 0;
+int  g_snap_guide_y = 0;
+
+WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
+bool g_show_dma_comp = false;
 
 

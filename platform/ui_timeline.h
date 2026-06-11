@@ -74,6 +74,7 @@ void DrawTimelineCompositeLockToggle(int slot, const char *name);
 /* Whether timeline playback is currently running (lives here as timeline state;
    the playback advance loop and the play-toggle thunk in the overlay use it). */
 extern bool g_is_playing;
+extern bool g_timeline_onion;
 
 /* Render the anipoint-aligned composite preview of the two selected frames into
    the given canvas area; handles lock toggles and anipoint dragging. Returns

@@ -1,5 +1,6 @@
 #pragma once
 #include <SDL.h>
+#include <imgui.h>
 #include <vector>
 #include "document.h"   /* g_doc, Document::dirty */
 
@@ -224,5 +225,194 @@ bool CanRedo(void);
 void DoUndo(void);
 void DoRedo(void);
 void OpenResizeSpriteDialog(void);
+
+/* ---- Clipboard, transform and hitbox shared state ---- */
+struct CopiedImage {
+    bool           valid;
+    unsigned short w, h;
+    void          *data_p;  /* pixel data */
+    unsigned short stride;  /* bytes per row */
+    bool           has_meta;
+    bool           has_opaque;
+    bool           from_cut;
+    int            origin_x, origin_y; /* source-local top-left after tight crop */
+    unsigned short palnum;
+    unsigned short anix, aniy;
+    unsigned short anix2, aniy2, aniz2;
+    unsigned short opals;
+    bool           has_palette;
+    unsigned short palette_numc;
+    unsigned char  palette_data[512];
+    char           source_name[16];
+    char           src_filename[16];
+};
+
+struct PastedImage {
+    bool active;        /* paste is active and can be moved */
+    int paste_x, paste_y;  /* top-left corner where paste will go */
+    bool dragging;      /* user is dragging the paste boundary */
+    float drag_start_mx, drag_start_my;
+    int drag_start_px, drag_start_py;
+};
+
+enum class PasteBlendMode {
+    Normal = 0,
+    Dissolve,
+    Darken,
+    Multiply,
+    ColorBurn,
+    LinearBurn,
+    Lighten,
+    Screen,
+    ColorDodge,
+    Overlay,
+    SoftLight,
+    HardLight,
+    Difference,
+    Exclusion
+};
+
+enum class TransformHandle {
+    None,
+    Move,
+    Rotate,
+    TL, T, TR,
+    L,      R,
+    BL, B, BR
+};
+
+struct FreeTransform {
+    bool         active;
+    bool         aspect_locked;   /* persistent — chain icon toggles */
+    /* The "live" rect we render during the drag. */
+    int          rx, ry, rw, rh;
+    /* Snapshot taken when Ctrl+T was pressed — used to compute the scale
+       factor for the final nearest-neighbor resample, and to revert on Esc. */
+    int          start_x, start_y, start_w, start_h;
+    float        angle_deg;
+    float        start_angle_deg;
+    /* Per-drag state. */
+    TransformHandle handle;
+    float        drag_mx, drag_my;
+    int          drag_rx, drag_ry, drag_rw, drag_rh;
+    float        drag_angle_deg;
+    /* Reference aspect ratio captured at drag-start (w / h). */
+    float        ref_aspect;
+};
+
+enum class SpriteTransformOp {
+    FlipHorizontal = 0,
+    FlipVertical,
+    Rotate90CW,
+    Rotate90CCW,
+    Rotate180
+};
+
+enum AutoChopMode {
+    AutoChopMode_BestHorizontal = 0,
+    AutoChopMode_BestVertical,
+    AutoChopMode_ManualGrid
+};
+
+struct AutoChopPiecePreview {
+    int cell_x, cell_y, cell_w, cell_h;
+    int out_x, out_y, out_w, out_h;
+    int piece_no;
+    int opaque_pixels;
+    long long uncomp_bits;
+    long long zcom_bits;
+};
+
+struct AutoChopPreview {
+    std::vector<AutoChopPiecePreview> pieces;
+    int target_count;
+    int raw_cells;
+    int empty_cells;
+    int bpp;
+    long long src_uncomp_bits;
+    long long src_zcom_bits;
+    long long split_uncomp_bits;
+    long long split_zcom_bits;
+    bool best_split_valid;
+    bool best_split_vertical;
+    int best_split_pos;
+};
+
+extern CopiedImage g_clipboard;
+extern PastedImage g_pasted;
+extern FreeTransform g_xform;
+extern PasteBlendMode g_paste_blend_mode;
+extern int g_paste_opacity;
+extern int g_hitbox_x, g_hitbox_y, g_hitbox_w, g_hitbox_h;
+extern int g_hitbox_drag_corner;
+
+extern bool g_show_auto_chop;
+extern int g_chop_mode;
+extern int g_chop_w;
+extern int g_chop_h;
+extern bool g_chop_trim;
+
+void xform_begin(void);
+void xform_cancel(void);
+void xform_commit(void);
+void apply_pasted_region(void);
+bool SelectedImageWillAutoChop(void);
+bool BuildBestAutoSplitPreviewForImage(const IMG *img, bool vertical, AutoChopPreview *out);
+bool BuildAutoChopPreviewForImage(const IMG *img, AutoChopPreview *out);
+void DrawAutoChopPreviewRects(ImDrawList *dl, const AutoChopPreview &out, ImVec2 img_pos, float sx, float sy, bool fill);
+bool TransformSelectedSprite(SpriteTransformOp op);
+
+/* ---- Shared canvas variables and functions ---- */
+struct WorldViewState;
+namespace mk2 {
+    struct Document;
+}
+
+extern bool g_anipoint_drag1;
+extern bool g_anipoint_drag2;
+extern bool g_show_mk2;
+extern WorldViewState &g_world_state;
+extern mk2::Document g_mk2_doc;
+extern int g_mk2_drag_corner;
+extern bool g_selection_add_drag;
+
+struct SnapBBox {
+    bool valid;
+    int min_x, min_y, max_x, max_y;
+    int img_idx;        /* which image the bbox was computed from */
+};
+extern SnapBBox g_snap_bbox;
+extern bool g_snap_hit_x;
+extern bool g_snap_hit_y;
+extern int  g_snap_guide_x;
+extern int  g_snap_guide_y;
+
+int Mk2CurrentRecord(void);
+void selection_begin_add_drag(int sw, int sh, bool add);
+void selection_finish_add_drag(int sw, int sh);
+bool BuildClipboardPaletteMap(const PAL *target_pal, unsigned char map[256]);
+bool paste_preview_rgba(unsigned char src_ci, unsigned char dst_ci, const PAL *target_pal, const unsigned char pal_map[256], bool remap_palette, int x, int y, int *r, int *g, int *b, int *a);
+void undo_push(void);
+extern const PasteBlendMode k_paste_blend_modes[14];
+const char *PasteBlendModeName(PasteBlendMode mode);
+
+struct VariantPaintResult {
+    int pixels;
+    int slots;
+    int skipped_transparent;
+    int skipped_no_slot;
+};
+VariantPaintResult ApplyVariantBrush(IMG *img, int cx, int cy, int brush);
+void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous, bool defringe);
+void FloodFill(IMG *img, int sx, int sy, unsigned char new_color);
+
+struct WorldMarkedSequenceState;
+extern WorldMarkedSequenceState &g_world_marked_state;
+extern bool g_show_dma_comp;
+void pixel_hist_push_stroke(void);
+int PaintBucketFill(IMG *img, int sx, int sy, unsigned char new_color, int tolerance, bool contiguous);
+bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io);
+
+
 
 

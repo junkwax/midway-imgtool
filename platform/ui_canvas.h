@@ -58,14 +58,7 @@ struct CanvasTransform2D {
     float sa = 0.0f;
 };
 
-enum class TransformHandle {
-    None,
-    Move,
-    Rotate,
-    TL, T, TR,
-    L,      R,
-    BL, B, BR
-};
+
 
 struct CanvasTransformHandleOverlay {
     TransformHandle hover = TransformHandle::None;
@@ -570,3 +563,6 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
 
 /* Destroy module-owned transient/cached canvas textures. */
 void ClearCanvasUiTextures(void);
+
+/* Draw the main edit canvas window. */
+void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canvas_h);
