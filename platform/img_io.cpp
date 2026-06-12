@@ -1854,7 +1854,12 @@ void BuildTgaFromMarked(const char* filepath)
         }
         if (best_y != -1) {
             int x = 256 - best_free_w;
-            for (int dy = 0; dy < h; dy++) free_width[best_y + dy] -= w;
+            /* Every spanned row's free space must measure from the glyph's
+             * right edge (x + w). Subtracting w instead left rows that had
+             * more free space than the binding row claiming pixels under the
+             * glyph as free, so later glyphs were blitted over earlier ones
+             * (see MK2FONT1.TGA corruption). */
+            for (int dy = 0; dy < h; dy++) free_width[best_y + dy] = best_free_w - w;
             packed.push_back({img, x, best_y});
             if (best_y + h > max_y) max_y = best_y + h;
 

@@ -344,6 +344,7 @@ struct WorldMarkedSequenceState {
     std::string dummy_decap_prefix;
     int drag_slot = -1;
     int drag_frame = -1;
+    bool drag_dual = false;        /* dragging the dual (second) instance */
     ImVec2 drag_mouse = ImVec2(0, 0);
     int drag_dx = 0;
     int drag_dy = 0;
@@ -356,6 +357,11 @@ struct WorldMarkedSequenceState {
     std::vector<int> local_dy[kWorldMarkedMaxTabs];
     std::vector<int> visible_from[kWorldMarkedMaxTabs];
     std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip (ASM ani_flip) */
+    std::vector<int> frame_z[kWorldMarkedMaxTabs];      /* per-entry draw priority; higher draws on top */
+    std::vector<int> dual_on[kWorldMarkedMaxTabs];      /* per-entry second sprite instance enabled */
+    std::vector<int> dual_dx[kWorldMarkedMaxTabs];      /* second instance local anipoint X delta */
+    std::vector<int> dual_dy[kWorldMarkedMaxTabs];      /* second instance local anipoint Y delta */
+    std::vector<int> dual_z[kWorldMarkedMaxTabs];       /* second instance draw priority */
     std::vector<int> sequence_frames[kWorldMarkedMaxTabs];
     std::vector<int> default_frames[kWorldMarkedMaxTabs];
     Document *sequence_doc[kWorldMarkedMaxTabs] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -428,6 +434,10 @@ struct WorldMarkedLaneRenderInfo {
     bool lane_mirror_x[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
     ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
+    /* Screen rect of the dual (second) sprite instance, when drawn. */
+    bool dual_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
+    ImVec2 dual_rect_min[kWorldMarkedMaxTabs] = {};
+    ImVec2 dual_rect_max[kWorldMarkedMaxTabs] = {};
 };
 
 struct WorldMarkedSceneResult {
@@ -527,6 +537,7 @@ std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);
 int ClampWorldMarkedVisibleFrom(int value);
+int ClampWorldMarkedZ(int value);
 void WorldMarkedRestart(WorldMarkedSequenceState &state);
 void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta);
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count);

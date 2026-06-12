@@ -2003,31 +2003,16 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
 {
     if (!dl) return;
 
-    auto draw_slot = [&](int slot) {
-        if (slot < 0 || slot >= (int)lanes.size()) return;
+    auto draw_instance = [&](int slot, bool dual) {
         const WorldMarkedLane &lane = lanes[slot];
         int state_slot = lane.delay_slot;
-        EnsureWorldMarkedFrameDelays(state, state_slot, (int)lane.frames.size());
-        if (lane.frame_pos >= 0 &&
-            lane.frame_pos < (int)state.visible_from[state_slot].size() &&
-            state.frame < state.visible_from[state_slot][lane.frame_pos])
-            return;
-
-        bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
-        bool mirror_x = mirror_flag ? *mirror_flag : false;
-        if (lane.frame_pos >= 0 &&
-            lane.frame_pos < (int)state.frame_mirror[state_slot].size() &&
-            state.frame_mirror[state_slot][lane.frame_pos])
-            mirror_x = !mirror_x;
-        render_info.lane_mirror_x[slot] = mirror_x;
+        bool mirror_x = render_info.lane_mirror_x[slot];
 
         const std::vector<int> *pieces = NULL;
         const std::vector<Document*> *piece_docs = NULL;
-        if (lane.frame_pos >= 0 &&
-            lane.frame_pos < (int)lane.frame_pieces.size())
+        if (lane.frame_pos < (int)lane.frame_pieces.size())
             pieces = &lane.frame_pieces[lane.frame_pos];
-        if (lane.frame_pos >= 0 &&
-            lane.frame_pos < (int)lane.frame_piece_docs.size())
+        if (lane.frame_pos < (int)lane.frame_piece_docs.size())
             piece_docs = &lane.frame_piece_docs[lane.frame_pos];
 
         std::vector<int> fallback_piece;
@@ -2037,6 +2022,17 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
             pieces = &fallback_piece;
             piece_docs = NULL;
         }
+
+        int local_dx = dual ? state.dual_dx[state_slot][lane.frame_pos]
+                            : state.local_dx[state_slot][lane.frame_pos];
+        int local_dy = dual ? state.dual_dy[state_slot][lane.frame_pos]
+                            : state.local_dy[state_slot][lane.frame_pos];
+        bool *rect_valid = dual ? &render_info.dual_rect_valid[slot]
+                                : &render_info.lane_rect_valid[slot];
+        ImVec2 *rect_min = dual ? &render_info.dual_rect_min[slot]
+                                : &render_info.lane_rect_min[slot];
+        ImVec2 *rect_max = dual ? &render_info.dual_rect_max[slot]
+                                : &render_info.lane_rect_max[slot];
 
         for (size_t pi = 0; pi < pieces->size(); pi++) {
             int piece_idx = (*pieces)[pi];
@@ -2048,8 +2044,8 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
                                                        WorldMarkedLaneAlpha(slot));
             if (!tex) continue;
 
-            int ax = (int)(short)img->anix + state.local_dx[state_slot][lane.frame_pos];
-            int ay = (int)(short)img->aniy + state.local_dy[state_slot][lane.frame_pos];
+            int ax = (int)(short)img->anix + local_dx;
+            int ay = (int)(short)img->aniy + local_dy;
             float spw = img->w * layout.scale;
             float sph = img->h * layout.scale;
             float left = mirror_x
@@ -2064,26 +2060,64 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
                         WorldMarkedLaneOutlineColor(slot), 0.0f, 0, 1.0f);
 
             ImVec2 rmax(spos.x + spw, spos.y + sph);
-            if (!render_info.lane_rect_valid[slot]) {
-                render_info.lane_rect_valid[slot] = true;
-                render_info.lane_rect_min[slot] = spos;
-                render_info.lane_rect_max[slot] = rmax;
+            if (!*rect_valid) {
+                *rect_valid = true;
+                *rect_min = spos;
+                *rect_max = rmax;
             } else {
-                if (spos.x < render_info.lane_rect_min[slot].x)
-                    render_info.lane_rect_min[slot].x = spos.x;
-                if (spos.y < render_info.lane_rect_min[slot].y)
-                    render_info.lane_rect_min[slot].y = spos.y;
-                if (rmax.x > render_info.lane_rect_max[slot].x)
-                    render_info.lane_rect_max[slot].x = rmax.x;
-                if (rmax.y > render_info.lane_rect_max[slot].y)
-                    render_info.lane_rect_max[slot].y = rmax.y;
+                if (spos.x < rect_min->x) rect_min->x = spos.x;
+                if (spos.y < rect_min->y) rect_min->y = spos.y;
+                if (rmax.x > rect_max->x) rect_max->x = rmax.x;
+                if (rmax.y > rect_max->y) rect_max->y = rmax.y;
             }
         }
     };
 
-    for (int slot = (int)lanes.size() - 1; slot >= 1; slot--)
-        draw_slot(slot);
-    draw_slot(0);
+    /* Collect one draw job per visible instance (lane sprite + optional dual
+       copy), then paint back-to-front by per-entry Z. Equal Z keeps the legacy
+       order: slot N-1 painted first (back), slot 0 last (top); a dual copy
+       paints right after its primary. */
+    struct WorldLaneDrawJob {
+        int slot;
+        int z;
+        int order;
+        bool dual;
+    };
+    int n = (int)lanes.size();
+    std::vector<WorldLaneDrawJob> jobs;
+    jobs.reserve((size_t)n * 2);
+    for (int slot = 0; slot < n; slot++) {
+        const WorldMarkedLane &lane = lanes[slot];
+        int state_slot = lane.delay_slot;
+        EnsureWorldMarkedFrameDelays(state, state_slot, (int)lane.frames.size());
+        if (lane.frame_pos < 0 ||
+            lane.frame_pos >= (int)lane.frames.size())
+            continue;
+        if (lane.frame_pos < (int)state.visible_from[state_slot].size() &&
+            state.frame < state.visible_from[state_slot][lane.frame_pos])
+            continue;
+
+        bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
+        bool mirror_x = mirror_flag ? *mirror_flag : false;
+        if (lane.frame_pos < (int)state.frame_mirror[state_slot].size() &&
+            state.frame_mirror[state_slot][lane.frame_pos])
+            mirror_x = !mirror_x;
+        render_info.lane_mirror_x[slot] = mirror_x;
+
+        int order = (slot == 0) ? n - 1 : n - 1 - slot;
+        jobs.push_back({slot, state.frame_z[state_slot][lane.frame_pos],
+                        order, false});
+        if (state.dual_on[state_slot][lane.frame_pos])
+            jobs.push_back({slot, state.dual_z[state_slot][lane.frame_pos],
+                            order, true});
+    }
+    std::stable_sort(jobs.begin(), jobs.end(),
+                     [](const WorldLaneDrawJob &a, const WorldLaneDrawJob &b) {
+                         if (a.z != b.z) return a.z < b.z;
+                         return a.order < b.order;
+                     });
+    for (const WorldLaneDrawJob &job : jobs)
+        draw_instance(job.slot, job.dual);
 }
 
 void WorldDrawMarkedLaneTags(ImDrawList *dl,
@@ -2450,6 +2484,55 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             state.visible_from[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleFrom(show_at);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Hide this entry until the global preview tick reaches this value.");
+
+        int frame_z = state.frame_z[lane.delay_slot][edit_fi];
+        ImGui::SameLine();
+        ImGui::TextDisabled("Z");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(38.0f);
+        if (ImGui::InputInt("##world_edit_z", &frame_z, 0, 0))
+            state.frame_z[lane.delay_slot][edit_fi] = ClampWorldMarkedZ(frame_z);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw priority for this entry: higher Z draws on top of other lanes.\n"
+                              "Equal Z keeps the normal lane order (slot 1 on top).");
+
+        bool dual = state.dual_on[lane.delay_slot][edit_fi] != 0;
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Dual##world_edit_dual", &dual))
+            state.dual_on[lane.delay_slot][edit_fi] = dual ? 1 : 0;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw this entry's sprite a second time in the same frame,\n"
+                              "at its own local offset and Z. Drag either copy in the world canvas.");
+        if (dual) {
+            int dual_dx = state.dual_dx[lane.delay_slot][edit_fi];
+            int dual_dy = state.dual_dy[lane.delay_slot][edit_fi];
+            int dual_z = state.dual_z[lane.delay_slot][edit_fi];
+            ImGui::SameLine();
+            ImGui::TextDisabled("dAX2");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(46.0f);
+            if (ImGui::InputInt("##world_edit_dax2", &dual_dx, 0, 0))
+                state.dual_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(dual_dx);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Local anipoint X delta for the second copy of this sprite.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("dAY2");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(46.0f);
+            if (ImGui::InputInt("##world_edit_day2", &dual_dy, 0, 0))
+                state.dual_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(dual_dy);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Local anipoint Y delta for the second copy of this sprite.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("Z2");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(38.0f);
+            if (ImGui::InputInt("##world_edit_z2", &dual_z, 0, 0))
+                state.dual_z[lane.delay_slot][edit_fi] = ClampWorldMarkedZ(dual_z);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Draw priority for the second copy. Lower than Z puts it behind\n"
+                                  "the first copy (and behind other lanes it sorts under).");
+        }
     }
 }
 
@@ -2523,6 +2606,10 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; Delay ticks are encoded by repeating that frame label.\n";
     out += "; Hidden entries export as 0 until their Show@ preview tick.\n";
     out += "; Each *_local_anipts table is aligned 1:1 with the .long rows.\n";
+    out += "; Entries with z= / dual annotations need routine code: z orders the\n";
+    out += "; object's draw priority, dual draws the same sprite a second time.\n";
+    out += "; Lanes with dual entries also emit a *_dual_anipts table aligned\n";
+    out += "; 1:1 with the rows; -32768,-32768 means no second copy that tick.\n";
     out += "; Run these lanes at the same animation sleep/FPS used in the preview.\n\n";
 
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
@@ -2562,6 +2649,14 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
         std::string local_table;
         local_table += anim_label;
         local_table += "_local_anipts\n";
+        bool lane_has_dual = false;
+        for (int fi = 0; fi < (int)lane.frames.size(); fi++)
+            if (state.dual_on[lane.delay_slot][fi]) { lane_has_dual = true; break; }
+        std::string dual_table;
+        if (lane_has_dual) {
+            dual_table += anim_label;
+            dual_table += "_dual_anipts\n";
+        }
         int tick = 0;
         for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
             IMG *frame_img = doc_get_img(lane.doc, lane.frames[fi]);
@@ -2576,6 +2671,11 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             int local_dx = state.local_dx[lane.delay_slot][fi];
             int local_dy = state.local_dy[lane.delay_slot][fi];
             int visible_from = state.visible_from[lane.delay_slot][fi];
+            int frame_z = state.frame_z[lane.delay_slot][fi];
+            bool dual = state.dual_on[lane.delay_slot][fi] != 0;
+            int dual_dx = state.dual_dx[lane.delay_slot][fi];
+            int dual_dy = state.dual_dy[lane.delay_slot][fi];
+            int dual_z = state.dual_z[lane.delay_slot][fi];
             for (int repeat = 0; repeat < delay; repeat++) {
                 bool hidden = tick < visible_from;
                 out += "\t.long\t";
@@ -2595,6 +2695,20 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                         out += " show>=";
                         out += std::to_string(visible_from);
                     }
+                    if (frame_z) {
+                        out += " z=";
+                        out += std::to_string(frame_z);
+                    }
+                    if (dual) {
+                        out += " dual dAX2=";
+                        out += std::to_string(dual_dx);
+                        out += " dAY2=";
+                        out += std::to_string(dual_dy);
+                        if (dual_z) {
+                            out += " z2=";
+                            out += std::to_string(dual_z);
+                        }
+                    }
                 } else if (hidden) {
                     out += "\t; hidden";
                 }
@@ -2609,6 +2723,24 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 local_table += hidden ? " hidden " : " ";
                 local_table += sprite;
                 local_table += "\n";
+
+                if (lane_has_dual) {
+                    dual_table += "\t.word\t";
+                    if (dual && !hidden) {
+                        dual_table += std::to_string(dual_dx);
+                        dual_table += ",";
+                        dual_table += std::to_string(dual_dy);
+                        dual_table += "\t; tick ";
+                        dual_table += std::to_string(tick);
+                        dual_table += " second ";
+                        dual_table += sprite;
+                    } else {
+                        dual_table += "-32768,-32768\t; tick ";
+                        dual_table += std::to_string(tick);
+                        dual_table += " no second copy";
+                    }
+                    dual_table += "\n";
+                }
                 tick++;
             }
         }
@@ -2621,6 +2753,10 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
         }
         out += local_table;
         out += "\n";
+        if (lane_has_dual) {
+            out += dual_table;
+            out += "\n";
+        }
     }
     return out;
 }
@@ -2670,23 +2806,37 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
         mouse.y <= world_layout.pos.y + world_layout.height;
 
     int hover_slot = -1;
+    bool hover_dual = false;
     if (over_world && !over_panel) {
-        for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        /* Dual copies paint after their primary, so test them first; both
+           rects exist whenever the entry draws its sprite twice. */
+        for (int slot = 0; slot < (int)lanes.size() && hover_slot < 0; slot++) {
+            if (!render_info.dual_rect_valid[slot]) continue;
+            if (mouse.x >= render_info.dual_rect_min[slot].x &&
+                mouse.x <= render_info.dual_rect_max[slot].x &&
+                mouse.y >= render_info.dual_rect_min[slot].y &&
+                mouse.y <= render_info.dual_rect_max[slot].y) {
+                hover_slot = slot;
+                hover_dual = true;
+            }
+        }
+        for (int slot = 0; slot < (int)lanes.size() && hover_slot < 0; slot++) {
             if (!render_info.lane_rect_valid[slot]) continue;
             if (mouse.x >= render_info.lane_rect_min[slot].x &&
                 mouse.x <= render_info.lane_rect_max[slot].x &&
                 mouse.y >= render_info.lane_rect_min[slot].y &&
                 mouse.y <= render_info.lane_rect_max[slot].y) {
                 hover_slot = slot;
-                break;
             }
         }
     }
 
     if (hover_slot >= 0) {
         if (dl) {
-            dl->AddRect(render_info.lane_rect_min[hover_slot],
-                        render_info.lane_rect_max[hover_slot],
+            dl->AddRect(hover_dual ? render_info.dual_rect_min[hover_slot]
+                                   : render_info.lane_rect_min[hover_slot],
+                        hover_dual ? render_info.dual_rect_max[hover_slot]
+                                   : render_info.lane_rect_max[hover_slot],
                         IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
         }
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
@@ -2701,9 +2851,12 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
             state.paused = true;
             state.drag_slot = state_slot;
             state.drag_frame = lane.frame_pos;
+            state.drag_dual = hover_dual;
             state.drag_mouse = mouse;
-            state.drag_dx = state.local_dx[state_slot][lane.frame_pos];
-            state.drag_dy = state.local_dy[state_slot][lane.frame_pos];
+            state.drag_dx = hover_dual ? state.dual_dx[state_slot][lane.frame_pos]
+                                       : state.local_dx[state_slot][lane.frame_pos];
+            state.drag_dy = hover_dual ? state.dual_dy[state_slot][lane.frame_pos]
+                                       : state.local_dy[state_slot][lane.frame_pos];
             state.drag_mirror = render_info.lane_mirror_x[hover_slot];
         }
     }
@@ -2711,20 +2864,23 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
     if (state.drag_slot >= 0) {
         int state_slot = state.drag_slot;
         int frame_idx = state.drag_frame;
+        std::vector<int> *dst_dx = state.drag_dual ? state.dual_dx : state.local_dx;
+        std::vector<int> *dst_dy = state.drag_dual ? state.dual_dy : state.local_dy;
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
             state_slot < 0 || state_slot >= kWorldMarkedMaxTabs ||
             frame_idx < 0 ||
-            frame_idx >= (int)state.local_dx[state_slot].size()) {
+            frame_idx >= (int)dst_dx[state_slot].size()) {
             state.drag_slot = -1;
             state.drag_frame = -1;
+            state.drag_dual = false;
             state.drag_mirror = false;
         } else {
             int px = (int)((mouse.x - state.drag_mouse.x) / world_layout.scale);
             int py = (int)((mouse.y - state.drag_mouse.y) / world_layout.scale);
-            state.local_dx[state_slot][frame_idx] =
+            dst_dx[state_slot][frame_idx] =
                 ClampWorldMarkedAniptDelta(state.drag_dx +
                                            (state.drag_mirror ? px : -px));
-            state.local_dy[state_slot][frame_idx] =
+            dst_dy[state_slot][frame_idx] =
                 ClampWorldMarkedAniptDelta(state.drag_dy - py);
         }
     }
@@ -2784,6 +2940,38 @@ int ClampWorldMarkedVisibleFrom(int value)
     return value;
 }
 
+int ClampWorldMarkedZ(int value)
+{
+    if (value < -99) return -99;
+    if (value >  99) return  99;
+    return value;
+}
+
+/* Every per-entry array a slot's sequence carries, with the value a fresh
+   entry gets. Sequence edits (duplicate/move/delete/reconcile) must touch all
+   of them together or the entries drift out of alignment. */
+struct WorldSeqArrayRef {
+    std::vector<int> *vec;
+    int fresh;
+};
+
+static std::vector<WorldSeqArrayRef> WorldMarkedSeqArrays(
+    WorldMarkedSequenceState &state, int slot)
+{
+    return {
+        { &state.frame_delays[slot], 1 },
+        { &state.local_dx[slot],     0 },
+        { &state.local_dy[slot],     0 },
+        { &state.visible_from[slot], 0 },
+        { &state.frame_mirror[slot], 0 },
+        { &state.frame_z[slot],      0 },
+        { &state.dual_on[slot],      0 },
+        { &state.dual_dx[slot],      0 },
+        { &state.dual_dy[slot],      0 },
+        { &state.dual_z[slot],       0 },
+    };
+}
+
 void WorldMarkedRestart(WorldMarkedSequenceState &state)
 {
     state.timer = 0.0f;
@@ -2839,6 +3027,27 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
         fmir.resize((size_t)frame_count, 0);
     else if ((int)fmir.size() > frame_count)
         fmir.resize((size_t)frame_count);
+
+    std::vector<int> &fz = state.frame_z[slot];
+    std::vector<int> &don = state.dual_on[slot];
+    std::vector<int> &ddx = state.dual_dx[slot];
+    std::vector<int> &ddy = state.dual_dy[slot];
+    std::vector<int> &dz = state.dual_z[slot];
+    fz.resize((size_t)frame_count, 0);
+    don.resize((size_t)frame_count, 0);
+    ddx.resize((size_t)frame_count, 0);
+    ddy.resize((size_t)frame_count, 0);
+    dz.resize((size_t)frame_count, 0);
+    for (int &z : fz)
+        z = ClampWorldMarkedZ(z);
+    for (int &on : don)
+        on = on ? 1 : 0;
+    for (int &dx : ddx)
+        dx = ClampWorldMarkedAniptDelta(dx);
+    for (int &dy : ddy)
+        dy = ClampWorldMarkedAniptDelta(dy);
+    for (int &z : dz)
+        z = ClampWorldMarkedZ(z);
 }
 
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
@@ -2885,11 +3094,8 @@ int WorldMarkedFrameForTick(WorldMarkedSequenceState &state, int slot,
 void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
 {
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
-    state.frame_delays[slot].clear();
-    state.local_dx[slot].clear();
-    state.local_dy[slot].clear();
-    state.visible_from[slot].clear();
-    state.frame_mirror[slot].clear();
+    for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
+        ref.vec->clear();
 }
 
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
@@ -2973,14 +3179,15 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
             (int)state.sequence_frames[slot].size());
 
         std::vector<int> prev_defaults = state.default_frames[slot];
-        std::vector<int> old_seq   = state.sequence_frames[slot];
-        std::vector<int> old_delay = state.frame_delays[slot];
-        std::vector<int> old_dx    = state.local_dx[slot];
-        std::vector<int> old_dy    = state.local_dy[slot];
-        std::vector<int> old_vis   = state.visible_from[slot];
-        std::vector<int> old_mir   = state.frame_mirror[slot];
+        std::vector<int> old_seq = state.sequence_frames[slot];
+        std::vector<WorldSeqArrayRef> refs = WorldMarkedSeqArrays(state, slot);
+        std::vector<std::vector<int>> old_vals;
+        old_vals.reserve(refs.size());
+        for (const WorldSeqArrayRef &ref : refs)
+            old_vals.push_back(*ref.vec);
 
-        std::vector<int> new_seq, new_delay, new_dx, new_dy, new_vis, new_mir;
+        std::vector<int> new_seq;
+        std::vector<std::vector<int>> new_vals(refs.size());
         new_seq.reserve(old_seq.size() + defaults.size());
         for (size_t i = 0; i < old_seq.size(); i++) {
             int idx = old_seq[i];
@@ -2988,11 +3195,8 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
             if (std::find(defaults.begin(), defaults.end(), idx) == defaults.end())
                 continue;                            /* sprite was unmarked */
             new_seq.push_back(idx);
-            new_delay.push_back(old_delay[i]);
-            new_dx.push_back(old_dx[i]);
-            new_dy.push_back(old_dy[i]);
-            new_vis.push_back(old_vis[i]);
-            new_mir.push_back(old_mir[i]);
+            for (size_t a = 0; a < refs.size(); a++)
+                new_vals[a].push_back(old_vals[a][i]);
         }
         for (int idx : defaults) {
             /* Only frames newly added to the marked set get appended; frames
@@ -3003,20 +3207,14 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
             if (std::find(new_seq.begin(), new_seq.end(), idx) != new_seq.end())
                 continue;
             new_seq.push_back(idx);
-            new_delay.push_back(1);
-            new_dx.push_back(0);
-            new_dy.push_back(0);
-            new_vis.push_back(0);
-            new_mir.push_back(0);
+            for (size_t a = 0; a < refs.size(); a++)
+                new_vals[a].push_back(refs[a].fresh);
         }
 
         state.default_frames[slot] = defaults;
         state.sequence_frames[slot] = new_seq;
-        state.frame_delays[slot]    = new_delay;
-        state.local_dx[slot]        = new_dx;
-        state.local_dy[slot]        = new_dy;
-        state.visible_from[slot]    = new_vis;
-        state.frame_mirror[slot]    = new_mir;
+        for (size_t a = 0; a < refs.size(); a++)
+            *refs[a].vec = new_vals[a];
         EnsureWorldMarkedFrameDelays(state, slot, (int)new_seq.size());
     }
 
@@ -3043,14 +3241,8 @@ void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot
 
     int insert_at = frame_idx + 1;
     frames.insert(frames.begin() + insert_at, frames[frame_idx]);
-    state.frame_delays[slot].insert(state.frame_delays[slot].begin() + insert_at,
-                                    state.frame_delays[slot][frame_idx]);
-    state.local_dx[slot].insert(state.local_dx[slot].begin() + insert_at,
-                                state.local_dx[slot][frame_idx]);
-    state.local_dy[slot].insert(state.local_dy[slot].begin() + insert_at,
-                                state.local_dy[slot][frame_idx]);
-    state.visible_from[slot].insert(state.visible_from[slot].begin() + insert_at,
-                                    state.visible_from[slot][frame_idx]);
+    for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
+        ref.vec->insert(ref.vec->begin() + insert_at, (*ref.vec)[frame_idx]);
     state.paused = true;
     state.timer = 0.0f;
     state.frame = WorldMarkedTickForFrame(state, slot, (int)frames.size(), insert_at);
@@ -3066,10 +3258,8 @@ void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int
     EnsureWorldMarkedFrameDelays(state, slot, n);
 
     std::swap(frames[frame_idx], frames[j]);
-    std::swap(state.frame_delays[slot][frame_idx], state.frame_delays[slot][j]);
-    std::swap(state.local_dx[slot][frame_idx],     state.local_dx[slot][j]);
-    std::swap(state.local_dy[slot][frame_idx],     state.local_dy[slot][j]);
-    std::swap(state.visible_from[slot][frame_idx], state.visible_from[slot][j]);
+    for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
+        std::swap((*ref.vec)[frame_idx], (*ref.vec)[j]);
 
     state.paused = true;
     state.timer = 0.0f;
@@ -3084,10 +3274,8 @@ void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, i
     EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
 
     frames.erase(frames.begin() + frame_idx);
-    state.frame_delays[slot].erase(state.frame_delays[slot].begin() + frame_idx);
-    state.local_dx[slot].erase(state.local_dx[slot].begin() + frame_idx);
-    state.local_dy[slot].erase(state.local_dy[slot].begin() + frame_idx);
-    state.visible_from[slot].erase(state.visible_from[slot].begin() + frame_idx);
+    for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
+        ref.vec->erase(ref.vec->begin() + frame_idx);
     if (frame_idx >= (int)frames.size())
         frame_idx = (int)frames.size() - 1;
     state.paused = true;

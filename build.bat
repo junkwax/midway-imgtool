@@ -47,7 +47,9 @@ if not defined VCVARSALL (
 )
 :vs_found
 
-set "SOURCE=."
+set "SOURCE=%~dp0"
+if "%SOURCE:~-1%"=="\" set "SOURCE=%SOURCE:~0,-1%"
+set "SOURCE_FWD=%SOURCE:\=/%"
 set BUILDROOT=%LOCALAPPDATA%\imgtool-build
 set BUILDDIR=%BUILDROOT%\build
 set DEPSDIR=%BUILDROOT%\deps
@@ -61,6 +63,20 @@ set CMAKE=%CMAKEDIR%\bin\cmake.exe
 echo [1/4] Setting up VS 2022 %VCVARS_ARCH% environment...
 call "%VCVARSALL%" %VCVARS_ARCH%
 if errorlevel 1 (echo ERROR: vcvarsall failed & goto :fail)
+
+if exist "%BUILDDIR%\CMakeCache.txt" (
+    findstr /C:"CMAKE_HOME_DIRECTORY:INTERNAL=%SOURCE_FWD%" "%BUILDDIR%\CMakeCache.txt" >nul
+    if errorlevel 1 (
+        echo        Existing CMake cache is for another source tree; cleaning build dir.
+        rmdir /S /Q "%BUILDDIR%"
+    ) else (
+        findstr /C:"CMAKE_GENERATOR_PLATFORM:INTERNAL=%CMAKE_ARCH%" "%BUILDDIR%\CMakeCache.txt" >nul
+        if errorlevel 1 (
+            echo        Existing CMake cache is for another architecture; cleaning build dir.
+            rmdir /S /Q "%BUILDDIR%"
+        )
+    )
+)
 
 echo [2/4] Creating build dirs...
 if not exist "%DEPSDIR%" mkdir "%DEPSDIR%"

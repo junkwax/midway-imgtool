@@ -8,6 +8,33 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.12.0] — World View draw staging and build-cache cleanup
+
+Feature release focused on more faithful World View staging for multi-sprite
+animations, plus fixes for exported TGA atlases and repeatable Windows builds.
+
+### World View
+- **Per-entry draw priority** — marked-sequence frames can now carry a `Z`
+  value so overlapping lanes can be staged in the intended front-to-back order.
+- **Dual sprite instances** — a sequence entry can draw a second copy of the
+  same sprite with its own local anipoint delta and draw priority, useful for
+  effects or mirrored animation beats.
+- **ASM export annotations** — generated animation source now includes `z=`,
+  `dual`, and `*_dual_anipts` data so staged preview intent survives export.
+- **Cleaner sequence editing** — duplicate, move, delete, and marked-set sync
+  now keep every per-entry timing, offset, visibility, mirror, Z, and dual field
+  aligned together.
+
+### Fixes
+- **TGA atlas packing** — fixed a row free-space accounting bug that could let
+  later glyphs overlap earlier glyphs in exported sheets such as `MK2FONT1.TGA`.
+- **ASM animation import** — ignores generated `*_dual_anipts` tables when
+  scanning ASM files for real animation labels.
+- **Windows build reuse** — `build.bat` and `build.ps1` now detect stale CMake
+  caches from another source tree or architecture and clean the build directory
+  before configuring.
+- **App artwork** — refreshed `imgtool.png` with the latest application graphic.
+
 ## [v3.11.0] — Overlay split complete and editor workflow polish
 
 Feature release completing the long-running ImGui overlay split while keeping

@@ -15,6 +15,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$SourceDir = (Resolve-Path $SourceDir).Path
 
 # Validate architecture
 if ($Arch -eq "x86") {
@@ -78,6 +79,26 @@ if (-not $Sdl2Ver) {
 $sdl2Root  = "$SharedDeps\SDL2-$Sdl2Ver"
 $sdl2Cmake = "$sdl2Root\cmake"
 $buildDir  = "$BuildRoot\build"
+
+$cacheFile = Join-Path $buildDir "CMakeCache.txt"
+if (Test-Path $cacheFile) {
+    $cacheText = Get-Content -LiteralPath $cacheFile -Raw
+    $cachedSource = ""
+    $cachedPlatform = ""
+    if ($cacheText -match "(?m)^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$") {
+        $cachedSource = $Matches[1].Trim()
+    }
+    if ($cacheText -match "(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=(.+)$") {
+        $cachedPlatform = $Matches[1].Trim()
+    }
+
+    $expectedSource = $SourceDir.Replace('\', '/')
+    if (($cachedSource -and $cachedSource -ne $expectedSource) -or
+        ($cachedPlatform -and $cachedPlatform -ne $cmakeArch)) {
+        Write-Host "      Existing CMake cache is stale; cleaning build dir." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $buildDir -Recurse -Force
+    }
+}
 
 New-Item -ItemType Directory -Force -Path $BuildRoot  | Out-Null
 New-Item -ItemType Directory -Force -Path $SharedDeps | Out-Null

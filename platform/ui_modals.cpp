@@ -2087,6 +2087,7 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
         if (lbl.empty() || seen.count(lbl)) return;
         if (body.find(lbl) == body.end()) return;        /* defined here only */
         if (ends_with(lbl, "_local_anipts")) return;     /* data table, not an anim */
+        if (ends_with(lbl, "_dual_anipts")) return;      /* data table, not an anim */
         seen[lbl] = true; anim_labels.push_back(lbl);
     };
     for (auto &tab : anitab_labels)
