@@ -75,12 +75,13 @@ int main(void)
         CHECK(strip_trailing_sequence_digits("123", nullptr) == false); /* all digits */
     }
 
-    /* InferSubframeParentName: numbered/lettered subframes -> folder/base name.
-       EDHANG1A belongs under EDHANG1; EDHANG1 belongs under EDHANG. */
+    /* InferSubframeParentName: unambiguous subframes -> folder/base name.
+       EDHANG1A belongs under EDHANG1; bare EDHANG1 needs a real EDHANG
+       parent before the UI treats it as a numbered subframe. */
     CHECK(InferSubframeParentName("BASE_1A") == "BASE");
     CHECK(InferSubframeParentName("RUN_2B") == "RUN");
     CHECK(InferSubframeParentName("EDHANG1A") == "EDHANG1");
-    CHECK(InferSubframeParentName("EDHANG1") == "EDHANG");
+    CHECK(InferSubframeParentName("EDHANG1") == "");
     CHECK(InferSubframeParentName("WALK") == "");      /* no digits */
     CHECK(InferSubframeParentName("") == "");
 

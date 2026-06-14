@@ -903,19 +903,35 @@ void DrawMainLayout(void)
                 }
                 for (int r = 0; r < (int)rows.size(); r++) {
                     std::string parent_name = InferSubframeParentName(rows[r].name.c_str());
-                    if (parent_name.empty()) continue;
                     bool found_parent = false;
-                    for (int p = 0; p < (int)rows.size(); p++) {
-                        if (p == r) continue;
-                        if (rows[p].src == rows[r].src && rows[p].name == parent_name) {
-                            rows[r].parent_row = p;
-                            rows[p].children.push_back(r);
-                            found_parent = true;
-                            break;
+                    if (!parent_name.empty()) {
+                        for (int p = 0; p < (int)rows.size(); p++) {
+                            if (p == r) continue;
+                            if (rows[p].src == rows[r].src && rows[p].name == parent_name) {
+                                rows[r].parent_row = p;
+                                rows[p].children.push_back(r);
+                                found_parent = true;
+                                break;
+                            }
+                        }
+                        if (!found_parent)
+                            rows[r].virtual_parent = parent_name;
+                    } else {
+                        std::string numbered_parent;
+                        if (strip_trailing_sequence_digits(rows[r].name,
+                                                           &numbered_parent)) {
+                            for (int p = 0; p < (int)rows.size(); p++) {
+                                if (p == r) continue;
+                                if (rows[p].src == rows[r].src &&
+                                    rows[p].name == numbered_parent) {
+                                    rows[r].parent_row = p;
+                                    rows[p].children.push_back(r);
+                                    found_parent = true;
+                                    break;
+                                }
+                            }
                         }
                     }
-                    if (!found_parent)
-                        rows[r].virtual_parent = parent_name;
                 }
                 for (int r = 0; r < (int)rows.size(); r++) {
                     if (rows[r].virtual_parent.empty()) continue;
@@ -2098,7 +2114,15 @@ static void CollectSubframeIndicesForParent(int parent_idx, std::vector<int> *ou
         std::string src = img->src_filename[0] ? img->src_filename : "Workspace";
         if (src != parent_src) continue;
         std::string child_name = img_name_string(img);
-        if (InferSubframeParentName(child_name.c_str()) == parent_name)
+        bool belongs_to_parent =
+            (InferSubframeParentName(child_name.c_str()) == parent_name);
+        if (!belongs_to_parent) {
+            std::string numbered_parent;
+            belongs_to_parent =
+                strip_trailing_sequence_digits(child_name, &numbered_parent) &&
+                numbered_parent == parent_name;
+        }
+        if (belongs_to_parent)
             out->push_back(idx);
     }
 }

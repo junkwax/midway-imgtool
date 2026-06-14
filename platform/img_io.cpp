@@ -1232,15 +1232,7 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
     for (IMG *master : targets) {
         if (!master->data_p || master->w == 0 || master->h == 0) continue;
 
-        char first_suffix[8];
-        make_chop_subframe_suffix(master->n_s, 0,
-                                  first_suffix, sizeof(first_suffix));
-        std::string child_base =
-            shorten_parent_name_for_suffix(master->n_s, strlen(first_suffix));
-        if (child_base != std::string(master->n_s, img_name_len15(master->n_s))) {
-            strncpy(master->n_s, child_base.c_str(), 15);
-            master->n_s[15] = '\0';
-        }
+        std::string parent_name(master->n_s, img_name_len15(master->n_s));
 
         int rows = (master->h + grid_h - 1) / grid_h;
         int cols = (master->w + grid_w - 1) / grid_w;
@@ -1308,13 +1300,12 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
                 /* Number plain parents as BASE1/BASE2. Letter numbered
                    parents as BASE1A/BASE1B so they group under the frame. */
                 char suffix[8];
-                make_chop_subframe_suffix(master->n_s, piece_no,
+                make_chop_subframe_suffix(parent_name.c_str(), piece_no,
                                           suffix, sizeof(suffix));
                 piece_no++;
                 size_t suf_len = strlen(suffix);
-                std::string base_name = child_base;
-                if (base_name.length() + suf_len > 15)
-                    base_name = shorten_parent_name_for_suffix(child_base.c_str(), suf_len);
+                std::string base_name =
+                    shorten_parent_name_for_suffix(parent_name.c_str(), suf_len);
                 base_name += suffix;
                 strncpy(new_img->n_s, base_name.c_str(), 15);
                 new_img->n_s[15] = '\0';

@@ -31,6 +31,8 @@ std::string trim_sprite_name(std::string s);
 bool ascii_iequals(const std::string &a, const std::string &b);
 /* If `name` ends in digits, strip them; returns true and writes the stem. */
 bool strip_trailing_sequence_digits(const std::string &name, std::string *stem_out);
-/* Infer the parent/base name of a numbered subframe (JCWALK1 -> JCWALK,
-   BASE_1A -> BASE). Returns "" when there is no numbered suffix. */
+/* Infer the parent/base name of an unambiguous subframe (EDHANG1A -> EDHANG1,
+   BASE_1A -> BASE). Bare numeric names such as EDHANG1 need list context, so
+   callers should use strip_trailing_sequence_digits() only when a real parent
+   sprite exists. */
 std::string InferSubframeParentName(const char *name);

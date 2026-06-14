@@ -8,6 +8,18 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.13.1] — Subframe naming patch
+
+Patch release fixing the parent-aware subframe naming added in v3.13.0.
+
+### Fixes
+- **Manual Auto-Chop parent preservation** — breaking a numbered parent such as
+  `EDHANG1` no longer renames the parent to `EDHANG` before creating pieces.
+  New children now correctly become `EDHANG1A`, `EDHANG1B`, and so on.
+- **Context-aware numeric grouping** — bare numbered names such as `EDHANG1`
+  only group under `EDHANG` when a real `EDHANG` parent sprite exists. Lettered
+  children such as `EDHANG1A` still group directly under `EDHANG1`.
+
 ## [v3.13.0] — World View timing controls and parent-aware subframes
 
 Feature release focused on more flexible World View animation staging and
