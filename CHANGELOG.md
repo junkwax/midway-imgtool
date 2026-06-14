@@ -8,6 +8,31 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.13.0] — World View timing controls and parent-aware subframes
+
+Feature release focused on more flexible World View animation staging and
+cleaner generated subframe names.
+
+### World View
+- **Show and hide ticks** — sequence entries now support both `Show@` and
+  `Hide@` timing so held subframes can appear for a bounded tick window.
+- **Held subframe preview** — timed subframes can remain on screen alongside
+  the active frame instead of being replaced immediately by the next frame.
+- **Expanded rows** — marked World View playback now supports up to ten rows,
+  with split-row controls for breaking one IMG's marked sequence into multiple
+  editable lanes.
+- **Testing visibility controls** — per-row eye buttons hide individual rows,
+  and a border toggle hides all sprite bounds while checking staged animation.
+- **Zoomed world canvas** — the logical arcade world stays 400x254 while the
+  rendered view zooms in for easier inspection.
+
+### Subframes
+- **Parent-aware Auto-Chop names** — breaking `EDHANG1` now creates
+  `EDHANG1A`, `EDHANG1B`, while breaking `EDHANG` creates `EDHANG1`,
+  `EDHANG2`.
+- **Image-list grouping** — the subframe parser now recognizes both numbered
+  and lettered generated children so they fold under the expected parent.
+
 ## [v3.12.0] — World View draw staging and build-cache cleanup
 
 Feature release focused on more faithful World View staging for multi-sprite

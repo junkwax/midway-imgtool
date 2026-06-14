@@ -1153,6 +1153,13 @@ static size_t img_name_len15(const char *s)
     return n;
 }
 
+static bool img_name_ends_with_digit(const char *s)
+{
+    size_t n = img_name_len15(s);
+    while (n > 0 && s[n - 1] == ' ') n--;
+    return n > 0 && std::isdigit((unsigned char)s[n - 1]);
+}
+
 static std::string shorten_parent_name_for_suffix(const char *name,
                                                   size_t suffix_len)
 {
@@ -1188,6 +1195,22 @@ static std::string shorten_parent_name_for_suffix(const char *name,
     return base;
 }
 
+static void make_chop_subframe_suffix(const char *parent_name, int piece_no,
+                                      char *suffix, size_t suffix_sz)
+{
+    if (!suffix || suffix_sz == 0) return;
+    if (piece_no < 0) piece_no = 0;
+
+    if (img_name_ends_with_digit(parent_name)) {
+        if (piece_no < 26)
+            snprintf(suffix, suffix_sz, "%c", 'A' + piece_no);
+        else
+            snprintf(suffix, suffix_sz, "_%02d", piece_no + 1);
+    } else {
+        snprintf(suffix, suffix_sz, "%d", piece_no + 1);
+    }
+}
+
 int ChopMarkedImages(int grid_w, int grid_h, bool trim)
 {
     if (grid_w <= 0 || grid_h <= 0) return 0;
@@ -1209,7 +1232,11 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
     for (IMG *master : targets) {
         if (!master->data_p || master->w == 0 || master->h == 0) continue;
 
-        std::string child_base = shorten_parent_name_for_suffix(master->n_s, 1);
+        char first_suffix[8];
+        make_chop_subframe_suffix(master->n_s, 0,
+                                  first_suffix, sizeof(first_suffix));
+        std::string child_base =
+            shorten_parent_name_for_suffix(master->n_s, strlen(first_suffix));
         if (child_base != std::string(master->n_s, img_name_len15(master->n_s))) {
             strncpy(master->n_s, child_base.c_str(), 15);
             master->n_s[15] = '\0';
@@ -1278,16 +1305,11 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
                 new_img->flags = 0; /* Unmarked */
                 new_img->opals = master->opals;
 
-                /* Shipping Midway sprite pieces are commonly named BASE1A,
-                   BASE1B, BASE1C rather than carrying hierarchy metadata in
-                   the IMG itself. Use direct A..Z suffixes for generated
-                   pieces and fall back to _NN only for unusually large chops. */
+                /* Number plain parents as BASE1/BASE2. Letter numbered
+                   parents as BASE1A/BASE1B so they group under the frame. */
                 char suffix[8];
-                if (piece_no < 26) {
-                    snprintf(suffix, sizeof(suffix), "%c", 'A' + piece_no);
-                } else {
-                    snprintf(suffix, sizeof(suffix), "_%02d", piece_no + 1);
-                }
+                make_chop_subframe_suffix(master->n_s, piece_no,
+                                          suffix, sizeof(suffix));
                 piece_no++;
                 size_t suf_len = strlen(suffix);
                 std::string base_name = child_base;

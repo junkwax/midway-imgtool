@@ -17,11 +17,11 @@
 #include "img_format.h"  /* IMG */
 
 enum {
-    kWorldMarkedSourceTabs = 4,
-    kWorldDummyDecapSlot = 4,      /* optional dummy body */
-    kWorldAsmSlot = 5,             /* ASM-driven player lane */
-    kWorldAsmOpponentSlot = 6,     /* ASM-driven opponent lane (fatalities) */
-    kWorldMarkedMaxTabs = 7        /* 4 tabs + dummy + 2 ASM lanes */
+    kWorldMarkedSourceTabs = 10,                  /* marked IMG rows */
+    kWorldDummyDecapSlot = kWorldMarkedSourceTabs,/* optional dummy body */
+    kWorldAsmSlot,                                /* ASM-driven player lane */
+    kWorldAsmOpponentSlot,                        /* ASM-driven opponent lane */
+    kWorldMarkedMaxTabs                           /* source rows + dummy + 2 ASM lanes */
 };
 
 struct WorldViewState {
@@ -328,7 +328,21 @@ void DrawCanvasStrikeBoxOverlay(ImDrawList *dl, ImVec2 img_pos,
 void CanvasResizeRectFromCorner(int corner, int mouse_x, int mouse_y,
                                 int *x, int *y, int *w, int *h);
 
+struct WorldMarkedSplitLane {
+    int slot = -1;
+    int doc_idx = -1;
+};
+
 struct WorldMarkedSequenceState {
+    WorldMarkedSequenceState()
+    {
+        for (int i = 0; i < kWorldMarkedMaxTabs; i++) {
+            sequence_doc_idx[i] = -1;
+            lane_visible[i] = true;
+        }
+        hold_end[kWorldDummyDecapSlot] = true;
+    }
+
     bool marked_play = false;
     float fps = 12.0f;
     float timer = 0.0f;
@@ -336,7 +350,7 @@ struct WorldMarkedSequenceState {
     bool paused = false;
     bool mirror_active = false;
     bool mirror_other = false;
-    bool mirror_extra[5] = {false, false, false, false, false};
+    bool mirror_extra[kWorldMarkedMaxTabs - 2] = {};
     bool dummy_decap_body = false;
     bool dummy_decap_reset = true;
     bool dummy_decap_manual = false;
@@ -350,12 +364,16 @@ struct WorldMarkedSequenceState {
     int drag_dy = 0;
     bool drag_mirror = false;
     bool show_asm = false;
+    bool draw_sprite_borders = true;
     std::string generated_asm;
-    bool hold_end[kWorldMarkedMaxTabs] = {false, false, false, false, true, false, false};
+    std::vector<WorldMarkedSplitLane> split_lanes;
+    bool lane_visible[kWorldMarkedMaxTabs] = {};
+    bool hold_end[kWorldMarkedMaxTabs] = {};
     std::vector<int> frame_delays[kWorldMarkedMaxTabs];
     std::vector<int> local_dx[kWorldMarkedMaxTabs];
     std::vector<int> local_dy[kWorldMarkedMaxTabs];
     std::vector<int> visible_from[kWorldMarkedMaxTabs];
+    std::vector<int> visible_until[kWorldMarkedMaxTabs]; /* 0 = no hide cutoff */
     std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip (ASM ani_flip) */
     std::vector<int> frame_z[kWorldMarkedMaxTabs];      /* per-entry draw priority; higher draws on top */
     std::vector<int> dual_on[kWorldMarkedMaxTabs];      /* per-entry second sprite instance enabled */
@@ -364,8 +382,8 @@ struct WorldMarkedSequenceState {
     std::vector<int> dual_z[kWorldMarkedMaxTabs];       /* second instance draw priority */
     std::vector<int> sequence_frames[kWorldMarkedMaxTabs];
     std::vector<int> default_frames[kWorldMarkedMaxTabs];
-    Document *sequence_doc[kWorldMarkedMaxTabs] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-    int sequence_doc_idx[kWorldMarkedMaxTabs] = {-1, -1, -1, -1, -1, -1, -1};
+    Document *sequence_doc[kWorldMarkedMaxTabs] = {};
+    int sequence_doc_idx[kWorldMarkedMaxTabs] = {};
 };
 
 struct WorldMarkedLane {
@@ -430,12 +448,12 @@ struct WorldMarkedTabsResult {
 };
 
 struct WorldMarkedLaneRenderInfo {
-    bool lane_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
-    bool lane_mirror_x[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
+    bool lane_rect_valid[kWorldMarkedMaxTabs] = {};
+    bool lane_mirror_x[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
     /* Screen rect of the dual (second) sprite instance, when drawn. */
-    bool dual_rect_valid[kWorldMarkedMaxTabs] = {false, false, false, false, false, false, false};
+    bool dual_rect_valid[kWorldMarkedMaxTabs] = {};
     ImVec2 dual_rect_min[kWorldMarkedMaxTabs] = {};
     ImVec2 dual_rect_max[kWorldMarkedMaxTabs] = {};
 };
@@ -476,7 +494,8 @@ bool WorldAppendMarkedDocumentLanes(WorldMarkedSequenceState &state,
                                     std::vector<WorldMarkedLane> &lanes,
                                     bool *dummy_decap_missing);
 bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
-                                 std::vector<WorldMarkedLane> &lanes);
+                                 std::vector<WorldMarkedLane> &lanes,
+                                 bool used_source_slots[kWorldMarkedSourceTabs]);
 bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
                         const std::vector<WorldAsmLaneFrame> &frames,
                         Document *doc, int doc_idx, int slot_id,
@@ -522,6 +541,7 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
                                             int active_doc_idx);
 void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                                  WorldMarkedLane &lane,
+                                 const std::vector<WorldMarkedLane> &lanes,
                                  int display_slot);
 WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState &state,
                                                         WorldMarkedLane &lane);
@@ -537,6 +557,7 @@ std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);
 int ClampWorldMarkedVisibleFrom(int value);
+int ClampWorldMarkedVisibleUntil(int value);
 int ClampWorldMarkedZ(int value);
 void WorldMarkedRestart(WorldMarkedSequenceState &state);
 void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta);
@@ -553,6 +574,11 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
                                      std::vector<std::vector<int>> &frame_pieces,
                                      std::vector<std::string> &frame_labels);
 void WorldMarkedResetSequenceToDefaults(WorldMarkedSequenceState &state, int slot);
+bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
+                                 const WorldMarkedLane &lane,
+                                 const std::vector<WorldMarkedLane> &lanes,
+                                 int frame_idx);
+void WorldMarkedClearSplitLanes(WorldMarkedSequenceState &state);
 void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
 void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx, int dir);
 void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);

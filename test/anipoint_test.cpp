@@ -75,12 +75,12 @@ int main(void)
         CHECK(strip_trailing_sequence_digits("123", nullptr) == false); /* all digits */
     }
 
-    /* InferSubframeParentName: numbered subframe -> folder/base name.
-       Pure trailing digits (JCWALK1) have no subframe parent; the BASE_1A /
-       RUN_2B underscore-numbered forms collapse to their stem. */
+    /* InferSubframeParentName: numbered/lettered subframes -> folder/base name.
+       EDHANG1A belongs under EDHANG1; EDHANG1 belongs under EDHANG. */
     CHECK(InferSubframeParentName("BASE_1A") == "BASE");
     CHECK(InferSubframeParentName("RUN_2B") == "RUN");
-    CHECK(InferSubframeParentName("JCWALK1") == "");   /* no subframe suffix */
+    CHECK(InferSubframeParentName("EDHANG1A") == "EDHANG1");
+    CHECK(InferSubframeParentName("EDHANG1") == "EDHANG");
     CHECK(InferSubframeParentName("WALK") == "");      /* no digits */
     CHECK(InferSubframeParentName("") == "");
 

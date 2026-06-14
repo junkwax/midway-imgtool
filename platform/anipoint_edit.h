@@ -25,3 +25,10 @@ void finish_sequence_anipoint_edit_if_idle(void);
 bool set_primary_anipoint_with_sequence(IMG *img, int new_ax, int new_ay);
 /* As above for the secondary anipoint (activating it first if needed). */
 bool set_secondary_anipoint_with_sequence(IMG *img, int new_ax2, int new_ay2);
+
+/* Local-only variants for numeric/property-panel edits. These still coalesce
+   undo while the widget is active, but they only touch the selected image. */
+bool set_primary_anipoint_local(IMG *img, int new_ax, int new_ay);
+bool set_secondary_anipoint_local(IMG *img, int new_ax2, int new_ay2);
+bool set_secondary_anipoint_z_local(IMG *img, int new_az2);
+bool clear_secondary_anipoint_local(IMG *img);

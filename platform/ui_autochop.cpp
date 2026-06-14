@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <cctype>
 
 #include "anipoint.h"
 #include "ui_timeline.h"
@@ -490,6 +491,30 @@ static void UnlinkAllocatedImage(IMG *img)
     FreeImg(img);
 }
 
+static bool AutoChopNameEndsWithDigit(const char *name)
+{
+    size_t n = 0;
+    while (n < 15 && name && name[n] != '\0') n++;
+    while (n > 0 && name[n - 1] == ' ') n--;
+    return n > 0 && std::isdigit((unsigned char)name[n - 1]);
+}
+
+static void AutoChopSubframeSuffix(const char *parent_name, int piece_no,
+                                   char *buf, size_t buf_sz)
+{
+    if (!buf || buf_sz == 0) return;
+    if (piece_no < 0) piece_no = 0;
+
+    if (AutoChopNameEndsWithDigit(parent_name)) {
+        if (piece_no < 26)
+            snprintf(buf, buf_sz, "%c", (char)('A' + piece_no));
+        else
+            snprintf(buf, buf_sz, "_%02d", piece_no + 1);
+    } else {
+        snprintf(buf, buf_sz, "%d", piece_no + 1);
+    }
+}
+
 static bool CreateAutoSplitPiece(IMG *master,
                                  const AutoChopPiecePreview &piece,
                                  const char *suffix)
@@ -558,8 +583,8 @@ int ApplyBestAutoSplitToTargets(bool vertical)
     for (const PendingSplit &plan : pending) {
         int local_created = 0;
         for (int i = 0; i < (int)plan.preview.pieces.size(); i++) {
-            char suffix[4];
-            snprintf(suffix, sizeof(suffix), "%c", 'A' + i);
+            char suffix[8];
+            AutoChopSubframeSuffix(plan.img->n_s, i, suffix, sizeof(suffix));
             if (CreateAutoSplitPiece(plan.img, plan.preview.pieces[(size_t)i], suffix)) {
                 local_created++;
                 created++;

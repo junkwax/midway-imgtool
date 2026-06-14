@@ -97,8 +97,11 @@ std::string InferSubframeParentName(const char *name)
     size_t digits = end;
     while (digits > 0 && std::isdigit((unsigned char)s[digits - 1]))
         digits--;
-    if (digits < end && digits > 0 && (s[digits - 1] == '_' || s[digits - 1] == '-'))
-        return s.substr(0, digits - 1);
+    if (digits < end && digits > 0) {
+        if (s[digits - 1] == '_' || s[digits - 1] == '-')
+            return s.substr(0, digits - 1);
+        return s.substr(0, digits);
+    }
 
     return std::string();
 }

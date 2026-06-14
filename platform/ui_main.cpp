@@ -680,7 +680,7 @@ void DrawMainLayout(void)
             ImGui::Separator();
             ImGui::MenuItem("World View",      NULL,   &g_world_state.enabled);
             if (g_world_state.enabled) {
-                if (ImGui::MenuItem("Marked Tab Playback", NULL, &g_world_marked_state.marked_play)) {
+                if (ImGui::MenuItem("Marked Row Playback", NULL, &g_world_marked_state.marked_play)) {
                     WorldMarkedRestart(g_world_marked_state);
                 }
                 ImGui::MenuItem("Marked Playback Paused", NULL, &g_world_marked_state.paused);
@@ -692,7 +692,7 @@ void DrawMainLayout(void)
                     g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
                     WorldMarkedRestart(g_world_marked_state);
                 }
-                if (ImGui::BeginMenu("Marked Tab Lanes")) {
+                if (ImGui::BeginMenu("Marked Rows")) {
                     for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
                         ImGui::PushID(slot);
                         char label[64];
@@ -1322,40 +1322,30 @@ void DrawMainLayout(void)
                 int ax = (short)img->anix, ay = (short)img->aniy;
                 int ax2 = (short)img->anix2, ay2 = (short)img->aniy2, az2 = (short)img->aniz2;
                 if (AnimPointSliderInt("X1##quick_ptx",  &ax,  -1024, 1024))
-                    set_primary_anipoint_with_sequence(img, ax, (int)(short)img->aniy);
+                    set_primary_anipoint_local(img, ax, (int)(short)img->aniy);
                 if (AnimPointSliderInt("Y1##quick_pty",  &ay,  -1024, 1024))
-                    set_primary_anipoint_with_sequence(img, (int)(short)img->anix, ay);
+                    set_primary_anipoint_local(img, (int)(short)img->anix, ay);
                 if (AnimPointSliderInt("X2##quick_ptx2", &ax2, -1024, 1024)) {
                     int cur_y2 = secondary_anipoint_in_use(img) ? (int)(short)img->aniy2 : 0;
-                    set_secondary_anipoint_with_sequence(img, ax2, cur_y2);
+                    set_secondary_anipoint_local(img, ax2, cur_y2);
                 }
                 if (AnimPointSliderInt("Y2##quick_pty2", &ay2, -1024, 1024)) {
                     int cur_x2 = secondary_anipoint_in_use(img) ? (int)(short)img->anix2 : 0;
-                    set_secondary_anipoint_with_sequence(img, cur_x2, ay2);
+                    set_secondary_anipoint_local(img, cur_x2, ay2);
                 }
-                if (AnimPointSliderInt("AZ2##quick_ptz2", &az2, -1024, 1024)) {
-                    if (begin_sequence_anipoint_edit()) {
-                        if (az2 == -1) clear_secondary_anipoint(img);
-                        else {
-                            activate_secondary_anipoint(img);
-                            img->aniz2 = (unsigned short)(short)az2;
-                        }
-                    }
-                }
+                if (AnimPointSliderInt("AZ2##quick_ptz2", &az2, -1024, 1024))
+                    set_secondary_anipoint_z_local(img, az2);
                 if (ImGui::SmallButton("Default Center##quick_anipts")) {
-                    set_primary_anipoint_with_sequence(img,
-                                                       (int)img->w / 2,
-                                                       (int)img->h / 2);
-                    if (begin_sequence_anipoint_edit())
-                        clear_secondary_anipoint(img);
-                    g_img_tex_idx = -2;
+                    set_primary_anipoint_local(img,
+                                               (int)img->w / 2,
+                                               (int)img->h / 2);
+                    clear_secondary_anipoint_local(img);
                 }
                 ImGui::SameLine();
                 bool had_second_point = secondary_anipoint_in_use(img);
                 if (!had_second_point) ImGui::BeginDisabled();
                 if (ImGui::SmallButton("Clear 2nd##quick_anipts")) {
-                    if (begin_sequence_anipoint_edit())
-                        clear_secondary_anipoint(img);
+                    clear_secondary_anipoint_local(img);
                 }
                 if (!had_second_point) ImGui::EndDisabled();
             } else {
@@ -1423,36 +1413,26 @@ void DrawMainLayout(void)
                 int ax = (short)img->anix, ay = (short)img->aniy;
                 int ax2 = (short)img->anix2, ay2 = (short)img->aniy2, az2 = (short)img->aniz2;
                 if (AnimPointSliderInt("X1##ptx",  &ax,  -1024, 1024))
-                    set_primary_anipoint_with_sequence(img, ax, (int)(short)img->aniy);
+                    set_primary_anipoint_local(img, ax, (int)(short)img->aniy);
                 if (AnimPointSliderInt("Y1##pty",  &ay,  -1024, 1024))
-                    set_primary_anipoint_with_sequence(img, (int)(short)img->anix, ay);
+                    set_primary_anipoint_local(img, (int)(short)img->anix, ay);
                 if (AnimPointSliderInt("X2##ptx2", &ax2, -1024, 1024)) {
                     int cur_y2 = secondary_anipoint_in_use(img) ? (int)(short)img->aniy2 : 0;
-                    set_secondary_anipoint_with_sequence(img, ax2, cur_y2);
+                    set_secondary_anipoint_local(img, ax2, cur_y2);
                 }
                 if (AnimPointSliderInt("Y2##pty2", &ay2, -1024, 1024)) {
                     int cur_x2 = secondary_anipoint_in_use(img) ? (int)(short)img->anix2 : 0;
-                    set_secondary_anipoint_with_sequence(img, cur_x2, ay2);
+                    set_secondary_anipoint_local(img, cur_x2, ay2);
                 }
-                if (AnimPointSliderInt("AZ2##ptz2", &az2, -1024, 1024)) {
-                    if (begin_sequence_anipoint_edit()) {
-                        if (az2 == -1) {
-                            clear_secondary_anipoint(img);
-                        } else {
-                            activate_secondary_anipoint(img);
-                            img->aniz2 = (unsigned short)(short)az2;
-                        }
-                    }
-                }
+                if (AnimPointSliderInt("AZ2##ptz2", &az2, -1024, 1024))
+                    set_secondary_anipoint_z_local(img, az2);
 
                 ImGui::Spacing();
                 if (ImGui::Button("Default Center", ImVec2(-1, 0))) {
-                    set_primary_anipoint_with_sequence(img,
-                                                       (int)img->w / 2,
-                                                       (int)img->h / 2);
-                    if (begin_sequence_anipoint_edit())
-                        clear_secondary_anipoint(img);
-                    g_img_tex_idx = -2;
+                    set_primary_anipoint_local(img,
+                                               (int)img->w / 2,
+                                               (int)img->h / 2);
+                    clear_secondary_anipoint_local(img);
                     snprintf(g_restore_msg, sizeof(g_restore_msg),
                              "Centered anim point for %s and cleared secondary.", img->n_s);
                     g_restore_msg_timer = 3.0f;
@@ -1463,8 +1443,7 @@ void DrawMainLayout(void)
                 bool had_second_point = secondary_anipoint_in_use(img);
                 if (!had_second_point) ImGui::BeginDisabled();
                 if (ImGui::Button("Clear 2nd Point", ImVec2(-1, 0))) {
-                    if (begin_sequence_anipoint_edit())
-                        clear_secondary_anipoint(img);
+                    clear_secondary_anipoint_local(img);
                 }
                 if (had_second_point && ImGui::IsItemHovered())
                     ImGui::SetTooltip("Clears X2/Y2/AZ2. AZ2 becomes -1.");

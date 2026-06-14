@@ -3491,11 +3491,14 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
     g_is_playing = true;
     g_world_marked_state.mirror_active = false;
     g_world_marked_state.mirror_other = true;
-    g_world_marked_state.mirror_extra[0] = false;
-    g_world_marked_state.mirror_extra[1] = false;
-    g_world_marked_state.mirror_extra[2] = false;
-    for (int i = 0; i < kWorldMarkedMaxTabs; i++)
+    for (bool &mirror : g_world_marked_state.mirror_extra)
+        mirror = false;
+    WorldMarkedClearSplitLanes(g_world_marked_state);
+    for (int i = 0; i < kWorldMarkedMaxTabs; i++) {
         g_world_marked_state.hold_end[i] = false;
+        g_world_marked_state.lane_visible[i] = true;
+    }
+    g_world_marked_state.draw_sprite_borders = true;
     g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
     g_world_marked_state.dummy_decap_body = false;
     g_world_marked_state.dummy_decap_reset = true;
@@ -4085,7 +4088,7 @@ void DrawAutoChopDialog(void)
     if (!ImGui::BeginPopupModal("Break into Subframes", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) return;
 
     ImGui::TextWrapped("Breaks marked sprites, or the selected sprite if none are marked,\n"
-                       "into Midway-style A/B pieces and recalculates ANIX/ANIY.");
+                       "into parent-aware subframes and recalculates ANIX/ANIY.");
     ImGui::Spacing();
 
     AutoSplitTargetSummary horizontal_summary;
@@ -5042,10 +5045,12 @@ Timeline / Anim:
   Ctrl-click frames    Pair two frames; Play/Left/Right advances both
   Drag paired sprite   Move sprite by editing its anipoint; lock Back/Front to protect it
   Auto Anipts          With a paired frame locked, align the sequence by sprite sizes
-  World Marked         Play marked animations from up to four IMG tabs together
+  World Marked         Play marked animations from up to ten IMG rows together
   World Sequence       On-canvas Pause/Refresh plus per-frame delay thumbnails
+  Split Row            Move the selected World Sequence entry onward to a new row
+  Eye / Borders        Hide individual World rows, or all sprite bounds
   Dummy Body           Adds stock *DECAP1-7 body fall as an editable sync lane
-  World Left / Right   Pause and scrub all marked-tab sequences together
+  World Left / Right   Pause and scrub all marked-row sequences together
 
 View / Help:
   Ctrl+= / Ctrl+-      Zoom in / out

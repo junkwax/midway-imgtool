@@ -91,6 +91,13 @@ static int apply_anipoint_delta_to_sequence(IMG *src, int src_idx,
     return changed;
 }
 
+static void mark_selected_anipoint_changed(void)
+{
+    InvalidateThumb(g_doc ? g_doc->ilselected : -1);
+    g_img_tex_idx = -2;
+    mark_dirty();
+}
+
 bool set_primary_anipoint_with_sequence(IMG *img, int new_ax, int new_ay)
 {
     if (!img) return false;
@@ -108,6 +115,20 @@ bool set_primary_anipoint_with_sequence(IMG *img, int new_ax, int new_ay)
     InvalidateThumb(g_doc->ilselected);
     g_img_tex_idx = -2;
     mark_dirty();
+    return true;
+}
+
+bool set_primary_anipoint_local(IMG *img, int new_ax, int new_ay)
+{
+    if (!img) return false;
+    unsigned short packed_ax = signed_to_img_word(new_ax);
+    unsigned short packed_ay = signed_to_img_word(new_ay);
+    if (img->anix == packed_ax && img->aniy == packed_ay) return false;
+    if (!begin_sequence_anipoint_edit()) return false;
+
+    img->anix = packed_ax;
+    img->aniy = packed_ay;
+    mark_selected_anipoint_changed();
     return true;
 }
 
@@ -133,5 +154,55 @@ bool set_secondary_anipoint_with_sequence(IMG *img, int new_ax2, int new_ay2)
     InvalidateThumb(g_doc->ilselected);
     g_img_tex_idx = -2;
     mark_dirty();
+    return true;
+}
+
+bool set_secondary_anipoint_local(IMG *img, int new_ax2, int new_ay2)
+{
+    if (!img) return false;
+    bool was_active = secondary_anipoint_in_use(img);
+    unsigned short packed_ax2 = signed_to_img_word(new_ax2);
+    unsigned short packed_ay2 = signed_to_img_word(new_ay2);
+    if (was_active && img->anix2 == packed_ax2 && img->aniy2 == packed_ay2)
+        return false;
+    if (!begin_sequence_anipoint_edit()) return false;
+    if (!was_active)
+        activate_secondary_anipoint(img);
+
+    img->anix2 = packed_ax2;
+    img->aniy2 = packed_ay2;
+    mark_selected_anipoint_changed();
+    return true;
+}
+
+bool clear_secondary_anipoint_local(IMG *img)
+{
+    if (!img) return false;
+    if (img->anix2 == (unsigned short)-1 &&
+        img->aniy2 == (unsigned short)-1 &&
+        img->aniz2 == (unsigned short)-1)
+        return false;
+    if (!begin_sequence_anipoint_edit()) return false;
+
+    clear_secondary_anipoint(img);
+    mark_selected_anipoint_changed();
+    return true;
+}
+
+bool set_secondary_anipoint_z_local(IMG *img, int new_az2)
+{
+    if (!img) return false;
+    if (new_az2 == -1)
+        return clear_secondary_anipoint_local(img);
+
+    bool was_active = secondary_anipoint_in_use(img);
+    unsigned short packed_az2 = signed_to_img_word(new_az2);
+    if (was_active && img->aniz2 == packed_az2) return false;
+    if (!begin_sequence_anipoint_edit()) return false;
+    if (!was_active)
+        activate_secondary_anipoint(img);
+
+    img->aniz2 = packed_az2;
+    mark_selected_anipoint_changed();
     return true;
 }
