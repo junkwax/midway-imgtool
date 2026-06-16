@@ -58,6 +58,7 @@ void document_clear_contents(Document *doc)
     free_img_chain(doc->img2_p);
     free_pal_chain(doc->pal_p);
     if (doc->scrseqmem_p) free(doc->scrseqmem_p);
+    if (doc->damtbl_p) free(doc->damtbl_p);
 
     document_set_defaults(doc);
 }

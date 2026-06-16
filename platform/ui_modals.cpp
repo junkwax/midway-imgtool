@@ -89,6 +89,15 @@ static int  g_sheet_padding       = 2;
 static bool g_sheet_crop          = true;
 static char g_sheet_prefix[12]    = "FRAME";
 
+static bool g_show_opacity_gradient = false;
+static bool g_opacity_gradient_marked = false;
+static int  g_opacity_gradient_direction = 2;
+static int  g_opacity_gradient_start = 100;
+static int  g_opacity_gradient_end = 0;
+static bool g_opacity_gradient_content_bounds = true;
+static bool g_opacity_gradient_trim = false;
+static int  g_opacity_gradient_seed = 17;
+
 static bool FileDialogSupportsMultiSelect(FileDialogMode mode)
 {
     return mode == FileDialogMode::ImportPng ||
@@ -3060,6 +3069,12 @@ static const Mk2FatalityFighterDef g_mk2_fatality_fighters[] = {
 static const int kMk2FatalityFighterCount =
     (int)(sizeof(g_mk2_fatality_fighters) / sizeof(g_mk2_fatality_fighters[0]));
 
+struct Mk2FatalityReactionPair {
+    const char *attacker = NULL;
+    const char *victim = NULL;
+    const char *reason = NULL;
+};
+
 static void Mk2FatalityClampSelections(void)
 {
     if (g_mk2_fatality_command_idx < 0) g_mk2_fatality_command_idx = 0;
@@ -3499,6 +3514,7 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
         g_world_marked_state.lane_visible[i] = true;
     }
     g_world_marked_state.draw_sprite_borders = true;
+    g_world_marked_state.show_boundary_overlay = true;
     g_world_marked_state.hold_end[kWorldDummyDecapSlot] = true;
     g_world_marked_state.dummy_decap_body = false;
     g_world_marked_state.dummy_decap_reset = true;
@@ -3550,33 +3566,55 @@ static void Mk2FatalityStageFighterWorkspace(void)
     Mk2FatalityStageDualPlans(fighter, attacker_plan, victim_plan);
 }
 
-static void Mk2FatalityApplyFatalityDefaults(const mk2fatal::CommandBlock &cmd,
-                                             const Mk2FatalityFighterDef &fighter)
+static Mk2FatalityReactionPair Mk2FatalityInferReactionPair(
+    const mk2fatal::CommandBlock &cmd,
+    const Mk2FatalityFighterDef &fighter)
 {
+    Mk2FatalityReactionPair pair = {};
     const char *attacker = fighter.fatal_anims[0];
     const char *victim = "a_torso_ripped";
+    const char *reason = "fallback body ending";
     if (cmd.routine == "do_fatality_1") {
         attacker = fighter.db1_anim ? fighter.db1_anim : attacker;
         victim = fighter.db1_victim ? fighter.db1_victim : victim;
+        reason = "fighter fatality 1 default";
     } else if (cmd.routine == "do_fatality_2") {
         attacker = fighter.db2_anim ? fighter.db2_anim : attacker;
         victim = fighter.db2_victim ? fighter.db2_victim : victim;
+        reason = "fighter fatality 2 default";
     } else if (Mk2FatalityFilterMatch(cmd.routine, "headhole")) {
         attacker = "a_jc_headhole";
         victim = "a_headhole";
+        reason = "routine name contains headhole";
     } else if (Mk2FatalityFilterMatch(cmd.routine, "raiden_lift")) {
         attacker = "a_death_zap1";
         victim = "a_torso_ripped";
+        reason = "routine name contains raiden_lift";
     } else if (Mk2FatalityFilterMatch(cmd.routine, "decap")) {
         victim = "a_decapfall";
+        reason = "routine name contains decap";
     } else if (Mk2FatalityFilterMatch(cmd.routine, "rip")) {
         victim = "a_torso_ripped";
+        reason = "routine name contains rip";
     } else if (Mk2FatalityFilterMatch(cmd.routine, "head")) {
         victim = "a_head";
+        reason = "routine name contains head";
     }
 
-    g_mk2_fatality_attacker_anim_idx = Mk2FatalityAnimListIndex(fighter.fatal_anims, attacker);
-    g_mk2_fatality_victim_anim_idx = Mk2FatalityAnimListIndex(g_mk2_fatality_cage_deaths, victim);
+    pair.attacker = attacker;
+    pair.victim = victim;
+    pair.reason = reason;
+    return pair;
+}
+
+static void Mk2FatalityApplyFatalityDefaults(const mk2fatal::CommandBlock &cmd,
+                                             const Mk2FatalityFighterDef &fighter)
+{
+    Mk2FatalityReactionPair pair = Mk2FatalityInferReactionPair(cmd, fighter);
+    g_mk2_fatality_attacker_anim_idx =
+        Mk2FatalityAnimListIndex(fighter.fatal_anims, pair.attacker);
+    g_mk2_fatality_victim_anim_idx =
+        Mk2FatalityAnimListIndex(g_mk2_fatality_cage_deaths, pair.victim);
 }
 
 static void Mk2FatalityStageSelectedFatality(void)
@@ -3674,6 +3712,91 @@ static void DrawMk2FatalityPlanSummary(void)
                         g_mk2_fatality_plan.img_files.size() == 1 ? "y" : "ies");
     if (!g_mk2_fatality_stage_status.empty())
         ImGui::TextDisabled("%s", g_mk2_fatality_stage_status.c_str());
+}
+
+static void DrawMk2FatalityReactionPairPanel(
+    const Mk2FatalityFighterDef &fighter,
+    const mk2fatal::CommandBlock *cmd)
+{
+    if (!cmd) return;
+
+    Mk2FatalityReactionPair inferred =
+        Mk2FatalityInferReactionPair(*cmd, fighter);
+    const char *selected_attacker = Mk2FatalitySelectedAttackerAnim(fighter);
+    const char *selected_victim = Mk2FatalitySelectedVictimAnim();
+
+    if (!ImGui::CollapsingHeader("Reaction Pair",
+                                 ImGuiTreeNodeFlags_DefaultOpen))
+        return;
+
+    ImGui::TextDisabled("Fatality routine drives the pair: attacker animation plus victim reaction/body ending.");
+    if (ImGui::BeginTable("##mk2fatal_reaction_pair", 3,
+                          ImGuiTableFlags_Borders |
+                          ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Role", ImGuiTableColumnFlags_WidthFixed, 92.0f);
+        ImGui::TableSetupColumn("Selected", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Inferred", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Routine");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(cmd->routine.empty() ? "(not detected)"
+                                                    : cmd->routine.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextDisabled("%s", inferred.reason ? inferred.reason : "manual");
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Attacker");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(selected_attacker ? selected_attacker : "(none)");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(inferred.attacker ? inferred.attacker : "(none)");
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Victim");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(selected_victim ? selected_victim : "(none)");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(inferred.victim ? inferred.victim : "(none)");
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Source");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s / %s", fighter.source_file, "MKJC.ASM");
+        ImGui::TableNextColumn();
+        ImGui::TextDisabled("opponent reactions currently use Cage body-ending labels");
+
+        ImGui::EndTable();
+    }
+
+    if (ImGui::SmallButton("Use Inferred Pair##mk2fatal_pair_infer")) {
+        Mk2FatalityApplyFatalityDefaults(*cmd, fighter);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Set the attacker and victim selectors from the routine/default mapping.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Stage Pair##mk2fatal_pair_stage")) {
+        Mk2FatalityStageSelectedFatality();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Load the selected attacker and victim reaction into World View lanes.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy Pair##mk2fatal_pair_copy")) {
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "routine=%s attacker=%s victim=%s reason=%s",
+                 cmd->routine.empty() ? "(not detected)" : cmd->routine.c_str(),
+                 selected_attacker ? selected_attacker : "(none)",
+                 selected_victim ? selected_victim : "(none)",
+                 inferred.reason ? inferred.reason : "manual");
+        ImGui::SetClipboardText(buf);
+    }
 }
 
 void DrawMk2FatalityWindow(void)
@@ -3827,12 +3950,16 @@ void DrawMk2FatalityWindow(void)
         }
         ImGui::EndCombo();
     }
+    const mk2fatal::CommandBlock *selected_cmd = NULL;
     if (!fighter_cmds.empty()) {
-        const mk2fatal::CommandBlock &cmd = g_mk2_fatality_doc.commands[fighter_cmds[g_mk2_fatality_selected_fatality]];
+        selected_cmd =
+            &g_mk2_fatality_doc.commands[fighter_cmds[g_mk2_fatality_selected_fatality]];
+    }
+    if (!fighter_cmds.empty()) {
         ImGui::SameLine();
         ImGui::TextDisabled("%s  %s",
-                            cmd.combo_label.empty() ? "combo?" : cmd.combo_label.c_str(),
-                            cmd.range_note.empty() ? "" : cmd.range_note.c_str());
+                            selected_cmd->combo_label.empty() ? "combo?" : selected_cmd->combo_label.c_str(),
+                            selected_cmd->range_note.empty() ? "" : selected_cmd->range_note.c_str());
     }
 
     ImGui::SetNextItemWidth(220);
@@ -3867,6 +3994,7 @@ void DrawMk2FatalityWindow(void)
     if (fighter_cmds.empty()) ImGui::EndDisabled();
     if (!g_mk2_fatality_stage_status.empty())
         ImGui::TextDisabled("%s", g_mk2_fatality_stage_status.c_str());
+    DrawMk2FatalityReactionPairPanel(fighter, selected_cmd);
     ImGui::Separator();
 
     if (ImGui::BeginTabBar("##mk2fatal_tabs")) {
@@ -4453,11 +4581,558 @@ void DrawDeleteImagesConfirm(void)
     ImGui::EndPopup();
 }
 
+SeqScrLayoutInfo SeqScrLayout(void)
+{
+    SeqScrLayoutInfo li = {};
+    li.far_model = g_doc->fileversion >= 0x0634;
+    li.record_size = li.far_model ? 98 : 58;
+    li.entry_size = li.far_model ? 18 : 16;
+    li.entry_index_off = li.far_model ? 4 : 2;
+    li.entry_ticks_off = li.far_model ? 6 : 4;
+    li.entry_dx_off = li.far_model ? 8 : 6;
+    li.entry_dy_off = li.far_model ? 10 : 8;
+    li.entry_spare1_off = li.far_model ? 12 : 10;
+    li.startx_off = li.far_model ? 84 : 52;
+    li.starty_off = li.far_model ? 86 : 54;
+    return li;
+}
+
+unsigned short SeqScrReadU16(const unsigned char *p)
+{
+    return (unsigned short)(p[0] | (p[1] << 8));
+}
+
+short SeqScrReadI16(const unsigned char *p)
+{
+    return (short)SeqScrReadU16(p);
+}
+
+static void SeqScrWriteU16(unsigned char *p, unsigned short v)
+{
+    p[0] = (unsigned char)(v & 0xFF);
+    p[1] = (unsigned char)((v >> 8) & 0xFF);
+}
+
+static void SeqScrCopyName(char dst[17], const unsigned char *src)
+{
+    memcpy(dst, src, 16);
+    dst[16] = '\0';
+    for (int i = 0; i < 16; i++) {
+        unsigned char c = (unsigned char)dst[i];
+        if (c == '\0') break;
+        if (c < 32 || c >= 127) dst[i] = '.';
+    }
+}
+
+bool SeqScrBuildRecords(std::vector<SeqScrRecordView> &records,
+                        bool *truncated_out)
+{
+    records.clear();
+    if (truncated_out) *truncated_out = false;
+    if (!g_doc->scrseqmem_p || g_doc->scrseqbytes == 0)
+        return false;
+
+    const SeqScrLayoutInfo li = SeqScrLayout();
+    const unsigned char *blob = (const unsigned char *)g_doc->scrseqmem_p;
+    size_t bytes = (size_t)g_doc->scrseqbytes;
+    size_t off = 0;
+    unsigned int total = g_doc->seqcnt + g_doc->scrcnt;
+    records.reserve(total);
+
+    for (unsigned int i = 0; i < total; i++) {
+        SeqScrRecordView rec = {};
+        rec.index = (int)i;
+        rec.script = i >= g_doc->seqcnt;
+        rec.offset = off;
+        rec.truncated = off + (size_t)li.record_size > bytes;
+        if (rec.truncated) {
+            if (truncated_out) *truncated_out = true;
+            records.push_back(rec);
+            return true;
+        }
+
+        const unsigned char *base = blob + off;
+        SeqScrCopyName(rec.name, base);
+        rec.flags = (int)SeqScrReadI16(base + 16);
+        rec.num = (int)SeqScrReadU16(base + 18);
+        rec.startx = (int)SeqScrReadI16(base + li.startx_off);
+        rec.starty = (int)SeqScrReadI16(base + li.starty_off);
+        rec.entries_offset = off + (size_t)li.record_size;
+
+        size_t entry_bytes = (size_t)rec.num * (size_t)li.entry_size;
+        if (rec.entries_offset + entry_bytes > bytes) {
+            rec.truncated = true;
+            if (truncated_out) *truncated_out = true;
+            records.push_back(rec);
+            return true;
+        }
+
+        records.push_back(rec);
+        off = rec.entries_offset + entry_bytes;
+    }
+
+    if (off > bytes && truncated_out)
+        *truncated_out = true;
+    return true;
+}
+
+const char *SeqScrRecordTypeLabel(const SeqScrRecordView &rec)
+{
+    return rec.script ? "Script" : "Seq";
+}
+
+const char *SeqScrEntryTargetName(const SeqScrRecordView &rec,
+                                  int entry_index,
+                                  const std::vector<SeqScrRecordView> &records)
+{
+    static char label[64];
+    if (entry_index < 0) return "NULL";
+
+    if (rec.script) {
+        if (entry_index >= 0 && entry_index < (int)g_doc->seqcnt &&
+            entry_index < (int)records.size()) {
+            snprintf(label, sizeof(label), "%s", records[(size_t)entry_index].name);
+            return label;
+        }
+        snprintf(label, sizeof(label), "seq[%d]?", entry_index);
+        return label;
+    }
+
+    IMG *img = get_img(entry_index);
+    if (img) {
+        snprintf(label, sizeof(label), "%.15s", img->n_s);
+        return label;
+    }
+    snprintf(label, sizeof(label), "img[%d]?", entry_index);
+    return label;
+}
+
+static bool SeqScrBeginBlobEdit(void)
+{
+    if (!g_doc->scrseqmem_p || g_doc->scrseqbytes == 0)
+        return false;
+    return doc_undo_push();
+}
+
+static bool SeqScrInputI16(const char *label, unsigned char *base, int off,
+                           bool editing, int width = 74)
+{
+    int v = (int)SeqScrReadI16(base + off);
+    int old_v = v;
+    if (!editing) ImGui::BeginDisabled();
+    ImGui::SetNextItemWidth((float)width);
+    bool changed = ImGui::InputInt(label, &v, 0, 0);
+    if (!editing) ImGui::EndDisabled();
+    if (!changed || v == old_v)
+        return false;
+    if (v < -32768) v = -32768;
+    if (v > 32767) v = 32767;
+    if (!SeqScrBeginBlobEdit())
+        return false;
+    unsigned char *edit_blob = (unsigned char *)g_doc->scrseqmem_p;
+    size_t base_off = (size_t)(base - (unsigned char *)g_doc->scrseqmem_p);
+    SeqScrWriteU16(edit_blob + base_off + (size_t)off,
+                   (unsigned short)(short)v);
+    mark_dirty();
+    return true;
+}
+
+static bool SeqScrInputU8(const char *label, unsigned char *base, int off,
+                          bool editing, int width = 58)
+{
+    int v = (int)base[off];
+    int old_v = v;
+    if (!editing) ImGui::BeginDisabled();
+    ImGui::SetNextItemWidth((float)width);
+    bool changed = ImGui::InputInt(label, &v, 0, 0);
+    if (!editing) ImGui::EndDisabled();
+    if (!changed || v == old_v)
+        return false;
+    if (v < 0) v = 0;
+    if (v > 255) v = 255;
+    if (!SeqScrBeginBlobEdit())
+        return false;
+    unsigned char *edit_blob = (unsigned char *)g_doc->scrseqmem_p;
+    size_t base_off = (size_t)(base - (unsigned char *)g_doc->scrseqmem_p);
+    edit_blob[base_off + (size_t)off] = (unsigned char)v;
+    mark_dirty();
+    return true;
+}
+
+static bool SeqScrInputI8(const char *label, unsigned char *base, int off,
+                          bool editing, int width = 52)
+{
+    int v = base[off] >= 128 ? (int)base[off] - 256 : (int)base[off];
+    int old_v = v;
+    if (!editing) ImGui::BeginDisabled();
+    ImGui::SetNextItemWidth((float)width);
+    bool changed = ImGui::InputInt(label, &v, 0, 0);
+    if (!editing) ImGui::EndDisabled();
+    if (!changed || v == old_v)
+        return false;
+    if (v < -128) v = -128;
+    if (v > 127) v = 127;
+    if (!SeqScrBeginBlobEdit())
+        return false;
+    unsigned char *edit_blob = (unsigned char *)g_doc->scrseqmem_p;
+    size_t base_off = (size_t)(base - (unsigned char *)g_doc->scrseqmem_p);
+    edit_blob[base_off + (size_t)off] = (unsigned char)(signed char)v;
+    mark_dirty();
+    return true;
+}
+
+static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
+                                   const SeqScrLayoutInfo &li,
+                                   const std::vector<SeqScrRecordView> &records,
+                                   bool editing)
+{
+    if (rec.truncated) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
+                           "Record is truncated; editing disabled.");
+        return;
+    }
+
+    unsigned char *blob = (unsigned char *)g_doc->scrseqmem_p;
+    unsigned char *base = blob + rec.offset;
+
+    ImGui::TextDisabled("%s %d  offset=0x%X  entries=%d  flags=0x%04X",
+                        SeqScrRecordTypeLabel(rec),
+                        rec.script ? (rec.index - (int)g_doc->seqcnt) : rec.index,
+                        (unsigned)rec.offset, rec.num, rec.flags & 0xFFFF);
+
+    static int s_name_record = -1;
+    static char s_name_edit[17] = {};
+    if (s_name_record == rec.index) {
+        if (!editing) ImGui::BeginDisabled();
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::InputText("Name##seqscr_name_edit", s_name_edit,
+                         sizeof(s_name_edit));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Apply##seqscr_name_apply")) {
+            if (SeqScrBeginBlobEdit()) {
+                unsigned char *edit_blob = (unsigned char *)g_doc->scrseqmem_p;
+                unsigned char *edit_base = edit_blob + rec.offset;
+                memset(edit_base, 0, 16);
+                strncpy((char *)edit_base, s_name_edit, 15);
+                mark_dirty();
+            }
+            s_name_record = -1;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Cancel##seqscr_name_cancel"))
+            s_name_record = -1;
+        if (!editing) ImGui::EndDisabled();
+    } else {
+        ImGui::Text("Name: %.16s", rec.name);
+        ImGui::SameLine();
+        if (!editing) ImGui::BeginDisabled();
+        if (ImGui::SmallButton("Rename##seqscr_name_start")) {
+            s_name_record = rec.index;
+            memset(s_name_edit, 0, sizeof(s_name_edit));
+            strncpy(s_name_edit, rec.name, sizeof(s_name_edit) - 1);
+        }
+        if (!editing) ImGui::EndDisabled();
+    }
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Flags");
+    ImGui::SameLine();
+    SeqScrInputI16("##seqscr_flags", base, 16, editing);
+    ImGui::SameLine();
+    ImGui::TextDisabled("Num is read-only because changing it would resize/reframe the blob.");
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Start X");
+    ImGui::SameLine();
+    SeqScrInputI16("##seqscr_startx", base, li.startx_off, editing);
+    ImGui::SameLine();
+    ImGui::TextUnformatted("Start Y");
+    ImGui::SameLine();
+    SeqScrInputI16("##seqscr_starty", base, li.starty_off, editing);
+
+    if (li.far_model) {
+        ImGui::TextDisabled("Damage table refs");
+        for (int i = 0; i < 6; i++) {
+            if (i > 0) ImGui::SameLine();
+            char id[32];
+            snprintf(id, sizeof(id), "D%d##seqscr_dam_%d", i, i);
+            SeqScrInputI8(id, base, 88 + i, editing, 52);
+        }
+    }
+
+    if (rec.num <= 0) {
+        ImGui::TextDisabled("No entries.");
+        return;
+    }
+
+    if (ImGui::BeginTable("##seqscr_entries", 8,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
+                          ImVec2(0, 240))) {
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 36);
+        ImGui::TableSetupColumn("Target", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed, 74);
+        ImGui::TableSetupColumn("Ticks", ImGuiTableColumnFlags_WidthFixed, 58);
+        ImGui::TableSetupColumn("dX", ImGuiTableColumnFlags_WidthFixed, 74);
+        ImGui::TableSetupColumn("dY", ImGuiTableColumnFlags_WidthFixed, 74);
+        ImGui::TableSetupColumn("Spare1", ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Spare2/3", ImGuiTableColumnFlags_WidthFixed, 150);
+        ImGui::TableHeadersRow();
+
+        for (int e = 0; e < rec.num; e++) {
+            unsigned char *entry = blob + rec.entries_offset +
+                                   (size_t)e * (size_t)li.entry_size;
+            int item_index = (int)SeqScrReadI16(entry + li.entry_index_off);
+
+            ImGui::PushID(e);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%d", e);
+
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(SeqScrEntryTargetName(rec, item_index, records));
+
+            ImGui::TableSetColumnIndex(2);
+            SeqScrInputI16("##idx", entry, li.entry_index_off, editing);
+
+            ImGui::TableSetColumnIndex(3);
+            SeqScrInputU8("##ticks", entry, li.entry_ticks_off, editing);
+
+            ImGui::TableSetColumnIndex(4);
+            SeqScrInputI16("##dx", entry, li.entry_dx_off, editing);
+
+            ImGui::TableSetColumnIndex(5);
+            SeqScrInputI16("##dy", entry, li.entry_dy_off, editing);
+
+            ImGui::TableSetColumnIndex(6);
+            SeqScrInputI16("##s1", entry, li.entry_spare1_off, editing, 66);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Raw signed spare word preserved from the ENTRY record.");
+
+            ImGui::TableSetColumnIndex(7);
+            int spare2_off = li.entry_spare1_off + 2;
+            int spare3_off = li.entry_spare1_off + 4;
+            SeqScrInputI16("##s2", entry, spare2_off, editing, 66);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Raw signed spare word preserved from the ENTRY record.");
+            ImGui::SameLine();
+            SeqScrInputI16("##s3", entry, spare3_off, editing, 66);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Raw signed spare word preserved from the ENTRY record.");
+            ImGui::PopID();
+        }
+
+        ImGui::EndTable();
+    }
+}
+
+void DrawSeqScrEditorWindow(void)
+{
+    if (!g_show_seqscr_editor) return;
+
+    ImGui::SetNextWindowSize(ImVec2(900, 640), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Anim Scripts / Seqs", &g_show_seqscr_editor)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("Sequences: %u   Scripts: %u   Blob: %u bytes   Layout: %s",
+                g_doc->seqcnt, g_doc->scrcnt, g_doc->scrseqbytes,
+                g_doc->fileversion >= 0x0634 ? "far pointer" : "near pointer");
+    ImGui::TextDisabled("Edits are fixed-size only and save back into the IMG's SEQSCR/ENTRY blob.");
+    if (ImGui::CollapsingHeader("How to read this", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped("Sequences are the simple frame lists: each entry usually targets an IMG sprite, with Ticks as the frame hold and dX/dY as local animation offsets.");
+        ImGui::TextWrapped("Scripts are higher-level animation lists: each entry targets a sequence, so a script can chain multiple sprite sequences together.");
+        ImGui::TextWrapped("Index is the raw target number saved in the IMG. The Target column resolves it to a sprite or sequence name when this editor can match it.");
+        ImGui::TextWrapped("Spare1/2/3 are the three raw signed spare words at the end of each ENTRY record. They are preserved Midway/WIMP metadata and may be routine-specific.");
+        ImGui::TextWrapped("Start X/Y and record-level damage refs are preserved Midway/WIMP metadata. Damage refs use -1 for none in newer far-pointer files.");
+    }
+
+    bool has_blob = g_doc->scrseqmem_p && g_doc->scrseqbytes > 0;
+    if (!has_blob) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("This IMG has no embedded sequence/script blob.");
+        ImGui::End();
+        return;
+    }
+
+    static bool s_editing = false;
+    ImGui::Checkbox("Enable in-place editing", &s_editing);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Allows editing names, flags, start positions, damage refs,\n"
+                          "entry indices, ticks, deltas, and spare fields.\n"
+                          "Entry counts are intentionally read-only.");
+    }
+
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    SeqScrBuildRecords(records, &truncated);
+    if (truncated) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
+                           "Warning: the sequence/script blob ended before all declared records were parsed.");
+    }
+
+    const SeqScrLayoutInfo li = SeqScrLayout();
+    ImGui::Separator();
+
+    if (ImGui::BeginChild("##seqscr_records", ImVec2(0, 0), true)) {
+        for (const SeqScrRecordView &rec : records) {
+            char header[128];
+            int local_index = rec.script ? rec.index - (int)g_doc->seqcnt
+                                         : rec.index;
+            snprintf(header, sizeof(header), "%s %d  %.16s  entries=%d%s",
+                     SeqScrRecordTypeLabel(rec), local_index, rec.name,
+                     rec.num, rec.truncated ? "  TRUNCATED" : "");
+            ImGui::PushID(rec.index);
+            if (ImGui::CollapsingHeader(header)) {
+                SeqScrDrawRecordEditor(rec, li, records, s_editing);
+                ImGui::Spacing();
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::End();
+}
+
+static void DebugHexBytes(const char *label, const unsigned char *data, int len)
+{
+    char hex[256];
+    char ascii[64];
+    int hp = 0;
+    int ap = 0;
+    if (!data || len <= 0) {
+        ImGui::TextDisabled("%s: <none>", label);
+        return;
+    }
+    if (len > 32) len = 32;
+    for (int i = 0; i < len && hp < (int)sizeof(hex) - 4; i++) {
+        hp += snprintf(hex + hp, sizeof(hex) - (size_t)hp, "%02X%s",
+                       data[i], (i + 1 < len) ? " " : "");
+        ascii[ap++] = (data[i] >= 32 && data[i] < 127) ? (char)data[i] : '.';
+    }
+    hex[hp] = '\0';
+    ascii[ap] = '\0';
+    ImGui::Text("%s: %s  |%s|", label, hex, ascii);
+}
+
+static void DebugDrawPointTable(const IMG *img)
+{
+    if (!img || !img->pttbl_p) {
+        ImGui::TextDisabled("PTTBL:   none");
+        return;
+    }
+
+    ImGui::Text("PTTBL_p:  %p", img->pttbl_p);
+    const unsigned char *p = (const unsigned char *)img->pttbl_p;
+    if (ImGui::BeginTable("##debug_pttbl", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("#");
+        ImGui::TableSetupColumn("X");
+        ImGui::TableSetupColumn("Y");
+        ImGui::TableHeadersRow();
+        for (int i = 0; i < 10; i++) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%d", i);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%d", (int)SeqScrReadI16(p + i * 4));
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%d", (int)SeqScrReadI16(p + i * 4 + 2));
+        }
+        ImGui::EndTable();
+    }
+}
+
+static void DebugDrawAltPaletteTable(const IMG *img)
+{
+    if (!img || !img->opaltbl_p) {
+        ImGui::TextDisabled("OPALTBL: none");
+        return;
+    }
+
+    const unsigned char *alt = (const unsigned char *)img->opaltbl_p;
+    ImGui::Text("OPALTBL_p: %p", img->opaltbl_p);
+    DebugHexBytes("OPALTBL", alt, 16);
+    if (ImGui::BeginTable("##debug_opaltbl", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("Slot");
+        ImGui::TableSetupColumn("Byte");
+        ImGui::TableSetupColumn("Best-effort palette");
+        ImGui::TableHeadersRow();
+        for (int i = 0; i < 16; i++) {
+            unsigned int v = alt[i];
+            PAL *pal = get_pal((int)v);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%02d", i);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("0x%02X / %u", v, v);
+            ImGui::TableSetColumnIndex(2);
+            if (pal) ImGui::Text("%u %.9s", v, pal->n_s);
+            else ImGui::TextDisabled("-");
+        }
+        ImGui::EndTable();
+    }
+}
+
+static void DebugDrawDamageTableRefs()
+{
+    if (!g_doc->damtbl_p || g_doc->damtblbytes == 0 || g_doc->damcnt == 0) {
+        ImGui::TextDisabled("DAMAGE TABLE REFS: none");
+        return;
+    }
+
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    SeqScrBuildRecords(records, &truncated);
+
+    unsigned int count = g_doc->damtblbytes / 4u;
+    if (g_doc->damcnt < count) count = g_doc->damcnt;
+    const unsigned char *p = (const unsigned char *)g_doc->damtbl_p;
+    ImGui::Text("DAMTBLBYTES: %u bytes", g_doc->damtblbytes);
+    if (truncated) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.25f, 1.0f),
+                                      "SEQSCR blob truncated; names may be incomplete.");
+
+    if (ImGui::BeginTable("##debug_damtbl", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("#");
+        ImGui::TableSetupColumn("Flag");
+        ImGui::TableSetupColumn("Kind");
+        ImGui::TableSetupColumn("Index");
+        ImGui::TableSetupColumn("Target");
+        ImGui::TableHeadersRow();
+        for (unsigned int i = 0; i < count; i++) {
+            unsigned short flag = SeqScrReadU16(p + i * 4);
+            short index = SeqScrReadI16(p + i * 4 + 2);
+            const char *kind = (flag == 0x0040) ? "Seq"
+                              : (flag == 0x0000) ? "Script" : "?";
+            int rec_index = -1;
+            if (flag == 0x0040 && index >= 0) rec_index = index;
+            else if (flag == 0x0000 && index >= 0) rec_index = (int)g_doc->seqcnt + index;
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%u", i);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("0x%04X", flag);
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(kind);
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%d", (int)index);
+            ImGui::TableSetColumnIndex(4);
+            if (rec_index >= 0 && rec_index < (int)records.size())
+                ImGui::Text("%s %.16s", kind, records[(size_t)rec_index].name);
+            else
+                ImGui::TextDisabled("-");
+        }
+        ImGui::EndTable();
+    }
+}
+
 void DrawDebugInfoModal(void)
 {
     if (g_show_debug) ImGui::OpenPopup("Debug Info");
+    ImGui::SetNextWindowSize(ImVec2(720, 680), ImGuiCond_Appearing);
     if (!ImGui::BeginPopupModal("Debug Info", &g_show_debug, ImGuiWindowFlags_NoMove)) return;
-    ImGui::SetNextWindowSize(ImVec2(520, 580), ImGuiCond_Always);
 
     if (ImGui::CollapsingHeader("LIB_HDR", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("IMGCNT:  %u",     g_doc->imgcnt);
@@ -4466,6 +5141,11 @@ void DrawDebugInfoModal(void)
         ImGui::Text("SCRCNT:  %u",     g_doc->scrcnt);
         ImGui::Text("DAMCNT:  %u",     g_doc->damcnt);
         ImGui::Text("VERSION: 0x%04X", g_doc->fileversion);
+        DebugHexBytes("BUFSCR", g_doc->file_bufscr, 4);
+        ImGui::Text("SPARE1/2/3: 0x%04X 0x%04X 0x%04X",
+                    (unsigned)g_doc->file_spare1,
+                    (unsigned)g_doc->file_spare2,
+                    (unsigned)g_doc->file_spare3);
         ImGui::Separator();
         ImGui::TextDisabled("SEQSCR/ENTRY blob (load-time, round-trips on save):");
         if (g_doc->scrseqmem_p && g_doc->scrseqbytes > 0) {
@@ -4473,6 +5153,7 @@ void DrawDebugInfoModal(void)
         } else {
             ImGui::TextDisabled("SCRSEQBYTES:  0  (no seq/scr in file)");
         }
+        DebugDrawDamageTableRefs();
     }
 
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -4487,12 +5168,12 @@ void DrawDebugInfoModal(void)
             ImGui::Text("H:        %d",       (int)img->h);
             ImGui::Text("PALNUM:   %d",       (int)img->palnum);
             ImGui::Text("DATA_p:   %p",       img->data_p);
-            if (img->pttbl_p) ImGui::Text("PTTBL_p:  %p", img->pttbl_p);
-            else ImGui::TextDisabled("PTTBL_p:  NULL");
             ImGui::Text("ANIX2:    %d",       (int)(short)img->anix2);
             ImGui::Text("ANIY2:    %d",       (int)(short)img->aniy2);
             ImGui::Text("ANIZ2:    %d",       (int)(short)img->aniz2);
             ImGui::Text("OPALS:    0x%04X",   (int)img->opals);
+            DebugDrawAltPaletteTable(img);
+            DebugDrawPointTable(img);
             ImGui::Text("TEMP:     %p",       img->temp);
         } else {
             ImGui::TextDisabled("No image selected");
@@ -4500,7 +5181,9 @@ void DrawDebugInfoModal(void)
     }
     if (ImGui::CollapsingHeader("IMAGE_disk (load-time)", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (img) {
+            DebugHexBytes("RAW_NAME", img->file_name_raw, 16);
             ImGui::Text("FILE_OSET:    0x%X (%u)", img->file_oset, img->file_oset);
+            ImGui::Text("FILE_DATA:    0x%X (%u)", img->file_data, img->file_data);
             ImGui::Text("FILE_LIB:     %u",        (unsigned)img->file_lib);
             ImGui::Text("FILE_FRM:     %u",        (unsigned)img->file_frm);
             if (img->file_pttblnum == 0xFFFF)
@@ -4532,8 +5215,12 @@ void DrawDebugInfoModal(void)
             ImGui::Text("DATA_p:   %p",       pal->data_p);
             ImGui::Text("TEMP:     %p",       pal->temp);
             ImGui::Separator();
-            ImGui::TextDisabled("PALETTE_disk fields (lib/colind/cmap/oset)");
-            ImGui::TextDisabled("are not currently retained at load.");
+            DebugHexBytes("RAW_NAME", pal->file_name_raw, 10);
+            ImGui::Text("FILE_DATA:  0x%04X", (unsigned)pal->file_data);
+            ImGui::Text("FILE_LIB:   %u",     (unsigned)pal->file_lib);
+            ImGui::Text("FILE_COLIND:%u",     (unsigned)pal->file_colind);
+            ImGui::Text("FILE_CMAP:  %u",     (unsigned)pal->file_cmap);
+            ImGui::Text("FILE_SPARE: 0x%04X", (unsigned)pal->file_spare);
         } else {
             ImGui::TextDisabled("No palette selected");
         }
@@ -4547,6 +5234,308 @@ void DrawDebugInfoModal(void)
     }
     ImGui::SameLine();
     ImGui::TextDisabled("F9 to toggle");
+    ImGui::EndPopup();
+}
+
+struct OpacityGradientStats {
+    int images = 0;
+    int opaque_pixels = 0;
+    int cleared_pixels = 0;
+};
+
+static int OpacityGradientClamp(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static unsigned int OpacityGradientHash(int x, int y, unsigned char ci,
+                                        int image_idx, int seed)
+{
+    unsigned int h = 2166136261u;
+    h ^= (unsigned int)(x + seed * 17); h *= 16777619u;
+    h ^= (unsigned int)(y + seed * 31); h *= 16777619u;
+    h ^= (unsigned int)ci;              h *= 16777619u;
+    h ^= (unsigned int)(image_idx + 1); h *= 16777619u;
+    h ^= h >> 13;
+    h *= 1274126177u;
+    h ^= h >> 16;
+    return h;
+}
+
+static bool OpacityGradientOpaqueBounds(const IMG *img,
+                                        int *min_x, int *min_y,
+                                        int *max_x, int *max_y)
+{
+    if (min_x) *min_x = 0;
+    if (min_y) *min_y = 0;
+    if (max_x) *max_x = -1;
+    if (max_y) *max_y = -1;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0)
+        return false;
+
+    int w = (int)img->w;
+    int h = (int)img->h;
+    int stride = (w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+    int lx = w, ly = h, rx = -1, by = -1;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (pix[(size_t)y * stride + x] == 0) continue;
+            if (x < lx) lx = x;
+            if (y < ly) ly = y;
+            if (x > rx) rx = x;
+            if (y > by) by = y;
+        }
+    }
+    if (rx < 0) return false;
+    if (min_x) *min_x = lx;
+    if (min_y) *min_y = ly;
+    if (max_x) *max_x = rx;
+    if (max_y) *max_y = by;
+    return true;
+}
+
+static float OpacityGradientT(int direction,
+                              int x, int y,
+                              int min_x, int min_y,
+                              int max_x, int max_y)
+{
+    int w_span = max_x - min_x;
+    int h_span = max_y - min_y;
+    switch (direction) {
+    case 0:
+        return w_span > 0 ? (float)(x - min_x) / (float)w_span : 0.0f;
+    case 1:
+        return w_span > 0 ? (float)(max_x - x) / (float)w_span : 0.0f;
+    case 2:
+        return h_span > 0 ? (float)(y - min_y) / (float)h_span : 0.0f;
+    case 3:
+        return h_span > 0 ? (float)(max_y - y) / (float)h_span : 0.0f;
+    case 4:
+    case 5: {
+        float cx = ((float)min_x + (float)max_x) * 0.5f;
+        float cy = ((float)min_y + (float)max_y) * 0.5f;
+        float dx = (float)x - cx;
+        float dy = (float)y - cy;
+        float d = sqrtf(dx * dx + dy * dy);
+        float corners[4][2] = {
+            { (float)min_x - cx, (float)min_y - cy },
+            { (float)max_x - cx, (float)min_y - cy },
+            { (float)min_x - cx, (float)max_y - cy },
+            { (float)max_x - cx, (float)max_y - cy }
+        };
+        float max_d = 0.0f;
+        for (int i = 0; i < 4; i++) {
+            float cd = sqrtf(corners[i][0] * corners[i][0] +
+                             corners[i][1] * corners[i][1]);
+            if (cd > max_d) max_d = cd;
+        }
+        float t = max_d > 0.0f ? d / max_d : 0.0f;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        return direction == 4 ? t : 1.0f - t;
+    }
+    default:
+        return 0.0f;
+    }
+}
+
+static int ApplyOpacityGradientOne(IMG *img, int image_idx, bool apply)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0)
+        return 0;
+
+    int min_x = 0, min_y = 0, max_x = (int)img->w - 1, max_y = (int)img->h - 1;
+    if (g_opacity_gradient_content_bounds) {
+        if (!OpacityGradientOpaqueBounds(img, &min_x, &min_y, &max_x, &max_y))
+            return 0;
+    }
+
+    int w = (int)img->w;
+    int h = (int)img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *pix = (unsigned char *)img->data_p;
+    int changed = 0;
+    int start = OpacityGradientClamp(g_opacity_gradient_start, 0, 100);
+    int end = OpacityGradientClamp(g_opacity_gradient_end, 0, 100);
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char *p = pix + (size_t)y * stride + x;
+            unsigned char ci = *p;
+            if (ci == 0) continue;
+            float t = OpacityGradientT(g_opacity_gradient_direction,
+                                       x, y, min_x, min_y, max_x, max_y);
+            int keep_pct = (int)floorf((float)start +
+                                       ((float)end - (float)start) * t +
+                                       0.5f);
+            keep_pct = OpacityGradientClamp(keep_pct, 0, 100);
+            bool keep = keep_pct >= 100 ||
+                        (keep_pct > 0 &&
+                         (int)(OpacityGradientHash(x, y, ci, image_idx,
+                                                   g_opacity_gradient_seed) % 100u) < keep_pct);
+            if (!keep) {
+                changed++;
+                if (apply) *p = 0;
+            }
+        }
+    }
+    return changed;
+}
+
+static OpacityGradientStats OpacityGradientScan(bool apply,
+                                                std::vector<int> *changed_indices)
+{
+    OpacityGradientStats stats = {};
+    if (!g_doc) return stats;
+
+    auto visit = [&](int idx, IMG *img) {
+        if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+        int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+        if (!OpacityGradientOpaqueBounds(img, &min_x, &min_y, &max_x, &max_y))
+            return;
+
+        int stride = ((int)img->w + 3) & ~3;
+        const unsigned char *pix = (const unsigned char *)img->data_p;
+        int opaque = 0;
+        for (int y = 0; y < (int)img->h; y++)
+            for (int x = 0; x < (int)img->w; x++)
+                if (pix[(size_t)y * stride + x] != 0) opaque++;
+
+        int changed = ApplyOpacityGradientOne(img, idx, apply);
+        stats.images++;
+        stats.opaque_pixels += opaque;
+        stats.cleared_pixels += changed;
+        if (apply && changed > 0 && changed_indices)
+            changed_indices->push_back(idx);
+    };
+
+    if (g_opacity_gradient_marked) {
+        int idx = 0;
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+            if (img->flags & 1) visit(idx, img);
+        }
+    } else {
+        IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+        visit(g_doc->ilselected, img);
+    }
+    return stats;
+}
+
+void OpenOpacityGradientDialog(void)
+{
+    if (!g_doc || g_doc->ilselected < 0) return;
+    g_show_opacity_gradient = true;
+}
+
+void DrawOpacityGradientDialog(void)
+{
+    if (g_show_opacity_gradient)
+        ImGui::OpenPopup("Opacity Gradient");
+    if (!ImGui::BeginPopupModal("Opacity Gradient",
+                                &g_show_opacity_gradient,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    IMG *selected = (g_doc && g_doc->ilselected >= 0)
+                 ? get_img(g_doc->ilselected) : NULL;
+    int marked_count = CountMarkedImages();
+    bool have_selected = selected && selected->data_p &&
+                         selected->w > 0 && selected->h > 0;
+    if (!have_selected) {
+        ImGui::TextDisabled("Select a sprite with pixels first.");
+        if (ImGui::Button("Close", ImVec2(90, 0)))
+            g_show_opacity_gradient = false;
+        ImGui::EndPopup();
+        return;
+    }
+
+    ImGui::Text("%s  %dx%d", selected->n_s, selected->w, selected->h);
+    ImGui::TextWrapped("IMG sprites do not store true per-pixel alpha. This writes transparent index #0 with a stable dissolve pattern.");
+
+    const char *directions[] = {
+        "Left to Right",
+        "Right to Left",
+        "Top to Bottom",
+        "Bottom to Top",
+        "Center to Edge",
+        "Edge to Center"
+    };
+    ImGui::Combo("Direction", &g_opacity_gradient_direction,
+                 directions, (int)(sizeof(directions) / sizeof(directions[0])));
+
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::SliderInt("Start opacity", &g_opacity_gradient_start, 0, 100, "%d%%");
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::SliderInt("End opacity", &g_opacity_gradient_end, 0, 100, "%d%%");
+    if (ImGui::SmallButton("Swap Start/End")) {
+        int t = g_opacity_gradient_start;
+        g_opacity_gradient_start = g_opacity_gradient_end;
+        g_opacity_gradient_end = t;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reset Fade Out")) {
+        g_opacity_gradient_start = 100;
+        g_opacity_gradient_end = 0;
+    }
+
+    ImGui::Checkbox("Use opaque content bounds", &g_opacity_gradient_content_bounds);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Span the gradient over the non-transparent sprite bounds instead of the padded canvas.");
+    ImGui::Checkbox("Trim transparent bounds after apply", &g_opacity_gradient_trim);
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("Pattern seed", &g_opacity_gradient_seed, 1, 17);
+
+    bool can_marked = marked_count > 0;
+    if (!can_marked && g_opacity_gradient_marked)
+        g_opacity_gradient_marked = false;
+    if (!can_marked) ImGui::BeginDisabled();
+    ImGui::Checkbox("Apply to marked sprites", &g_opacity_gradient_marked);
+    if (!can_marked) ImGui::EndDisabled();
+
+    OpacityGradientStats preview = OpacityGradientScan(false, NULL);
+    ImGui::Separator();
+    ImGui::Text("Preview: %d sprite%s, %d opaque px, %d px become transparent",
+                preview.images, preview.images == 1 ? "" : "s",
+                preview.opaque_pixels, preview.cleared_pixels);
+
+    bool can_apply = preview.cleared_pixels > 0;
+    if (!can_apply) ImGui::BeginDisabled();
+    if (ImGui::Button("Apply", ImVec2(110, 0))) {
+        std::vector<int> changed_indices;
+        if (doc_undo_push()) {
+            OpacityGradientStats applied =
+                OpacityGradientScan(true, &changed_indices);
+            int crops = 0;
+            if (applied.cleared_pixels > 0 && g_opacity_gradient_trim) {
+                if (g_opacity_gradient_marked)
+                    crops = CropMarkedImagesToContent();
+                else
+                    crops = CropSelectedImageToContent();
+            }
+            if (applied.cleared_pixels > 0 || crops > 0) {
+                mark_dirty();
+                g_img_tex_idx = -2;
+                for (int idx : changed_indices)
+                    InvalidateThumb(idx);
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Opacity gradient cleared %d px on %d sprite%s%s.",
+                         applied.cleared_pixels,
+                         applied.images,
+                         applied.images == 1 ? "" : "s",
+                         crops > 0 ? " and trimmed bounds" : "");
+                g_restore_msg_timer = 5.0f;
+            }
+        }
+        g_show_opacity_gradient = false;
+    }
+    if (!can_apply) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(90, 0)))
+        g_show_opacity_gradient = false;
+
     ImGui::EndPopup();
 }
 
@@ -5048,7 +6037,9 @@ Timeline / Anim:
   World Marked         Play marked animations from up to ten IMG rows together
   World Sequence       On-canvas Pause/Refresh plus per-frame delay thumbnails
   Split Row            Move the selected World Sequence entry onward to a new row
+  Auto Y               Bulk Show@/Hide@ plus per-entry vX/vY until a Y line is crossed
   Eye / Borders        Hide individual World rows, or all sprite bounds
+  Bounds               Green 400x254 safe, yellow X-clipped, red vertical/bad anchor
   Dummy Body           Adds stock *DECAP1-7 body fall as an editable sync lane
   World Left / Right   Pause and scrub all marked-row sequences together
 

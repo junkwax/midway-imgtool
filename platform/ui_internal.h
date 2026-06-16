@@ -1,6 +1,7 @@
 #pragma once
 #include <SDL.h>
 #include <imgui.h>
+#include <cstddef>
 #include <vector>
 #include "document.h"   /* g_doc, Document::dirty */
 
@@ -14,6 +15,42 @@ static const float TIMELINE_H  = 108.0f;
    g_doc->dirty directly so future side-effects live in one place. */
 #include <string>
 #include <vector>
+
+struct SeqScrLayoutInfo {
+    bool far_model;
+    int record_size;
+    int entry_size;
+    int entry_index_off;
+    int entry_ticks_off;
+    int entry_dx_off;
+    int entry_dy_off;
+    int entry_spare1_off;
+    int startx_off;
+    int starty_off;
+};
+
+struct SeqScrRecordView {
+    int index;
+    bool script;
+    size_t offset;
+    size_t entries_offset;
+    int flags;
+    int num;
+    int startx;
+    int starty;
+    bool truncated;
+    char name[17];
+};
+
+SeqScrLayoutInfo SeqScrLayout(void);
+unsigned short SeqScrReadU16(const unsigned char *p);
+short SeqScrReadI16(const unsigned char *p);
+bool SeqScrBuildRecords(std::vector<SeqScrRecordView> &records,
+                        bool *truncated_out);
+const char *SeqScrRecordTypeLabel(const SeqScrRecordView &rec);
+const char *SeqScrEntryTargetName(const SeqScrRecordView &rec,
+                                  int entry_index,
+                                  const std::vector<SeqScrRecordView> &records);
 
 void InvalidatePaletteUsage(void);
 inline void mark_dirty(void) { g_doc->dirty = true; InvalidatePaletteUsage(); }
@@ -119,6 +156,7 @@ extern float g_pan_x;
 extern float g_pan_y;
 extern bool  g_zoom_fit;
 extern bool  g_zoom_reset;
+extern float g_zoom_effective;
 extern float g_zoom_wheel_accum;
 extern int   g_zoom_pending_steps;
 extern bool  g_zoom_pending_fit;
@@ -263,6 +301,8 @@ struct CopiedImage {
     unsigned short anix, aniy;
     unsigned short anix2, aniy2, aniz2;
     unsigned short opals;
+    bool           has_opaltbl;
+    unsigned char  opaltbl[16];
     bool           has_palette;
     unsigned short palette_numc;
     unsigned char  palette_data[512];
@@ -454,10 +494,13 @@ void FloodFill(IMG *img, int sx, int sy, unsigned char new_color);
 
 struct WorldMarkedSequenceState;
 extern WorldMarkedSequenceState &g_world_marked_state;
+extern bool g_world_marked_panel_docked;
 extern bool g_show_dma_comp;
 void pixel_hist_push_stroke(void);
 int PaintBucketFill(IMG *img, int sx, int sy, unsigned char new_color, int tolerance, bool contiguous);
 bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io);
+void DrawWorldMarkedTimelinePanel(void);
+bool WorldLoadSeqScrRecord(int record_index);
 
 enum class ImageListSort { Original = 0, Name, Size };
 extern ImageListSort g_image_list_sort;
@@ -465,6 +508,7 @@ extern bool g_image_list_sort_desc;
 extern bool g_show_debug;
 extern bool g_show_about;
 extern bool g_show_help;
+extern bool g_show_seqscr_editor;
 extern const float TOOLBAR_W;
 extern const float PANEL_W;
 
@@ -504,7 +548,10 @@ void DrawAutoChopDialog(void);
 void DrawResizeSpriteDialog(void);
 void DrawBulkResizeDialog(void);
 void DrawBulkRestoreRegexDialog(void);
+void OpenOpacityGradientDialog(void);
+void DrawOpacityGradientDialog(void);
 void DrawDeleteImagesConfirm(void);
+void DrawSeqScrEditorWindow(void);
 void DrawDebugInfoModal(void);
 void DrawNewImgConfirm(void);
 void DrawNewBlankImageDialog(void);

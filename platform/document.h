@@ -61,6 +61,8 @@ typedef struct Document {
      * verbatim from the source file so save can write it back unchanged. */
     void         *scrseqmem_p;
     unsigned int  scrseqbytes;
+    void         *damtbl_p;      /* raw damage table refs: damcnt * 4 bytes */
+    unsigned int  damtblbytes;
 
     /* ---- LIB_HDR fields preserved verbatim from load ----
      * Real game-asset pipelines populate bufscr with script-buffer indices

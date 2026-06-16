@@ -2960,8 +2960,7 @@ void DrawRightPanelPaletteEditor(float panel_h)
         }
     }
 
-    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-    if (ImGui::CollapsingHeader("Color##quick", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Color Tools", ImGuiTreeNodeFlags_DefaultOpen)) {
         auto begin_palette_drag_undo = []() {
             if (!g_palette_drag_undo_active) {
                 doc_undo_push();
@@ -2970,22 +2969,31 @@ void DrawRightPanelPaletteEditor(float panel_h)
         };
         SDL_Color &col = g_palette[g_sel_color];
         int r = col.r, g = col.g, b = col.b;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("R");
+        ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("R##quick_cr", &r, 0, 255)) {
+        if (ImGui::SliderInt("##tool_rgb_r", &r, 0, 255)) {
             begin_palette_drag_undo();
             col.r = (unsigned char)r;
             palette_writeback(g_sel_color);
             commit_palette_adjustments();
         }
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("G");
+        ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("G##quick_cg", &g, 0, 255)) {
+        if (ImGui::SliderInt("##tool_rgb_g", &g, 0, 255)) {
             begin_palette_drag_undo();
             col.g = (unsigned char)g;
             palette_writeback(g_sel_color);
             commit_palette_adjustments();
         }
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("B");
+        ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("B##quick_cb", &b, 0, 255)) {
+        if (ImGui::SliderInt("##tool_rgb_b", &b, 0, 255)) {
             begin_palette_drag_undo();
             col.b = (unsigned char)b;
             palette_writeback(g_sel_color);
@@ -2993,15 +3001,8 @@ void DrawRightPanelPaletteEditor(float panel_h)
         }
         if (g_palette_drag_undo_active && !ImGui::IsAnyItemActive())
             g_palette_drag_undo_active = false;
-    }
+        ImGui::Separator();
 
-    if (ImGui::CollapsingHeader("Color Tools")) {
-        auto begin_palette_drag_undo = []() {
-            if (!g_palette_drag_undo_active) {
-                doc_undo_push();
-                g_palette_drag_undo_active = true;
-            }
-        };
         PAL *active_pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
         bool can_copy_zero = active_pal && active_pal->data_p;
         if (!can_copy_zero) ImGui::BeginDisabled();

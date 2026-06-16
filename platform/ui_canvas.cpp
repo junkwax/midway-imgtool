@@ -27,6 +27,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 static SDL_Texture *s_world_onion_tex = NULL;
 static int s_world_onion_tex_w = 0;
@@ -101,6 +103,7 @@ void ZoomImageRectForAvailable(const ImVec2 &avail, const ImVec2 &origin,
                                ImVec2 *pos, ImVec2 *size, float *scale_out)
 {
     float scale = ZoomDisplayScaleForAvailable(avail);
+    g_zoom_effective = scale;
     float tw = (float)g_img_tex_w * scale;
     float th = (float)g_img_tex_h * scale;
     if (pos) {
@@ -141,6 +144,21 @@ void ResetZoomToFit(void)
     g_pan_x = 0.0f;
     g_pan_y = 0.0f;
     g_zoom_fit = true;
+    g_zoom_reset = false;
+    g_zoom_wheel_accum = 0.0f;
+}
+
+void ResetZoomToHalfFit(const ImVec2 &avail)
+{
+    float fit = ZoomFitScaleForAvailable(avail);
+    float scale = floorf(fit * 0.5f);
+    if (scale < 1.0f) scale = 1.0f;
+    if (scale > ZOOM_MAX) scale = ZOOM_MAX;
+    g_zoom = scale;
+    g_zoom_effective = scale;
+    g_pan_x = 0.0f;
+    g_pan_y = 0.0f;
+    g_zoom_fit = false;
     g_zoom_reset = false;
     g_zoom_wheel_accum = 0.0f;
 }
@@ -1399,15 +1417,20 @@ WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_origin_y)
 {
     WorldCanvasLayout layout;
-    float fit_x = avail.x / (float)world_w;
-    float fit_y = avail.y / (float)world_h;
+    int guide_w = world_w;
+    int guide_h = world_h;
+    if (guide_w < 512) guide_w = 512;
+    if (guide_h < 254) guide_h = 254;
+
+    float fit_x = avail.x / (float)guide_w;
+    float fit_y = avail.y / (float)guide_h;
     layout.scale = (fit_x < fit_y) ? fit_x : fit_y;
     if (layout.scale < 2.0f) layout.scale = 2.0f;
     layout.scale = (float)(int)layout.scale;
     if (layout.scale < 2.0f) layout.scale = 2.0f;
 
-    layout.width = (float)world_w * layout.scale;
-    layout.height = (float)world_h * layout.scale;
+    layout.width = (float)guide_w * layout.scale;
+    layout.height = (float)guide_h * layout.scale;
     layout.pos = ImVec2(img_pos.x + (avail.x - layout.width) * 0.5f,
                         img_pos.y + (avail.y - layout.height) * 0.5f);
     layout.origin_x = layout.pos.x + world_origin_x * layout.scale;
@@ -1560,6 +1583,8 @@ void WorldResetDummyDecapDelays(WorldMarkedSequenceState &state, int frame_count
     state.local_dy[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
     state.visible_from[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
     state.visible_until[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    state.motion_dx[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    state.motion_dy[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
     int n = (int)(sizeof(kWorldDummyDecapDefaultDelays) /
                   sizeof(kWorldDummyDecapDefaultDelays[0]));
     if (frame_count < n) n = frame_count;
@@ -2011,9 +2036,450 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
         state.local_dy[slot_id][k] = fr.dy;
         state.visible_from[slot_id][k] = 0;
         state.visible_until[slot_id][k] = 0;
+        state.motion_dx[slot_id][k] = 0;
+        state.motion_dy[slot_id][k] = 0;
         state.frame_mirror[slot_id][k] = fr.mirror ? 1 : 0;
     }
 
+    lanes.push_back(lane);
+    return true;
+}
+
+static bool WorldSeqScrEntryValues(const SeqScrRecordView &rec,
+                                   const SeqScrLayoutInfo &li,
+                                   int entry_idx,
+                                   int *target_idx,
+                                   int *ticks,
+                                   int *dx,
+                                   int *dy)
+{
+    if (!g_doc || !g_doc->scrseqmem_p || rec.truncated ||
+        entry_idx < 0 || entry_idx >= rec.num)
+        return false;
+    unsigned char *blob = (unsigned char *)g_doc->scrseqmem_p;
+    unsigned char *entry = blob + rec.entries_offset +
+                           (size_t)entry_idx * (size_t)li.entry_size;
+    if (target_idx) *target_idx = (int)SeqScrReadI16(entry + li.entry_index_off);
+    if (ticks) *ticks = (int)entry[li.entry_ticks_off];
+    if (dx) *dx = (int)SeqScrReadI16(entry + li.entry_dx_off);
+    if (dy) *dy = (int)SeqScrReadI16(entry + li.entry_dy_off);
+    return true;
+}
+
+static int WorldSeqScrFirstImageInSequence(const SeqScrRecordView &seq,
+                                           const SeqScrLayoutInfo &li)
+{
+    if (seq.script || seq.truncated) return -1;
+    for (int i = seq.num - 1; i >= 0; i--) {
+        int img_idx = -1;
+        if (!WorldSeqScrEntryValues(seq, li, i, &img_idx, NULL, NULL, NULL))
+            continue;
+        if (img_idx >= 0 && doc_get_img(g_doc, img_idx))
+            return img_idx;
+    }
+    return -1;
+}
+
+static bool WorldDecodeSeqScrRecord(int record_index,
+                                    std::vector<int> &frames,
+                                    std::vector<int> &delays,
+                                    std::vector<int> &dxs,
+                                    std::vector<int> &dys,
+                                    std::vector<int> &targets,
+                                    std::vector<std::string> &labels,
+                                    bool *is_script,
+                                    std::string *name)
+{
+    frames.clear();
+    delays.clear();
+    dxs.clear();
+    dys.clear();
+    targets.clear();
+    labels.clear();
+    if (is_script) *is_script = false;
+    if (name) name->clear();
+    if (!g_doc || !g_doc->scrseqmem_p || g_doc->scrseqbytes == 0)
+        return false;
+
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    if (!SeqScrBuildRecords(records, &truncated) ||
+        record_index < 0 || record_index >= (int)records.size())
+        return false;
+
+    const SeqScrRecordView &rec = records[(size_t)record_index];
+    if (rec.truncated) return false;
+    if (is_script) *is_script = rec.script;
+    if (name) *name = rec.name;
+
+    SeqScrLayoutInfo li = SeqScrLayout();
+    frames.reserve((size_t)rec.num);
+    delays.reserve((size_t)rec.num);
+    dxs.reserve((size_t)rec.num);
+    dys.reserve((size_t)rec.num);
+    targets.reserve((size_t)rec.num);
+    labels.reserve((size_t)rec.num);
+
+    for (int display_e = 0; display_e < rec.num; display_e++) {
+        int e = rec.script ? display_e : (rec.num - 1 - display_e);
+        int target = -1;
+        int ticks = 1;
+        int dx = 0;
+        int dy = 0;
+        if (!WorldSeqScrEntryValues(rec, li, e, &target, &ticks, &dx, &dy))
+            continue;
+
+        if (rec.script) {
+            std::string label;
+            int preview_img = -1;
+            if (target >= 0 && target < (int)g_doc->seqcnt &&
+                target < (int)records.size() && !records[(size_t)target].script) {
+                const SeqScrRecordView &seq = records[(size_t)target];
+                preview_img = WorldSeqScrFirstImageInSequence(seq, li);
+                char buf[80];
+                IMG *preview = doc_get_img(g_doc, preview_img);
+                if (preview) {
+                    snprintf(buf, sizeof(buf), "%02d %s -> %s", e,
+                             seq.name[0] ? seq.name : "sequence",
+                             img_name_string(preview).c_str());
+                } else {
+                    snprintf(buf, sizeof(buf), "%02d %s", e,
+                             seq.name[0] ? seq.name : "sequence");
+                }
+                label = buf;
+            } else {
+                char fallback[32];
+                snprintf(fallback, sizeof(fallback), "%02d seq[%d]?", e, target);
+                label = fallback;
+            }
+            frames.push_back(preview_img);
+            targets.push_back(target);
+            labels.push_back(label);
+        } else {
+            frames.push_back(target);
+            targets.push_back(target);
+            IMG *img = doc_get_img(g_doc, target);
+            if (img) {
+                labels.push_back(img_name_string(img));
+            } else {
+                char fallback[32];
+                snprintf(fallback, sizeof(fallback), "img[%d]?", target);
+                labels.push_back(fallback);
+            }
+        }
+
+        delays.push_back(ClampTimelineHold(ticks > 0 ? ticks : 1));
+        dxs.push_back(ClampWorldMarkedAniptDelta(dx));
+        dys.push_back(ClampWorldMarkedAniptDelta(dy));
+    }
+
+    return !frames.empty();
+}
+
+static std::string WorldSeqScrRecordAsmLabel(const SeqScrRecordView &rec)
+{
+    int local_idx = rec.script ? rec.index - (int)g_doc->seqcnt : rec.index;
+    char fallback[32];
+    snprintf(fallback, sizeof(fallback), "%s%d",
+             rec.script ? "script" : "seq", local_idx);
+    std::string token = WorldMarkedAsmToken(rec.name, fallback);
+    char label[96];
+    snprintf(label, sizeof(label), "%s%02d_%s",
+             rec.script ? "scr" : "seq", local_idx, token.c_str());
+    return label;
+}
+
+static bool WorldSeqScrExportUsesLiveState(const SeqScrRecordView &rec)
+{
+    const WorldMarkedSequenceState &state = g_world_marked_state;
+    return state.embedded_active &&
+           state.embedded_record_index == rec.index &&
+           state.embedded_doc_idx == document_active_index() &&
+           !state.sequence_frames[kWorldEmbeddedSeqScrSlot].empty();
+}
+
+static void WorldAppendSeqScrSequenceAsm(std::string &out,
+                                         const SeqScrRecordView &rec,
+                                         const SeqScrLayoutInfo &li)
+{
+    std::string label = WorldSeqScrRecordAsmLabel(rec);
+    int local_idx = rec.index;
+    char line[256];
+    snprintf(line, sizeof(line),
+             "; Sequence %d %.16s: frame table + matching local anipts\n",
+             local_idx, rec.name);
+    out += line;
+    bool live = WorldSeqScrExportUsesLiveState(rec);
+    const int live_slot = kWorldEmbeddedSeqScrSlot;
+    int entry_count = live
+                    ? (int)g_world_marked_state.sequence_frames[live_slot].size()
+                    : rec.num;
+    snprintf(line, sizeof(line), "%s_count\t.word\t%d\n",
+             label.c_str(), entry_count);
+    out += line;
+
+    out += label;
+    out += "_frames\n";
+    std::string anipts = label + "_anipts\n";
+    int expanded_ticks = 0;
+    for (int display_e = 0; display_e < entry_count; display_e++) {
+        int e = display_e < rec.num ? rec.num - 1 - display_e : -1;
+        int target = -1;
+        int ticks = 1;
+        int dx = 0;
+        int dy = 0;
+        if (live) {
+            const WorldMarkedSequenceState &state = g_world_marked_state;
+            target = state.sequence_frames[live_slot][(size_t)display_e];
+            ticks = display_e < (int)state.frame_delays[live_slot].size()
+                  ? state.frame_delays[live_slot][(size_t)display_e] : 1;
+            dx = display_e < (int)state.local_dx[live_slot].size()
+               ? state.local_dx[live_slot][(size_t)display_e] : 0;
+            dy = display_e < (int)state.local_dy[live_slot].size()
+               ? state.local_dy[live_slot][(size_t)display_e] : 0;
+        } else {
+            if (!WorldSeqScrEntryValues(rec, li, e, &target, &ticks, &dx, &dy))
+                continue;
+        }
+        int hold = ClampTimelineHold(ticks > 0 ? ticks : 1);
+        IMG *img = doc_get_img(g_doc, target);
+        char fallback[32];
+        snprintf(fallback, sizeof(fallback), "img%d", target);
+        std::string sprite = WorldMarkedAsmToken(img ? img_name_string(img) : "",
+                                                 fallback);
+        for (int t = 0; t < hold; t++) {
+            snprintf(line, sizeof(line),
+                     "\t.long\t%s\t; entry %d visual %d tick %d/%d img=%d dX=%d dY=%d\n",
+                     sprite.c_str(), e, display_e, t + 1, hold, target, dx, dy);
+            out += line;
+            snprintf(line, sizeof(line),
+                     "\t.word\t%d,%d\t; entry %d visual %d tick %d\n",
+                     dx, dy, e, display_e, expanded_ticks);
+            anipts += line;
+            expanded_ticks++;
+        }
+    }
+    snprintf(line, sizeof(line), "%s_ticks\t.word\t%d\n\n",
+             label.c_str(), expanded_ticks);
+    out += line;
+    out += anipts;
+    out += "\n";
+}
+
+static void WorldAppendSeqScrScriptAsm(std::string &out,
+                                       const SeqScrRecordView &rec,
+                                       const SeqScrLayoutInfo &li,
+                                       const std::vector<SeqScrRecordView> &records)
+{
+    std::string label = WorldSeqScrRecordAsmLabel(rec);
+    char line[256];
+    snprintf(line, sizeof(line),
+             "; Script %d %.16s: higher-level sequence calls\n",
+             rec.index - (int)g_doc->seqcnt, rec.name);
+    out += line;
+    snprintf(line, sizeof(line), "%s_count\t.word\t%d\n",
+             label.c_str(), rec.num);
+    out += line;
+
+    out += label;
+    out += "\n";
+    std::string anipts = label + "_anipts\n";
+    bool live = WorldSeqScrExportUsesLiveState(rec);
+    for (int e = 0; e < rec.num; e++) {
+        int target = -1;
+        int ticks = 1;
+        int dx = 0;
+        int dy = 0;
+        if (!WorldSeqScrEntryValues(rec, li, e, &target, &ticks, &dx, &dy))
+            continue;
+        if (live) {
+            const WorldMarkedSequenceState &state = g_world_marked_state;
+            int slot = kWorldEmbeddedSeqScrSlot;
+            ticks = e < (int)state.frame_delays[slot].size()
+                  ? state.frame_delays[slot][(size_t)e] : ticks;
+            dx = e < (int)state.local_dx[slot].size()
+               ? state.local_dx[slot][(size_t)e] : dx;
+            dy = e < (int)state.local_dy[slot].size()
+               ? state.local_dy[slot][(size_t)e] : dy;
+        }
+
+        std::string seq_label;
+        const char *seq_name = "missing";
+        if (target >= 0 && target < (int)g_doc->seqcnt &&
+            target < (int)records.size() && !records[(size_t)target].script) {
+            const SeqScrRecordView &seq = records[(size_t)target];
+            seq_label = WorldSeqScrRecordAsmLabel(seq);
+            seq_name = seq.name;
+        } else {
+            char fallback[32];
+            snprintf(fallback, sizeof(fallback), "missing_seq_%d", target);
+            seq_label = fallback;
+        }
+
+        snprintf(line, sizeof(line),
+                 "\t.long\t%s_frames,%s_anipts\t; entry %d seq=%d %.16s ticks=%d\n",
+                 seq_label.c_str(), seq_label.c_str(), e, target, seq_name,
+                 ticks);
+        out += line;
+        snprintf(line, sizeof(line),
+                 "\t.word\t%d,%d,%d\t; ticks,dX,dY for script entry %d\n",
+                 ticks, dx, dy, e);
+        anipts += line;
+    }
+    out += "\n";
+    out += anipts;
+    out += "\n";
+}
+
+std::string WorldBuildSeqScrAsmExport(int record_index)
+{
+    std::string out;
+    out.reserve(8192);
+    out += "; IMGTOOL embedded WIMP SEQSCR export\n";
+    out += "; Image records: export marked sprites with File > Export > Write TBL.\n";
+    out += "; Sequences below emit *_frames tables and matching *_anipts tables.\n";
+    out += "; Scripts below emit higher-level tables that point at sequence tables.\n\n";
+
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    if (!SeqScrBuildRecords(records, &truncated) || records.empty()) {
+        out += "; No SEQSCR/ENTRY data found.\n";
+        return out;
+    }
+
+    SeqScrLayoutInfo li = SeqScrLayout();
+    std::vector<char> include(records.size(), 0);
+    if (record_index >= 0 && record_index < (int)records.size()) {
+        include[(size_t)record_index] = 1;
+        const SeqScrRecordView &focus = records[(size_t)record_index];
+        if (focus.script && !focus.truncated) {
+            for (int e = 0; e < focus.num; e++) {
+                int target = -1;
+                if (!WorldSeqScrEntryValues(focus, li, e, &target, NULL, NULL, NULL))
+                    continue;
+                if (target >= 0 && target < (int)g_doc->seqcnt &&
+                    target < (int)records.size())
+                    include[(size_t)target] = 1;
+            }
+        }
+    } else {
+        for (size_t i = 0; i < records.size(); i++)
+            include[i] = 1;
+    }
+
+    for (const SeqScrRecordView &rec : records) {
+        if (!include[(size_t)rec.index] || rec.script || rec.truncated) continue;
+        WorldAppendSeqScrSequenceAsm(out, rec, li);
+    }
+    for (const SeqScrRecordView &rec : records) {
+        if (!include[(size_t)rec.index] || !rec.script || rec.truncated) continue;
+        WorldAppendSeqScrScriptAsm(out, rec, li, records);
+    }
+
+    if (truncated)
+        out += "; Warning: source SEQSCR blob was truncated; skipped truncated records.\n";
+    return out;
+}
+
+bool WorldLoadSeqScrRecord(int record_index)
+{
+    std::vector<int> frames;
+    std::vector<int> delays;
+    std::vector<int> dxs;
+    std::vector<int> dys;
+    std::vector<int> targets;
+    std::vector<std::string> labels;
+    bool is_script = false;
+    std::string name;
+    if (!WorldDecodeSeqScrRecord(record_index, frames, delays, dxs, dys,
+                                 targets, labels, &is_script, &name))
+        return false;
+
+    WorldMarkedSequenceState &state = g_world_marked_state;
+    int slot = kWorldEmbeddedSeqScrSlot;
+    WorldMarkedClearSequenceState(state, slot);
+    state.default_frames[slot] = frames;
+    state.sequence_frames[slot] = frames;
+    state.sequence_doc[slot] = g_doc;
+    state.sequence_doc_idx[slot] = document_active_index();
+    state.embedded_active = true;
+    state.embedded_is_script = is_script;
+    state.embedded_show_companions = false;
+    state.embedded_record_index = record_index;
+    state.embedded_doc_idx = document_active_index();
+    state.embedded_name = name;
+    state.embedded_frame_labels = labels;
+    state.embedded_targets = targets;
+    state.lane_visible[slot] = true;
+    state.hold_end[slot] = false;
+
+    EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
+    for (int i = 0; i < (int)frames.size(); i++) {
+        state.frame_delays[slot][i] = i < (int)delays.size() ? delays[i] : 1;
+        state.local_dx[slot][i] = i < (int)dxs.size() ? dxs[i] : 0;
+        state.local_dy[slot][i] = i < (int)dys.size() ? dys[i] : 0;
+        state.visible_from[slot][i] = 0;
+        state.visible_until[slot][i] = 0;
+        state.motion_dx[slot][i] = 0;
+        state.motion_dy[slot][i] = 0;
+        state.frame_mirror[slot][i] = 0;
+        state.frame_z[slot][i] = 0;
+        state.dual_on[slot][i] = 0;
+        state.dual_dx[slot][i] = 0;
+        state.dual_dy[slot][i] = 0;
+        state.dual_z[slot][i] = 0;
+    }
+
+    g_world_state.enabled = true;
+    state.marked_play = true;
+    WorldMarkedRestart(state);
+    state.paused = true;
+    state.timer = 0.0f;
+    return true;
+}
+
+static bool WorldAppendEmbeddedSeqScrLane(WorldMarkedSequenceState &state,
+                                          std::vector<WorldMarkedLane> &lanes)
+{
+    if (!state.embedded_active ||
+        state.embedded_record_index < 0 ||
+        state.embedded_doc_idx < 0)
+        return false;
+
+    Document *doc = document_get(state.embedded_doc_idx);
+    if (!doc || state.sequence_frames[kWorldEmbeddedSeqScrSlot].empty())
+        return false;
+
+    WorldMarkedLane lane = {};
+    lane.doc = doc;
+    lane.doc_idx = state.embedded_doc_idx;
+    lane.delay_slot = kWorldEmbeddedSeqScrSlot;
+    lane.frame_pos = 0;
+    lane.dummy_decap = false;
+    lane.frames = state.sequence_frames[kWorldEmbeddedSeqScrSlot];
+    lane.label = state.embedded_is_script ? "Script" : "Sequence";
+    if (!state.embedded_name.empty()) {
+        lane.label += ": ";
+        lane.label += state.embedded_name;
+    }
+    lane.asm_label_part = WorldMarkedAsmLabelPart(state.embedded_name.c_str(),
+                                                  kWorldEmbeddedSeqScrSlot);
+    WorldMarkedBuildSingleFrameLane(doc, lane.frames,
+                                    lane.frame_pieces, lane.frame_labels);
+    for (int i = 0; i < (int)lane.frame_labels.size() &&
+                    i < (int)state.embedded_frame_labels.size(); i++) {
+        if (!state.embedded_frame_labels[(size_t)i].empty())
+            lane.frame_labels[(size_t)i] = state.embedded_frame_labels[(size_t)i];
+    }
+
+    EnsureWorldMarkedFrameDelays(state, kWorldEmbeddedSeqScrSlot,
+                                 (int)lane.frames.size());
+    lane.frame_pos =
+        WorldMarkedFrameForTick(state, kWorldEmbeddedSeqScrSlot,
+                                (int)lane.frames.size(), state.frame,
+                                state.hold_end[kWorldEmbeddedSeqScrSlot]);
+    if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size())
+        lane.img = doc_get_img(doc, lane.frames[(size_t)lane.frame_pos]);
     lanes.push_back(lane);
     return true;
 }
@@ -2025,7 +2491,8 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
                                           float delta_time,
                                           int active_doc_idx,
                                           IMG *selected_img,
-                                          const std::vector<WorldMarkedAsmLaneInput> &asm_lanes)
+                                          const std::vector<WorldMarkedAsmLaneInput> &asm_lanes,
+                                          bool draw_panel)
 {
     WorldMarkedTabsResult result = {};
     if (!state.marked_play)
@@ -2035,19 +2502,26 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
     lanes.reserve(kWorldMarkedMaxTabs);
 
     bool dummy_decap_missing = false;
-    WorldAppendMarkedDocumentLanes(state, active_doc_idx, lanes,
-                                   &dummy_decap_missing);
+    bool embedded_focus_only = state.embedded_active &&
+                               !state.embedded_show_companions;
+    if (!embedded_focus_only) {
+        WorldAppendMarkedDocumentLanes(state, active_doc_idx, lanes,
+                                       &dummy_decap_missing);
+    }
+    bool embedded_present = WorldAppendEmbeddedSeqScrLane(state, lanes);
 
     bool asm_present = false;
-    for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
-        if (!input.enabled) continue;
-        if (WorldAppendAsmLane(state, input.name, input.frames, input.doc,
-                               input.doc_idx, input.slot_id, lanes))
-            asm_present = true;
+    if (!embedded_focus_only) {
+        for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
+            if (!input.enabled) continue;
+            if (WorldAppendAsmLane(state, input.name, input.frames, input.doc,
+                                   input.doc_idx, input.slot_id, lanes))
+                asm_present = true;
+        }
     }
 
     if (lanes.empty()) return result;
-    if (lanes.size() < 2 && !asm_present) return result;
+    if (lanes.size() < 2 && !asm_present && !embedded_present) return result;
     if (!WorldUpdateMarkedLanePlayback(state, lanes, delta_time))
         return result;
 
@@ -2057,10 +2531,12 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
     ImGui::SetCursorScreenPos(img_pos);
     ImGui::Dummy(ImVec2(avail.x, avail.y));
 
-    result.panel =
-        WorldDrawMarkedPanel(state, lanes, scene.panel_layout,
-                             dummy_decap_missing, selected_img,
-                             active_doc_idx);
+    if (draw_panel) {
+        result.panel =
+            WorldDrawMarkedPanel(state, lanes, scene.panel_layout,
+                                 dummy_decap_missing, selected_img,
+                                 active_doc_idx);
+    }
     result.drew = true;
     return result;
 }
@@ -2071,6 +2547,10 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
 {
     if (state.fps < 1.0f) state.fps = 1.0f;
     if (state.fps > 60.0f) state.fps = 60.0f;
+    if (state.embedded_active && state.embedded_is_script) {
+        state.paused = true;
+        state.timer = 0.0f;
+    }
     if (!state.paused)
         state.timer += delta_time;
     float step = 1.0f / state.fps;
@@ -2092,6 +2572,9 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                        ? lane.frame_docs[lane.frame_pos] : lane.doc;
         lane.img = doc_get_img(fdoc, lane.frames[lane.frame_pos]);
         if (lane.img) have_image = true;
+        if (state.embedded_active && state.embedded_is_script &&
+            lane.delay_slot == kWorldEmbeddedSeqScrSlot)
+            have_image = true;
     }
     return have_image;
 }
@@ -2152,6 +2635,51 @@ static bool WorldMarkedEntryHasTimedHold(WorldMarkedSequenceState &state,
     return visible_from > 0 || visible_until > 0;
 }
 
+static int WorldMarkedEntryMotionStartTick(WorldMarkedSequenceState &state,
+                                           int slot, int frame_count,
+                                           int frame_idx)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_idx < 0)
+        return 0;
+    if (frame_idx < (int)state.visible_from[slot].size() &&
+        state.visible_from[slot][frame_idx] > 0)
+        return state.visible_from[slot][frame_idx];
+    return WorldMarkedTickForFrame(state, slot, frame_count, frame_idx);
+}
+
+static int WorldMarkedEntryMotionElapsed(WorldMarkedSequenceState &state,
+                                         int slot, int frame_count,
+                                         int frame_idx, int tick)
+{
+    int start_tick =
+        WorldMarkedEntryMotionStartTick(state, slot, frame_count, frame_idx);
+    return tick > start_tick ? tick - start_tick : 0;
+}
+
+static void WorldMarkedEffectiveLocalDelta(WorldMarkedSequenceState &state,
+                                           int slot, int frame_count,
+                                           int frame_idx, bool dual,
+                                           int tick, int *out_dx, int *out_dy)
+{
+    int dx = dual ? state.dual_dx[slot][frame_idx]
+                  : state.local_dx[slot][frame_idx];
+    int dy = dual ? state.dual_dy[slot][frame_idx]
+                  : state.local_dy[slot][frame_idx];
+    int elapsed =
+        WorldMarkedEntryMotionElapsed(state, slot, frame_count, frame_idx, tick);
+    int vx = (frame_idx < (int)state.motion_dx[slot].size())
+           ? state.motion_dx[slot][frame_idx] : 0;
+    int vy = (frame_idx < (int)state.motion_dy[slot].size())
+           ? state.motion_dy[slot][frame_idx] : 0;
+
+    /* Motion is expressed visually in world pixels. The renderer positions by
+       subtracting anipoints, so visual +X/+Y becomes negative local delta. */
+    dx = ClampWorldMarkedAniptDelta(dx - vx * elapsed);
+    dy = ClampWorldMarkedAniptDelta(dy - vy * elapsed);
+    if (out_dx) *out_dx = dx;
+    if (out_dy) *out_dy = dy;
+}
+
 void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes,
                                 const WorldCanvasLayout &layout,
@@ -2180,16 +2708,20 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
             piece_docs = NULL;
         }
 
-        int local_dx = dual ? state.dual_dx[state_slot][frame_idx]
-                            : state.local_dx[state_slot][frame_idx];
-        int local_dy = dual ? state.dual_dy[state_slot][frame_idx]
-                            : state.local_dy[state_slot][frame_idx];
+        int local_dx = 0;
+        int local_dy = 0;
+        WorldMarkedEffectiveLocalDelta(state, state_slot,
+                                       (int)lane.frames.size(), frame_idx,
+                                       dual, state.frame,
+                                       &local_dx, &local_dy);
         bool *rect_valid = dual ? &render_info.dual_rect_valid[slot]
                                 : &render_info.lane_rect_valid[slot];
         ImVec2 *rect_min = dual ? &render_info.dual_rect_min[slot]
                                 : &render_info.lane_rect_min[slot];
         ImVec2 *rect_max = dual ? &render_info.dual_rect_max[slot]
                                 : &render_info.lane_rect_max[slot];
+        bool *bad_y_anchor = dual ? &render_info.dual_bad_y_anchor[slot]
+                                  : &render_info.lane_bad_y_anchor[slot];
 
         for (size_t pi = 0; pi < pieces->size(); pi++) {
             int piece_idx = (*pieces)[pi];
@@ -2203,6 +2735,10 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
 
             int ax = (int)(short)img->anix + local_dx;
             int ay = (int)(short)img->aniy + local_dy;
+            int raw_aniy = (int)img->aniy;
+            if ((short)img->aniy < 0 || raw_aniy == 0x4000 ||
+                raw_aniy == 0xFFFF || ay < 0 || ay >= 0x4000)
+                *bad_y_anchor = true;
             float spw = img->w * layout.scale;
             float sph = img->h * layout.scale;
             float left = mirror_x
@@ -2302,6 +2838,241 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
                      });
     for (const WorldLaneDrawJob &job : jobs)
         draw_instance(job.slot, job.frame_idx, job.dual, job.mirror_x);
+}
+
+enum WorldBoundaryClass {
+    WorldBoundary_Green = 0,
+    WorldBoundary_Yellow,
+    WorldBoundary_Red
+};
+
+struct WorldBoundaryRect {
+    int left = 0;
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+};
+
+static ImVec2 WorldBoundaryPointToScreen(const WorldCanvasLayout &layout,
+                                         int x, int y)
+{
+    return ImVec2(layout.pos.x + (float)x * layout.scale,
+                  layout.pos.y + (float)y * layout.scale);
+}
+
+static WorldBoundaryRect WorldBoundaryRectFromScreen(ImVec2 rect_min,
+                                                     ImVec2 rect_max,
+                                                     const WorldCanvasLayout &layout)
+{
+    float scale = layout.scale > 0.0f ? layout.scale : 1.0f;
+    WorldBoundaryRect r;
+    r.left = (int)std::floor((rect_min.x - layout.pos.x) / scale + 0.0001f);
+    r.top = (int)std::floor((rect_min.y - layout.pos.y) / scale + 0.0001f);
+    r.right = (int)std::ceil((rect_max.x - layout.pos.x) / scale - 0.0001f) - 1;
+    r.bottom = (int)std::ceil((rect_max.y - layout.pos.y) / scale - 0.0001f) - 1;
+    return r;
+}
+
+static WorldBoundaryClass WorldBoundaryClassify(const WorldBoundaryRect &r,
+                                                bool bad_y_anchor)
+{
+    (void)bad_y_anchor;
+
+    if (r.top < 0 || r.bottom > 253 || r.right > 511)
+        return WorldBoundary_Red;
+
+    if (r.left >= 0 && r.top >= 0 && r.right <= 399 && r.bottom <= 253)
+        return WorldBoundary_Green;
+
+    if (r.right <= 511 && r.bottom <= 253)
+        return WorldBoundary_Yellow;
+
+    return WorldBoundary_Red;
+}
+
+static ImU32 WorldBoundaryColor(WorldBoundaryClass cls, int alpha)
+{
+    if (cls == WorldBoundary_Red)
+        return IM_COL32(255, 70, 70, alpha);
+    if (cls == WorldBoundary_Yellow)
+        return IM_COL32(255, 210, 60, alpha);
+    return IM_COL32(80, 235, 120, alpha);
+}
+
+static const char *WorldBoundaryName(WorldBoundaryClass cls)
+{
+    if (cls == WorldBoundary_Red) return "RED";
+    if (cls == WorldBoundary_Yellow) return "YELLOW";
+    return "GREEN";
+}
+
+static void WorldDrawBoundaryGuides(ImDrawList *dl,
+                                    const WorldCanvasLayout &layout)
+{
+    if (!dl) return;
+
+    ImVec2 green_min = WorldBoundaryPointToScreen(layout, 0, 0);
+    ImVec2 green_max = WorldBoundaryPointToScreen(layout, 400, 254);
+    ImVec2 yellow_min = WorldBoundaryPointToScreen(layout, 0, 0);
+    ImVec2 yellow_max = WorldBoundaryPointToScreen(layout, 512, 254);
+    const float red_pad = 7.0f;
+    ImVec2 red_min(yellow_min.x - red_pad, yellow_min.y - red_pad);
+    ImVec2 red_max(yellow_max.x + red_pad, yellow_max.y + red_pad);
+
+    dl->AddRect(red_min, red_max,
+                WorldBoundaryColor(WorldBoundary_Red, 145),
+                0.0f, 0, 1.2f);
+    dl->AddRect(yellow_min, yellow_max,
+                WorldBoundaryColor(WorldBoundary_Yellow, 190),
+                0.0f, 0, 1.4f);
+    dl->AddRect(green_min, green_max,
+                WorldBoundaryColor(WorldBoundary_Green, 230),
+                0.0f, 0, 1.8f);
+}
+
+static bool WorldBoundaryInfoForRect(const WorldMarkedLaneRenderInfo &render_info,
+                                     const WorldCanvasLayout &layout,
+                                     int slot, bool dual,
+                                     WorldBoundaryRect *out_rect,
+                                     WorldBoundaryClass *out_class)
+{
+    bool valid = dual ? render_info.dual_rect_valid[slot]
+                      : render_info.lane_rect_valid[slot];
+    if (!valid) return false;
+
+    ImVec2 mn = dual ? render_info.dual_rect_min[slot]
+                     : render_info.lane_rect_min[slot];
+    ImVec2 mx = dual ? render_info.dual_rect_max[slot]
+                     : render_info.lane_rect_max[slot];
+    bool bad_y = dual ? render_info.dual_bad_y_anchor[slot]
+                      : render_info.lane_bad_y_anchor[slot];
+    WorldBoundaryRect rect = WorldBoundaryRectFromScreen(mn, mx, layout);
+    WorldBoundaryClass cls = WorldBoundaryClassify(rect, bad_y);
+    if (out_rect) *out_rect = rect;
+    if (out_class) *out_class = cls;
+    return true;
+}
+
+static void WorldDrawBoundaryStatus(ImDrawList *dl,
+                                    const WorldMarkedSequenceState &state,
+                                    const std::vector<WorldMarkedLane> &lanes,
+                                    const WorldMarkedLaneRenderInfo &render_info,
+                                    const WorldCanvasLayout &layout,
+                                    ImVec2 world_pos, float world_width)
+{
+    if (!dl || !state.show_boundary_overlay) return;
+
+    int green_count = 0;
+    int yellow_count = 0;
+    int red_count = 0;
+    int first_issue_slot = -1;
+    bool first_issue_dual = false;
+    WorldBoundaryRect first_issue_rect = {};
+    WorldBoundaryClass first_issue_class = WorldBoundary_Green;
+
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        for (int pass = 0; pass < 2; pass++) {
+            bool dual = pass != 0;
+            WorldBoundaryRect rect;
+            WorldBoundaryClass cls;
+            if (!WorldBoundaryInfoForRect(render_info, layout, slot, dual,
+                                          &rect, &cls))
+                continue;
+            if (cls == WorldBoundary_Red) red_count++;
+            else if (cls == WorldBoundary_Yellow) yellow_count++;
+            else green_count++;
+
+            if (cls != WorldBoundary_Green &&
+                (first_issue_slot < 0 || cls > first_issue_class)) {
+                first_issue_slot = slot;
+                first_issue_dual = dual;
+                first_issue_rect = rect;
+                first_issue_class = cls;
+            }
+        }
+    }
+
+    char label[256];
+    if (first_issue_slot >= 0) {
+        snprintf(label, sizeof(label),
+                 "Bounds: %s row %d%s L%d T%d R%d B%d   ok=%d warn=%d bad=%d",
+                 WorldBoundaryName(first_issue_class),
+                 first_issue_slot + 1,
+                 first_issue_dual ? " dual" : "",
+                 first_issue_rect.left, first_issue_rect.top,
+                 first_issue_rect.right, first_issue_rect.bottom,
+                 green_count, yellow_count, red_count);
+    } else {
+        snprintf(label, sizeof(label),
+                 "Bounds: GREEN visible 0..399 x 0..253   DMA X clip max 511");
+    }
+
+    ImU32 col = first_issue_slot >= 0
+              ? WorldBoundaryColor(first_issue_class, 255)
+              : WorldBoundaryColor(WorldBoundary_Green, 255);
+    ImVec2 label_pos(world_pos.x, world_pos.y + 20.0f);
+    ImVec2 label_sz = ImGui::CalcTextSize(label);
+    float label_w = label_sz.x + 8.0f;
+    if (label_w > world_width) label_w = world_width;
+    dl->AddRectFilled(label_pos,
+                      ImVec2(label_pos.x + label_w, label_pos.y + 18.0f),
+                      IM_COL32(0, 0, 0, 190));
+    dl->PushClipRect(label_pos,
+                     ImVec2(label_pos.x + label_w, label_pos.y + 18.0f), true);
+    dl->AddText(ImVec2(label_pos.x + 4.0f, label_pos.y + 2.0f),
+                col, label);
+    dl->PopClipRect();
+}
+
+static void WorldDrawMarkedBoundaryOverlay(ImDrawList *dl,
+                                           const WorldMarkedSequenceState &state,
+                                           const std::vector<WorldMarkedLane> &lanes,
+                                           const WorldMarkedLaneRenderInfo &render_info,
+                                           const WorldCanvasLayout &layout)
+{
+    if (!dl || !state.show_boundary_overlay) return;
+
+    WorldDrawBoundaryGuides(dl, layout);
+    if (!state.draw_sprite_borders) return;
+
+    for (int slot = 0; slot < (int)lanes.size(); slot++) {
+        for (int pass = 0; pass < 2; pass++) {
+            bool dual = pass != 0;
+            WorldBoundaryRect rect;
+            WorldBoundaryClass cls;
+            if (!WorldBoundaryInfoForRect(render_info, layout, slot, dual,
+                                          &rect, &cls))
+                continue;
+            if (cls == WorldBoundary_Green)
+                continue;
+
+            ImVec2 mn = dual ? render_info.dual_rect_min[slot]
+                             : render_info.lane_rect_min[slot];
+            ImVec2 mx = dual ? render_info.dual_rect_max[slot]
+                             : render_info.lane_rect_max[slot];
+            float thick = cls == WorldBoundary_Red ? 3.0f :
+                          cls == WorldBoundary_Yellow ? 2.4f : 1.6f;
+            dl->AddRect(ImVec2(mn.x - 1.0f, mn.y - 1.0f),
+                        ImVec2(mx.x + 1.0f, mx.y + 1.0f),
+                        IM_COL32(0, 0, 0, 220), 0.0f, 0, thick + 1.2f);
+            dl->AddRect(mn, mx, WorldBoundaryColor(cls, 255),
+                        0.0f, 0, thick);
+
+            if (cls != WorldBoundary_Green) {
+                char tag[64];
+                snprintf(tag, sizeof(tag), "%s R%d%s",
+                         WorldBoundaryName(cls), slot + 1,
+                         dual ? "D" : "");
+                ImVec2 tag_sz = ImGui::CalcTextSize(tag);
+                ImVec2 tag_pos(mn.x, mx.y + 2.0f);
+                dl->AddRectFilled(ImVec2(tag_pos.x - 2.0f, tag_pos.y - 1.0f),
+                                  ImVec2(tag_pos.x + tag_sz.x + 2.0f,
+                                         tag_pos.y + tag_sz.y + 1.0f),
+                                  IM_COL32(0, 0, 0, 190));
+                dl->AddText(tag_pos, WorldBoundaryColor(cls, 255), tag);
+            }
+        }
+    }
 }
 
 void WorldDrawMarkedLaneTags(ImDrawList *dl,
@@ -2409,11 +3180,22 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
                                result.render_info);
     dl->AddCircle(ImVec2(origin_x, origin_y), 4.0f,
                   IM_COL32(255, 200, 0, 255), 0, 1.5f);
-    WorldDrawMarkedLaneTags(dl, lanes, result.render_info, world_pos);
-    WorldDrawMarkedLaneStatus(dl, state, lanes, world_pos, world_width);
+    WorldDrawMarkedBoundaryOverlay(dl, state, lanes, result.render_info,
+                                   result.layout);
+    if (state.draw_sprite_borders) {
+        WorldDrawMarkedLaneTags(dl, lanes, result.render_info, world_pos);
+        WorldDrawMarkedLaneStatus(dl, state, lanes, world_pos, world_width);
+    }
+    WorldDrawBoundaryStatus(dl, state, lanes, result.render_info,
+                            result.layout, world_pos, world_width);
 
     result.panel_layout =
         ComputeWorldMarkedPanelLayout(avail, img_pos, (int)lanes.size());
+    if (g_world_marked_panel_docked) {
+        result.panel_layout.pos = ImVec2(-10000.0f, -10000.0f);
+        result.panel_layout.width = 0.0f;
+        result.panel_layout.height = 0.0f;
+    }
     WorldHandleMarkedLaneDrag(dl, state, lanes, result.render_info,
                               result.layout, result.panel_layout);
     return result;
@@ -2426,13 +3208,36 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
                                                   int active_doc_idx)
 {
     WorldMarkedPanelAction action = {};
+    bool script_table_mode = state.embedded_active && state.embedded_is_script;
+    if (script_table_mode) {
+        state.paused = true;
+        state.timer = 0.0f;
+    }
 
-    ImGui::Text("Frame Sequence");
+    if (state.embedded_active) {
+        const char *kind = state.embedded_is_script ? "Script" : "Sequence";
+        const char *name = state.embedded_name.empty()
+                         ? "(unnamed)" : state.embedded_name.c_str();
+        int slot = kWorldEmbeddedSeqScrSlot;
+        int n = (int)state.sequence_frames[slot].size();
+        int entry = WorldMarkedFrameForTick(state, slot, n, state.frame,
+                                            state.hold_end[slot]);
+        int total_ticks = WorldMarkedSequenceTicks(state, slot, n);
+        ImGui::Text("%s: %s   Entry %d/%d   Tick %d/%d",
+                    kind, name, n > 0 ? entry + 1 : 0, n,
+                    state.frame, total_ticks);
+    } else {
+        ImGui::Text("Frame Sequence");
+    }
     ImGui::SameLine();
+    if (script_table_mode) ImGui::BeginDisabled();
     if (ImGui::SmallButton(state.paused ? "Play##world_marked_pause"
                                         : "Pause##world_marked_pause")) {
         state.paused = !state.paused;
     }
+    if (script_table_mode) ImGui::EndDisabled();
+    if (script_table_mode && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Scripts load as paused tables. Select rows to inspect/edit them.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Refresh##world_marked_restart"))
         WorldMarkedRestart(state);
@@ -2443,29 +3248,50 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     ImGui::SliderFloat("FPS##world_marked_panel_fps", &state.fps, 1.0f, 60.0f, "%.1f");
     ImGui::SameLine();
     ImGui::TextDisabled("Tick %d", state.frame);
+    if (state.embedded_active) {
+        ImGui::SameLine();
+        ImGui::Checkbox("Companions##world_marked_companions",
+                        &state.embedded_show_companions);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Show marked rows, ASM lanes, dummy body, and other helper lanes alongside the loaded sequence/script.");
+    }
     ImGui::SameLine();
     ImGui::Checkbox("Borders##world_marked_borders", &state.draw_sprite_borders);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Draw colored sprite bounds in World View.");
     ImGui::SameLine();
+    ImGui::Checkbox("Bounds##world_marked_bounds", &state.show_boundary_overlay);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Draw TV-safe World View guides: green is 0..399 x 0..253,\n"
+                          "yellow extends to DMA X 511 while vertically safe,\n"
+                          "red is outside those limits.");
+    ImGui::SameLine();
     if (ImGui::SmallButton("Copy ASM##world_marked_copy_asm")) {
-        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+        state.generated_asm = state.embedded_active
+                            ? WorldBuildSeqScrAsmExport(state.embedded_record_index)
+                            : WorldBuildMarkedAsm(state, lanes);
         ImGui::SetClipboardText(state.generated_asm.c_str());
         action.copied_asm = true;
         action.copied_lane_count = (int)lanes.size();
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned local-anipoint tables.");
+        ImGui::SetTooltip(state.embedded_active
+            ? "Copies ASM for the loaded sequence/script record."
+            : "Copies one animation table per marked tab, plus aligned local-anipoint tables.");
     ImGui::SameLine();
     if (ImGui::SmallButton("View ASM##world_marked_view_asm")) {
-        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+        state.generated_asm = state.embedded_active
+                            ? WorldBuildSeqScrAsmExport(state.embedded_record_index)
+                            : WorldBuildMarkedAsm(state, lanes);
         state.show_asm = true;
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Preview the generated animation-table source.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Save ASM##world_marked_save_asm")) {
-        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+        state.generated_asm = state.embedded_active
+                            ? WorldBuildSeqScrAsmExport(state.embedded_record_index)
+                            : WorldBuildMarkedAsm(state, lanes);
         action.request_save_asm = true;
     }
     if (ImGui::IsItemHovered())
@@ -2523,6 +3349,470 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     return action;
 }
 
+static void WorldSyncEditorSelectionToSprite(Document *doc, int doc_idx,
+                                             int img_idx);
+
+static void WorldDrawEmbeddedScriptTable(WorldMarkedSequenceState &state,
+                                         WorldMarkedLane &lane)
+{
+    int slot = lane.delay_slot;
+    int n = (int)lane.frames.size();
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || n <= 0)
+        return;
+
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+    ImGui::Separator();
+    ImGui::Text("Script Table  %s  entries=%d",
+                state.embedded_name.empty() ? "(unnamed)" : state.embedded_name.c_str(),
+                n);
+    ImGui::TextDisabled("World View shows the first drawable frame from each target sequence. Load Seq opens the full target sequence.");
+
+    ImGuiTableFlags flags =
+        ImGuiTableFlags_Borders |
+        ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_Resizable |
+        ImGuiTableFlags_SizingStretchProp;
+    int load_target = -1;
+    if (ImGui::BeginTable("##world_embedded_script_table", 6, flags)) {
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 34.0f);
+        ImGui::TableSetupColumn("Target", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Ticks", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("dX", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("dY", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 78.0f);
+        ImGui::TableHeadersRow();
+
+        for (int fi = 0; fi < n; fi++) {
+            bool current = fi == lane.frame_pos;
+            ImGui::PushID(fi);
+            ImGui::TableNextRow();
+            if (current) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                                       IM_COL32(38, 86, 135, 180));
+            }
+
+            ImGui::TableNextColumn();
+            char row_label[16];
+            snprintf(row_label, sizeof(row_label), "%d", fi);
+            if (ImGui::Selectable(row_label, current)) {
+                state.paused = true;
+                state.timer = 0.0f;
+                state.frame = WorldMarkedTickForFrame(state, slot, n, fi);
+                lane.frame_pos = fi;
+                if (fi < (int)lane.frames.size())
+                    WorldSyncEditorSelectionToSprite(lane.doc, lane.doc_idx,
+                                                     lane.frames[(size_t)fi]);
+            }
+
+            ImGui::TableNextColumn();
+            int target = (fi < (int)state.embedded_targets.size())
+                       ? state.embedded_targets[(size_t)fi] : -1;
+            const char *target_name =
+                (fi < (int)state.embedded_frame_labels.size() &&
+                 !state.embedded_frame_labels[(size_t)fi].empty())
+                    ? state.embedded_frame_labels[(size_t)fi].c_str()
+                    : "sequence";
+            ImGui::Text("%d  %s", target, target_name);
+
+            ImGui::TableNextColumn();
+            int ticks = state.frame_delays[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##script_ticks", &ticks, 0, 0)) {
+                state.frame_delays[slot][fi] = ClampTimelineHold(ticks);
+                state.paused = true;
+            }
+
+            ImGui::TableNextColumn();
+            int dx = state.local_dx[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##script_dx", &dx, 0, 0)) {
+                state.local_dx[slot][fi] = ClampWorldMarkedAniptDelta(dx);
+                state.paused = true;
+            }
+
+            ImGui::TableNextColumn();
+            int dy = state.local_dy[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##script_dy", &dy, 0, 0)) {
+                state.local_dy[slot][fi] = ClampWorldMarkedAniptDelta(dy);
+                state.paused = true;
+            }
+
+            ImGui::TableNextColumn();
+            bool can_load = target >= 0 && g_doc && target < (int)g_doc->seqcnt;
+            ImGui::BeginDisabled(!can_load);
+            if (ImGui::SmallButton("Load Seq##script_load_target"))
+                load_target = target;
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (load_target >= 0)
+        WorldLoadSeqScrRecord(load_target);
+}
+
+static void WorldEmbeddedSequenceRefreshMetadata(WorldMarkedSequenceState &state,
+                                                 WorldMarkedLane &lane)
+{
+    int slot = kWorldEmbeddedSeqScrSlot;
+    if (lane.delay_slot != slot)
+        slot = lane.delay_slot;
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs)
+        return;
+
+    lane.frames = state.sequence_frames[slot];
+    int n = (int)lane.frames.size();
+    state.embedded_targets.resize((size_t)n);
+    state.embedded_frame_labels.resize((size_t)n);
+    WorldMarkedBuildSingleFrameLane(lane.doc, lane.frames,
+                                    lane.frame_pieces, lane.frame_labels);
+    for (int fi = 0; fi < n; fi++) {
+        int target = lane.frames[(size_t)fi];
+        state.embedded_targets[(size_t)fi] = target;
+        IMG *img = doc_get_img(lane.doc, target);
+        std::string label;
+        if (img) {
+            label = img_name_string(img);
+        } else {
+            char fallback[32];
+            snprintf(fallback, sizeof(fallback), "img[%d]?", target);
+            label = fallback;
+        }
+        state.embedded_frame_labels[(size_t)fi] = label;
+        if (fi < (int)lane.frame_labels.size())
+            lane.frame_labels[(size_t)fi] = label;
+    }
+
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+    lane.frame_pos = WorldMarkedFrameForTick(state, slot, n, state.frame,
+                                             state.hold_end[slot]);
+    if (lane.frame_pos < 0) lane.frame_pos = 0;
+    if (lane.frame_pos >= n) lane.frame_pos = n - 1;
+    lane.img = (lane.frame_pos >= 0 && lane.frame_pos < n)
+             ? doc_get_img(lane.doc, lane.frames[(size_t)lane.frame_pos])
+             : NULL;
+}
+
+static void WorldSyncEditorSelectionToSprite(Document *doc, int doc_idx,
+                                             int img_idx)
+{
+    if (!doc || img_idx < 0 || !doc_get_img(doc, img_idx))
+        return;
+
+    if (doc_idx >= 0 && doc_idx != document_active_index()) {
+        document_set_active(doc_idx);
+        ResetPerDocumentUiState(false);
+        g_doc_tab_select_request = doc_idx;
+    }
+
+    if (!g_doc || !doc_get_img(g_doc, img_idx))
+        return;
+    g_doc->ilselected = img_idx;
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+}
+
+static void WorldEmbeddedSequenceSelectEntry(WorldMarkedSequenceState &state,
+                                             WorldMarkedLane &lane,
+                                             int frame_idx)
+{
+    int slot = lane.delay_slot;
+    int n = (int)lane.frames.size();
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || n <= 0)
+        return;
+    if (frame_idx < 0) frame_idx = 0;
+    if (frame_idx >= n) frame_idx = n - 1;
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = WorldMarkedTickForFrame(state, slot, n, frame_idx);
+    lane.frame_pos = frame_idx;
+    lane.img = doc_get_img(lane.doc, lane.frames[(size_t)frame_idx]);
+    WorldSyncEditorSelectionToSprite(lane.doc, lane.doc_idx,
+                                     lane.frames[(size_t)frame_idx]);
+}
+
+static void WorldMarkedApplyAutoYChain(WorldMarkedSequenceState &state,
+                                       const WorldMarkedLane &lane,
+                                       int start_frame, int show_step,
+                                       int fallback_life, int visual_vx,
+                                       int visual_vy, int breach_y);
+static void WorldMarkedClearMotionFrom(WorldMarkedSequenceState &state,
+                                       int slot, int start_frame);
+
+static void WorldDrawEmbeddedSequenceAutoTools(WorldMarkedSequenceState &state,
+                                               WorldMarkedLane &lane,
+                                               int edit_fi)
+{
+    static int s_embed_auto_step = 3;
+    static int s_embed_auto_life = 32;
+    static int s_embed_auto_vx = 0;
+    static int s_embed_auto_vy = 1;
+    static int s_embed_auto_y = 200;
+
+    ImGui::TextDisabled("Auto Y");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Apply Show@, Hide@, and vX/vY from the selected entry onward.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Step");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(42.0f);
+    if (ImGui::InputInt("##world_embed_auto_step", &s_embed_auto_step, 0, 0)) {
+        if (s_embed_auto_step < 0) s_embed_auto_step = 0;
+        if (s_embed_auto_step > 999) s_embed_auto_step = 999;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Life");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(46.0f);
+    if (ImGui::InputInt("##world_embed_auto_life", &s_embed_auto_life, 0, 0)) {
+        if (s_embed_auto_life < 1) s_embed_auto_life = 1;
+        if (s_embed_auto_life > 9999) s_embed_auto_life = 9999;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("vX");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(46.0f);
+    if (ImGui::InputInt("##world_embed_auto_vx", &s_embed_auto_vx, 0, 0))
+        s_embed_auto_vx = ClampWorldMarkedMotion(s_embed_auto_vx);
+    ImGui::SameLine();
+    ImGui::TextDisabled("vY");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(46.0f);
+    if (ImGui::InputInt("##world_embed_auto_vy", &s_embed_auto_vy, 0, 0))
+        s_embed_auto_vy = ClampWorldMarkedMotion(s_embed_auto_vy);
+    ImGui::SameLine();
+    ImGui::TextDisabled("Y");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(50.0f);
+    if (ImGui::InputInt("##world_embed_auto_y", &s_embed_auto_y, 0, 0)) {
+        if (s_embed_auto_y < -9999) s_embed_auto_y = -9999;
+        if (s_embed_auto_y >  9999) s_embed_auto_y =  9999;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Apply From Entry##world_embed_auto_apply")) {
+        WorldMarkedApplyAutoYChain(state, lane, edit_fi,
+                                   s_embed_auto_step, s_embed_auto_life,
+                                   s_embed_auto_vx, s_embed_auto_vy,
+                                   s_embed_auto_y);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear v##world_embed_auto_clear")) {
+        WorldMarkedClearMotionFrom(state, lane.delay_slot, edit_fi);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    }
+}
+
+static void WorldDrawEmbeddedSequenceTable(WorldMarkedSequenceState &state,
+                                           WorldMarkedLane &lane)
+{
+    int slot = lane.delay_slot;
+    int n = (int)lane.frames.size();
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || n <= 0)
+        return;
+
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+    WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    n = (int)lane.frames.size();
+    int edit_fi = lane.frame_pos;
+    if (edit_fi < 0) edit_fi = 0;
+    if (edit_fi >= n) edit_fi = n - 1;
+
+    ImGui::Separator();
+    ImGui::Text("Sequence Table  %s  entries=%d",
+                state.embedded_name.empty() ? "(unnamed)" : state.embedded_name.c_str(),
+                n);
+    ImGui::SameLine();
+    ImGui::TextDisabled("Entry %d/%d", edit_fi + 1, n);
+    ImGui::SameLine();
+    ImGui::TextDisabled("Order");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(edit_fi <= 0);
+    if (ImGui::SmallButton("<##world_embed_seq_left")) {
+        WorldMarkedMoveSequenceEntry(state, slot, edit_fi, -1);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+        edit_fi = lane.frame_pos;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(edit_fi >= n - 1);
+    if (ImGui::SmallButton(">##world_embed_seq_right")) {
+        WorldMarkedMoveSequenceEntry(state, slot, edit_fi, +1);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+        edit_fi = lane.frame_pos;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+##world_embed_seq_dup")) {
+        WorldMarkedDuplicateSequenceEntry(state, slot, edit_fi);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+        edit_fi = lane.frame_pos;
+        n = (int)lane.frames.size();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(n <= 1);
+    if (ImGui::SmallButton("-##world_embed_seq_del")) {
+        WorldMarkedDeleteSequenceEntry(state, slot, edit_fi);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+        edit_fi = lane.frame_pos;
+        n = (int)lane.frames.size();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reset Seq##world_embed_seq_reset")) {
+        WorldMarkedResetSequenceToDefaults(state, slot);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+        edit_fi = lane.frame_pos;
+        n = (int)lane.frames.size();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Restore the loaded embedded sequence order and clear local preview edits.");
+
+    WorldDrawEmbeddedSequenceAutoTools(state, lane, edit_fi);
+
+    ImGuiTableFlags flags =
+        ImGuiTableFlags_Borders |
+        ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_Resizable |
+        ImGuiTableFlags_ScrollY |
+        ImGuiTableFlags_ScrollX |
+        ImGuiTableFlags_SizingFixedFit;
+    float table_h = ImGui::GetContentRegionAvail().y - 48.0f;
+    if (table_h < 128.0f) table_h = 128.0f;
+    if (ImGui::BeginTable("##world_embedded_sequence_table", 12, flags,
+                          ImVec2(0.0f, table_h))) {
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 36.0f);
+        ImGui::TableSetupColumn("Sprite", ImGuiTableColumnFlags_WidthFixed, 190.0f);
+        ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+        ImGui::TableSetupColumn("Ticks", ImGuiTableColumnFlags_WidthFixed, 58.0f);
+        ImGui::TableSetupColumn("dX", ImGuiTableColumnFlags_WidthFixed, 58.0f);
+        ImGui::TableSetupColumn("dY", ImGuiTableColumnFlags_WidthFixed, 58.0f);
+        ImGui::TableSetupColumn("Show", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("Hide", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("vX", ImGuiTableColumnFlags_WidthFixed, 52.0f);
+        ImGui::TableSetupColumn("vY", ImGuiTableColumnFlags_WidthFixed, 52.0f);
+        ImGui::TableSetupColumn("Z", ImGuiTableColumnFlags_WidthFixed, 44.0f);
+        ImGui::TableSetupColumn("Dual", ImGuiTableColumnFlags_WidthFixed, 52.0f);
+        ImGui::TableHeadersRow();
+
+        for (int fi = 0; fi < n; fi++) {
+            bool current = fi == lane.frame_pos;
+            ImGui::PushID(fi);
+            ImGui::TableNextRow();
+            if (current) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                                       IM_COL32(38, 86, 135, 180));
+            }
+
+            ImGui::TableNextColumn();
+            char row_label[16];
+            snprintf(row_label, sizeof(row_label), "%d", fi);
+            if (ImGui::Selectable(row_label, current,
+                                  ImGuiSelectableFlags_SpanAllColumns)) {
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            const char *sprite_name =
+                (fi < (int)state.embedded_frame_labels.size() &&
+                 !state.embedded_frame_labels[(size_t)fi].empty())
+                    ? state.embedded_frame_labels[(size_t)fi].c_str()
+                    : "(missing)";
+            ImGui::TextUnformatted(sprite_name);
+
+            ImGui::TableNextColumn();
+            int target = state.sequence_frames[slot][(size_t)fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_img_index", &target, 0, 0)) {
+                target = ClampWorldMarkedAniptDelta(target);
+                state.sequence_frames[slot][(size_t)fi] = target;
+                state.paused = true;
+                state.timer = 0.0f;
+                state.frame = WorldMarkedTickForFrame(state, slot, n, fi);
+                WorldEmbeddedSequenceRefreshMetadata(state, lane);
+                WorldSyncEditorSelectionToSprite(lane.doc, lane.doc_idx, target);
+            }
+
+            ImGui::TableNextColumn();
+            int ticks = state.frame_delays[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_ticks", &ticks, 0, 0)) {
+                state.frame_delays[slot][fi] = ClampTimelineHold(ticks);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            int dx = state.local_dx[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_dx", &dx, 0, 0)) {
+                state.local_dx[slot][fi] = ClampWorldMarkedAniptDelta(dx);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            int dy = state.local_dy[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_dy", &dy, 0, 0)) {
+                state.local_dy[slot][fi] = ClampWorldMarkedAniptDelta(dy);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            int show_at = state.visible_from[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_show", &show_at, 0, 0)) {
+                state.visible_from[slot][fi] =
+                    ClampWorldMarkedVisibleFrom(show_at);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            int hide_at = state.visible_until[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_hide", &hide_at, 0, 0)) {
+                state.visible_until[slot][fi] =
+                    ClampWorldMarkedVisibleUntil(hide_at);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            int vx = state.motion_dx[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_vx", &vx, 0, 0)) {
+                state.motion_dx[slot][fi] = ClampWorldMarkedMotion(vx);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            int vy = state.motion_dy[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_vy", &vy, 0, 0)) {
+                state.motion_dy[slot][fi] = ClampWorldMarkedMotion(vy);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            int z = state.frame_z[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_z", &z, 0, 0)) {
+                state.frame_z[slot][fi] = ClampWorldMarkedZ(z);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            bool dual = state.dual_on[slot][fi] != 0;
+            if (ImGui::Checkbox("##seq_dual", &dual)) {
+                state.dual_on[slot][fi] = dual ? 1 : 0;
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+            ImGui::PopID();
+        }
+
+        ImGui::EndTable();
+    }
+}
+
 WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
                                             std::vector<WorldMarkedLane> &lanes,
                                             const WorldMarkedPanelLayout &layout,
@@ -2546,12 +3836,25 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
         for (int slot = 0; slot < (int)lanes.size(); slot++) {
             WorldMarkedLane &lane = lanes[slot];
             ImGui::PushID(slot);
-            WorldDrawMarkedLaneControls(state, lane, lanes, slot);
+            if (state.embedded_active && state.embedded_is_script &&
+                lane.delay_slot == kWorldEmbeddedSeqScrSlot) {
+                WorldDrawEmbeddedScriptTable(state, lane);
+            } else if (state.embedded_active && !state.embedded_is_script &&
+                       lane.delay_slot == kWorldEmbeddedSeqScrSlot) {
+                WorldDrawEmbeddedSequenceTable(state, lane);
 
-            WorldMarkedLaneThumbClick thumb_click =
-                WorldDrawMarkedLaneThumbnails(state, lane);
-            if (thumb_click.clicked)
-                result.thumb_click = thumb_click;
+                WorldMarkedLaneThumbClick thumb_click =
+                    WorldDrawMarkedLaneThumbnails(state, lane);
+                if (thumb_click.clicked)
+                    result.thumb_click = thumb_click;
+            } else {
+                WorldDrawMarkedLaneControls(state, lane, lanes, slot);
+
+                WorldMarkedLaneThumbClick thumb_click =
+                    WorldDrawMarkedLaneThumbnails(state, lane);
+                if (thumb_click.clicked)
+                    result.thumb_click = thumb_click;
+            }
             ImGui::PopID();
         }
     }
@@ -2561,6 +3864,139 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
 
     result.copied_popup_asm = WorldDrawMarkedAsmPopup(state);
     return result;
+}
+
+static bool WorldMarkedFrameWorldYBounds(const WorldMarkedLane &lane,
+                                         int frame_idx, int local_dy,
+                                         int *out_top, int *out_bottom)
+{
+    if (frame_idx < 0 || frame_idx >= (int)lane.frames.size())
+        return false;
+
+    const std::vector<int> *pieces = NULL;
+    const std::vector<Document*> *piece_docs = NULL;
+    if (frame_idx < (int)lane.frame_pieces.size())
+        pieces = &lane.frame_pieces[frame_idx];
+    if (frame_idx < (int)lane.frame_piece_docs.size())
+        piece_docs = &lane.frame_piece_docs[frame_idx];
+
+    std::vector<int> fallback_piece;
+    if (!pieces || pieces->empty()) {
+        fallback_piece.push_back(lane.frames[frame_idx]);
+        pieces = &fallback_piece;
+        piece_docs = NULL;
+    }
+
+    bool valid = false;
+    int top = 0;
+    int bottom = 0;
+    for (size_t pi = 0; pi < pieces->size(); pi++) {
+        Document *pdoc = (piece_docs && pi < piece_docs->size() && (*piece_docs)[pi])
+                       ? (*piece_docs)[pi] : lane.doc;
+        IMG *img = doc_get_img(pdoc, (*pieces)[pi]);
+        if (!img) continue;
+
+        int piece_top = g_world_state.origin_y - ((int)(short)img->aniy + local_dy);
+        int piece_bottom = piece_top + (int)img->h;
+        if (!valid) {
+            top = piece_top;
+            bottom = piece_bottom;
+            valid = true;
+        } else {
+            if (piece_top < top) top = piece_top;
+            if (piece_bottom > bottom) bottom = piece_bottom;
+        }
+    }
+
+    if (!valid) return false;
+    if (out_top) *out_top = top;
+    if (out_bottom) *out_bottom = bottom;
+    return true;
+}
+
+static int WorldMarkedTicksUntilYBreach(const WorldMarkedLane &lane,
+                                        int frame_idx, int local_dy,
+                                        int visual_vy, int breach_y,
+                                        int fallback_life)
+{
+    int life = fallback_life < 1 ? 1 : fallback_life;
+    int top = 0;
+    int bottom = 0;
+    if (!WorldMarkedFrameWorldYBounds(lane, frame_idx, local_dy,
+                                      &top, &bottom))
+        return life;
+
+    if (visual_vy > 0) {
+        int dist = breach_y - bottom + 1; /* bottom moves past the line */
+        if (dist <= 0) return 1;
+        int ticks = (dist + visual_vy - 1) / visual_vy;
+        return ticks < 1 ? 1 : ticks;
+    }
+    if (visual_vy < 0) {
+        int speed = -visual_vy;
+        int dist = top - breach_y + 1;    /* top moves past the line */
+        if (dist <= 0) return 1;
+        int ticks = (dist + speed - 1) / speed;
+        return ticks < 1 ? 1 : ticks;
+    }
+    return life;
+}
+
+static void WorldMarkedApplyAutoYChain(WorldMarkedSequenceState &state,
+                                       const WorldMarkedLane &lane,
+                                       int start_frame, int show_step,
+                                       int fallback_life, int visual_vx,
+                                       int visual_vy, int breach_y)
+{
+    int slot = lane.delay_slot;
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs)
+        return;
+    int n = (int)lane.frames.size();
+    if (n <= 0) return;
+    if (start_frame < 0) start_frame = 0;
+    if (start_frame >= n) start_frame = n - 1;
+
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+    int step = show_step < 0 ? 0 : show_step;
+    int life = fallback_life < 1 ? 1 : fallback_life;
+    int base_show = state.visible_from[slot][start_frame];
+    if (base_show <= 0)
+        base_show = WorldMarkedTickForFrame(state, slot, n, start_frame);
+
+    visual_vx = ClampWorldMarkedMotion(visual_vx);
+    visual_vy = ClampWorldMarkedMotion(visual_vy);
+    for (int fi = start_frame; fi < n; fi++) {
+        int show_tick = base_show + (fi - start_frame) * step;
+        int entry_life =
+            WorldMarkedTicksUntilYBreach(lane, fi,
+                                         state.local_dy[slot][fi],
+                                         visual_vy, breach_y, life);
+        state.visible_from[slot][fi] = ClampWorldMarkedVisibleFrom(show_tick);
+        state.visible_until[slot][fi] =
+            ClampWorldMarkedVisibleUntil(show_tick + entry_life);
+        state.motion_dx[slot][fi] = visual_vx;
+        state.motion_dy[slot][fi] = visual_vy;
+        if (step > 0)
+            state.frame_delays[slot][fi] = ClampTimelineHold(step);
+    }
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = base_show;
+}
+
+static void WorldMarkedClearMotionFrom(WorldMarkedSequenceState &state,
+                                       int slot, int start_frame)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs)
+        return;
+    int n = (int)state.sequence_frames[slot].size();
+    if (n <= 0) n = (int)state.motion_dx[slot].size();
+    if (start_frame < 0) start_frame = 0;
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+    for (int fi = start_frame; fi < n; fi++) {
+        state.motion_dx[slot][fi] = 0;
+        state.motion_dy[slot][fi] = 0;
+    }
 }
 
 void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
@@ -2676,6 +4112,8 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         int local_dy = state.local_dy[lane.delay_slot][edit_fi];
         int show_at = state.visible_from[lane.delay_slot][edit_fi];
         int hide_at = state.visible_until[lane.delay_slot][edit_fi];
+        int motion_dx = state.motion_dx[lane.delay_slot][edit_fi];
+        int motion_dy = state.motion_dy[lane.delay_slot][edit_fi];
         ImGui::SameLine();
         ImGui::TextDisabled("Delay");
         ImGui::SameLine();
@@ -2716,6 +4154,23 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             state.visible_until[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleUntil(hide_at);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Hide this entry once the global preview tick reaches this value. 0 disables the cutoff.");
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("vX");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(42.0f);
+        if (ImGui::InputInt("##world_edit_vx", &motion_dx, 0, 0))
+            state.motion_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dx);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Visual X motion in pixels per tick. Positive moves this entry right.");
+        ImGui::SameLine();
+        ImGui::TextDisabled("vY");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(42.0f);
+        if (ImGui::InputInt("##world_edit_vy", &motion_dy, 0, 0))
+            state.motion_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dy);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Visual Y motion in pixels per tick. Positive moves this entry down.");
 
         int frame_z = state.frame_z[lane.delay_slot][edit_fi];
         ImGui::SameLine();
@@ -2764,6 +4219,81 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Draw priority for the second copy. Lower than Z puts it behind\n"
                                   "the first copy (and behind other lanes it sorts under).");
+        }
+
+        if (!lane.dummy_decap) {
+            static int s_auto_step = 3;
+            static int s_auto_life = 32;
+            static int s_auto_vx = 0;
+            static int s_auto_vy = 1;
+            static int s_auto_y = 200;
+
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Auto Y");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Apply motion from the selected entry onward. Downward motion hides when the sprite bottom passes Y; upward motion hides when the top passes Y.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("Step");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(38.0f);
+            if (ImGui::InputInt("##world_auto_step", &s_auto_step, 0, 0)) {
+                if (s_auto_step < 0) s_auto_step = 0;
+                if (s_auto_step > 999) s_auto_step = 999;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Ticks between each subframe's Show@ value.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("Life");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(42.0f);
+            if (ImGui::InputInt("##world_auto_life", &s_auto_life, 0, 0)) {
+                if (s_auto_life < 1) s_auto_life = 1;
+                if (s_auto_life > 9999) s_auto_life = 9999;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Fallback visible ticks when vY is 0 or no Y breach can be calculated.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("vX");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(42.0f);
+            if (ImGui::InputInt("##world_auto_vx", &s_auto_vx, 0, 0))
+                s_auto_vx = ClampWorldMarkedMotion(s_auto_vx);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Visual X motion in pixels per tick.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("vY");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(42.0f);
+            if (ImGui::InputInt("##world_auto_vy", &s_auto_vy, 0, 0))
+                s_auto_vy = ClampWorldMarkedMotion(s_auto_vy);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Visual Y motion in pixels per tick. Positive moves down, negative moves up.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("Y");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(48.0f);
+            if (ImGui::InputInt("##world_auto_y", &s_auto_y, 0, 0)) {
+                if (s_auto_y < -9999) s_auto_y = -9999;
+                if (s_auto_y >  9999) s_auto_y =  9999;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("World Y breach line.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Apply From Entry##world_auto_apply")) {
+                WorldMarkedApplyAutoYChain(state, lane, edit_fi,
+                                           s_auto_step, s_auto_life,
+                                           s_auto_vx, s_auto_vy, s_auto_y);
+                WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Set Show@, Hide@, and vX/vY from this entry through the end of the row.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear v##world_auto_clear")) {
+                WorldMarkedClearMotionFrom(state, lane.delay_slot, edit_fi);
+                WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Clear vX/vY from this entry through the end of the row.");
         }
     }
 }
@@ -2838,6 +4368,7 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; Delay ticks are encoded by repeating that frame label.\n";
     out += "; Show@/Hide@ entries act as timed held subframes in preview;\n";
     out += "; export emits 0 outside that tick window.\n";
+    out += "; vX/vY motion is baked into the per-tick local anipoint rows.\n";
     out += "; Each *_local_anipts table is aligned 1:1 with the .long rows.\n";
     out += "; Entries with z= / dual annotations need routine code: z orders the\n";
     out += "; object's draw priority, dual draws the same sprite a second time.\n";
@@ -2905,6 +4436,8 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             int local_dy = state.local_dy[lane.delay_slot][fi];
             int visible_from = state.visible_from[lane.delay_slot][fi];
             int visible_until = state.visible_until[lane.delay_slot][fi];
+            int motion_dx = state.motion_dx[lane.delay_slot][fi];
+            int motion_dy = state.motion_dy[lane.delay_slot][fi];
             int frame_z = state.frame_z[lane.delay_slot][fi];
             bool dual = state.dual_on[lane.delay_slot][fi] != 0;
             int dual_dx = state.dual_dx[lane.delay_slot][fi];
@@ -2913,6 +4446,18 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             for (int repeat = 0; repeat < delay; repeat++) {
                 bool hidden = tick < visible_from ||
                               (visible_until > 0 && tick >= visible_until);
+                int eff_dx = 0;
+                int eff_dy = 0;
+                WorldMarkedEffectiveLocalDelta(state, lane.delay_slot,
+                                               (int)lane.frames.size(), fi,
+                                               false, tick, &eff_dx, &eff_dy);
+                int eff_dual_dx = 0;
+                int eff_dual_dy = 0;
+                if (lane_has_dual)
+                    WorldMarkedEffectiveLocalDelta(state, lane.delay_slot,
+                                                   (int)lane.frames.size(), fi,
+                                                   true, tick,
+                                                   &eff_dual_dx, &eff_dual_dy);
                 out += "\t.long\t";
                 out += hidden ? "0" : sprite;
                 if (repeat == 0) {
@@ -2934,6 +4479,12 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                         out += " hide>=";
                         out += std::to_string(visible_until);
                     }
+                    if (motion_dx || motion_dy) {
+                        out += " vX=";
+                        out += std::to_string(motion_dx);
+                        out += " vY=";
+                        out += std::to_string(motion_dy);
+                    }
                     if (frame_z) {
                         out += " z=";
                         out += std::to_string(frame_z);
@@ -2954,9 +4505,9 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 out += "\n";
 
                 local_table += "\t.word\t";
-                local_table += std::to_string(local_dx);
+                local_table += std::to_string(eff_dx);
                 local_table += ",";
-                local_table += std::to_string(local_dy);
+                local_table += std::to_string(eff_dy);
                 local_table += "\t; tick ";
                 local_table += std::to_string(tick);
                 local_table += hidden ? " hidden " : " ";
@@ -2966,9 +4517,9 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 if (lane_has_dual) {
                     dual_table += "\t.word\t";
                     if (dual && !hidden) {
-                        dual_table += std::to_string(dual_dx);
+                        dual_table += std::to_string(eff_dual_dx);
                         dual_table += ",";
-                        dual_table += std::to_string(dual_dy);
+                        dual_table += std::to_string(eff_dual_dy);
                         dual_table += "\t; tick ";
                         dual_table += std::to_string(tick);
                         dual_table += " second ";
@@ -3193,6 +4744,13 @@ int ClampWorldMarkedZ(int value)
     return value;
 }
 
+int ClampWorldMarkedMotion(int value)
+{
+    if (value < -128) return -128;
+    if (value >  128) return  128;
+    return value;
+}
+
 /* Every per-entry array a slot's sequence carries, with the value a fresh
    entry gets. Sequence edits (duplicate/move/delete/reconcile) must touch all
    of them together or the entries drift out of alignment. */
@@ -3210,6 +4768,8 @@ static std::vector<WorldSeqArrayRef> WorldMarkedSeqArrays(
         { &state.local_dy[slot],     0 },
         { &state.visible_from[slot], 0 },
         { &state.visible_until[slot], 0 },
+        { &state.motion_dx[slot],    0 },
+        { &state.motion_dy[slot],    0 },
         { &state.frame_mirror[slot], 0 },
         { &state.frame_z[slot],      0 },
         { &state.dual_on[slot],      0 },
@@ -3251,6 +4811,8 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
     std::vector<int> &local_dy = state.local_dy[slot];
     std::vector<int> &visible_from = state.visible_from[slot];
     std::vector<int> &visible_until = state.visible_until[slot];
+    std::vector<int> &motion_dx = state.motion_dx[slot];
+    std::vector<int> &motion_dy = state.motion_dy[slot];
     if ((int)local_dx.size() < frame_count)
         local_dx.resize((size_t)frame_count, 0);
     else if ((int)local_dx.size() > frame_count)
@@ -3267,6 +4829,14 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
         visible_until.resize((size_t)frame_count, 0);
     else if ((int)visible_until.size() > frame_count)
         visible_until.resize((size_t)frame_count);
+    if ((int)motion_dx.size() < frame_count)
+        motion_dx.resize((size_t)frame_count, 0);
+    else if ((int)motion_dx.size() > frame_count)
+        motion_dx.resize((size_t)frame_count);
+    if ((int)motion_dy.size() < frame_count)
+        motion_dy.resize((size_t)frame_count, 0);
+    else if ((int)motion_dy.size() > frame_count)
+        motion_dy.resize((size_t)frame_count);
     for (int &dx : local_dx)
         dx = ClampWorldMarkedAniptDelta(dx);
     for (int &dy : local_dy)
@@ -3275,6 +4845,10 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
         show_tick = ClampWorldMarkedVisibleFrom(show_tick);
     for (int &hide_tick : visible_until)
         hide_tick = ClampWorldMarkedVisibleUntil(hide_tick);
+    for (int &dx : motion_dx)
+        dx = ClampWorldMarkedMotion(dx);
+    for (int &dy : motion_dy)
+        dy = ClampWorldMarkedMotion(dy);
 
     std::vector<int> &fmir = state.frame_mirror[slot];
     if ((int)fmir.size() < frame_count)
@@ -3751,6 +5325,8 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
 
     dl->AddCircle(ImVec2(ox, oy), 4.0f,
                   IM_COL32(255, 200, 0, 255), 0, 1.5f);
+    if (g_world_marked_state.show_boundary_overlay)
+        WorldDrawBoundaryGuides(dl, layout);
 
     if (!io.WantCaptureMouse) {
         bool over_world =
@@ -3771,17 +5347,46 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
         }
     }
 
-    char buf[96];
-    snprintf(buf, sizeof(buf),
-             "[%d] %s%s   anix=%d aniy=%d   world=%dx%d",
-             image_idx, img->n_s,
-             mirror_active ? " mirror" : "",
-             ax, ay, world_w, world_h);
-    dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
-                      ImVec2(wpos.x + 320, wpos.y + 18),
-                      IM_COL32(0, 0, 0, 180));
-    dl->AddText(ImVec2(wpos.x + 4, wpos.y + 2),
-                IM_COL32(220, 220, 220, 255), buf);
+    if (g_world_marked_state.draw_sprite_borders) {
+        ImVec2 sprite_max(spos.x + spw, spos.y + sph);
+        int raw_aniy = (int)img->aniy;
+        bool bad_y_anchor = (short)img->aniy < 0 || raw_aniy == 0x4000 ||
+                            raw_aniy == 0xFFFF || ay < 0 || ay >= 0x4000;
+        WorldBoundaryRect sprite_rect =
+            WorldBoundaryRectFromScreen(spos, sprite_max, layout);
+        WorldBoundaryClass sprite_class =
+            WorldBoundaryClassify(sprite_rect, bad_y_anchor);
+        ImU32 sprite_border =
+            sprite_class == WorldBoundary_Green
+                ? IM_COL32(85, 170, 255, 230)
+                : WorldBoundaryColor(sprite_class, 255);
+        float sprite_thick = sprite_class == WorldBoundary_Red ? 3.0f :
+                             sprite_class == WorldBoundary_Yellow ? 2.4f : 1.3f;
+        dl->AddRect(spos, sprite_max, sprite_border, 0.0f, 0, sprite_thick);
+        if (sprite_class != WorldBoundary_Green) {
+            char tag[64];
+            snprintf(tag, sizeof(tag), "%s", WorldBoundaryName(sprite_class));
+            ImVec2 tag_sz = ImGui::CalcTextSize(tag);
+            ImVec2 tag_pos(spos.x, sprite_max.y + 2.0f);
+            dl->AddRectFilled(ImVec2(tag_pos.x - 2.0f, tag_pos.y - 1.0f),
+                              ImVec2(tag_pos.x + tag_sz.x + 2.0f,
+                                     tag_pos.y + tag_sz.y + 1.0f),
+                              IM_COL32(0, 0, 0, 190));
+            dl->AddText(tag_pos, sprite_border, tag);
+        }
+
+        char buf[96];
+        snprintf(buf, sizeof(buf),
+                 "[%d] %s%s   anix=%d aniy=%d   world=%dx%d",
+                 image_idx, img->n_s,
+                 mirror_active ? " mirror" : "",
+                 ax, ay, world_w, world_h);
+        dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
+                          ImVec2(wpos.x + 320, wpos.y + 18),
+                          IM_COL32(0, 0, 0, 180));
+        dl->AddText(ImVec2(wpos.x + 4, wpos.y + 2),
+                    IM_COL32(220, 220, 220, 255), buf);
+    }
 
     ImGui::Dummy(ImVec2(avail.x, avail.y));
     return true;
@@ -3849,7 +5454,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                timeline frames in shared anipoint space, not one editable IMG. */
         }
         else if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
-            if (g_zoom_reset) ResetZoomToFit();
+            if (g_zoom_reset) ResetZoomToHalfFit(avail);
 
             auto apply_canvas_zoom_step = [&](int dir, ImVec2 anchor) {
                 ImVec2 old_pos, old_size;
@@ -7229,6 +8834,15 @@ void SplitSelectionToOverlayFrame(bool clear_source)
     dst->anix = src->anix; dst->aniy = src->aniy;
     dst->anix2 = src->anix2; dst->aniy2 = src->aniy2; dst->aniz2 = src->aniz2;
     dst->opals = src->opals;
+    if (src->opaltbl_p) {
+        dst->opaltbl_p = malloc(16);
+        if (!dst->opaltbl_p) {
+            if (have_snap) pixel_hist_free(&snap);
+            unlink_and_free_img(dst);
+            return;
+        }
+        memcpy(dst->opaltbl_p, src->opaltbl_p, 16);
+    }
     strncpy(dst->src_filename, src->src_filename, sizeof(dst->src_filename) - 1);
     dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
     snprintf(dst->n_s, sizeof(dst->n_s), "%.12sOVR", src->n_s);
@@ -7826,6 +9440,9 @@ void copy_image(bool cut)
     g_clipboard.aniy2 = img->aniy2;
     g_clipboard.aniz2 = img->aniz2;
     g_clipboard.opals = img->opals;
+    g_clipboard.has_opaltbl = img->opaltbl_p != NULL;
+    memset(g_clipboard.opaltbl, 0, sizeof(g_clipboard.opaltbl));
+    if (img->opaltbl_p) memcpy(g_clipboard.opaltbl, img->opaltbl_p, 16);
     g_clipboard.has_palette = false;
     g_clipboard.palette_numc = 0;
     memset(g_clipboard.palette_data, 0, sizeof(g_clipboard.palette_data));
@@ -7934,7 +9551,16 @@ void PasteClipboardAsNewImage(void)
     if (g_doc->palcnt > 0 && dst->palnum >= g_doc->palcnt)
         dst->palnum = (g_doc->plselected >= 0 && (unsigned)g_doc->plselected < g_doc->palcnt)
                     ? (unsigned short)g_doc->plselected : 0;
-    dst->opals = g_clipboard.has_meta ? g_clipboard.opals : 0;
+    dst->opals = (g_clipboard.has_meta && g_clipboard.has_opaltbl)
+        ? g_clipboard.opals : (unsigned short)-1;
+    if (g_clipboard.has_meta && g_clipboard.has_opaltbl) {
+        dst->opaltbl_p = malloc(16);
+        if (!dst->opaltbl_p) {
+            unlink_and_free_img(dst);
+            return;
+        }
+        memcpy(dst->opaltbl_p, g_clipboard.opaltbl, 16);
+    }
     if (g_clipboard.has_meta) dst->aniz2 = g_clipboard.aniz2;
     else clear_secondary_anipoint(dst);
 
@@ -9633,9 +11259,9 @@ void ApplyVariantToSelection(void)
 
 /* ---- World marked tabs -------------------------------------------- */
 
-bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
+static void WorldCollectActiveAsmLanes(std::vector<WorldMarkedAsmLaneInput> &asm_lanes)
 {
-    std::vector<WorldMarkedAsmLaneInput> asm_lanes;
+    asm_lanes.clear();
     asm_lanes.reserve(2);
     auto add_asm_lane = [&](std::vector<AsmAnim> &anims, bool enabled, int sel,
                             int slot_id, Document *doc, int doc_idx) {
@@ -9664,16 +11290,11 @@ bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                  kWorldAsmSlot, g_asm_anim_doc, g_asm_anim_doc_idx);
     add_asm_lane(g_asm_opp_anims, g_asm_opp_enabled, g_asm_opp_sel,
                  kWorldAsmOpponentSlot, g_asm_opp_doc, g_asm_opp_doc_idx);
+}
 
-    IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
-    WorldMarkedTabsResult tabs_result =
-        WorldDrawMarkedTabs(g_world_marked_state, g_world_state,
-                            avail, img_pos, io.DeltaTime,
-                            document_active_index(), selected_img, asm_lanes);
-    if (!tabs_result.drew)
-        return false;
-
-    WorldMarkedPanelAction panel_action = tabs_result.panel.header;
+static void WorldHandleMarkedPanelResult(const WorldMarkedPanelResult &panel_result)
+{
+    WorldMarkedPanelAction panel_action = panel_result.header;
     if (panel_action.copied_asm) {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Copied World View ASM for %d lane%s.",
@@ -9698,19 +11319,95 @@ bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                  "Select a DECAP body frame/piece first.");
         g_restore_msg_timer = 4.0f;
     }
-    if (tabs_result.panel.thumb_click.clicked) {
-        if (tabs_result.panel.thumb_click.doc_idx != document_active_index()) {
-            document_set_active(tabs_result.panel.thumb_click.doc_idx);
-            ResetPerDocumentUiState(false);
-            g_doc_tab_select_request = tabs_result.panel.thumb_click.doc_idx;
-        }
-        g_doc->ilselected = tabs_result.panel.thumb_click.img_idx;
-        g_zoom_reset = true;
+    if (panel_result.thumb_click.clicked) {
+        Document *doc = document_get(panel_result.thumb_click.doc_idx);
+        WorldSyncEditorSelectionToSprite(doc,
+                                         panel_result.thumb_click.doc_idx,
+                                         panel_result.thumb_click.img_idx);
     }
-    if (tabs_result.panel.copied_popup_asm) {
+    if (panel_result.copied_popup_asm) {
         snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied World View ASM.");
         g_restore_msg_timer = 4.0f;
     }
+}
+
+bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
+{
+    std::vector<WorldMarkedAsmLaneInput> asm_lanes;
+    WorldCollectActiveAsmLanes(asm_lanes);
+
+    IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
+    WorldMarkedTabsResult tabs_result =
+        WorldDrawMarkedTabs(g_world_marked_state, g_world_state,
+                            avail, img_pos, io.DeltaTime,
+                            document_active_index(), selected_img, asm_lanes,
+                            !g_world_marked_panel_docked);
+    if (!tabs_result.drew)
+        return false;
+
+    if (!g_world_marked_panel_docked)
+        WorldHandleMarkedPanelResult(tabs_result.panel);
     return true;
 }
 
+void DrawWorldMarkedTimelinePanel(void)
+{
+    if (!g_world_state.enabled || !g_world_marked_state.marked_play) {
+        ImGui::TextDisabled("World View frame sequence is inactive.");
+        return;
+    }
+
+    std::vector<WorldMarkedLane> lanes;
+    lanes.reserve(kWorldMarkedMaxTabs);
+    bool dummy_decap_missing = false;
+    bool embedded_focus_only = g_world_marked_state.embedded_active &&
+                               !g_world_marked_state.embedded_show_companions;
+    if (!embedded_focus_only) {
+        WorldAppendMarkedDocumentLanes(g_world_marked_state,
+                                       document_active_index(), lanes,
+                                       &dummy_decap_missing);
+    }
+    bool embedded_present =
+        WorldAppendEmbeddedSeqScrLane(g_world_marked_state, lanes);
+
+    std::vector<WorldMarkedAsmLaneInput> asm_lanes;
+    WorldCollectActiveAsmLanes(asm_lanes);
+    bool asm_present = false;
+    if (!embedded_focus_only) {
+        for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
+            if (!input.enabled) continue;
+            if (WorldAppendAsmLane(g_world_marked_state, input.name,
+                                   input.frames, input.doc, input.doc_idx,
+                                   input.slot_id, lanes))
+                asm_present = true;
+        }
+    }
+
+    if (lanes.empty()) {
+        ImGui::TextDisabled("Mark sprites in at least two IMG tabs, or enable ASM lanes.");
+        return;
+    }
+    if (lanes.size() < 2 && !asm_present && !embedded_present) {
+        ImGui::TextDisabled("World View frame sequence needs a second marked row, ASM lane, or embedded sequence/script.");
+        return;
+    }
+    if (!WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, 0.0f)) {
+        ImGui::TextDisabled("World View frame sequence has no drawable frames.");
+        return;
+    }
+
+    WorldMarkedPanelLayout layout;
+    layout.pos = ImGui::GetCursorScreenPos();
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    layout.width = avail.x;
+    layout.height = avail.y;
+    if (layout.width < 240.0f) layout.width = 240.0f;
+    if (layout.height < 88.0f) layout.height = 88.0f;
+
+    IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
+    WorldMarkedPanelResult panel_result =
+        WorldDrawMarkedPanel(g_world_marked_state, lanes, layout,
+                             dummy_decap_missing, selected_img,
+                             document_active_index());
+    WorldHandleMarkedPanelResult(panel_result);
+}

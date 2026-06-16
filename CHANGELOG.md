@@ -8,6 +8,39 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.14.0] — Anim Scripts/Seqs editor, opacity gradients, World View motion
+
+Feature release adding a WIMP sequence/script (SEQSCR) browser and editor,
+dithered opacity gradients backed by per-IMG alternate palettes, and per-tick
+motion staging in the World View.
+
+### Anim Scripts / Seqs
+- **SEQSCR browser** — a new "Anim Scripts / Seqs" window lists the embedded
+  sequence and script records parsed from the SEQSCR blob, with separate
+  Sequences and Scripts panes.
+- **World View integration** — records can be loaded straight into a dedicated
+  embedded sequence/script lane for playback alongside marked sprites.
+- **ASM export** — each record can be copied or saved as generated animation
+  ASM, and the view/edit data panel exposes the raw record fields.
+- **Damage table preservation** — the raw damage-table refs (`damtbl`) are now
+  kept verbatim across load and save so existing assets round-trip unchanged.
+
+### Opacity gradients
+- **Opacity Gradient dialog** — apply a dithered opacity gradient to the
+  selected sprite or all marked sprites, backed by a 16-byte alternate palette
+  table (`opaltbl`) stored per IMG and preserved through copy/paste and save.
+
+### World View
+- **Per-tick motion** — marked-sequence entries now support per-tick visual
+  motion deltas (`motion_dx` / `motion_dy`) so lanes can drift across the scene
+  during playback.
+- **Boundary overlay toggle** — the arcade world boundary overlay can be shown
+  or hidden while staging animation.
+- **Y-anchor warnings** — lanes and dual instances flag a bad Y anchor so
+  mis-positioned sprites are easier to spot.
+- **Half-fit zoom** — a half-fit zoom helper makes it easier to inspect the
+  zoomed world canvas.
+
 ## [v3.13.1] — Subframe naming patch
 
 Patch release fixing the parent-aware subframe naming added in v3.13.0.

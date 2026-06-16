@@ -530,6 +530,14 @@ static bool CreateAutoSplitPiece(IMG *master,
     child->palnum = master->palnum;
     child->flags = 0;
     child->opals = master->opals;
+    if (master->opaltbl_p) {
+        child->opaltbl_p = malloc(16);
+        if (!child->opaltbl_p) {
+            UnlinkAllocatedImage(child);
+            return false;
+        }
+        memcpy(child->opaltbl_p, master->opaltbl_p, 16);
+    }
     child->anix = signed_to_img_word((int)(short)master->anix - piece.out_x);
     child->aniy = signed_to_img_word((int)(short)master->aniy - piece.out_y);
     clear_secondary_anipoint(child);

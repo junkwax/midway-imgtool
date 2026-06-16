@@ -131,9 +131,11 @@ void LoadImgFile(void)
         hdr.version, hdr.imgcnt, hdr.palcnt,
         (signed short)hdr.seqcnt, (signed short)hdr.scrcnt);
 
-    /* Drop any prior seq/scr blob — we rebuild it from this file's contents. */
+    /* Drop any prior trailing blobs — we rebuild them from this file. */
     if (g_doc->scrseqmem_p) { free(g_doc->scrseqmem_p); g_doc->scrseqmem_p = NULL; }
     g_doc->scrseqbytes = 0;
+    if (g_doc->damtbl_p) { free(g_doc->damtbl_p); g_doc->damtbl_p = NULL; }
+    g_doc->damtblbytes = 0;
 
     /* Capture LIB_HDR fields that have to round-trip verbatim. The original
      * DOS imgtool clobbered these on save (bufscr=-1, spare*=0), but real
@@ -145,6 +147,9 @@ void LoadImgFile(void)
 
     g_doc->ilpalloaded = -1;
     g_doc->damcnt = 0;
+    int source_damcnt_signed = (signed short)hdr.damcnt;
+    unsigned int source_damcnt = source_damcnt_signed > 0
+        ? (unsigned int)source_damcnt_signed : 0u;
 
     /* Compute offset to the seq/scr region: it lives just past the
      * IMAGE_disk and PALETTE_disk record arrays. */
@@ -212,6 +217,7 @@ void LoadImgFile(void)
 
     int pal_base = (int)g_doc->palcnt;
     unsigned int img_oset = hdr.oset;
+    int point_table_count = 0;
 
     for (int i = 0; i < hdr.imgcnt; i++) {
         fseek(f, (long)img_oset, SEEK_SET);
@@ -287,9 +293,10 @@ void LoadImgFile(void)
         }
 
         if (hdr.version >= 0x60A && (signed short)idisk.pttblnum >= 0) {
-            fseek(f, (long)(ptoset + (unsigned int)(signed short)idisk.pttblnum * 40), SEEK_SET);
+            fseek(f, (long)(ptoset + (long)point_table_count * 40L), SEEK_SET);
             img->pttbl_p = PoolAlloc(40);
             if (img->pttbl_p) fread(img->pttbl_p, 1, 40, f);
+            point_table_count++;
         }
 
         /* Snapshot the just-loaded pixel data as the baseline. The diff-mode
@@ -341,6 +348,51 @@ void LoadImgFile(void)
         fread(pal->data_p, 1, col_sz, f);
     }
 
+    long altpal_oset = ptoset + (long)point_table_count * 40L;
+    int altpal_count = 0;
+    if (hdr.version >= 0x061D) {
+        long pos = altpal_oset;
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+            img->opaltbl_p = NULL;
+            if ((signed short)img->opals < 0) continue;
+            img->opaltbl_p = PoolAlloc(16);
+            if (!img->opaltbl_p) continue;
+            fseek(f, pos, SEEK_SET);
+            if (fread(img->opaltbl_p, 1, 16, f) != 16) {
+                free(img->opaltbl_p);
+                img->opaltbl_p = NULL;
+                img->opals = (unsigned short)-1;
+                break;
+            }
+            img->opals = (unsigned short)altpal_count;
+            pos += 16;
+            altpal_count++;
+        }
+    } else {
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+            img->opals = (unsigned short)-1;
+            img->opaltbl_p = NULL;
+        }
+    }
+
+    if (hdr.version >= 0x0632 && source_damcnt > 0) {
+        unsigned int dam_bytes = source_damcnt * 4u;
+        long dam_oset = altpal_oset + (long)altpal_count * 16L;
+        g_doc->damtbl_p = malloc(dam_bytes);
+        if (g_doc->damtbl_p) {
+            fseek(f, dam_oset, SEEK_SET);
+            if (fread(g_doc->damtbl_p, 1, dam_bytes, f) == dam_bytes) {
+                g_doc->damcnt = source_damcnt;
+                g_doc->damtblbytes = dam_bytes;
+            } else {
+                free(g_doc->damtbl_p);
+                g_doc->damtbl_p = NULL;
+                g_doc->damtblbytes = 0;
+                g_doc->damcnt = 0;
+            }
+        }
+    }
+
     fclose(f);
 
     if (g_doc->imgcnt > 0) g_doc->ilselected = 0;
@@ -360,7 +412,9 @@ void LoadImgFile(void)
  *   7. Write the SEQSCR+ENTRY blob verbatim (g_doc->scrseqmem_p, g_doc->scrseqbytes).
  *   8. Write all per-image PTTBL records (40 bytes each) for any image
  *      that has one.
- *   9. Rewind, rewrite the finalized LIB_HDR.
+ *   9. Write all per-image alternate palette records (16 bytes each).
+ *  10. Write global damage table refs.
+ *  11. Rewind, rewrite the finalized LIB_HDR.
  */
 /* PPP> setting from MK2MIL.LOD; other LODs differ. 6 covers MK2's
  * fighter sprites (≤64 colors per palette). Verifier compares
@@ -445,17 +499,29 @@ void SaveImgFile(void)
 
     int num_imgs = (int)g_doc->imgcnt;
     int num_pals = (int)g_doc->palcnt;
+    bool has_opaltbl = false;
+    for (IMG *scan = (IMG *)g_doc->img_p; scan; scan = (IMG *)scan->nxt_p) {
+        if (scan->opaltbl_p) { has_opaltbl = true; break; }
+    }
+    unsigned int dam_refs = 0;
+    if (g_doc->damtbl_p && g_doc->damtblbytes >= 4) {
+        dam_refs = g_doc->damtblbytes / 4u;
+        if (g_doc->damcnt > 0 && g_doc->damcnt < dam_refs)
+            dam_refs = g_doc->damcnt;
+    }
 
     /* ---- 1. Header placeholder ---- */
     LIB_HDR hdr = {};
     hdr.imgcnt  = (unsigned short)num_imgs;
     hdr.palcnt  = (unsigned short)(num_pals + NUMDEFPAL);
     hdr.version = (g_doc->fileversion != 0) ? (unsigned short)g_doc->fileversion : 0x0634;
+    if (has_opaltbl && hdr.version < 0x061D) hdr.version = 0x061D;
+    if (dam_refs > 0 && hdr.version < 0x0632) hdr.version = 0x0632;
     hdr.temp    = 0xABCD;
     hdr.oset    = 0;  /* finalized in step 4 */
     hdr.seqcnt  = (unsigned short)g_doc->seqcnt;
     hdr.scrcnt  = (unsigned short)g_doc->scrcnt;
-    hdr.damcnt  = 0;  /* original asm always zeros this on save */
+    hdr.damcnt  = (unsigned short)dam_refs;
     /* Preserve bufscr + spare1/2/3 from load (real game files use them;
      * LOAD2 consumes bufscr to compute IRW layout). Default is all 0xFF /
      * zero (matches a freshly-created file). */
@@ -535,6 +601,7 @@ void SaveImgFile(void)
 
     /* ---- 5. IMAGE_disk records ---- */
     int pt_index = 0;
+    int altpal_index = 0;
     img = (IMG *)g_doc->img_p;
     for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
         IMAGE_disk idisk = {};
@@ -575,10 +642,14 @@ void SaveImgFile(void)
         idisk.frm      = img->file_frm;  /* preserve from load (real files
                                             often have 0xFFFF; original DOS
                                             imgtool clobbered to 0) */
-        idisk.opals    = img->opals;
-        idisk.pttblnum = img->pttbl_p
-            ? (img->file_oset ? img->file_pttblnum : (unsigned short)(pt_index++))
+        idisk.opals    = img->opaltbl_p
+            ? (unsigned short)(altpal_index++)
             : (unsigned short)0xFFFF;
+        img->opals     = idisk.opals;
+        idisk.pttblnum = img->pttbl_p
+            ? (unsigned short)(pt_index++)
+            : (unsigned short)0xFFFF;
+        img->file_pttblnum = idisk.pttblnum;
         fwrite(&idisk, 1, sizeof(idisk), f);
     }
 
@@ -624,7 +695,20 @@ void SaveImgFile(void)
         }
     }
 
-    /* ---- 9. Rewrite finalized LIB_HDR ---- */
+    /* ---- 9. Per-image alternate palette records (16 bytes each) ---- */
+    img = (IMG *)g_doc->img_p;
+    for (int i = 0; i < num_imgs && img; i++, img = (IMG *)img->nxt_p) {
+        if (img->opaltbl_p) {
+            fwrite(img->opaltbl_p, 1, 16, f);
+        }
+    }
+
+    /* ---- 10. Global damage table refs ---- */
+    if (dam_refs > 0 && g_doc->damtbl_p) {
+        fwrite(g_doc->damtbl_p, 1, dam_refs * 4u, f);
+    }
+
+    /* ---- 11. Rewrite finalized LIB_HDR ---- */
     rewind(f);
     fwrite(&hdr, 1, sizeof(hdr), f);
 
@@ -1296,6 +1380,13 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
                 new_img->palnum = master->palnum;
                 new_img->flags = 0; /* Unmarked */
                 new_img->opals = master->opals;
+                if (master->opaltbl_p) {
+                    new_img->opaltbl_p = malloc(16);
+                    if (new_img->opaltbl_p)
+                        memcpy(new_img->opaltbl_p, master->opaltbl_p, 16);
+                    else
+                        new_img->opals = (unsigned short)-1;
+                }
 
                 /* Number plain parents as BASE1/BASE2. Letter numbered
                    parents as BASE1A/BASE1B so they group under the frame. */

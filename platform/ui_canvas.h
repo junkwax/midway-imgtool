@@ -21,7 +21,8 @@ enum {
     kWorldDummyDecapSlot = kWorldMarkedSourceTabs,/* optional dummy body */
     kWorldAsmSlot,                                /* ASM-driven player lane */
     kWorldAsmOpponentSlot,                        /* ASM-driven opponent lane */
-    kWorldMarkedMaxTabs                           /* source rows + dummy + 2 ASM lanes */
+    kWorldEmbeddedSeqScrSlot,                     /* embedded WIMP sequence/script lane */
+    kWorldMarkedMaxTabs                           /* source rows + dummy + ASM + embedded lanes */
 };
 
 struct WorldViewState {
@@ -163,6 +164,7 @@ void ZoomImageRectForAvailable(const ImVec2 &avail, const ImVec2 &origin,
                                ImVec2 *pos, ImVec2 *size, float *scale_out);
 float ZoomNextLevel(float current, int dir);
 void ResetZoomToFit(void);
+void ResetZoomToHalfFit(const ImVec2 &avail);
 void QueueZoomStep(int dir);
 void QueueZoomFit(void);
 bool ApplyZoomScale(float old_scale, float new_scale,
@@ -365,7 +367,16 @@ struct WorldMarkedSequenceState {
     bool drag_mirror = false;
     bool show_asm = false;
     bool draw_sprite_borders = true;
+    bool show_boundary_overlay = true;
     std::string generated_asm;
+    bool embedded_active = false;
+    bool embedded_is_script = false;
+    bool embedded_show_companions = false;
+    int embedded_record_index = -1;
+    int embedded_doc_idx = -1;
+    std::string embedded_name;
+    std::vector<std::string> embedded_frame_labels;
+    std::vector<int> embedded_targets;
     std::vector<WorldMarkedSplitLane> split_lanes;
     bool lane_visible[kWorldMarkedMaxTabs] = {};
     bool hold_end[kWorldMarkedMaxTabs] = {};
@@ -374,6 +385,8 @@ struct WorldMarkedSequenceState {
     std::vector<int> local_dy[kWorldMarkedMaxTabs];
     std::vector<int> visible_from[kWorldMarkedMaxTabs];
     std::vector<int> visible_until[kWorldMarkedMaxTabs]; /* 0 = no hide cutoff */
+    std::vector<int> motion_dx[kWorldMarkedMaxTabs];     /* visual pixels per tick; +X moves right */
+    std::vector<int> motion_dy[kWorldMarkedMaxTabs];     /* visual pixels per tick; +Y moves down */
     std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip (ASM ani_flip) */
     std::vector<int> frame_z[kWorldMarkedMaxTabs];      /* per-entry draw priority; higher draws on top */
     std::vector<int> dual_on[kWorldMarkedMaxTabs];      /* per-entry second sprite instance enabled */
@@ -452,10 +465,12 @@ struct WorldMarkedLaneRenderInfo {
     bool lane_mirror_x[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
+    bool lane_bad_y_anchor[kWorldMarkedMaxTabs] = {};
     /* Screen rect of the dual (second) sprite instance, when drawn. */
     bool dual_rect_valid[kWorldMarkedMaxTabs] = {};
     ImVec2 dual_rect_min[kWorldMarkedMaxTabs] = {};
     ImVec2 dual_rect_max[kWorldMarkedMaxTabs] = {};
+    bool dual_bad_y_anchor[kWorldMarkedMaxTabs] = {};
 };
 
 struct WorldMarkedSceneResult {
@@ -507,7 +522,8 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
                                           float delta_time,
                                           int active_doc_idx,
                                           IMG *selected_img,
-                                          const std::vector<WorldMarkedAsmLaneInput> &asm_lanes);
+                                          const std::vector<WorldMarkedAsmLaneInput> &asm_lanes,
+                                          bool draw_panel);
 bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                                    std::vector<WorldMarkedLane> &lanes,
                                    float delta_time);
@@ -559,6 +575,7 @@ int ClampWorldMarkedAniptDelta(int value);
 int ClampWorldMarkedVisibleFrom(int value);
 int ClampWorldMarkedVisibleUntil(int value);
 int ClampWorldMarkedZ(int value);
+int ClampWorldMarkedMotion(int value);
 void WorldMarkedRestart(WorldMarkedSequenceState &state);
 void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta);
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count);
@@ -588,6 +605,7 @@ void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &fram
 void WorldRefreshMarkedLaneAfterSequenceEdit(WorldMarkedSequenceState &state,
                                              WorldMarkedLane &lane,
                                              int &edit_frame);
+std::string WorldBuildSeqScrAsmExport(int record_index);
 
 /* Draw the single-sprite World View canvas into the current ImGui window.
    Returns true when it consumed/reserved the canvas area. */

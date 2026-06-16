@@ -24,6 +24,7 @@ struct IMG {
     unsigned short palnum;
     void          *data_p;
     void          *pttbl_p;     /* point table pointer or NULL */
+    void          *opaltbl_p;   /* 16-byte alternate palette table or NULL */
     unsigned short anix2;
     unsigned short aniy2;
     unsigned short aniz2;
@@ -192,6 +193,7 @@ static inline void FreeImg(IMG *img)
     if (!img) return;
     free(img->data_p);
     free(img->pttbl_p);
+    free(img->opaltbl_p);
     free(img->baseline_p);
     free(img->layer_p);   /* single allocation: header + pixels */
     free(img);

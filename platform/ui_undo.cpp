@@ -99,12 +99,14 @@ static bool CloneImgChainForSnapshot(const IMG *src, void **out)
         dst->nxt_p = NULL;
         dst->data_p = NULL;
         dst->pttbl_p = NULL;
+        dst->opaltbl_p = NULL;
         dst->baseline_p = NULL;
         dst->temp = NULL;
         dst->layer_p = NULL;
 
         if (!CloneBytes(src->data_p, ImgPixelBytes(src->w, src->h), &dst->data_p) ||
             !CloneBytes(src->pttbl_p, 40, &dst->pttbl_p) ||
+            !CloneBytes(src->opaltbl_p, 16, &dst->opaltbl_p) ||
             !CloneBytes(src->layer_p, LayerBlockBytesFromHeader(src->layer_p),
                         &dst->layer_p)) {
             FreeImg(dst);
@@ -172,6 +174,7 @@ static void FreeDocSnapshot(DocSnapshot *snap)
     FreeImgChainForSnapshot(snap->doc.img2_p);
     FreePalChainForSnapshot(snap->doc.pal_p);
     free(snap->doc.scrseqmem_p);
+    free(snap->doc.damtbl_p);
     free(snap);
 }
 
@@ -187,11 +190,13 @@ static DocSnapshot *CaptureDocSnapshot(unsigned int seq)
     snap->doc.img2_p = NULL;
     snap->doc.pal_p = NULL;
     snap->doc.scrseqmem_p = NULL;
+    snap->doc.damtbl_p = NULL;
 
     if (!CloneImgChainForSnapshot((const IMG *)g_doc->img_p, &snap->doc.img_p) ||
         !CloneImgChainForSnapshot((const IMG *)g_doc->img2_p, &snap->doc.img2_p) ||
         !ClonePalChainForSnapshot((const PAL *)g_doc->pal_p, &snap->doc.pal_p) ||
-        !CloneBytes(g_doc->scrseqmem_p, g_doc->scrseqbytes, &snap->doc.scrseqmem_p)) {
+        !CloneBytes(g_doc->scrseqmem_p, g_doc->scrseqbytes, &snap->doc.scrseqmem_p) ||
+        !CloneBytes(g_doc->damtbl_p, g_doc->damtblbytes, &snap->doc.damtbl_p)) {
         FreeDocSnapshot(snap);
         return NULL;
     }
@@ -229,12 +234,14 @@ static bool RestoreDocSnapshot(DocSnapshot *snap)
     FreeImgChainForSnapshot(g_doc->img2_p);
     FreePalChainForSnapshot(g_doc->pal_p);
     free(g_doc->scrseqmem_p);
+    free(g_doc->damtbl_p);
 
     Document restored = snap->doc;
     snap->doc.img_p = NULL;
     snap->doc.img2_p = NULL;
     snap->doc.pal_p = NULL;
     snap->doc.scrseqmem_p = NULL;
+    snap->doc.damtbl_p = NULL;
     *g_doc = restored;
 
     if (g_doc->ilselected >= (int)g_doc->imgcnt)

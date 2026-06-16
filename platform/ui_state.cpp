@@ -37,6 +37,7 @@ float g_pan_x      = 0.0f;
 float g_pan_y      = 0.0f;
 bool  g_zoom_fit   = true;
 bool  g_zoom_reset = true;
+float g_zoom_effective = 1.0f;
 float g_zoom_wheel_accum   = 0.0f;
 int   g_zoom_pending_steps = 0;
 bool  g_zoom_pending_fit   = false;
@@ -120,6 +121,7 @@ int  g_snap_guide_x = 0;
 int  g_snap_guide_y = 0;
 
 WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
+bool g_world_marked_panel_docked = false;
 bool g_show_dma_comp = false;
 
 ImageListSort g_image_list_sort = ImageListSort::Original;
@@ -127,6 +129,7 @@ bool g_image_list_sort_desc = false;
 bool g_show_debug = false;
 bool g_show_about = false;
 bool g_show_help = false;
+bool g_show_seqscr_editor = false;
 const float TOOLBAR_W = 76.0f;
 const float PANEL_W = 280.0f;
 
