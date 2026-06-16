@@ -847,18 +847,20 @@ void DrawMainLayout(void)
         if (desired_panel_h > 380.0f) desired_panel_h = 380.0f;
 
         float usable_h = work_h - bottom_palette_h;
+        /* Cap the world canvas so the panel keeps at least its content-driven
+           height; shrink the canvas (down to a floor) when it would crowd the
+           panel out. */
         if (desired_canvas_h + desired_panel_h > usable_h) {
-            float overflow = desired_canvas_h + desired_panel_h - usable_h;
-            desired_canvas_h -= overflow;
-            if (desired_canvas_h < 220.0f) {
-                desired_panel_h -= (220.0f - desired_canvas_h);
-                desired_canvas_h = 220.0f;
-            }
-            if (desired_panel_h < TIMELINE_H)
-                desired_panel_h = TIMELINE_H;
+            desired_canvas_h = usable_h - desired_panel_h;
+            if (desired_canvas_h < 220.0f) desired_canvas_h = 220.0f;
         }
         canvas_h = desired_canvas_h;
-        timeline_h = desired_panel_h;
+        /* The docked panel below the world canvas always stretches to fill the
+           remaining height down to the screen bottom (or the top of the
+           palette bar), so all animation/data for whatever is docked there is
+           shown instead of cutting off with a black gap underneath. */
+        timeline_h = usable_h - canvas_h;
+        if (timeline_h < TIMELINE_H) timeline_h = TIMELINE_H;
     }
     if (canvas_h < 120.0f) canvas_h = 120.0f;
 
@@ -926,7 +928,7 @@ void DrawMainLayout(void)
     }
 
     /* ===== LEFT TOOLBAR ===== */
-    DrawLeftToolbar(work_y, work_h);
+    DrawLeftToolbar(work_y, work_h, bottom_palette_h);
 
     /* ===== RIGHT PANEL STRIP ===== */
     float panel_x = sw - PANEL_W;

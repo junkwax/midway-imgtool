@@ -146,6 +146,7 @@ void ResetZoomToFit(void)
     g_zoom_fit = true;
     g_zoom_reset = false;
     g_zoom_wheel_accum = 0.0f;
+    g_zoom_user_pref = 0.0f;   /* explicit fit drops the sticky zoom */
 }
 
 void ResetZoomToHalfFit(const ImVec2 &avail)
@@ -161,6 +162,27 @@ void ResetZoomToHalfFit(const ImVec2 &avail)
     g_zoom_fit = false;
     g_zoom_reset = false;
     g_zoom_wheel_accum = 0.0f;
+}
+
+/* Applied when a selection change (sprite/palette nav, undo, etc.) requests a
+   zoom reset. If the user has pinned a zoom level, keep it and just recenter on
+   the new content; otherwise fall back to the half-fit default. */
+void ResetZoomForSelection(const ImVec2 &avail)
+{
+    if (g_zoom_user_pref > 0.0f) {
+        float scale = g_zoom_user_pref;
+        if (scale < 1.0f) scale = 1.0f;
+        if (scale > ZOOM_MAX) scale = ZOOM_MAX;
+        g_zoom = scale;
+        g_zoom_effective = scale;
+        g_pan_x = 0.0f;
+        g_pan_y = 0.0f;
+        g_zoom_fit = false;
+        g_zoom_reset = false;
+        g_zoom_wheel_accum = 0.0f;
+        return;
+    }
+    ResetZoomToHalfFit(avail);
 }
 
 void QueueZoomStep(int dir)
@@ -194,6 +216,7 @@ bool ApplyZoomScale(float old_scale, float new_scale,
     g_zoom = new_scale;
     g_zoom_fit = false;
     g_zoom_reset = false;
+    g_zoom_user_pref = new_scale;   /* remember the user's chosen zoom */
     ZoomClampPanForScale(avail, new_scale);
     return true;
 }
@@ -5454,7 +5477,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                timeline frames in shared anipoint space, not one editable IMG. */
         }
         else if (g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
-            if (g_zoom_reset) ResetZoomToHalfFit(avail);
+            if (g_zoom_reset) ResetZoomForSelection(avail);
 
             auto apply_canvas_zoom_step = [&](int dir, ImVec2 anchor) {
                 ImVec2 old_pos, old_size;

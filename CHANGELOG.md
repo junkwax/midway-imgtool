@@ -8,6 +8,29 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.14.1] — Layout polish, opacity preview, sticky zoom
+
+Patch release with UI layout fixes, a live opacity-gradient preview, and
+persistent zoom across sprite changes.
+
+### UI
+- **Toolbar fills its column** — the left toolbar background now extends down to
+  the bottom palette bar (or the screen bottom in World View) instead of cutting
+  off partway, sizing itself dynamically to the available height.
+- **Docked World View panel stretches to the bottom** — the animation/data panel
+  below the world canvas now fills the remaining height down to the screen
+  bottom, so all docked sequence/script data is shown with no black gap.
+
+### Opacity gradient
+- **Live preview** — the Opacity Gradient dialog now shows a checkerboard-backed
+  preview of the selected sprite with the dissolve applied, updating live as the
+  direction, opacity, and seed are changed.
+
+### Zoom
+- **Sticky zoom** — a manually chosen zoom level is now carried across sprite and
+  palette selection changes instead of snapping back to the half-fit default.
+  Pressing Fit clears the pinned zoom and restores the default.
+
 ## [v3.14.0] — Anim Scripts/Seqs editor, opacity gradients, World View motion
 
 Feature release adding a WIMP sequence/script (SEQSCR) browser and editor,

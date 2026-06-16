@@ -157,6 +157,7 @@ extern float g_pan_y;
 extern bool  g_zoom_fit;
 extern bool  g_zoom_reset;
 extern float g_zoom_effective;
+extern float g_zoom_user_pref;
 extern float g_zoom_wheel_accum;
 extern int   g_zoom_pending_steps;
 extern bool  g_zoom_pending_fit;

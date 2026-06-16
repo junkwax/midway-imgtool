@@ -6,4 +6,4 @@
  *************************************************************/
 #pragma once
 
-void DrawLeftToolbar(float work_y, float work_h);
+void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h);

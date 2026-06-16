@@ -14,11 +14,16 @@
 #include <imgui.h>
 #include <cstdio>
 
-void DrawLeftToolbar(float work_y, float work_h)
+void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
 {
-    /* ===== LEFT TOOLBAR ===== */
+    /* ===== LEFT TOOLBAR =====
+     * The toolbar column owns the full left edge from just below the tab bar
+     * down to the top of the bottom palette bar (or to the screen bottom when
+     * the palette bar is hidden, e.g. in World View). Sizing it dynamically
+     * keeps the toolbar background filling that column instead of cutting off
+     * partway down. */
     ImGui::SetNextWindowPos(ImVec2(0, work_y + 5.0f));
-    ImGui::SetNextWindowSize(ImVec2(76.0f, work_h - 112.0f - 108.0f - 5.0f)); /* TOOLBAR_W = 76, PALETTE_H = 112, TIMELINE_H = 108 */
+    ImGui::SetNextWindowSize(ImVec2(76.0f, work_h - bottom_reserved_h - 5.0f)); /* TOOLBAR_W = 76 */
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
     ImGui::Begin("##toolbar", NULL,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |

@@ -97,6 +97,7 @@ static int  g_opacity_gradient_end = 0;
 static bool g_opacity_gradient_content_bounds = true;
 static bool g_opacity_gradient_trim = false;
 static int  g_opacity_gradient_seed = 17;
+static bool g_opacity_gradient_preview = true;
 
 static bool FileDialogSupportsMultiSelect(FileDialogMode mode)
 {
@@ -5424,6 +5425,93 @@ static OpacityGradientStats OpacityGradientScan(bool apply,
     return stats;
 }
 
+/* Live preview texture for the opacity gradient dialog. Rebuilt each frame the
+   preview is shown (sprites are small, so a per-frame relock is cheap); the
+   texture is recreated only when the sprite dimensions change. Cleared pixels
+   are written transparent so the dissolve shows over the checkerboard host. */
+static SDL_Texture *g_opacity_gradient_preview_tex = NULL;
+static int          g_opacity_gradient_preview_w = 0;
+static int          g_opacity_gradient_preview_h = 0;
+
+static void OpacityGradientFreePreview(void)
+{
+    if (g_opacity_gradient_preview_tex) {
+        SDL_DestroyTexture(g_opacity_gradient_preview_tex);
+        g_opacity_gradient_preview_tex = NULL;
+    }
+    g_opacity_gradient_preview_w = 0;
+    g_opacity_gradient_preview_h = 0;
+}
+
+static SDL_Texture *OpacityGradientBuildPreview(IMG *img, int image_idx)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0 || !g_imgui_renderer)
+        return NULL;
+
+    int w = (int)img->w;
+    int h = (int)img->h;
+    if (!g_opacity_gradient_preview_tex ||
+        g_opacity_gradient_preview_w != w ||
+        g_opacity_gradient_preview_h != h) {
+        OpacityGradientFreePreview();
+        g_opacity_gradient_preview_tex =
+            SDL_CreateTexture(g_imgui_renderer, SDL_PIXELFORMAT_ARGB8888,
+                              SDL_TEXTUREACCESS_STREAMING, w, h);
+        if (!g_opacity_gradient_preview_tex) return NULL;
+        SDL_SetTextureBlendMode(g_opacity_gradient_preview_tex, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_opacity_gradient_preview_tex, SDL_ScaleModeNearest);
+        g_opacity_gradient_preview_w = w;
+        g_opacity_gradient_preview_h = h;
+    }
+
+    int min_x = 0, min_y = 0, max_x = w - 1, max_y = h - 1;
+    if (g_opacity_gradient_content_bounds)
+        OpacityGradientOpaqueBounds(img, &min_x, &min_y, &max_x, &max_y);
+
+    int start = OpacityGradientClamp(g_opacity_gradient_start, 0, 100);
+    int end = OpacityGradientClamp(g_opacity_gradient_end, 0, 100);
+    int stride = (w + 3) & ~3;
+    const unsigned char *sp = (const unsigned char *)img->data_p;
+    PAL *pal = get_pal(img->palnum);
+    const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
+
+    void *pixels; int pitch;
+    if (SDL_LockTexture(g_opacity_gradient_preview_tex, NULL, &pixels, &pitch) != 0)
+        return NULL;
+    Uint32 *dst = (Uint32 *)pixels;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = sp[(size_t)y * stride + x];
+            Uint32 out = 0; /* transparent by default */
+            if (ci != 0) {
+                float t = OpacityGradientT(g_opacity_gradient_direction,
+                                           x, y, min_x, min_y, max_x, max_y);
+                int keep_pct = (int)floorf((float)start +
+                                           ((float)end - (float)start) * t + 0.5f);
+                keep_pct = OpacityGradientClamp(keep_pct, 0, 100);
+                bool keep = keep_pct >= 100 ||
+                            (keep_pct > 0 &&
+                             (int)(OpacityGradientHash(x, y, ci, image_idx,
+                                       g_opacity_gradient_seed) % 100u) < keep_pct);
+                if (keep) {
+                    Uint32 r = 200, g = 200, b = 200;
+                    if (pd) {
+                        unsigned short w15 =
+                            (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
+                        r = (((w15 >> 10) & 0x1F) << 3);
+                        g = (((w15 >>  5) & 0x1F) << 3);
+                        b = (( w15        & 0x1F) << 3);
+                    }
+                    out = (0xFFu << 24) | (r << 16) | (g << 8) | b;
+                }
+            }
+            dst[y * (pitch / 4) + x] = out;
+        }
+    }
+    SDL_UnlockTexture(g_opacity_gradient_preview_tex);
+    return g_opacity_gradient_preview_tex;
+}
+
 void OpenOpacityGradientDialog(void)
 {
     if (!g_doc || g_doc->ilselected < 0) return;
@@ -5436,8 +5524,10 @@ void DrawOpacityGradientDialog(void)
         ImGui::OpenPopup("Opacity Gradient");
     if (!ImGui::BeginPopupModal("Opacity Gradient",
                                 &g_show_opacity_gradient,
-                                ImGuiWindowFlags_AlwaysAutoResize))
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        OpacityGradientFreePreview();
         return;
+    }
 
     IMG *selected = (g_doc && g_doc->ilselected >= 0)
                  ? get_img(g_doc->ilselected) : NULL;
@@ -5494,6 +5584,40 @@ void DrawOpacityGradientDialog(void)
     if (!can_marked) ImGui::BeginDisabled();
     ImGui::Checkbox("Apply to marked sprites", &g_opacity_gradient_marked);
     if (!can_marked) ImGui::EndDisabled();
+
+    ImGui::Checkbox("Live preview", &g_opacity_gradient_preview);
+    if (g_opacity_gradient_preview) {
+        SDL_Texture *tex =
+            OpacityGradientBuildPreview(selected, g_doc->ilselected);
+        if (tex) {
+            /* Fit the sprite into a preview box, scaled up with nearest
+               filtering, over a checkerboard so cleared (transparent) pixels
+               read clearly. */
+            const float BOX = 200.0f;
+            float sw_px = (float)selected->w;
+            float sh_px = (float)selected->h;
+            float scale = BOX / (sw_px > sh_px ? sw_px : sh_px);
+            ImVec2 draw_sz(sw_px * scale, sh_px * scale);
+
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            const float CHK = 8.0f;
+            for (float yy = 0; yy < draw_sz.y; yy += CHK) {
+                for (float xx = 0; xx < draw_sz.x; xx += CHK) {
+                    bool dark = ((int)(xx / CHK) + (int)(yy / CHK)) & 1;
+                    ImVec2 a(p0.x + xx, p0.y + yy);
+                    ImVec2 b(p0.x + (xx + CHK > draw_sz.x ? draw_sz.x : xx + CHK),
+                             p0.y + (yy + CHK > draw_sz.y ? draw_sz.y : yy + CHK));
+                    dl->AddRectFilled(a, b,
+                        dark ? IM_COL32(60, 60, 60, 255)
+                             : IM_COL32(90, 90, 90, 255));
+                }
+            }
+            ImGui::Image((ImTextureID)(intptr_t)tex, draw_sz);
+        }
+    } else {
+        OpacityGradientFreePreview();
+    }
 
     OpacityGradientStats preview = OpacityGradientScan(false, NULL);
     ImGui::Separator();

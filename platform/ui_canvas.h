@@ -165,6 +165,7 @@ void ZoomImageRectForAvailable(const ImVec2 &avail, const ImVec2 &origin,
 float ZoomNextLevel(float current, int dir);
 void ResetZoomToFit(void);
 void ResetZoomToHalfFit(const ImVec2 &avail);
+void ResetZoomForSelection(const ImVec2 &avail);
 void QueueZoomStep(int dir);
 void QueueZoomFit(void);
 bool ApplyZoomScale(float old_scale, float new_scale,

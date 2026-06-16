@@ -38,6 +38,11 @@ float g_pan_y      = 0.0f;
 bool  g_zoom_fit   = true;
 bool  g_zoom_reset = true;
 float g_zoom_effective = 1.0f;
+/* Sticky zoom the user explicitly chose (via wheel/+- steps). Carried across
+   sprite/palette selection changes so the view stays at the last zoom instead
+   of snapping back to the half-fit default. 0 = none (use the default). A
+   "fit" action clears it. */
+float g_zoom_user_pref = 0.0f;
 float g_zoom_wheel_accum   = 0.0f;
 int   g_zoom_pending_steps = 0;
 bool  g_zoom_pending_fit   = false;
