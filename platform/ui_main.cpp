@@ -289,7 +289,17 @@ void DrawMainLayout(void)
     /* Sprite / palette list navigation: cursor up/down flicks
      * between images (default) or palettes (when palette panel
      * was last clicked), matching DOS imgtool muscle memory. */
-    if (!popup_using_keyboard && g_palette_nav && g_doc->palcnt > 0) {
+    if (!popup_using_keyboard && !widget_using_keyboard &&
+        g_world_state.enabled &&
+        WorldEmbeddedSeqScrActive(g_world_marked_state)) {
+        /* When a World View script/sequence table is loaded, Up/Down step
+           through its entries (loading each target sprite) instead of walking
+           the main image list, so you can scrub the script without clicking. */
+        if (ImGui::Shortcut(ImGuiKey_DownArrow, route))
+            StepWorldEmbeddedSeqScrEntry(g_world_marked_state, 1);
+        if (ImGui::Shortcut(ImGuiKey_UpArrow, route))
+            StepWorldEmbeddedSeqScrEntry(g_world_marked_state, -1);
+    } else if (!popup_using_keyboard && g_palette_nav && g_doc->palcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
             SelectPalette((g_doc->plselected + 1) % (int)g_doc->palcnt);
             g_zoom_reset = true;

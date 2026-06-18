@@ -5981,6 +5981,9 @@ void DrawAboutModal(void)
         ImGui::TextDisabled("SDL/ImGui modernization & feature work: see git history");
 
         ImGui::Spacing();
+        ImGui::TextDisabled("Portions based on agentic AI reverse engineering by");
+        ImGui::SameLine();
+        ImGui::TextLinkOpenURL("Asure007", "https://github.com/Asure/");
         ImGui::TextLinkOpenURL("https://github.com/junkwax/midway-imgtool");
         ImGui::SameLine();
         ImGui::TextDisabled(" (issues + releases)");

@@ -579,6 +579,12 @@ int ClampWorldMarkedZ(int value);
 int ClampWorldMarkedMotion(int value);
 void WorldMarkedRestart(WorldMarkedSequenceState &state);
 void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta);
+/* True when an embedded World View sequence/script table is loaded and showing
+   its entries (so Up/Down can step through its frames instead of the image list). */
+bool WorldEmbeddedSeqScrActive(const WorldMarkedSequenceState &state);
+/* Advance the loaded embedded sequence/script by `delta` entries (wrapping) and
+   sync the editor selection to the target sprite. */
+void StepWorldEmbeddedSeqScrEntry(WorldMarkedSequenceState &state, int delta);
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count);
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
                             int frame_count, int frame_idx);

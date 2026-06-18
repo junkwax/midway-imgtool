@@ -154,6 +154,13 @@ void ResetZoomToHalfFit(const ImVec2 &avail)
     float fit = ZoomFitScaleForAvailable(avail);
     float scale = floorf(fit * 0.5f);
     if (scale < 1.0f) scale = 1.0f;
+    /* Most sprites are small; half-fit can drop to 100% for tall/medium ones,
+       which opens them too small to work on. Prefer a readable initial
+       magnification (300%), but never exceed the fit scale so the whole
+       sprite stays visible in the canvas. */
+    float min_initial = 3.0f;
+    if (min_initial > fit) min_initial = fit;
+    if (scale < min_initial) scale = min_initial;
     if (scale > ZOOM_MAX) scale = ZOOM_MAX;
     g_zoom = scale;
     g_zoom_effective = scale;
@@ -3553,6 +3560,38 @@ static void WorldEmbeddedSequenceSelectEntry(WorldMarkedSequenceState &state,
     lane.img = doc_get_img(lane.doc, lane.frames[(size_t)frame_idx]);
     WorldSyncEditorSelectionToSprite(lane.doc, lane.doc_idx,
                                      lane.frames[(size_t)frame_idx]);
+}
+
+bool WorldEmbeddedSeqScrActive(const WorldMarkedSequenceState &state)
+{
+    return state.embedded_active &&
+           state.embedded_doc_idx >= 0 &&
+           !state.sequence_frames[kWorldEmbeddedSeqScrSlot].empty();
+}
+
+void StepWorldEmbeddedSeqScrEntry(WorldMarkedSequenceState &state, int delta)
+{
+    if (!WorldEmbeddedSeqScrActive(state))
+        return;
+    const int slot = kWorldEmbeddedSeqScrSlot;
+    int n = (int)state.sequence_frames[slot].size();
+    if (n <= 0) return;
+
+    int cur = WorldMarkedFrameForTick(state, slot, n, state.frame,
+                                      state.hold_end[slot]);
+    if (cur < 0) cur = 0;
+    if (cur >= n) cur = n - 1;
+
+    int next = (cur + delta) % n;
+    if (next < 0) next += n;
+
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = WorldMarkedTickForFrame(state, slot, n, next);
+
+    Document *doc = document_get(state.embedded_doc_idx);
+    WorldSyncEditorSelectionToSprite(doc, state.embedded_doc_idx,
+                                     state.sequence_frames[slot][(size_t)next]);
 }
 
 static void WorldMarkedApplyAutoYChain(WorldMarkedSequenceState &state,

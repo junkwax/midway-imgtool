@@ -214,4 +214,10 @@ Full keyboard reference in the in-app help (`h`).
 
 ---
 
+## Credits
+
+Portions of this tool are based on agentic AI reverse engineering by [Asure007](https://github.com/Asure/), including work from [midway-loadimg](https://github.com/Asure/midway-loadimg).
+
+---
+
 Issues and PRs welcome at https://github.com/junkwax/midway-imgtool.

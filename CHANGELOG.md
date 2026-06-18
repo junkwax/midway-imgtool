@@ -8,6 +8,30 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.14.2] — Readable open zoom, Script Table arrow nav, credits
+
+Patch release: sprites open at a workable magnification, World View
+script/sequence tables can be scrubbed with the keyboard, and reverse-
+engineering credit is added.
+
+### Zoom
+- **Readable initial zoom** — newly opened/selected sprites now default to at
+  least 300% (capped at the fit scale so the whole sprite stays visible) instead
+  of dropping to 100% for tall/medium sprites. Manual and sticky zoom are
+  unchanged.
+
+### World View
+- **Up/Down step the Script Table** — when a script or sequence table is loaded
+  in World View, the Up/Down arrows now cycle through its entries (loading each
+  target sprite into the editor, with wraparound) instead of walking the main
+  image list. Falls back to normal image-list navigation when no table is
+  active.
+
+### Credits
+- **Reverse-engineering credit** — the About dialog and README now credit the
+  agentic AI reverse engineering by [Asure007](https://github.com/Asure/),
+  including work from [midway-loadimg](https://github.com/Asure/midway-loadimg).
+
 ## [v3.14.1] — Layout polish, opacity preview, sticky zoom
 
 Patch release with UI layout fixes, a live opacity-gradient preview, and
