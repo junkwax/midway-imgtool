@@ -107,6 +107,17 @@ static int  g_sprite_cleanup_replacement_support = 4;
 static int  g_sprite_cleanup_outlier = 10;
 static bool g_sprite_cleanup_transparent = true;
 
+struct SpriteCleanupPreview {
+    SDL_Texture *current_tex;
+    SDL_Texture *updated_tex;
+    int current_w, current_h;
+    int updated_w, updated_h;
+    int image_idx;
+    int changed_pixels;
+    std::string key;
+};
+static SpriteCleanupPreview g_sprite_cleanup_preview = {NULL, NULL, 0, 0, 0, 0, -1, 0, ""};
+
 static bool FileDialogSupportsMultiSelect(FileDialogMode mode)
 {
     return mode == FileDialogMode::ImportPng ||
@@ -5641,10 +5652,165 @@ static SDL_Texture *OpacityGradientBuildPreview(IMG *img, int image_idx)
     return g_opacity_gradient_preview_tex;
 }
 
+static void SpriteCleanupPreviewClear(void)
+{
+    if (g_sprite_cleanup_preview.current_tex) {
+        SDL_DestroyTexture(g_sprite_cleanup_preview.current_tex);
+        g_sprite_cleanup_preview.current_tex = NULL;
+    }
+    if (g_sprite_cleanup_preview.updated_tex) {
+        SDL_DestroyTexture(g_sprite_cleanup_preview.updated_tex);
+        g_sprite_cleanup_preview.updated_tex = NULL;
+    }
+    g_sprite_cleanup_preview.current_w = 0;
+    g_sprite_cleanup_preview.current_h = 0;
+    g_sprite_cleanup_preview.updated_w = 0;
+    g_sprite_cleanup_preview.updated_h = 0;
+    g_sprite_cleanup_preview.image_idx = -1;
+    g_sprite_cleanup_preview.changed_pixels = 0;
+    g_sprite_cleanup_preview.key.clear();
+}
+
+static SpriteCleanupOptions SpriteCleanupOptionsFromUi(void)
+{
+    SpriteCleanupOptions opt;
+    opt.search_radius = g_sprite_cleanup_radius;
+    opt.similarity_distance = g_sprite_cleanup_similarity;
+    opt.min_similar_neighbors = g_sprite_cleanup_min_similar;
+    opt.min_replacement_neighbors = g_sprite_cleanup_replacement_support;
+    opt.outlier_distance = g_sprite_cleanup_outlier;
+    opt.allow_transparent_replacement = g_sprite_cleanup_transparent;
+    return opt;
+}
+
+static int SpriteCleanupPreviewTargetIndex(int marked)
+{
+    if (!g_doc) return -1;
+    if (marked > 0) {
+        if (g_doc->ilselected >= 0) {
+            IMG *selected = get_img(g_doc->ilselected);
+            if (selected && (selected->flags & 1))
+                return g_doc->ilselected;
+        }
+        int idx = 0;
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+            if (img->flags & 1) return idx;
+        }
+        return -1;
+    }
+    return g_doc->ilselected;
+}
+
+static unsigned int SpriteCleanupPixelHash(const unsigned char *pixels, size_t bytes)
+{
+    unsigned int h = 2166136261u;
+    for (size_t i = 0; i < bytes; i++) {
+        h ^= (unsigned int)pixels[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static bool SpriteCleanupPixelsToRgba(const unsigned char *pixels,
+                                      int w, int h, int stride, PAL *pal,
+                                      std::vector<unsigned char> &rgba)
+{
+    if (!pixels || w <= 0 || h <= 0 || stride < w) return false;
+    rgba.assign((size_t)w * h * 4, 0);
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = pixels[(size_t)y * stride + x];
+            unsigned char *dst = &rgba[((size_t)y * w + x) * 4];
+            if (ci == 0) {
+                dst[3] = 0;
+                continue;
+            }
+
+            unsigned int r = ci, g = ci, b = ci;
+            if (pal && pal->data_p && ci < pal->numc) {
+                unsigned short w15 = pal_word_or_black(pal, ci);
+                r = (unsigned int)(((w15 >> 10) & 0x1F) * 255 / 31);
+                g = (unsigned int)(((w15 >>  5) & 0x1F) * 255 / 31);
+                b = (unsigned int)(( w15        & 0x1F) * 255 / 31);
+            }
+            dst[0] = (unsigned char)r;
+            dst[1] = (unsigned char)g;
+            dst[2] = (unsigned char)b;
+            dst[3] = 255;
+        }
+    }
+    return true;
+}
+
+static void SpriteCleanupPreviewRefresh(int marked)
+{
+    int image_idx = SpriteCleanupPreviewTargetIndex(marked);
+    IMG *img = (image_idx >= 0) ? get_img(image_idx) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) {
+        SpriteCleanupPreviewClear();
+        return;
+    }
+
+    SpriteCleanupOptions opt = SpriteCleanupOptionsFromUi();
+    int w = (int)img->w;
+    int h = (int)img->h;
+    int stride = (w + 3) & ~3;
+    size_t bytes = (size_t)stride * h;
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    unsigned int hash = SpriteCleanupPixelHash(pixels, bytes);
+
+    char key[256];
+    snprintf(key, sizeof(key), "%p:%d:%p:%u:%u:%u:%u:%u:%d:%d:%d:%d:%d:%d",
+             (void *)g_doc, image_idx, img->data_p,
+             (unsigned)img->w, (unsigned)img->h, (unsigned)img->palnum,
+             g_palette_sync_serial, hash,
+             opt.search_radius, opt.similarity_distance,
+             opt.min_similar_neighbors, opt.min_replacement_neighbors,
+             opt.outlier_distance, opt.allow_transparent_replacement ? 1 : 0);
+    if (g_sprite_cleanup_preview.current_tex &&
+        g_sprite_cleanup_preview.updated_tex &&
+        g_sprite_cleanup_preview.key == key)
+        return;
+
+    PAL *pal = get_pal((int)img->palnum);
+    std::vector<unsigned char> current_rgba;
+    std::vector<unsigned char> updated_rgba;
+    std::vector<unsigned char> work(bytes);
+    memcpy(work.data(), pixels, bytes);
+
+    int changed = CleanupSpriteArtifacts(work.data(), w, h, stride, pal, &opt, true);
+    SDL_Texture *current_tex = NULL;
+    SDL_Texture *updated_tex = NULL;
+    if (SpriteCleanupPixelsToRgba(pixels, w, h, stride, pal, current_rgba))
+        current_tex = make_preview_texture(current_rgba.data(), w, h, 192);
+    if (SpriteCleanupPixelsToRgba(work.data(), w, h, stride, pal, updated_rgba))
+        updated_tex = make_preview_texture(updated_rgba.data(), w, h, 192);
+
+    SpriteCleanupPreviewClear();
+    if (!current_tex || !updated_tex) {
+        if (current_tex) SDL_DestroyTexture(current_tex);
+        if (updated_tex) SDL_DestroyTexture(updated_tex);
+        return;
+    }
+
+    SDL_QueryTexture(current_tex, NULL, NULL,
+                     &g_sprite_cleanup_preview.current_w,
+                     &g_sprite_cleanup_preview.current_h);
+    SDL_QueryTexture(updated_tex, NULL, NULL,
+                     &g_sprite_cleanup_preview.updated_w,
+                     &g_sprite_cleanup_preview.updated_h);
+    g_sprite_cleanup_preview.current_tex = current_tex;
+    g_sprite_cleanup_preview.updated_tex = updated_tex;
+    g_sprite_cleanup_preview.image_idx = image_idx;
+    g_sprite_cleanup_preview.changed_pixels = changed;
+    g_sprite_cleanup_preview.key = key;
+}
+
 void OpenSpriteCleanupDialog(void)
 {
     if (!g_doc) return;
     if (CountMarkedImages() == 0 && g_doc->ilselected < 0) return;
+    SpriteCleanupPreviewClear();
     g_show_sprite_cleanup = true;
 }
 
@@ -5654,8 +5820,10 @@ void DrawSpriteCleanupDialog(void)
         ImGui::OpenPopup("Sprite Artifact Cleanup");
     if (!ImGui::BeginPopupModal("Sprite Artifact Cleanup",
                                 &g_show_sprite_cleanup,
-                                ImGuiWindowFlags_AlwaysAutoResize))
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!g_show_sprite_cleanup) SpriteCleanupPreviewClear();
         return;
+    }
 
     int marked = CountMarkedImages();
     bool have_target = marked > 0 || (g_doc && g_doc->ilselected >= 0);
@@ -5698,22 +5866,44 @@ void DrawSpriteCleanupDialog(void)
         ImGui::SetTooltip("Surrounded one-off pixels become transparent index #0.");
 
     ImGui::Separator();
+    SpriteCleanupPreviewRefresh(marked);
+    if (g_sprite_cleanup_preview.current_tex &&
+        g_sprite_cleanup_preview.updated_tex) {
+        IMG *preview_img = get_img(g_sprite_cleanup_preview.image_idx);
+        ImGui::Text("Preview: %s (%d px)",
+                    preview_img ? preview_img->n_s : "sprite",
+                    g_sprite_cleanup_preview.changed_pixels);
+
+        ImGui::BeginGroup();
+        ImGui::TextUnformatted("Current");
+        ImGui::Image((ImTextureID)(intptr_t)g_sprite_cleanup_preview.current_tex,
+                     ImVec2((float)g_sprite_cleanup_preview.current_w,
+                            (float)g_sprite_cleanup_preview.current_h));
+        ImGui::EndGroup();
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        ImGui::TextUnformatted("Updated");
+        ImGui::Image((ImTextureID)(intptr_t)g_sprite_cleanup_preview.updated_tex,
+                     ImVec2((float)g_sprite_cleanup_preview.updated_w,
+                            (float)g_sprite_cleanup_preview.updated_h));
+        ImGui::EndGroup();
+    } else {
+        ImGui::TextDisabled("Preview unavailable");
+    }
+
+    ImGui::Separator();
     ImGui::BeginDisabled(!have_target);
     if (ImGui::Button("Clean", ImVec2(100, 0))) {
-        SpriteCleanupOptions opt;
-        opt.search_radius = g_sprite_cleanup_radius;
-        opt.similarity_distance = g_sprite_cleanup_similarity;
-        opt.min_similar_neighbors = g_sprite_cleanup_min_similar;
-        opt.min_replacement_neighbors = g_sprite_cleanup_replacement_support;
-        opt.outlier_distance = g_sprite_cleanup_outlier;
-        opt.allow_transparent_replacement = g_sprite_cleanup_transparent;
+        SpriteCleanupOptions opt = SpriteCleanupOptionsFromUi();
         CleanSpriteArtifactsInTargets(&opt);
+        SpriteCleanupPreviewClear();
         g_show_sprite_cleanup = false;
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        SpriteCleanupPreviewClear();
         g_show_sprite_cleanup = false;
         ImGui::CloseCurrentPopup();
     }
