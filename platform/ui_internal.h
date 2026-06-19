@@ -48,6 +48,7 @@ short SeqScrReadI16(const unsigned char *p);
 bool SeqScrBuildRecords(std::vector<SeqScrRecordView> &records,
                         bool *truncated_out);
 const char *SeqScrRecordTypeLabel(const SeqScrRecordView &rec);
+bool SeqScrAddRecord(bool script);
 const char *SeqScrEntryTargetName(const SeqScrRecordView &rec,
                                   int entry_index,
                                   const std::vector<SeqScrRecordView> &records);

@@ -649,6 +649,10 @@ void DrawMainLayout(void)
             ImGui::Separator();
             if (ImGui::MenuItem("Show Histogram"))               { CalculatePaletteHistogram(); g_show_histogram = true; }
             if (ImGui::MenuItem("Clean Up Palette"))             CleanupSelectedPalette();
+            if (ImGui::MenuItem("Group Like Colors"))            GroupLikeColorsSelectedPalette();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Clean up, then cluster similar colors so each hue family\n"
+                "sits together as its own dark-to-light ramp.");
             if (ImGui::MenuItem("Clean Copy Palette"))           CreateCleanedPaletteCopy();
             if (ImGui::MenuItem("Inherit Colors from Marked"))   InheritSelectedPaletteFromMarked();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -1650,9 +1654,39 @@ void DrawMainLayout(void)
                      "Copied anim ASM for '%s'.", name);
             g_restore_msg_timer = 4.0f;
         };
+        auto add_seqscr_record = [&](bool scripts) {
+            if (SeqScrAddRecord(scripts)) {
+                int new_global = scripts ? (int)(g_doc->seqcnt + g_doc->scrcnt) - 1
+                                         : (int)g_doc->seqcnt - 1;
+                int local_idx = scripts ? new_global - (int)g_doc->seqcnt : new_global;
+                s_seqscr_panel_doc_idx = active_doc_idx_for_seqscr;
+                s_seqscr_panel_selected = new_global;
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Added %s %d. Use Edit... to fill in its entries.",
+                         scripts ? "script" : "sequence", local_idx);
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Could not add %s (anim blob is truncated or out of memory).",
+                         scripts ? "script" : "sequence");
+            }
+            g_restore_msg_timer = 4.0f;
+        };
         auto draw_seqscr_name_list = [&](const char *title, bool scripts,
                                          const char *id_part) {
             if (ImGui::CollapsingHeader(title)) {
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+                char add_id[48];
+                snprintf(add_id, sizeof(add_id), "%s##%s_add",
+                         scripts ? "+ Add Script" : "+ Add Sequence", id_part);
+                if (seqscr_truncated) ImGui::BeginDisabled();
+                if (ImGui::Button(add_id, ImVec2(-1, 20)))
+                    add_seqscr_record(scripts);
+                if (ImGui::IsItemHovered() && !seqscr_truncated)
+                    ImGui::SetTooltip("Append a new empty %s; edit its entries with Edit...",
+                                      scripts ? "script" : "sequence");
+                if (seqscr_truncated) ImGui::EndDisabled();
+                ImGui::PopStyleVar();
+
                 float row_h = ImGui::GetTextLineHeightWithSpacing();
                 float list_h = row_h * (scripts ? 6.0f : 8.0f);
                 float max_list_h = panel_h * 0.24f;
@@ -2838,9 +2872,24 @@ float DrawDocumentTabBar(float y, float sw)
     bool new_tab = false;
     int active = document_active_index();
 
-    ImGuiTabBarFlags tab_flags = ImGuiTabBarFlags_FittingPolicyScroll;
+    /* Only force ImGui's selected tab when the active document actually changed
+       (open / close / new / World View sync), not every frame. Re-asserting
+       SetSelected continuously re-scrolls the bar to the active tab, which
+       fought the left/right scroll arrows whenever more tabs were open than
+       fit across the bar. */
+    static int s_last_synced_active = -1;
+    bool force_select = (active != s_last_synced_active) ||
+                        (g_doc_tab_select_request >= 0);
+
+    ImGuiTabBar *tab_bar_ptr = NULL;
+    std::vector<ImGuiID> doc_tab_ids;
+
+    ImGuiTabBarFlags tab_flags = ImGuiTabBarFlags_FittingPolicyScroll |
+                                 ImGuiTabBarFlags_Reorderable;
     if (ImGui::BeginTabBar("##img_document_tabs", tab_flags)) {
+        tab_bar_ptr = ImGui::GetCurrentTabBar();
         int n = document_tab_count();
+        doc_tab_ids.assign((size_t)n, 0);
         for (int i = 0; i < n; i++) {
             Document *doc = document_get(i);
             if (!doc) continue;
@@ -2851,9 +2900,17 @@ float DrawDocumentTabBar(float y, float sw)
                      doc->dirty ? "* " : "", base, i);
 
             bool open = true;
-            ImGuiTabItemFlags item_flags = (i == active) ? ImGuiTabItemFlags_SetSelected
-                                                         : ImGuiTabItemFlags_None;
+            bool want_select = force_select &&
+                               (i == active || i == g_doc_tab_select_request);
+            ImGuiTabItemFlags item_flags = want_select ? ImGuiTabItemFlags_SetSelected
+                                                       : ImGuiTabItemFlags_None;
             bool visible = ImGui::BeginTabItem(label, &open, item_flags);
+            /* Record the ID ImGui assigned this tab so a drag-reorder can be
+               mapped back to the document index after EndTabBar. */
+            if (tab_bar_ptr && tab_bar_ptr->LastTabItemIdx >= 0 &&
+                tab_bar_ptr->LastTabItemIdx < tab_bar_ptr->Tabs.Size)
+                doc_tab_ids[(size_t)i] =
+                    tab_bar_ptr->Tabs[tab_bar_ptr->LastTabItemIdx].ID;
             bool activated = ImGui::IsItemActivated();
             if (activated && i != active)
                 activate_idx = i;
@@ -2894,15 +2951,50 @@ float DrawDocumentTabBar(float y, float sw)
     ImGui::End();
     ImGui::PopStyleVar(2);
 
-    if (activate_idx >= 0)
-        ActivateDocumentTab(activate_idx);
-    if (close_idx >= 0)
-        RequestCloseDocumentTab(close_idx);
+    /* If the user dragged a tab, ImGui has reordered tab_bar->Tabs by now.
+       Map that order back to document indices and apply it to the backing
+       store so the new order persists. A reorder rewrites the indices, so the
+       click-derived activate/close indices from this frame no longer apply. */
+    bool reordered = false;
+    if (tab_bar_ptr && (int)doc_tab_ids.size() == document_tab_count()) {
+        std::vector<int> new_order;
+        new_order.reserve(doc_tab_ids.size());
+        for (int t = 0; t < tab_bar_ptr->Tabs.Size; t++) {
+            ImGuiID id = tab_bar_ptr->Tabs[t].ID;
+            for (int i = 0; i < (int)doc_tab_ids.size(); i++) {
+                if (doc_tab_ids[(size_t)i] == id) {
+                    new_order.push_back(i);
+                    break;
+                }
+            }
+        }
+        if ((int)new_order.size() == document_tab_count()) {
+            for (int i = 0; i < (int)new_order.size(); i++) {
+                if (new_order[i] != i) { reordered = true; break; }
+            }
+            if (reordered) {
+                document_reorder(new_order.data(), (int)new_order.size());
+                /* Tab IDs encode the index, so the active document's tab gets a
+                   new ID at its new slot; re-assert its selection next frame so
+                   the highlight follows it instead of snapping to tab 0. */
+                g_doc_tab_select_request = document_active_index();
+            }
+        }
+    }
+
+    if (!reordered) {
+        if (activate_idx >= 0)
+            ActivateDocumentTab(activate_idx);
+        if (close_idx >= 0)
+            RequestCloseDocumentTab(close_idx);
+    }
     if (new_tab) {
         document_new_tab();
         g_doc_tab_select_request = document_active_index();
         ResetPerDocumentUiState(false);
     }
+
+    s_last_synced_active = document_active_index();
     return tab_h;
 }
 

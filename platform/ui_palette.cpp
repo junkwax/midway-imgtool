@@ -590,7 +590,13 @@ static int palette_sort_hue(int r, int g, int b)
     return h;
 }
 
-static std::vector<int> BuildGradientPaletteOrder(PAL *pal, const bool used[256])
+/* Gradient: one global dark->light ramp (hues interleave by brightness).
+   GroupByColor: cluster each hue family together, each as its own dark->light
+   ramp, so "like colors" sit next to each other instead of being scattered. */
+enum class PaletteSortMode { Gradient, GroupByColor };
+
+static std::vector<int> BuildGradientPaletteOrder(PAL *pal, const bool used[256],
+                                                  PaletteSortMode mode = PaletteSortMode::Gradient)
 {
     struct PaletteSortColor {
         int old_idx;
@@ -626,11 +632,19 @@ static std::vector<int> BuildGradientPaletteOrder(PAL *pal, const bool used[256]
         colors.push_back(c);
     }
 
-    std::sort(colors.begin(), colors.end(), [](const PaletteSortColor& a, const PaletteSortColor& b) {
-        if (a.luma != b.luma) return a.luma < b.luma;
-        if (a.sat != b.sat) return a.sat < b.sat;
-        if (a.family != b.family) return a.family < b.family;
-        if (a.hue != b.hue) return a.hue < b.hue;
+    std::sort(colors.begin(), colors.end(), [mode](const PaletteSortColor& a, const PaletteSortColor& b) {
+        if (mode == PaletteSortMode::GroupByColor) {
+            /* Cluster by hue family first, then ramp dark->light within it. */
+            if (a.family != b.family) return a.family < b.family;
+            if (a.luma != b.luma) return a.luma < b.luma;
+            if (a.sat != b.sat) return a.sat < b.sat;
+            if (a.hue != b.hue) return a.hue < b.hue;
+        } else {
+            if (a.luma != b.luma) return a.luma < b.luma;
+            if (a.sat != b.sat) return a.sat < b.sat;
+            if (a.family != b.family) return a.family < b.family;
+            if (a.hue != b.hue) return a.hue < b.hue;
+        }
         if (a.r != b.r) return a.r < b.r;
         if (a.g != b.g) return a.g < b.g;
         if (a.b != b.b) return a.b < b.b;
@@ -670,7 +684,7 @@ static int BuildPaletteUsedMask(int pal_idx, int old_numc, bool used[256])
     return referenced_pixels;
 }
 
-static PaletteCleanupResult DeleteUnusedPaletteColors()
+static PaletteCleanupResult DeleteUnusedPaletteColors(PaletteSortMode mode = PaletteSortMode::Gradient)
 {
     PaletteCleanupResult result = {0, 0, 0, false};
     if (g_doc->plselected < 0) return result;
@@ -684,7 +698,7 @@ static PaletteCleanupResult DeleteUnusedPaletteColors()
 
     BuildPaletteUsedMask(g_doc->plselected, old_numc, used);
 
-    std::vector<int> order = BuildGradientPaletteOrder(pal, used);
+    std::vector<int> order = BuildGradientPaletteOrder(pal, used, mode);
     int new_numc = (int)order.size() + 1;
     result.sorted = (int)order.size();
 
@@ -2127,6 +2141,24 @@ void CleanupSelectedPalette(void)
     g_restore_msg_timer = 4.0f;
 }
 
+void GroupLikeColorsSelectedPalette(void)
+{
+    commit_palette_adjustments();
+    PaletteCleanupResult r = DeleteUnusedPaletteColors(PaletteSortMode::GroupByColor);
+    if (r.changed) {
+        memset(g_palette_selection, 0, sizeof(g_palette_selection));
+        save_palette_baseline();
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Grouped %d color%s by family (cleaned %d unused, moved %d).",
+                 r.sorted, r.sorted == 1 ? "" : "s", r.removed, r.moved);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Palette already grouped (%d active color%s).",
+                 r.sorted, r.sorted == 1 ? "" : "s");
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
 void CreateCleanedPaletteCopy(void)
 {
     commit_palette_adjustments();
@@ -2870,6 +2902,10 @@ void DrawRightPanelPaletteEditor(float panel_h)
                     if (ImGui::MenuItem("Preview Merge"))                    OpenPaletteMergePreview();
                     ImGui::Separator();
                     if (ImGui::MenuItem("Clean Up Palette")) CleanupSelectedPalette();
+                    if (ImGui::MenuItem("Group Like Colors")) GroupLikeColorsSelectedPalette();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                        "Clean up, then cluster similar colors so each hue family\n"
+                        "sits together as its own dark-to-light ramp.");
                     if (ImGui::MenuItem("Clean Copy Palette")) CreateCleanedPaletteCopy();
                     if (ImGui::MenuItem("Inherit Colors from Marked")) InheritSelectedPaletteFromMarked();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -2946,6 +2982,10 @@ void DrawRightPanelPaletteEditor(float panel_h)
 
             if (ImGui::BeginMenu("Utilities")) {
                 if (ImGui::MenuItem("Clean Up Palette")) CleanupSelectedPalette();
+                if (ImGui::MenuItem("Group Like Colors")) GroupLikeColorsSelectedPalette();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Clean up, then cluster similar colors so each hue family\n"
+                    "sits together as its own dark-to-light ramp.");
                 if (ImGui::MenuItem("Clean Copy Palette")) CreateCleanedPaletteCopy();
                 if (ImGui::MenuItem("Merge Duplicate Palettes")) MergeDuplicatePalettes();
                 if (ImGui::MenuItem("Inherit Colors from Marked")) InheritSelectedPaletteFromMarked();

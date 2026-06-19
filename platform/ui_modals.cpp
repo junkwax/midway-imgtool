@@ -4682,6 +4682,62 @@ const char *SeqScrRecordTypeLabel(const SeqScrRecordView &rec)
     return rec.script ? "Script" : "Seq";
 }
 
+/* Append a new, empty (zero-entry) sequence or script record to the SEQSCR
+   blob. A new sequence is inserted at the end of the sequence block so the
+   indices of existing sequences (which scripts reference) stay valid; a new
+   script is appended at the very end. Grows the blob, bumps seqcnt/scrcnt, and
+   leaves it for the editor to fill in. Returns false on a malformed blob or
+   allocation failure. */
+bool SeqScrAddRecord(bool script)
+{
+    const SeqScrLayoutInfo li = SeqScrLayout();
+    const unsigned char *old = (const unsigned char *)g_doc->scrseqmem_p;
+    size_t blob_bytes = old ? (size_t)g_doc->scrseqbytes : 0;
+
+    size_t insert_off = blob_bytes;   /* append (new script, or empty blob) */
+    if (blob_bytes > 0) {
+        std::vector<SeqScrRecordView> records;
+        bool truncated = false;
+        SeqScrBuildRecords(records, &truncated);
+        if (truncated) return false;  /* never rewrite a malformed blob */
+        if (!script) {
+            /* End of the sequence block = offset of the first script record. */
+            for (const SeqScrRecordView &rec : records) {
+                if (rec.index == (int)g_doc->seqcnt) { insert_off = rec.offset; break; }
+            }
+        }
+    }
+
+    size_t new_bytes = blob_bytes + (size_t)li.record_size;
+    unsigned char *nb = (unsigned char *)malloc(new_bytes);
+    if (!nb) return false;
+
+    if (insert_off > 0) memcpy(nb, old, insert_off);
+    memset(nb + insert_off, 0, (size_t)li.record_size);
+
+    const char *defname = script ? "NEWSCRIPT" : "NEWSEQ";
+    size_t namelen = strlen(defname);
+    if (namelen > 16) namelen = 16;
+    memcpy(nb + insert_off, defname, namelen);
+    /* num (offset 18) and flags (offset 16) stay zero. Far-pointer files use
+       -1 (0xFF bytes) to mean "no damage table ref"; default to that. */
+    if (li.far_model)
+        memset(nb + insert_off + 88, 0xFF, 6);
+
+    if (insert_off < blob_bytes)
+        memcpy(nb + insert_off + li.record_size, old + insert_off,
+               blob_bytes - insert_off);
+
+    doc_undo_push();
+    if (g_doc->scrseqmem_p) free(g_doc->scrseqmem_p);
+    g_doc->scrseqmem_p = nb;
+    g_doc->scrseqbytes = (unsigned int)new_bytes;
+    if (script) g_doc->scrcnt++;
+    else        g_doc->seqcnt++;
+    mark_dirty();
+    return true;
+}
+
 const char *SeqScrEntryTargetName(const SeqScrRecordView &rec,
                                   int entry_index,
                                   const std::vector<SeqScrRecordView> &records)

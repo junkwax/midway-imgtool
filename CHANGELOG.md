@@ -8,6 +8,34 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.15.0] — Tab reorder, palette color grouping, add sequences/scripts
+
+Feature release: document tabs can be reordered and scrolled properly, palettes
+can be grouped by color family, and new animation sequences/scripts can be
+created from the right panel.
+
+### Document tabs
+- **Scroll arrows work** — the active tab was being re-asserted as selected every
+  frame, which continuously re-scrolled the bar back to it and fought the
+  left/right scroll arrows when more tabs were open than fit. The active tab is
+  now only force-selected when it actually changes, so the arrows scroll freely.
+- **Drag to reorder** — document tabs can be dragged into any order, and the new
+  order persists in the backing store (not just visually for one frame).
+
+### Palettes
+- **Group Like Colors** — a new palette operation (Palette menu, right-click, and
+  Operations → Utilities) that cleans up unused colors and then clusters similar
+  colors so each hue family sits together as its own dark-to-light ramp, instead
+  of the single global brightness ramp produced by Clean Up Palette.
+
+### Animation
+- **Add Sequence / Add Script** — the Sequences and Scripts sections in the right
+  panel each gained a "+ Add" button that appends a new empty record to the IMG's
+  SEQSCR blob (new sequences insert at the end of the sequence block so existing
+  indices stay valid; new scripts append at the end). Works even on an IMG with
+  no existing animation blob. Fill in entries with Edit... in the Anim
+  Scripts/Seqs editor. Undoable.
+
 ## [v3.14.2] — Readable open zoom, Script Table arrow nav, credits
 
 Patch release: sprites open at a workable magnification, World View

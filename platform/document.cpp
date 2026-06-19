@@ -123,6 +123,40 @@ void document_set_active(int idx)
     document_repoint_active();
 }
 
+void document_reorder(const int *new_order, int count)
+{
+    if (!new_order || count != (int)g_documents.size())
+        return;
+
+    /* Validate that new_order is a true permutation of [0, count). */
+    std::deque<bool> seen((size_t)count, false);
+    for (int i = 0; i < count; i++) {
+        int src = new_order[i];
+        if (src < 0 || src >= count || seen[(size_t)src])
+            return;
+        seen[(size_t)src] = true;
+    }
+
+    /* Rebuild in the requested order. Document is a POD with owned chain
+       pointers; the shallow struct copy transfers ownership and the old deque's
+       trivial destructors free nothing, so there is no leak or double free. */
+    std::deque<Document> reordered;
+    for (int i = 0; i < count; i++)
+        reordered.push_back(g_documents[(size_t)new_order[i]]);
+
+    int new_active = g_active_document;
+    for (int i = 0; i < count; i++) {
+        if (new_order[i] == g_active_document) {
+            new_active = i;
+            break;
+        }
+    }
+
+    g_documents = std::move(reordered);
+    g_active_document = new_active;
+    document_repoint_active();
+}
+
 void document_close_tab(int idx)
 {
     if (idx < 0 || idx >= (int)g_documents.size()) return;

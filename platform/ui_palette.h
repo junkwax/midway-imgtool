@@ -115,6 +115,7 @@ void OpenPaletteReduceDialog(int bpp);
 void InvalidatePaletteUsage(void);
 bool ensure_palette_numc(PAL *pal, int min_numc);
 void CleanupSelectedPalette(void);
+void GroupLikeColorsSelectedPalette(void);
 void CreateCleanedPaletteCopy(void);
 void CopyPaletteZeroToOpaqueSlot(int requested_slot);
 void CopyPaletteZeroToOpaqueSlot(void);

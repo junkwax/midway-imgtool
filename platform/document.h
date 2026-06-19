@@ -106,6 +106,11 @@ Document *document_active(void);
 int       document_new_tab(void);
 void      document_set_active(int idx);
 void      document_close_tab(int idx);
+/* Reorder the open tabs to match `new_order`, a permutation of [0, count) where
+   new_order[i] is the current index of the document that should end up at slot i.
+   The active document follows its content to the new slot. No-op on a malformed
+   permutation. */
+void      document_reorder(const int *new_order, int count);
 void      document_clear_contents(Document *doc);
 
 #ifdef __cplusplus
