@@ -87,6 +87,58 @@ static void make_unique_pal_name(char out[10])
     out[0] = '\0';
 }
 
+/* Derive a numbered name from an existing palette name, e.g. LKALT_P ->
+   LKALT1_P -> LKALT2_P. The trailing "_p"/"_P" suffix (the palette marker) is
+   kept at the end and the counter is inserted before it; any digits already on
+   the stem are stripped first so re-duplicating advances the number instead of
+   appending. Names are capped at 9 chars (n_s[10]), so the stem is truncated to
+   make room for the counter and suffix. Falls back to PAL<n> for blank names. */
+static void make_numbered_pal_name(const char *base, char out[10])
+{
+    int len = 0;
+    while (len < 9 && base[len] != '\0') len++;
+
+    char suffix[3] = {0};
+    int core_len = len;
+    if (len >= 2 && base[len - 2] == '_' &&
+        (base[len - 1] == 'p' || base[len - 1] == 'P')) {
+        suffix[0] = '_';
+        suffix[1] = base[len - 1];
+        core_len = len - 2;
+    }
+    while (core_len > 0 && base[core_len - 1] >= '0' && base[core_len - 1] <= '9')
+        core_len--;
+
+    char stem[10] = {0};
+    if (core_len <= 0) {
+        memcpy(stem, "PAL", 3);
+        core_len = 3;
+    } else {
+        memcpy(stem, base, (size_t)core_len);
+    }
+
+    int suf_len = (int)strlen(suffix);
+    for (int n = 1; n < 100000000; n++) {
+        char num[12];
+        int num_len = snprintf(num, sizeof(num), "%d", n);
+        int avail = 9 - num_len - suf_len;          /* room left for the stem */
+        if (avail < 0) avail = 0;
+        int use_stem = core_len < avail ? core_len : avail;
+        char cand[10];
+        snprintf(cand, sizeof(cand), "%.*s%s%s", use_stem, stem, num, suffix);
+        bool clash = false;
+        for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p) {
+            if (strncmp(p->n_s, cand, 10) == 0) { clash = true; break; }
+        }
+        if (!clash) {
+            memset(out, 0, 10);
+            memcpy(out, cand, strlen(cand));
+            return;
+        }
+    }
+    out[0] = '\0';
+}
+
 static unsigned short MergedSlotWord(const unsigned char *target_colors, int base_count,
                                      const unsigned short *added, int slot)
 {
@@ -1533,7 +1585,7 @@ void DuplicatePalette(void)
     pal->bitspix = src->bitspix;
     pal->numc    = src->numc;
     pal->pad     = 0;
-    make_unique_pal_name(pal->n_s);
+    make_numbered_pal_name(src->n_s, pal->n_s);
 
     unsigned int col_sz = (unsigned int)pal->numc * 2;
     unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
@@ -2201,7 +2253,7 @@ void CreateCleanedPaletteCopy(void)
     pal->bitspix = src->bitspix;
     pal->numc    = (unsigned short)new_numc;
     pal->pad     = 0;
-    make_unique_pal_name(pal->n_s);
+    make_numbered_pal_name(src->n_s, pal->n_s);
 
     unsigned char *buf = (unsigned char *)PoolAlloc((size_t)new_numc * 2);
     if (!buf) return;

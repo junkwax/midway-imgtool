@@ -8,6 +8,19 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.15.1] — Numbered palette copies
+
+Patch release: duplicating or clean-copying a palette now derives the new name
+from the source instead of a generic counter.
+
+### Palettes
+- **Numbered copy names** — Duplicate Palette and Clean Copy Palette now number
+  off the source name, e.g. `LKALT_P` -> `LKALT1_P` -> `LKALT2_P`, keeping the
+  `_p`/`_P` palette suffix at the end and advancing the counter on re-duplicates
+  (so duplicating `LKALT1_P` yields `LKALT2_P`, not `LKALT11_P`). Names with no
+  suffix just get the number appended; the 9-char name limit is respected by
+  truncating the stem. Blank names still fall back to `PAL<n>`.
+
 ## [v3.15.0] — Tab reorder, palette color grouping, add sequences/scripts
 
 Feature release: document tabs can be reordered and scrolled properly, palettes
