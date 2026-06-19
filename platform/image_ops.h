@@ -38,3 +38,22 @@ bool FindInwardEdgeReplacement(const unsigned char *src,
                                unsigned char edge_ci,
                                int max_depth,
                                unsigned char *out_ci);
+
+struct SpriteCleanupOptions {
+    int search_radius = 3;                 /* spatial radius, in pixels */
+    int similarity_distance = 8;           /* RGB555 distance treated as "same family" */
+    int min_similar_neighbors = 1;         /* keep pixels with this much same-family support */
+    int min_replacement_neighbors = 4;     /* local support needed for a nonzero replacement */
+    int outlier_distance = 10;             /* min RGB555 distance from replacement color */
+    bool allow_transparent_replacement = true;
+};
+
+/* Repaint isolated, wrong-color sprite artifacts. A non-transparent pixel is
+   considered an artifact when it has too few same/similar-color neighbors in
+   `search_radius`. It is replaced with a locally-supported adjacent color, or
+   with transparent index 0 when it is a dust speck surrounded by transparency.
+   Returns the number of pixels that would change; when `apply` is true the
+   writes are committed after the full source image has been analyzed. */
+int CleanupSpriteArtifacts(unsigned char *pixels, int w, int h, int stride,
+                           PAL *pal, const SpriteCleanupOptions *options,
+                           bool apply);

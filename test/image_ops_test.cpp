@@ -59,14 +59,15 @@ int main(void)
     }
 
     /* Palette: 0 black, 2 near-black stroke, 3 bright fill. */
-    unsigned char paldata[4 * 2];
+    unsigned char paldata[5 * 2];
     put_word(paldata, 0, mkword(0, 0, 0));
     put_word(paldata, 1, mkword(0, 0, 0));
     put_word(paldata, 2, mkword(2, 2, 2));
     put_word(paldata, 3, mkword(31, 31, 31));
+    put_word(paldata, 4, mkword(3, 2, 2));
     PAL pal {};
     pal.data_p = paldata;
-    pal.numc = 4;
+    pal.numc = 5;
 
     /* EdgeColorStrongVariant: bright fill strongly differs from dark stroke;
        a near-identical color does not; index 0 / equal indices never qualify. */
@@ -96,8 +97,50 @@ int main(void)
         CHECK(out == 0);
     }
 
+    /* CleanupSpriteArtifacts: isolated outside dust is removed to transparent. */
+    {
+        unsigned char dust[5 * 5] = {};
+        dust[2 * 5 + 2] = 2;
+        SpriteCleanupOptions opt;
+        opt.search_radius = 2;
+        int n = CleanupSpriteArtifacts(dust, 5, 5, 5, &pal, &opt, false);
+        CHECK(n == 1);
+        CHECK(dust[2 * 5 + 2] == 2);  /* preview mode leaves source alone */
+        n = CleanupSpriteArtifacts(dust, 5, 5, 5, &pal, &opt, true);
+        CHECK(n == 1);
+        CHECK(dust[2 * 5 + 2] == 0);
+    }
+
+    /* CleanupSpriteArtifacts: an interior wrong-color speck is repainted from
+       the locally-supported neighboring color. */
+    {
+        unsigned char speck[5 * 5];
+        for (int i = 0; i < 25; i++) speck[i] = 3;
+        speck[2 * 5 + 2] = 2;
+        SpriteCleanupOptions opt;
+        opt.search_radius = 2;
+        int n = CleanupSpriteArtifacts(speck, 5, 5, 5, &pal, &opt, true);
+        CHECK(n == 1);
+        CHECK(speck[2 * 5 + 2] == 3);
+    }
+
+    /* A tiny two-pixel same-color cluster has similar-color support, so it is
+       not treated as random dust. */
+    {
+        unsigned char cluster[5 * 5];
+        for (int i = 0; i < 25; i++) cluster[i] = 3;
+        cluster[2 * 5 + 2] = 2;
+        cluster[2 * 5 + 3] = 2;
+        SpriteCleanupOptions opt;
+        opt.search_radius = 2;
+        int n = CleanupSpriteArtifacts(cluster, 5, 5, 5, &pal, &opt, true);
+        CHECK(n == 0);
+        CHECK(cluster[2 * 5 + 2] == 2);
+        CHECK(cluster[2 * 5 + 3] == 2);
+    }
+
     if (g_fails == 0) {
-        std::printf("PASS: image_ops edge/stroke helpers behave as specified\n");
+        std::printf("PASS: image_ops edge/stroke/cleanup helpers behave as specified\n");
         return 0;
     }
     std::fprintf(stderr, "FAILED: %d image_ops check(s)\n", g_fails);

@@ -523,6 +523,7 @@ void RequestDeleteImage(int idx);
 int CountMarkedImages(void);
 void RequestDeleteMarkedImages(void);
 
+struct SpriteCleanupOptions;
 void LabeledValue(const char *label, const char *fmt, ...);
 bool AnimPointSliderInt(const char *label, int *value, int min_value, int max_value);
 std::string sprite_family_key(const std::string &name);
@@ -550,6 +551,8 @@ void DrawAutoChopDialog(void);
 void DrawResizeSpriteDialog(void);
 void DrawBulkResizeDialog(void);
 void DrawBulkRestoreRegexDialog(void);
+void OpenSpriteCleanupDialog(void);
+void DrawSpriteCleanupDialog(void);
 void OpenOpacityGradientDialog(void);
 void DrawOpacityGradientDialog(void);
 void DrawDeleteImagesConfirm(void);
@@ -610,6 +613,7 @@ void SetIDFromSecondList(void);
 void SwitchImageList(void);
 void ClearExtraData(void);
 int RemoveHardStrokeFromTargets(int max_width);
+int CleanSpriteArtifactsInTargets(const SpriteCleanupOptions *options);
 int ApplyMarkedLikenessToSelected(void);
 
 extern bool g_show_new_img_confirm;

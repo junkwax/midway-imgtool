@@ -9114,6 +9114,80 @@ int RemoveHardStrokeFromTargets(int max_width)
     return changed_pixels;
 }
 
+int CleanSpriteArtifactsInTargets(const SpriteCleanupOptions *options)
+{
+    int marked = CountMarkedImages();
+    int selected = g_doc->ilselected;
+    if (marked == 0 && selected < 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Mark sprites, or select one sprite, before cleanup.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    std::vector<int> changed_indices;
+    int expected_pixels = 0;
+    int scanned = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        bool target = marked > 0 ? ((img->flags & 1) != 0) : (idx == selected);
+        if (!target || !img->data_p || img->w == 0 || img->h == 0) continue;
+        scanned++;
+
+        PAL *pal = get_pal((int)img->palnum);
+        int stride = ((int)img->w + 3) & ~3;
+        int n = CleanupSpriteArtifacts((unsigned char *)img->data_p,
+                                       (int)img->w, (int)img->h, stride,
+                                       pal, options, false);
+        if (n > 0) {
+            changed_indices.push_back(idx);
+            expected_pixels += n;
+        }
+    }
+
+    if (expected_pixels <= 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No isolated sprite artifacts found in %d sprite%s.",
+                 scanned, scanned == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    if (!doc_undo_push()) return 0;
+
+    int changed_images = 0;
+    int changed_pixels = 0;
+    for (int changed_idx : changed_indices) {
+        IMG *img = get_img(changed_idx);
+        PAL *pal = img ? get_pal((int)img->palnum) : NULL;
+        if (!img || !img->data_p || img->w == 0 || img->h == 0) continue;
+        int stride = ((int)img->w + 3) & ~3;
+        int n = CleanupSpriteArtifacts((unsigned char *)img->data_p,
+                                       (int)img->w, (int)img->h, stride,
+                                       pal, options, true);
+        if (n > 0) {
+            changed_images++;
+            changed_pixels += n;
+            InvalidateThumb(changed_idx);
+        }
+    }
+
+    if (changed_pixels > 0) {
+        g_img_tex_idx = -2;
+        mark_dirty();
+    }
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Cleaned %d artifact pixel%s from %d/%d sprite%s.",
+             changed_pixels,
+             changed_pixels == 1 ? "" : "s",
+             changed_images,
+             scanned,
+             scanned == 1 ? "" : "s");
+    g_restore_msg_timer = 5.0f;
+    return changed_pixels;
+}
+
 
 // Extracted from imgui_overlay.cpp: StripMarkedImages
 void StripMarkedImages(int max_transparent_neighbors, int specific_color)

@@ -510,6 +510,13 @@ void DrawMainLayout(void)
                 "One-pass edge defringe: every pixel touching a transparent\n"
                 "neighbor is averaged toward its non-transparent neighbors,\n"
                 "killing the 1px halo of blue/green-spill on digitized actors.");
+            if (ImGui::MenuItem("Clean Sprite Artifacts...", NULL, false,
+                                CountMarkedImages() > 0 || g_doc->ilselected >= 0)) {
+                OpenSpriteCleanupDialog();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Finds isolated wrong-color pixels and repaints them from\n"
+                "nearby supported colors, or transparent #0 for dust specks.");
             if (ImGui::MenuItem("Remove Hard Stroke (1-2px)")) {
                 RemoveHardStrokeFromTargets(2);
             }
@@ -2179,6 +2186,7 @@ void DrawMainLayout(void)
 
     DrawResizeSpriteDialog();
     DrawOpacityGradientDialog();
+    DrawSpriteCleanupDialog();
 
     DrawBulkResizeDialog();
 

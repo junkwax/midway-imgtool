@@ -99,6 +99,14 @@ static bool g_opacity_gradient_trim = false;
 static int  g_opacity_gradient_seed = 17;
 static bool g_opacity_gradient_preview = true;
 
+static bool g_show_sprite_cleanup = false;
+static int  g_sprite_cleanup_radius = 3;
+static int  g_sprite_cleanup_similarity = 8;
+static int  g_sprite_cleanup_min_similar = 1;
+static int  g_sprite_cleanup_replacement_support = 4;
+static int  g_sprite_cleanup_outlier = 10;
+static bool g_sprite_cleanup_transparent = true;
+
 static bool FileDialogSupportsMultiSelect(FileDialogMode mode)
 {
     return mode == FileDialogMode::ImportPng ||
@@ -5631,6 +5639,85 @@ static SDL_Texture *OpacityGradientBuildPreview(IMG *img, int image_idx)
     }
     SDL_UnlockTexture(g_opacity_gradient_preview_tex);
     return g_opacity_gradient_preview_tex;
+}
+
+void OpenSpriteCleanupDialog(void)
+{
+    if (!g_doc) return;
+    if (CountMarkedImages() == 0 && g_doc->ilselected < 0) return;
+    g_show_sprite_cleanup = true;
+}
+
+void DrawSpriteCleanupDialog(void)
+{
+    if (g_show_sprite_cleanup)
+        ImGui::OpenPopup("Sprite Artifact Cleanup");
+    if (!ImGui::BeginPopupModal("Sprite Artifact Cleanup",
+                                &g_show_sprite_cleanup,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    int marked = CountMarkedImages();
+    bool have_target = marked > 0 || (g_doc && g_doc->ilselected >= 0);
+    if (marked > 0) {
+        ImGui::Text("Target: %d marked sprite%s", marked, marked == 1 ? "" : "s");
+    } else if (g_doc && g_doc->ilselected >= 0) {
+        IMG *img = get_img(g_doc->ilselected);
+        ImGui::Text("Target: %s", img ? img->n_s : "selected sprite");
+    } else {
+        ImGui::TextDisabled("No sprite selected");
+    }
+
+    ImGui::SetNextItemWidth(220);
+    ImGui::SliderInt("Radius", &g_sprite_cleanup_radius, 1, 8);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Neighbor search radius in pixels.");
+
+    ImGui::SetNextItemWidth(220);
+    ImGui::SliderInt("Color tolerance", &g_sprite_cleanup_similarity, 0, 32);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Higher values treat nearby palette colors as the same family.");
+
+    ImGui::SetNextItemWidth(220);
+    ImGui::SliderInt("Similar neighbors", &g_sprite_cleanup_min_similar, 1, 8);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Pixels with at least this much same-family support are kept.");
+
+    ImGui::SetNextItemWidth(220);
+    ImGui::SliderInt("Replacement support", &g_sprite_cleanup_replacement_support, 1, 16);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Local support required before repainting with a non-transparent color.");
+
+    ImGui::SetNextItemWidth(220);
+    ImGui::SliderInt("Outlier difference", &g_sprite_cleanup_outlier, 0, 32);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Minimum color difference from the chosen replacement.");
+
+    ImGui::Checkbox("Dust to #0", &g_sprite_cleanup_transparent);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Surrounded one-off pixels become transparent index #0.");
+
+    ImGui::Separator();
+    ImGui::BeginDisabled(!have_target);
+    if (ImGui::Button("Clean", ImVec2(100, 0))) {
+        SpriteCleanupOptions opt;
+        opt.search_radius = g_sprite_cleanup_radius;
+        opt.similarity_distance = g_sprite_cleanup_similarity;
+        opt.min_similar_neighbors = g_sprite_cleanup_min_similar;
+        opt.min_replacement_neighbors = g_sprite_cleanup_replacement_support;
+        opt.outlier_distance = g_sprite_cleanup_outlier;
+        opt.allow_transparent_replacement = g_sprite_cleanup_transparent;
+        CleanSpriteArtifactsInTargets(&opt);
+        g_show_sprite_cleanup = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_sprite_cleanup = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void OpenOpacityGradientDialog(void)
