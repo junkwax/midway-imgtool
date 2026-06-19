@@ -6,6 +6,7 @@
  * hands/feet so the detector has to cluster islands into whole sprites.
  *************************************************************/
 #include "img_io.h"
+#include "stb_image.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -40,6 +41,78 @@ static bool write_ppm(const char *path, const std::vector<Rgb> &img, int w, int 
     std::fprintf(f, "P6\n%d %d\n255\n", w, h);
     bool ok = std::fwrite(img.data(), sizeof(Rgb), img.size(), f) == img.size();
     std::fclose(f);
+    return ok;
+}
+
+static unsigned short pack555(int r5, int g5, int b5)
+{
+    return (unsigned short)(((r5 & 0x1F) << 10) |
+                            ((g5 & 0x1F) << 5) |
+                             (b5 & 0x1F));
+}
+
+static void write_pal_word(unsigned char *dst, int idx, unsigned short w)
+{
+    dst[idx * 2 + 0] = (unsigned char)(w & 0xFF);
+    dst[idx * 2 + 1] = (unsigned char)(w >> 8);
+}
+
+static bool check_png_export_uses_image_palette(void)
+{
+    document_init();
+
+    PAL *gray = AllocPal();
+    PAL *red = AllocPal();
+    IMG *img = AllocImg();
+    if (!gray || !red || !img) {
+        std::fprintf(stderr, "FAIL: could not allocate export test document\n");
+        return false;
+    }
+
+    gray->numc = 2;
+    gray->data_p = std::calloc(2, 2);
+    red->numc = 2;
+    red->data_p = std::calloc(2, 2);
+    if (!gray->data_p || !red->data_p) {
+        std::fprintf(stderr, "FAIL: could not allocate export test palettes\n");
+        return false;
+    }
+
+    write_pal_word((unsigned char *)gray->data_p, 1, pack555(15, 15, 15));
+    write_pal_word((unsigned char *)red->data_p, 1, pack555(31, 0, 0));
+
+    img->w = 1;
+    img->h = 1;
+    img->palnum = 1;
+    img->data_p = std::calloc(1, 4);
+    if (!img->data_p) {
+        std::fprintf(stderr, "FAIL: could not allocate export test pixels\n");
+        return false;
+    }
+    ((unsigned char *)img->data_p)[0] = 1;
+    g_doc->ilselected = 0;
+
+    const char *path = "png_palette_export_test.png";
+    std::remove(path);
+    ExportPng(path);
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char *rgba = stbi_load(path, &w, &h, &channels, 4);
+    std::remove(path);
+    if (!rgba) {
+        std::fprintf(stderr, "FAIL: exported PNG could not be decoded\n");
+        return false;
+    }
+
+    bool ok = (w == 1 && h == 1 &&
+               rgba[0] > 240 && rgba[1] < 16 && rgba[2] < 16 && rgba[3] == 255);
+    if (!ok) {
+        std::fprintf(stderr,
+                     "FAIL: PNG export used wrong palette/color: %dx%d RGBA=(%u,%u,%u,%u)\n",
+                     w, h, rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
+    stbi_image_free(rgba);
+    document_clear_contents(g_doc);
     return ok;
 }
 
@@ -117,6 +190,10 @@ int main(void)
         }
     }
 
+    if (!check_png_export_uses_image_palette())
+        return 1;
+
     std::printf("PASS: sprite sheet detection grouped disconnected parts and ignored labels\n");
+    std::printf("PASS: PNG export uses the selected image palette\n");
     return 0;
 }

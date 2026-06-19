@@ -2012,36 +2012,60 @@ void BuildTgaFromMarked(const char* filepath)
 }
 
 /* ---- Save TGA ---- */
-void SaveTga(const char *filepath)
+static PAL *GetExportPalette(const IMG *img)
 {
-    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+    if (!img) return NULL;
+    PAL *pal = get_pal(img->palnum);
+    if (!pal || !pal->data_p) pal = get_pal(0);
+    return (pal && pal->data_p) ? pal : NULL;
+}
 
-    PAL *pal = get_pal(0);
-    if (!pal || !pal->data_p) pal = get_pal(img->palnum);
-    if (!pal || !pal->data_p) return;
+static bool BuildExportRgba(const IMG *img, std::vector<unsigned char> &rgba,
+                            int *w_out, int *h_out)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+
+    PAL *pal = GetExportPalette(img);
+    if (!pal) return false;
 
     int w = img->w, h = img->h;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
-    unsigned char *rgba = (unsigned char *)malloc((size_t)w * h * 4);
-    if (!rgba) return;
+    rgba.assign((size_t)w * h * 4, 0);
+
     const unsigned char *pal_data = (const unsigned char *)pal->data_p;
+    int pal_colors = (int)pal->numc;
+    if (pal_colors < 0) pal_colors = 0;
+    if (pal_colors > 256) pal_colors = 256;
+
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             unsigned char ci = ((const unsigned char *)img->data_p)[y * stride + x];
             int off = (y * w + x) * 4;
-            if (ci == 0) { rgba[off+0]=0; rgba[off+1]=0; rgba[off+2]=0; rgba[off+3]=0; }
-            else {
-                unsigned short pw = (unsigned short)(pal_data[ci*2] | (pal_data[ci*2+1] << 8));
-                rgba[off+0] = (unsigned char)(((pw >> 10) & 0x1F) << 3);
-                rgba[off+1] = (unsigned char)(((pw >>  5) & 0x1F) << 3);
-                rgba[off+2] = (unsigned char)(( pw        & 0x1F) << 3);
-                rgba[off+3] = 255;
+            if (ci == 0) {
+                rgba[(size_t)off + 3] = 0;
+            } else {
+                if ((int)ci < pal_colors)
+                    pal_word_to_rgb8(pal_data + ci * 2,
+                                     &rgba[(size_t)off + 0],
+                                     &rgba[(size_t)off + 1],
+                                     &rgba[(size_t)off + 2]);
+                rgba[(size_t)off + 3] = 255;
             }
         }
     }
-    stbi_write_tga(filepath, w, h, 4, rgba);
-    free(rgba);
+
+    if (w_out) *w_out = w;
+    if (h_out) *h_out = h;
+    return true;
+}
+
+void SaveTga(const char *filepath)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    std::vector<unsigned char> rgba;
+    int w = 0, h = 0;
+    if (!BuildExportRgba(img, rgba, &w, &h)) return;
+    stbi_write_tga(filepath, w, h, 4, rgba.data());
 }
 
 /* ---- Save LBM ---- */
@@ -4352,31 +4376,10 @@ void ExportPng(const char *path)
 {
     verbose_log("ExportPng: %s", path);
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
-    PAL *pal = get_pal(0);
-    if (!pal || !pal->data_p) pal = get_pal(img->palnum);
-    if (!pal || !pal->data_p) return;
-    int w = img->w, h = img->h;
-    unsigned short stride = (unsigned short)((w + 3) & ~3);
-    unsigned char *rgba = (unsigned char *)malloc((size_t)w * h * 4);
-    if (!rgba) return;
-    const unsigned char *pal_data = (const unsigned char *)pal->data_p;
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            unsigned char ci = ((const unsigned char *)img->data_p)[y * stride + x];
-            int off = (y * w + x) * 4;
-            if (ci == 0) { rgba[off+0]=0; rgba[off+1]=0; rgba[off+2]=0; rgba[off+3]=0; }
-            else {
-                unsigned short pw = (unsigned short)(pal_data[ci*2] | (pal_data[ci*2+1] << 8));
-                rgba[off+0] = (unsigned char)(((pw >> 10) & 0x1F) << 3);
-                rgba[off+1] = (unsigned char)(((pw >>  5) & 0x1F) << 3);
-                rgba[off+2] = (unsigned char)(( pw        & 0x1F) << 3);
-                rgba[off+3] = 255;
-            }
-        }
-    }
-    stbi_write_png(path, w, h, 4, rgba, w * 4);
-    free(rgba);
+    std::vector<unsigned char> rgba;
+    int w = 0, h = 0;
+    if (!BuildExportRgba(img, rgba, &w, &h)) return;
+    stbi_write_png(path, w, h, 4, rgba.data(), w * 4);
 }
 
 /* ---- Palette Export ---- */

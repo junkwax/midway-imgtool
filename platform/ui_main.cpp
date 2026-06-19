@@ -1674,19 +1674,6 @@ void DrawMainLayout(void)
         auto draw_seqscr_name_list = [&](const char *title, bool scripts,
                                          const char *id_part) {
             if (ImGui::CollapsingHeader(title)) {
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
-                char add_id[48];
-                snprintf(add_id, sizeof(add_id), "%s##%s_add",
-                         scripts ? "+ Add Script" : "+ Add Sequence", id_part);
-                if (seqscr_truncated) ImGui::BeginDisabled();
-                if (ImGui::Button(add_id, ImVec2(-1, 20)))
-                    add_seqscr_record(scripts);
-                if (ImGui::IsItemHovered() && !seqscr_truncated)
-                    ImGui::SetTooltip("Append a new empty %s; edit its entries with Edit...",
-                                      scripts ? "script" : "sequence");
-                if (seqscr_truncated) ImGui::EndDisabled();
-                ImGui::PopStyleVar();
-
                 float row_h = ImGui::GetTextLineHeightWithSpacing();
                 float list_h = row_h * (scripts ? 6.0f : 8.0f);
                 float max_list_h = panel_h * 0.24f;
@@ -1785,6 +1772,17 @@ void DrawMainLayout(void)
                                   ? selected_rec->name : selected_name_buf;
                 }
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+                char add_id[48];
+                snprintf(add_id, sizeof(add_id), "+##%s_add", id_part);
+                if (seqscr_truncated) ImGui::BeginDisabled();
+                if (ImGui::Button(add_id, ImVec2(24, 20)))
+                    add_seqscr_record(scripts);
+                if (ImGui::IsItemHovered() && !seqscr_truncated)
+                    ImGui::SetTooltip("Append a new empty %s; edit its entries with Edit...",
+                                      scripts ? "script" : "sequence");
+                if (seqscr_truncated) ImGui::EndDisabled();
+                ImGui::SameLine();
+
                 if (!selected_ok) ImGui::BeginDisabled();
                 char load_id[48];
                 snprintf(load_id, sizeof(load_id), "Load##%s_load", id_part);
