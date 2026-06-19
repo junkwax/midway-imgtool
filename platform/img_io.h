@@ -56,6 +56,8 @@ void WriteAnilstFromMarked(const char* filepath);
 void WriteTblFromMarked(const char* filepath, unsigned int base_address, bool mk3_format, bool include_pal, bool pad_4bit, bool align_16bit, bool dual_bank, int bank);
 void WriteIrwFromMarked(const char* filepath, unsigned int base_address, int bpp, bool align_16bit);
 void BuildTgaFromMarked(const char* filepath);
+bool BuildImageExportRgba(const IMG *img, std::vector<unsigned char> &rgba,
+                          int *w_out, int *h_out);
 void SaveTga(const char *filepath);
 void SaveLbm(const char *filepath);
 void LoadTga(const char *filepath);

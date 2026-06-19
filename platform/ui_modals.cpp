@@ -343,6 +343,7 @@ struct FilePreview {
     std::string  path;     /* full path that produced the texture */
 };
 static FilePreview g_file_preview = {NULL, 0, 0, ""};
+static FilePreview g_export_preview = {NULL, 0, 0, ""};
 
 static void file_preview_clear(void)
 {
@@ -352,6 +353,16 @@ static void file_preview_clear(void)
     }
     g_file_preview.w = g_file_preview.h = 0;
     g_file_preview.path.clear();
+}
+
+static void export_preview_clear(void)
+{
+    if (g_export_preview.tex) {
+        SDL_DestroyTexture(g_export_preview.tex);
+        g_export_preview.tex = NULL;
+    }
+    g_export_preview.w = g_export_preview.h = 0;
+    g_export_preview.path.clear();
 }
 
 /* Build an SDL texture from a row-major RGBA buffer, scaled to fit inside
@@ -384,6 +395,45 @@ static SDL_Texture *make_preview_texture(const unsigned char *rgba, int sw, int 
     }
     SDL_UnlockTexture(tex);
     return tex;
+}
+
+static bool file_dialog_uses_image_export_preview(FileDialogMode mode)
+{
+    return mode == FileDialogMode::ExportPng ||
+           mode == FileDialogMode::SaveTga ||
+           mode == FileDialogMode::SaveLbm;
+}
+
+static void export_preview_refresh(void)
+{
+    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) {
+        export_preview_clear();
+        return;
+    }
+
+    char key[160];
+    snprintf(key, sizeof(key), "%p:%d:%p:%u:%u:%u:%u",
+             (void *)g_doc, g_doc->ilselected, img->data_p,
+             (unsigned)img->w, (unsigned)img->h, (unsigned)img->palnum,
+             g_palette_sync_serial);
+    if (g_export_preview.tex && g_export_preview.path == key) return;
+
+    std::vector<unsigned char> rgba;
+    int w = 0, h = 0;
+    SDL_Texture *tex = NULL;
+    if (BuildImageExportRgba(img, rgba, &w, &h))
+        tex = make_preview_texture(rgba.data(), w, h, 192);
+
+    export_preview_clear();
+    if (tex) {
+        int tw = 0, th = 0;
+        SDL_QueryTexture(tex, NULL, NULL, &tw, &th);
+        g_export_preview.tex = tex;
+        g_export_preview.w = tw;
+        g_export_preview.h = th;
+        g_export_preview.path = key;
+    }
 }
 
 /* Decode a stb_image-supported file and build a preview texture. */
@@ -963,6 +1013,8 @@ void OpenFileDialog(FileDialogMode mode) {
         g_file_dialog_file[0] = '\0';
     }
     FileDialogClearMultiSelection();
+    file_preview_clear();
+    export_preview_clear();
     if (FileDialogSupportsMultiSelect(mode) && g_file_dialog_file[0]) {
         g_file_dialog_multi_files.push_back(g_file_dialog_file);
         g_file_dialog_anchor_file = g_file_dialog_file;
@@ -1178,20 +1230,31 @@ void DrawFileDialog() {
         ImGui::SameLine();
         ImGui::BeginChild("##file_preview", ImVec2(PREVIEW_PANE_W - 8, content_h), true);
         {
-            std::string preview_path = hover_preview_path;
-            if (preview_path.empty() && g_file_dialog_file[0])
-                preview_path = PathCombine(g_file_dialog_dir, g_file_dialog_file);
-            if (!preview_path.empty()) {
-                file_preview_refresh(preview_path);
-                if (g_file_preview.tex) {
-                    ImGui::TextUnformatted("Preview");
-                    ImGui::Image((ImTextureID)(intptr_t)g_file_preview.tex,
-                                 ImVec2((float)g_file_preview.w, (float)g_file_preview.h));
+            if (file_dialog_uses_image_export_preview(g_file_dialog_mode)) {
+                export_preview_refresh();
+                if (g_export_preview.tex) {
+                    ImGui::TextUnformatted("Export Preview");
+                    ImGui::Image((ImTextureID)(intptr_t)g_export_preview.tex,
+                                 ImVec2((float)g_export_preview.w, (float)g_export_preview.h));
                 } else {
-                    ImGui::TextDisabled("No preview\n(IMG / LBM previews\ncoming soon)");
+                    ImGui::TextDisabled("No sprite selected");
                 }
             } else {
-                ImGui::TextDisabled("Select a file");
+                std::string preview_path = hover_preview_path;
+                if (preview_path.empty() && g_file_dialog_file[0])
+                    preview_path = PathCombine(g_file_dialog_dir, g_file_dialog_file);
+                if (!preview_path.empty()) {
+                    file_preview_refresh(preview_path);
+                    if (g_file_preview.tex) {
+                        ImGui::TextUnformatted("Preview");
+                        ImGui::Image((ImTextureID)(intptr_t)g_file_preview.tex,
+                                     ImVec2((float)g_file_preview.w, (float)g_file_preview.h));
+                    } else {
+                        ImGui::TextDisabled("No preview\n(IMG / LBM previews\ncoming soon)");
+                    }
+                } else {
+                    ImGui::TextDisabled("Select a file");
+                }
             }
         }
         ImGui::EndChild();
@@ -1554,6 +1617,7 @@ void DrawFileDialog() {
             g_img_tex_idx = -2; /* Force canvas texture refresh */
             save_last_dir(g_file_dialog_dir, g_file_dialog_mode);
             file_preview_clear();
+            export_preview_clear();
             g_show_file_dialog = false;
             ImGui::CloseCurrentPopup();
         }
@@ -1561,6 +1625,7 @@ void DrawFileDialog() {
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(100, 0))) {
             file_preview_clear();
+            export_preview_clear();
             g_show_file_dialog = false;
             ImGui::CloseCurrentPopup();
         }

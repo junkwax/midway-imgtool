@@ -2020,8 +2020,8 @@ static PAL *GetExportPalette(const IMG *img)
     return (pal && pal->data_p) ? pal : NULL;
 }
 
-static bool BuildExportRgba(const IMG *img, std::vector<unsigned char> &rgba,
-                            int *w_out, int *h_out)
+bool BuildImageExportRgba(const IMG *img, std::vector<unsigned char> &rgba,
+                          int *w_out, int *h_out)
 {
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
 
@@ -2064,7 +2064,7 @@ void SaveTga(const char *filepath)
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     std::vector<unsigned char> rgba;
     int w = 0, h = 0;
-    if (!BuildExportRgba(img, rgba, &w, &h)) return;
+    if (!BuildImageExportRgba(img, rgba, &w, &h)) return;
     stbi_write_tga(filepath, w, h, 4, rgba.data());
 }
 
@@ -4378,8 +4378,13 @@ void ExportPng(const char *path)
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     std::vector<unsigned char> rgba;
     int w = 0, h = 0;
-    if (!BuildExportRgba(img, rgba, &w, &h)) return;
-    stbi_write_png(path, w, h, 4, rgba.data(), w * 4);
+    if (!BuildImageExportRgba(img, rgba, &w, &h)) return;
+    if (stbi_write_png(path, w, h, 4, rgba.data(), w * 4)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Exported PNG.");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "PNG export failed.");
+    }
+    g_restore_msg_timer = 4.0f;
 }
 
 /* ---- Palette Export ---- */
