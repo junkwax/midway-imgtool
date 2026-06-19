@@ -17,6 +17,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <string>
 
 #include "anipoint.h"
 #include "ui_timeline.h"
@@ -499,6 +500,48 @@ static bool AutoChopNameEndsWithDigit(const char *name)
     return n > 0 && std::isdigit((unsigned char)name[n - 1]);
 }
 
+static size_t AutoChopNameLen15(const char *name)
+{
+    size_t n = 0;
+    while (n < 15 && name && name[n] != '\0') n++;
+    return n;
+}
+
+static std::string AutoChopShortenParentNameForSuffix(const char *name,
+                                                      size_t suffix_len)
+{
+    if (suffix_len >= 15) suffix_len = 14;
+    std::string base(name ? name : "", AutoChopNameLen15(name));
+    if (base.empty()) base = "SPRITE";
+
+    while (base.size() + suffix_len > 15 && !base.empty()) {
+        size_t digit_start = base.size();
+        while (digit_start > 0 &&
+               base[digit_start - 1] >= '0' &&
+               base[digit_start - 1] <= '9') {
+            digit_start--;
+        }
+
+        size_t remove_pos = std::string::npos;
+        if (digit_start < base.size() && digit_start > 0) {
+            size_t before_digits = digit_start - 1;
+            if ((base[before_digits] >= 'A' && base[before_digits] <= 'Z') ||
+                (base[before_digits] >= 'a' && base[before_digits] <= 'z')) {
+                remove_pos = before_digits;
+            }
+        }
+
+        if (remove_pos == std::string::npos)
+            remove_pos = base.size() - 1;
+        base.erase(remove_pos, 1);
+    }
+
+    if (base.empty()) base = "SPRITE";
+    if (base.size() > 15 - suffix_len)
+        base.resize(15 - suffix_len);
+    return base;
+}
+
 static void AutoChopSubframeSuffix(const char *parent_name, int piece_no,
                                    char *buf, size_t buf_sz)
 {
@@ -515,9 +558,24 @@ static void AutoChopSubframeSuffix(const char *parent_name, int piece_no,
     }
 }
 
+static void AutoChopSubframeName(const char *parent_name, int piece_no,
+                                 char out[16])
+{
+    if (!out) return;
+    char suffix[8];
+    AutoChopSubframeSuffix(parent_name, piece_no, suffix, sizeof(suffix));
+    std::string base =
+        AutoChopShortenParentNameForSuffix(parent_name, strlen(suffix));
+    base += suffix;
+
+    char desired[16];
+    snprintf(desired, sizeof(desired), "%.15s", base.c_str());
+    MakeDerivedImageName(desired, "", out);
+}
+
 static bool CreateAutoSplitPiece(IMG *master,
                                  const AutoChopPiecePreview &piece,
-                                 const char *suffix)
+                                 const char *child_name)
 {
     if (!master || !master->data_p || piece.out_w <= 0 || piece.out_h <= 0)
         return false;
@@ -561,7 +619,9 @@ static bool CreateAutoSplitPiece(IMG *master,
     strncpy(child->src_filename, master->src_filename,
             sizeof(child->src_filename) - 1);
     child->src_filename[sizeof(child->src_filename) - 1] = '\0';
-    MakeDerivedImageName(master->n_s, suffix, child->n_s);
+    strncpy(child->n_s, child_name && child_name[0] ? child_name : "SUBFRAME",
+            sizeof(child->n_s) - 1);
+    child->n_s[sizeof(child->n_s) - 1] = '\0';
     return true;
 }
 
@@ -591,9 +651,9 @@ int ApplyBestAutoSplitToTargets(bool vertical)
     for (const PendingSplit &plan : pending) {
         int local_created = 0;
         for (int i = 0; i < (int)plan.preview.pieces.size(); i++) {
-            char suffix[8];
-            AutoChopSubframeSuffix(plan.img->n_s, i, suffix, sizeof(suffix));
-            if (CreateAutoSplitPiece(plan.img, plan.preview.pieces[(size_t)i], suffix)) {
+            char child_name[16];
+            AutoChopSubframeName(plan.img->n_s, i, child_name);
+            if (CreateAutoSplitPiece(plan.img, plan.preview.pieces[(size_t)i], child_name)) {
                 local_created++;
                 created++;
                 if (first_created_idx < 0)

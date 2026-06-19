@@ -388,6 +388,8 @@ struct WorldMarkedSequenceState {
     std::vector<int> visible_until[kWorldMarkedMaxTabs]; /* 0 = no hide cutoff */
     std::vector<int> motion_dx[kWorldMarkedMaxTabs];     /* visual pixels per tick; +X moves right */
     std::vector<int> motion_dy[kWorldMarkedMaxTabs];     /* visual pixels per tick; +Y moves down */
+    std::vector<int> motion_cap_x[kWorldMarkedMaxTabs];  /* visual motion distance before stopping; 0 = unlimited */
+    std::vector<int> motion_cap_y[kWorldMarkedMaxTabs];
     std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip (ASM ani_flip) */
     std::vector<int> frame_z[kWorldMarkedMaxTabs];      /* per-entry draw priority; higher draws on top */
     std::vector<int> dual_on[kWorldMarkedMaxTabs];      /* per-entry second sprite instance enabled */
@@ -577,6 +579,7 @@ int ClampWorldMarkedVisibleFrom(int value);
 int ClampWorldMarkedVisibleUntil(int value);
 int ClampWorldMarkedZ(int value);
 int ClampWorldMarkedMotion(int value);
+int ClampWorldMarkedMotionCap(int value);
 void WorldMarkedRestart(WorldMarkedSequenceState &state);
 void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta);
 /* True when an embedded World View sequence/script table is loaded and showing

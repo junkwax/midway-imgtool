@@ -1615,6 +1615,8 @@ void WorldResetDummyDecapDelays(WorldMarkedSequenceState &state, int frame_count
     state.visible_until[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
     state.motion_dx[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
     state.motion_dy[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    state.motion_cap_x[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
+    state.motion_cap_y[kWorldDummyDecapSlot].assign((size_t)frame_count, 0);
     int n = (int)(sizeof(kWorldDummyDecapDefaultDelays) /
                   sizeof(kWorldDummyDecapDefaultDelays[0]));
     if (frame_count < n) n = frame_count;
@@ -2068,6 +2070,8 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
         state.visible_until[slot_id][k] = 0;
         state.motion_dx[slot_id][k] = 0;
         state.motion_dy[slot_id][k] = 0;
+        state.motion_cap_x[slot_id][k] = 0;
+        state.motion_cap_y[slot_id][k] = 0;
         state.frame_mirror[slot_id][k] = fr.mirror ? 1 : 0;
     }
 
@@ -2452,6 +2456,8 @@ bool WorldLoadSeqScrRecord(int record_index)
         state.visible_until[slot][i] = 0;
         state.motion_dx[slot][i] = 0;
         state.motion_dy[slot][i] = 0;
+        state.motion_cap_x[slot][i] = 0;
+        state.motion_cap_y[slot][i] = 0;
         state.frame_mirror[slot][i] = 0;
         state.frame_z[slot][i] = 0;
         state.dual_on[slot][i] = 0;
@@ -2671,9 +2677,14 @@ static int WorldMarkedEntryMotionStartTick(WorldMarkedSequenceState &state,
 {
     if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_idx < 0)
         return 0;
-    if (frame_idx < (int)state.visible_from[slot].size() &&
-        state.visible_from[slot][frame_idx] > 0)
-        return state.visible_from[slot][frame_idx];
+    int visible_from = 0;
+    int visible_until = 0;
+    if (frame_idx < (int)state.visible_from[slot].size())
+        visible_from = state.visible_from[slot][frame_idx];
+    if (frame_idx < (int)state.visible_until[slot].size())
+        visible_until = state.visible_until[slot][frame_idx];
+    if (visible_from > 0 || visible_until > 0)
+        return visible_from;
     return WorldMarkedTickForFrame(state, slot, frame_count, frame_idx);
 }
 
@@ -2684,6 +2695,16 @@ static int WorldMarkedEntryMotionElapsed(WorldMarkedSequenceState &state,
     int start_tick =
         WorldMarkedEntryMotionStartTick(state, slot, frame_count, frame_idx);
     return tick > start_tick ? tick - start_tick : 0;
+}
+
+static int WorldMarkedClampedMotion(int velocity, int elapsed, int cap)
+{
+    int motion = velocity * elapsed;
+    if (cap > 0) {
+        if (motion > cap) motion = cap;
+        if (motion < -cap) motion = -cap;
+    }
+    return motion;
 }
 
 static void WorldMarkedEffectiveLocalDelta(WorldMarkedSequenceState &state,
@@ -2701,11 +2722,17 @@ static void WorldMarkedEffectiveLocalDelta(WorldMarkedSequenceState &state,
            ? state.motion_dx[slot][frame_idx] : 0;
     int vy = (frame_idx < (int)state.motion_dy[slot].size())
            ? state.motion_dy[slot][frame_idx] : 0;
+    int cap_x = (frame_idx < (int)state.motion_cap_x[slot].size())
+              ? state.motion_cap_x[slot][frame_idx] : 0;
+    int cap_y = (frame_idx < (int)state.motion_cap_y[slot].size())
+              ? state.motion_cap_y[slot][frame_idx] : 0;
 
     /* Motion is expressed visually in world pixels. The renderer positions by
        subtracting anipoints, so visual +X/+Y becomes negative local delta. */
-    dx = ClampWorldMarkedAniptDelta(dx - vx * elapsed);
-    dy = ClampWorldMarkedAniptDelta(dy - vy * elapsed);
+    dx = ClampWorldMarkedAniptDelta(
+        dx - WorldMarkedClampedMotion(vx, elapsed, cap_x));
+    dy = ClampWorldMarkedAniptDelta(
+        dy - WorldMarkedClampedMotion(vy, elapsed, cap_y));
     if (out_dx) *out_dx = dx;
     if (out_dy) *out_dy = dy;
 }
@@ -3599,6 +3626,10 @@ static void WorldMarkedApplyAutoYChain(WorldMarkedSequenceState &state,
                                        int start_frame, int show_step,
                                        int fallback_life, int visual_vx,
                                        int visual_vy, int breach_y);
+static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
+                                       const WorldMarkedLane &lane,
+                                       int start_frame, int link_count,
+                                       int gap_px, int visual_vy);
 static void WorldMarkedClearMotionFrom(WorldMarkedSequenceState &state,
                                        int slot, int start_frame);
 
@@ -3611,6 +3642,9 @@ static void WorldDrawEmbeddedSequenceAutoTools(WorldMarkedSequenceState &state,
     static int s_embed_auto_vx = 0;
     static int s_embed_auto_vy = 1;
     static int s_embed_auto_y = 200;
+    static int s_embed_chain_count = 3;
+    static int s_embed_chain_gap = 20;
+    static int s_embed_chain_vy = 1;
 
     ImGui::TextDisabled("Auto Y");
     if (ImGui::IsItemHovered())
@@ -3662,6 +3696,42 @@ static void WorldDrawEmbeddedSequenceAutoTools(WorldMarkedSequenceState &state,
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear v##world_embed_auto_clear")) {
         WorldMarkedClearMotionFrom(state, lane.delay_slot, edit_fi);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    }
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Chain");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Duplicate the selected sprite into linked copies. Each later copy moves down and stops one Gap farther.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Count");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(42.0f);
+    if (ImGui::InputInt("##world_embed_chain_count", &s_embed_chain_count, 0, 0)) {
+        if (s_embed_chain_count < 1) s_embed_chain_count = 1;
+        if (s_embed_chain_count > 32) s_embed_chain_count = 32;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Gap");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(46.0f);
+    if (ImGui::InputInt("##world_embed_chain_gap", &s_embed_chain_gap, 0, 0)) {
+        if (s_embed_chain_gap < 1) s_embed_chain_gap = 1;
+        if (s_embed_chain_gap > 9999) s_embed_chain_gap = 9999;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("vY");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(46.0f);
+    if (ImGui::InputInt("##world_embed_chain_vy", &s_embed_chain_vy, 0, 0)) {
+        s_embed_chain_vy = ClampWorldMarkedMotion(s_embed_chain_vy);
+        if (s_embed_chain_vy == 0) s_embed_chain_vy = 1;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Build Chain##world_embed_chain_apply")) {
+        WorldMarkedApplyYLinkChain(state, lane, edit_fi,
+                                   s_embed_chain_count, s_embed_chain_gap,
+                                   s_embed_chain_vy);
         WorldEmbeddedSequenceRefreshMetadata(state, lane);
     }
 }
@@ -3742,7 +3812,7 @@ static void WorldDrawEmbeddedSequenceTable(WorldMarkedSequenceState &state,
         ImGuiTableFlags_SizingFixedFit;
     float table_h = ImGui::GetContentRegionAvail().y - 48.0f;
     if (table_h < 128.0f) table_h = 128.0f;
-    if (ImGui::BeginTable("##world_embedded_sequence_table", 12, flags,
+    if (ImGui::BeginTable("##world_embedded_sequence_table", 13, flags,
                           ImVec2(0.0f, table_h))) {
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 36.0f);
         ImGui::TableSetupColumn("Sprite", ImGuiTableColumnFlags_WidthFixed, 190.0f);
@@ -3754,6 +3824,7 @@ static void WorldDrawEmbeddedSequenceTable(WorldMarkedSequenceState &state,
         ImGui::TableSetupColumn("Hide", ImGuiTableColumnFlags_WidthFixed, 62.0f);
         ImGui::TableSetupColumn("vX", ImGuiTableColumnFlags_WidthFixed, 52.0f);
         ImGui::TableSetupColumn("vY", ImGuiTableColumnFlags_WidthFixed, 52.0f);
+        ImGui::TableSetupColumn("StopY", ImGuiTableColumnFlags_WidthFixed, 62.0f);
         ImGui::TableSetupColumn("Z", ImGuiTableColumnFlags_WidthFixed, 44.0f);
         ImGui::TableSetupColumn("Dual", ImGuiTableColumnFlags_WidthFixed, 52.0f);
         ImGui::TableHeadersRow();
@@ -3851,6 +3922,15 @@ static void WorldDrawEmbeddedSequenceTable(WorldMarkedSequenceState &state,
             ImGui::SetNextItemWidth(-1);
             if (ImGui::InputInt("##seq_vy", &vy, 0, 0)) {
                 state.motion_dy[slot][fi] = ClampWorldMarkedMotion(vy);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+            }
+
+            ImGui::TableNextColumn();
+            int stop_y = state.motion_cap_y[slot][fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##seq_stop_y", &stop_y, 0, 0)) {
+                state.motion_cap_y[slot][fi] =
+                    ClampWorldMarkedMotionCap(stop_y);
                 WorldEmbeddedSequenceSelectEntry(state, lane, fi);
             }
 
@@ -4038,6 +4118,8 @@ static void WorldMarkedApplyAutoYChain(WorldMarkedSequenceState &state,
             ClampWorldMarkedVisibleUntil(show_tick + entry_life);
         state.motion_dx[slot][fi] = visual_vx;
         state.motion_dy[slot][fi] = visual_vy;
+        state.motion_cap_x[slot][fi] = 0;
+        state.motion_cap_y[slot][fi] = 0;
         if (step > 0)
             state.frame_delays[slot][fi] = ClampTimelineHold(step);
     }
@@ -4058,6 +4140,8 @@ static void WorldMarkedClearMotionFrom(WorldMarkedSequenceState &state,
     for (int fi = start_frame; fi < n; fi++) {
         state.motion_dx[slot][fi] = 0;
         state.motion_dy[slot][fi] = 0;
+        state.motion_cap_x[slot][fi] = 0;
+        state.motion_cap_y[slot][fi] = 0;
     }
 }
 
@@ -4176,6 +4260,8 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         int hide_at = state.visible_until[lane.delay_slot][edit_fi];
         int motion_dx = state.motion_dx[lane.delay_slot][edit_fi];
         int motion_dy = state.motion_dy[lane.delay_slot][edit_fi];
+        int motion_cap_x = state.motion_cap_x[lane.delay_slot][edit_fi];
+        int motion_cap_y = state.motion_cap_y[lane.delay_slot][edit_fi];
         ImGui::SameLine();
         ImGui::TextDisabled("Delay");
         ImGui::SameLine();
@@ -4233,6 +4319,17 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             state.motion_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dy);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Visual Y motion in pixels per tick. Positive moves this entry down.");
+        if (motion_dx || motion_dy || motion_cap_x || motion_cap_y) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("StopY");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(48.0f);
+            if (ImGui::InputInt("##world_edit_stop_y", &motion_cap_y, 0, 0))
+                state.motion_cap_y[lane.delay_slot][edit_fi] =
+                    ClampWorldMarkedMotionCap(motion_cap_y);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Maximum visual Y travel before vY stops. 0 keeps moving.");
+        }
 
         int frame_z = state.frame_z[lane.delay_slot][edit_fi];
         ImGui::SameLine();
@@ -4289,6 +4386,9 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             static int s_auto_vx = 0;
             static int s_auto_vy = 1;
             static int s_auto_y = 200;
+            static int s_chain_count = 3;
+            static int s_chain_gap = 20;
+            static int s_chain_vy = 1;
 
             ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("Auto Y");
@@ -4356,6 +4456,50 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Clear vX/vY from this entry through the end of the row.");
+
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Chain");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Duplicate the selected sprite into linked copies. Each later copy moves down and stops one Gap farther.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("Count");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(38.0f);
+            if (ImGui::InputInt("##world_chain_count", &s_chain_count, 0, 0)) {
+                if (s_chain_count < 1) s_chain_count = 1;
+                if (s_chain_count > 32) s_chain_count = 32;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Number of copies in the chain, including the anchored first link.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("Gap");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(42.0f);
+            if (ImGui::InputInt("##world_chain_gap", &s_chain_gap, 0, 0)) {
+                if (s_chain_gap < 1) s_chain_gap = 1;
+                if (s_chain_gap > 9999) s_chain_gap = 9999;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Pixels each link travels before it stops. A value of 20 makes copy 2 stop at 20px, copy 3 at 40px.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("vY");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(42.0f);
+            if (ImGui::InputInt("##world_chain_vy", &s_chain_vy, 0, 0)) {
+                s_chain_vy = ClampWorldMarkedMotion(s_chain_vy);
+                if (s_chain_vy == 0) s_chain_vy = 1;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Visual Y speed for moving links. Positive moves down.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Build Chain##world_chain_apply")) {
+                WorldMarkedApplyYLinkChain(state, lane, edit_fi,
+                                           s_chain_count, s_chain_gap,
+                                           s_chain_vy);
+                WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Replace the same-sprite run starting here with Count linked copies.");
         }
     }
 }
@@ -4430,7 +4574,8 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; Delay ticks are encoded by repeating that frame label.\n";
     out += "; Show@/Hide@ entries act as timed held subframes in preview;\n";
     out += "; export emits 0 outside that tick window.\n";
-    out += "; vX/vY motion is baked into the per-tick local anipoint rows.\n";
+    out += "; vX/vY motion is baked into the per-tick local anipoint rows;\n";
+    out += "; StopX/StopY caps clamp that baked preview motion.\n";
     out += "; Each *_local_anipts table is aligned 1:1 with the .long rows.\n";
     out += "; Entries with z= / dual annotations need routine code: z orders the\n";
     out += "; object's draw priority, dual draws the same sprite a second time.\n";
@@ -4500,6 +4645,8 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             int visible_until = state.visible_until[lane.delay_slot][fi];
             int motion_dx = state.motion_dx[lane.delay_slot][fi];
             int motion_dy = state.motion_dy[lane.delay_slot][fi];
+            int motion_cap_x = state.motion_cap_x[lane.delay_slot][fi];
+            int motion_cap_y = state.motion_cap_y[lane.delay_slot][fi];
             int frame_z = state.frame_z[lane.delay_slot][fi];
             bool dual = state.dual_on[lane.delay_slot][fi] != 0;
             int dual_dx = state.dual_dx[lane.delay_slot][fi];
@@ -4546,6 +4693,14 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                         out += std::to_string(motion_dx);
                         out += " vY=";
                         out += std::to_string(motion_dy);
+                    }
+                    if (motion_cap_x > 0) {
+                        out += " stopX=";
+                        out += std::to_string(motion_cap_x);
+                    }
+                    if (motion_cap_y > 0) {
+                        out += " stopY=";
+                        out += std::to_string(motion_cap_y);
                     }
                     if (frame_z) {
                         out += " z=";
@@ -4813,6 +4968,13 @@ int ClampWorldMarkedMotion(int value)
     return value;
 }
 
+int ClampWorldMarkedMotionCap(int value)
+{
+    if (value < 0) return 0;
+    if (value > 99999) return 99999;
+    return value;
+}
+
 /* Every per-entry array a slot's sequence carries, with the value a fresh
    entry gets. Sequence edits (duplicate/move/delete/reconcile) must touch all
    of them together or the entries drift out of alignment. */
@@ -4832,6 +4994,8 @@ static std::vector<WorldSeqArrayRef> WorldMarkedSeqArrays(
         { &state.visible_until[slot], 0 },
         { &state.motion_dx[slot],    0 },
         { &state.motion_dy[slot],    0 },
+        { &state.motion_cap_x[slot], 0 },
+        { &state.motion_cap_y[slot], 0 },
         { &state.frame_mirror[slot], 0 },
         { &state.frame_z[slot],      0 },
         { &state.dual_on[slot],      0 },
@@ -4875,6 +5039,8 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
     std::vector<int> &visible_until = state.visible_until[slot];
     std::vector<int> &motion_dx = state.motion_dx[slot];
     std::vector<int> &motion_dy = state.motion_dy[slot];
+    std::vector<int> &motion_cap_x = state.motion_cap_x[slot];
+    std::vector<int> &motion_cap_y = state.motion_cap_y[slot];
     if ((int)local_dx.size() < frame_count)
         local_dx.resize((size_t)frame_count, 0);
     else if ((int)local_dx.size() > frame_count)
@@ -4899,6 +5065,14 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
         motion_dy.resize((size_t)frame_count, 0);
     else if ((int)motion_dy.size() > frame_count)
         motion_dy.resize((size_t)frame_count);
+    if ((int)motion_cap_x.size() < frame_count)
+        motion_cap_x.resize((size_t)frame_count, 0);
+    else if ((int)motion_cap_x.size() > frame_count)
+        motion_cap_x.resize((size_t)frame_count);
+    if ((int)motion_cap_y.size() < frame_count)
+        motion_cap_y.resize((size_t)frame_count, 0);
+    else if ((int)motion_cap_y.size() > frame_count)
+        motion_cap_y.resize((size_t)frame_count);
     for (int &dx : local_dx)
         dx = ClampWorldMarkedAniptDelta(dx);
     for (int &dy : local_dy)
@@ -4911,6 +5085,10 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
         dx = ClampWorldMarkedMotion(dx);
     for (int &dy : motion_dy)
         dy = ClampWorldMarkedMotion(dy);
+    for (int &cap : motion_cap_x)
+        cap = ClampWorldMarkedMotionCap(cap);
+    for (int &cap : motion_cap_y)
+        cap = ClampWorldMarkedMotionCap(cap);
 
     std::vector<int> &fmir = state.frame_mirror[slot];
     if ((int)fmir.size() < frame_count)
@@ -4979,6 +5157,109 @@ int WorldMarkedFrameForTick(WorldMarkedSequenceState &state, int slot,
         t -= delay;
     }
     return frame_count - 1;
+}
+
+static int WorldMarkedAbsMotion(int value)
+{
+    return value < 0 ? -value : value;
+}
+
+static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
+                                       const WorldMarkedLane &lane,
+                                       int start_frame, int link_count,
+                                       int gap_px, int visual_vy)
+{
+    int slot = lane.delay_slot;
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs)
+        return;
+
+    std::vector<int> &frames = state.sequence_frames[slot];
+    if (frames.empty())
+        frames = lane.frames;
+    int n = (int)frames.size();
+    if (n <= 0)
+        return;
+    if (start_frame < 0) start_frame = 0;
+    if (start_frame >= n) start_frame = n - 1;
+
+    if (link_count < 1) link_count = 1;
+    if (link_count > 32) link_count = 32;
+    if (gap_px < 1) gap_px = 1;
+    if (gap_px > 9999) gap_px = 9999;
+    visual_vy = ClampWorldMarkedMotion(visual_vy);
+    if (visual_vy == 0) visual_vy = 1;
+
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+    const int base_frame = frames[(size_t)start_frame];
+    const int base_dx = state.local_dx[slot][start_frame];
+    const int base_dy = state.local_dy[slot][start_frame];
+    const int base_mirror = state.frame_mirror[slot][start_frame];
+    const int base_z = state.frame_z[slot][start_frame];
+
+    int base_show = state.visible_from[slot][start_frame];
+    if (base_show <= 0 && state.visible_until[slot][start_frame] <= 0)
+        base_show = WorldMarkedTickForFrame(state, slot, n, start_frame);
+    base_show = ClampWorldMarkedVisibleFrom(base_show);
+
+    int run_len = 1;
+    while (start_frame + run_len < n &&
+           frames[(size_t)(start_frame + run_len)] == base_frame) {
+        run_len++;
+    }
+
+    std::vector<WorldSeqArrayRef> refs = WorldMarkedSeqArrays(state, slot);
+    if (run_len < link_count) {
+        int insert_at = start_frame + run_len;
+        int add = link_count - run_len;
+        frames.insert(frames.begin() + insert_at, (size_t)add, base_frame);
+        for (const WorldSeqArrayRef &ref : refs) {
+            int seed = (start_frame < (int)ref.vec->size())
+                     ? (*ref.vec)[(size_t)start_frame] : ref.fresh;
+            ref.vec->insert(ref.vec->begin() + insert_at, (size_t)add, seed);
+        }
+    } else if (run_len > link_count) {
+        int erase_first = start_frame + link_count;
+        int erase_last = start_frame + run_len;
+        frames.erase(frames.begin() + erase_first, frames.begin() + erase_last);
+        for (const WorldSeqArrayRef &ref : refs)
+            ref.vec->erase(ref.vec->begin() + erase_first,
+                           ref.vec->begin() + erase_last);
+    }
+
+    n = (int)frames.size();
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+    int speed = WorldMarkedAbsMotion(visual_vy);
+    if (speed < 1) speed = 1;
+    int phase_ticks = (gap_px + speed - 1) / speed;
+    if (phase_ticks < 1) phase_ticks = 1;
+    int delay = ClampTimelineHold(phase_ticks);
+    int hide_at = ClampWorldMarkedVisibleUntil(99999);
+
+    for (int i = 0; i < link_count; i++) {
+        int fi = start_frame + i;
+        frames[(size_t)fi] = base_frame;
+        state.frame_delays[slot][fi] = delay;
+        state.local_dx[slot][fi] = base_dx;
+        state.local_dy[slot][fi] = base_dy;
+        state.visible_from[slot][fi] = base_show;
+        state.visible_until[slot][fi] = hide_at;
+        state.motion_dx[slot][fi] = 0;
+        state.motion_dy[slot][fi] = (i == 0) ? 0 : visual_vy;
+        state.motion_cap_x[slot][fi] = 0;
+        state.motion_cap_y[slot][fi] =
+            (i == 0) ? 0 : ClampWorldMarkedMotionCap(gap_px * i);
+        state.frame_mirror[slot][fi] = base_mirror;
+        state.frame_z[slot][fi] = base_z;
+        state.dual_on[slot][fi] = 0;
+        state.dual_dx[slot][fi] = 0;
+        state.dual_dy[slot][fi] = 0;
+        state.dual_z[slot][fi] = 0;
+    }
+
+    state.hold_end[slot] = true;
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = base_show;
 }
 
 void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
@@ -10909,6 +11190,258 @@ int AutoCalculateTimelineAnipointsFromLock(void)
     return changed;
 }
 
+struct ResizeImageResult {
+    int old_w = 0;
+    int old_h = 0;
+    int trim_x = 0;
+    int trim_y = 0;
+    bool did_trim = false;
+};
+
+static int ResizeImageInPlaceNoUndo(IMG *img, int nw, int nh,
+                                    SpriteResizeMode mode,
+                                    bool trim_bounds,
+                                    bool adjust_hitbox,
+                                    const ResizeRgb fallback_rgb[256],
+                                    ResizeImageResult *result)
+{
+    if (result) *result = ResizeImageResult();
+    if (!img || !img->data_p || img->w == 0 || img->h == 0)
+        return -1;
+
+    nw = clamp_int(nw, 1, 4096);
+    nh = clamp_int(nh, 1, 4096);
+
+    int old_w = img->w;
+    int old_h = img->h;
+    unsigned short old_anix = img->anix;
+    unsigned short old_aniy = img->aniy;
+    unsigned short old_anix2 = img->anix2;
+    unsigned short old_aniy2 = img->aniy2;
+    unsigned short old_aniz2 = img->aniz2;
+
+    if (result) {
+        result->old_w = old_w;
+        result->old_h = old_h;
+    }
+
+    bool optimize_bytes = (mode == SpriteResizeMode::QualitySmallBytes);
+    bool use_quality = (mode != SpriteResizeMode::IndexNearest);
+    if (nw == old_w && nh == old_h && !(trim_bounds || optimize_bytes))
+        return 0;
+
+    PAL *pal = get_pal(img->palnum);
+    unsigned int new_stride = 0;
+    unsigned char *new_pixels = use_quality
+        ? ResizeSpritePixelsQuality(img, pal, fallback_rgb, nw, nh,
+                                    optimize_bytes, &new_stride)
+        : ResizeSpritePixelsNearest(img, nw, nh, &new_stride);
+    if (!new_pixels) return -1;
+
+    free(img->data_p);
+    img->data_p = new_pixels;
+    img->w = (unsigned short)nw;
+    img->h = (unsigned short)nh;
+    img->anix = signed_to_img_word(scaled_coord(old_anix, old_w, nw));
+    img->aniy = signed_to_img_word(scaled_coord(old_aniy, old_h, nh));
+    if (secondary_anipoint_words_in_use(old_anix2, old_aniy2, old_aniz2)) {
+        img->anix2 = signed_to_img_word(scaled_coord(old_anix2, old_w, nw));
+        img->aniy2 = signed_to_img_word(scaled_coord(old_aniy2, old_h, nh));
+        img->aniz2 = old_aniz2;
+    } else {
+        clear_secondary_anipoint(img);
+    }
+
+    if (adjust_hitbox && g_hitbox_w > 0 && g_hitbox_h > 0) {
+        g_hitbox_x = scaled_coord((unsigned short)(short)g_hitbox_x, old_w, nw);
+        g_hitbox_y = scaled_coord((unsigned short)(short)g_hitbox_y, old_h, nh);
+        g_hitbox_w = clamp_int(round_to_int((double)g_hitbox_w * (double)nw / (double)old_w), 1, 4096);
+        g_hitbox_h = clamp_int(round_to_int((double)g_hitbox_h * (double)nh / (double)old_h), 1, 4096);
+    }
+
+    int trim_x = 0;
+    int trim_y = 0;
+    bool did_trim = false;
+    if (trim_bounds || optimize_bytes)
+        did_trim = trim_image_to_content(img, optimize_bytes, &trim_x, &trim_y,
+                                         adjust_hitbox);
+
+    if (result) {
+        result->trim_x = trim_x;
+        result->trim_y = trim_y;
+        result->did_trim = did_trim;
+    }
+
+    (void)new_stride;
+    return 1;
+}
+
+static void CollectResizeSubframesForParent(int parent_idx,
+                                            std::vector<int> *out)
+{
+    if (!out) return;
+    out->clear();
+    IMG *parent = get_img(parent_idx);
+    if (!parent) return;
+
+    std::string parent_name = img_name_string(parent);
+    if (parent_name.empty()) return;
+    std::string parent_src =
+        parent->src_filename[0] ? parent->src_filename : "Workspace";
+
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (idx == parent_idx) continue;
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+
+        std::string src =
+            img->src_filename[0] ? img->src_filename : "Workspace";
+        if (src != parent_src) continue;
+
+        std::string child_name = img_name_string(img);
+        bool belongs_to_parent =
+            (InferSubframeParentName(child_name.c_str()) == parent_name);
+        if (!belongs_to_parent) {
+            std::string numbered_parent;
+            belongs_to_parent =
+                strip_trailing_sequence_digits(child_name, &numbered_parent) &&
+                numbered_parent == parent_name;
+        }
+
+        if (belongs_to_parent)
+            out->push_back(idx);
+    }
+}
+
+static bool ResizeSelectedSpriteWithSubframes(IMG *img, int img_idx,
+                                              int nw, int nh,
+                                              SpriteResizeMode mode,
+                                              bool trim_bounds,
+                                              const std::vector<int> &child_indices)
+{
+    if (!img || child_indices.empty()) return false;
+
+    struct ChildPlan {
+        IMG *img;
+        int idx;
+        int old_w;
+        int old_h;
+        int offset_x;
+        int offset_y;
+    };
+
+    int parent_old_w = img->w;
+    int parent_old_h = img->h;
+    int parent_old_anix = (int)(short)img->anix;
+    int parent_old_aniy = (int)(short)img->aniy;
+
+    std::vector<ChildPlan> children;
+    children.reserve(child_indices.size());
+    for (int child_idx : child_indices) {
+        IMG *child = get_img(child_idx);
+        if (!child || !child->data_p || child->w == 0 || child->h == 0)
+            continue;
+        ChildPlan plan = {};
+        plan.img = child;
+        plan.idx = child_idx;
+        plan.old_w = child->w;
+        plan.old_h = child->h;
+        plan.offset_x = parent_old_anix - (int)(short)child->anix;
+        plan.offset_y = parent_old_aniy - (int)(short)child->aniy;
+        children.push_back(plan);
+    }
+    if (children.empty()) return false;
+
+    bool optimize_bytes = (mode == SpriteResizeMode::QualitySmallBytes);
+    bool same_size = (nw == parent_old_w && nh == parent_old_h);
+    if (same_size && !(trim_bounds || optimize_bytes))
+        return false;
+
+    if (!doc_undo_push()) return false;
+
+    ResizeRgb fallback_rgb[256];
+    for (int i = 0; i < 256; i++) {
+        fallback_rgb[i].r = g_palette[i].r;
+        fallback_rgb[i].g = g_palette[i].g;
+        fallback_rgb[i].b = g_palette[i].b;
+    }
+
+    ResizeImageResult parent_result;
+    int parent_status = ResizeImageInPlaceNoUndo(img, nw, nh, mode,
+                                                 trim_bounds, true,
+                                                 fallback_rgb,
+                                                 &parent_result);
+    if (parent_status <= 0)
+        return false;
+
+    int parent_scaled_anix = scaled_coord((unsigned short)(short)parent_old_anix,
+                                          parent_old_w, nw);
+    int parent_scaled_aniy = scaled_coord((unsigned short)(short)parent_old_aniy,
+                                          parent_old_h, nh);
+
+    int changed_children = 0;
+    for (const ChildPlan &child_plan : children) {
+        IMG *child = child_plan.img;
+        int child_nw = clamp_int(round_to_int((double)child_plan.old_w *
+                                              (double)nw /
+                                              (double)parent_old_w), 1, 4096);
+        int child_nh = clamp_int(round_to_int((double)child_plan.old_h *
+                                              (double)nh /
+                                              (double)parent_old_h), 1, 4096);
+
+        ResizeImageResult child_result;
+        int child_status = ResizeImageInPlaceNoUndo(child, child_nw, child_nh,
+                                                    mode, trim_bounds, false,
+                                                    fallback_rgb,
+                                                    &child_result);
+        if (child_status < 0)
+            continue;
+
+        int scaled_offset_x = round_to_int((double)child_plan.offset_x *
+                                           (double)nw /
+                                           (double)parent_old_w);
+        int scaled_offset_y = round_to_int((double)child_plan.offset_y *
+                                           (double)nh /
+                                           (double)parent_old_h);
+        unsigned short new_anix = signed_to_img_word(parent_scaled_anix -
+                                                     scaled_offset_x -
+                                                     child_result.trim_x);
+        unsigned short new_aniy = signed_to_img_word(parent_scaled_aniy -
+                                                     scaled_offset_y -
+                                                     child_result.trim_y);
+        bool anipoint_changed =
+            child->anix != new_anix || child->aniy != new_aniy;
+        child->anix = new_anix;
+        child->aniy = new_aniy;
+
+        if (child_status > 0 || anipoint_changed) {
+            InvalidateThumb(child_plan.idx);
+            changed_children++;
+        }
+    }
+
+    mark_dirty();
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+    g_xform.active = false;
+    deselect_all();
+    InvalidateThumb(img_idx);
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             parent_result.did_trim
+                 ? "Resized %s and %d subframe%s: %dx%d -> %dx%d (trimmed %d,%d)."
+                 : "Resized %s and %d subframe%s: %dx%d -> %dx%d.",
+             img->n_s,
+             changed_children,
+             changed_children == 1 ? "" : "s",
+             parent_old_w, parent_old_h, (int)img->w, (int)img->h,
+             parent_result.trim_x, parent_result.trim_y);
+    g_restore_msg_timer = 4.0f;
+    return true;
+}
+
 bool TransformSelectedSprite(SpriteTransformOp op)
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -11006,6 +11539,14 @@ bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool trim_bound
     int old_h = img->h;
     bool optimize_bytes = (mode == SpriteResizeMode::QualitySmallBytes);
     bool use_quality = (mode != SpriteResizeMode::IndexNearest);
+
+    std::vector<int> child_indices;
+    CollectResizeSubframesForParent(g_doc->ilselected, &child_indices);
+    if (!child_indices.empty()) {
+        return ResizeSelectedSpriteWithSubframes(img, g_doc->ilselected,
+                                                 nw, nh, mode, trim_bounds,
+                                                 child_indices);
+    }
 
     if (nw == old_w && nh == old_h && !(trim_bounds || optimize_bytes)) return false;
 
