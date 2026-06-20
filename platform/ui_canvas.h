@@ -352,6 +352,8 @@ struct WorldMarkedSequenceState {
             chain_delay[i] = 0;
             chain_vy[i] = 1;
             chain_pingpong[i] = false;
+            pingpong_delay[i] = 0;
+            stop_tick[i] = 0;
             subframe_swap_tick[i] = 0;
         }
         hold_end[kWorldDummyDecapSlot] = true;
@@ -414,6 +416,8 @@ struct WorldMarkedSequenceState {
     std::vector<int> default_frames[kWorldMarkedMaxTabs];
     Document *sequence_doc[kWorldMarkedMaxTabs] = {};
     int sequence_doc_idx[kWorldMarkedMaxTabs] = {};
+    int pingpong_delay[kWorldMarkedMaxTabs] = {}; /* pause before a generated reverse pass */
+    int stop_tick[kWorldMarkedMaxTabs] = {};      /* 0 = run normally; >0 freezes preview at this tick */
     int auto_step[kWorldMarkedMaxTabs] = {};
     int auto_life[kWorldMarkedMaxTabs] = {};
     int auto_vx[kWorldMarkedMaxTabs] = {};
@@ -439,6 +443,7 @@ struct WorldMarkedLane {
     std::vector<std::vector<Document*>> frame_piece_docs;
     std::vector<std::string> frame_labels;
     int frame_pos = 0;
+    int tick = 0;
     IMG *img = nullptr;
     bool dummy_decap = false;
     std::string label;
@@ -573,6 +578,8 @@ void WorldDrawMarkedLaneTags(ImDrawList *dl,
                              ImVec2 world_pos);
 void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
+                               const WorldMarkedLaneRenderInfo &render_info,
+                               const WorldCanvasLayout &layout,
                                ImVec2 world_pos, float world_width);
 WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &state,
                                                   const std::vector<WorldMarkedLane> &lanes,

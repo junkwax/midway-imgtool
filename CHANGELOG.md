@@ -8,6 +8,28 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.15.8] — World View ping-pong timing
+
+Patch release: World View lane timing can now freeze at a specific tick, chain
+ping-pong timing has an explicit reverse delay, and the standard toolbar no
+longer covers the animation timeline or palette.
+
+### World View
+- **Stop at tick** — each World View lane now has a `Stop@` tick control that
+  freezes that lane at the requested global preview tick without stopping other
+  lanes.
+- **Ping-pong reverse delay** — each slot now has a `PongDelay` value used by
+  chain Ping Pong to hold the fully extended pose before the reverse pass.
+- **True chain reversal** — chain Ping Pong now retracts links in complete
+  reverse order instead of replaying the forward order.
+- **Current Y readout** — World View status text now shows the currently rendered
+  sprite Y bounds, including timed motion and mirrored/compound lanes.
+
+### UI
+- **Toolbar bottom dock clearance** — the left toolbar now reserves space for
+  the standard animation timeline and palette, so it no longer draws over those
+  views.
+
 ## [v3.15.1] — Numbered palette copies
 
 Patch release: duplicating or clean-copying a palette now derives the new name

@@ -949,7 +949,9 @@ void DrawMainLayout(void)
     }
 
     /* ===== LEFT TOOLBAR ===== */
-    DrawLeftToolbar(work_y, work_h, bottom_palette_h);
+    float toolbar_bottom_reserved_h =
+        bottom_palette_h + (world_sequence_timeline ? 0.0f : timeline_h);
+    DrawLeftToolbar(work_y, work_h, toolbar_bottom_reserved_h);
 
     /* ===== RIGHT PANEL STRIP ===== */
     float panel_x = sw - PANEL_W;

@@ -2485,6 +2485,22 @@ bool WorldLoadSeqScrRecord(int record_index)
     return true;
 }
 
+static int WorldMarkedEffectiveTickForSlot(WorldMarkedSequenceState &state,
+                                           int slot, int frame_count,
+                                           int tick)
+{
+    if (tick < 0) tick = 0;
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0)
+        return tick;
+
+    int stop_tick = ClampWorldMarkedVisibleFrom(state.stop_tick[slot]);
+    state.stop_tick[slot] = stop_tick;
+    if (stop_tick > 0 && tick >= stop_tick)
+        return stop_tick;
+
+    return tick;
+}
+
 static bool WorldAppendEmbeddedSeqScrLane(WorldMarkedSequenceState &state,
                                           std::vector<WorldMarkedLane> &lanes)
 {
@@ -2521,9 +2537,12 @@ static bool WorldAppendEmbeddedSeqScrLane(WorldMarkedSequenceState &state,
 
     EnsureWorldMarkedFrameDelays(state, kWorldEmbeddedSeqScrSlot,
                                  (int)lane.frames.size());
+    lane.tick =
+        WorldMarkedEffectiveTickForSlot(state, kWorldEmbeddedSeqScrSlot,
+                                        (int)lane.frames.size(), state.frame);
     lane.frame_pos =
         WorldMarkedFrameForTick(state, kWorldEmbeddedSeqScrSlot,
-                                (int)lane.frames.size(), state.frame,
+                                (int)lane.frames.size(), lane.tick,
                                 state.hold_end[kWorldEmbeddedSeqScrSlot]);
     if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size())
         lane.img = doc_get_img(doc, lane.frames[(size_t)lane.frame_pos]);
@@ -2611,8 +2630,10 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
         WorldMarkedLane &lane = lanes[slot];
         int n = (int)lane.frames.size();
         if (n <= 0) continue;
+        lane.tick = WorldMarkedEffectiveTickForSlot(state, lane.delay_slot, n,
+                                                    state.frame);
         lane.frame_pos = WorldMarkedFrameForTick(state, lane.delay_slot, n,
-                                                 state.frame,
+                                                 lane.tick,
                                                  state.hold_end[lane.delay_slot]);
         Document *fdoc = (lane.frame_pos < (int)lane.frame_docs.size() &&
                           lane.frame_docs[lane.frame_pos])
@@ -2781,7 +2802,7 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
         int local_dy = 0;
         WorldMarkedEffectiveLocalDelta(state, state_slot,
                                        (int)lane.frames.size(), frame_idx,
-                                       dual, state.frame,
+                                       dual, lane.tick,
                                        &local_dx, &local_dy);
         bool *rect_valid = dual ? &render_info.dual_rect_valid[slot]
                                 : &render_info.lane_rect_valid[slot];
@@ -2888,7 +2909,7 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
             if (fi == lane.frame_pos)
                 continue;
             if (!WorldMarkedEntryHasTimedHold(state, state_slot, fi) ||
-                !WorldMarkedEntryVisibleAtTick(state, state_slot, fi, state.frame))
+                !WorldMarkedEntryVisibleAtTick(state, state_slot, fi, lane.tick))
                 continue;
             int mirror_bits = fi < (int)state.frame_mirror[state_slot].size()
                             ? state.frame_mirror[state_slot][fi] : 0;
@@ -2908,7 +2929,7 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
         render_info.lane_mirror_x[slot] = current_mirror_x;
         render_info.lane_mirror_y[slot] = current_mirror_y;
         if (WorldMarkedEntryVisibleAtTick(state, state_slot, lane.frame_pos,
-                                          state.frame))
+                                          lane.tick))
             add_frame_jobs(slot, lane.frame_pos, order,
                            current_mirror_x, current_mirror_y);
     }
@@ -3191,6 +3212,8 @@ void WorldDrawMarkedLaneTags(ImDrawList *dl,
 
 void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
+                               const WorldMarkedLaneRenderInfo &render_info,
+                               const WorldCanvasLayout &layout,
                                ImVec2 world_pos, float world_width)
 {
     if (!dl) return;
@@ -3203,13 +3226,32 @@ void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
                              ? lane.label.c_str()
                              : (lane.doc->fname_s[0] ? lane.doc->fname_s : "Untitled");
         bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
-        char part[224];
-        snprintf(part, sizeof(part), "%s[%d] %s:%s %d/%d%s%s",
+        char y_buf[48] = "";
+        if (render_info.lane_rect_valid[slot]) {
+            WorldBoundaryRect rect =
+                WorldBoundaryRectFromScreen(render_info.lane_rect_min[slot],
+                                            render_info.lane_rect_max[slot],
+                                            layout);
+            snprintf(y_buf, sizeof(y_buf), " y=%d..%d",
+                     rect.top, rect.bottom);
+        }
+        char stop_buf[32] = "";
+        int stop_tick = (lane.delay_slot >= 0 &&
+                         lane.delay_slot < kWorldMarkedMaxTabs)
+                      ? state.stop_tick[lane.delay_slot] : 0;
+        if (stop_tick > 0) {
+            snprintf(stop_buf, sizeof(stop_buf), " stop@%d%s",
+                     stop_tick, lane.tick >= stop_tick ? "*" : "");
+        }
+        char part[320];
+        snprintf(part, sizeof(part), "%s[%d] %s:%s %d/%d tick=%d%s%s%s%s",
                  slot == 0 ? "" : " + ",
                  lane.doc_idx, doc_name, img_name_string(lane.img).c_str(),
-                 lane.frame_pos + 1, (int)lane.frames.size(),
+                 lane.frame_pos + 1, (int)lane.frames.size(), lane.tick,
+                 y_buf,
                  (mirror_flag && *mirror_flag) ? " mirror" : "",
-                 state.hold_end[lane.delay_slot] ? " hold" : "");
+                 state.hold_end[lane.delay_slot] ? " hold" : "",
+                 stop_buf);
         label += part;
     }
     char fps_buf[32];
@@ -3266,7 +3308,8 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
                                    result.layout);
     if (state.draw_sprite_borders) {
         WorldDrawMarkedLaneTags(dl, lanes, result.render_info, world_pos);
-        WorldDrawMarkedLaneStatus(dl, state, lanes, world_pos, world_width);
+        WorldDrawMarkedLaneStatus(dl, state, lanes, result.render_info,
+                                  result.layout, world_pos, world_width);
     }
     WorldDrawBoundaryStatus(dl, state, lanes, result.render_info,
                             result.layout, world_pos, world_width);
@@ -3448,6 +3491,15 @@ static void WorldDrawEmbeddedScriptTable(WorldMarkedSequenceState &state,
                 state.embedded_name.empty() ? "(unnamed)" : state.embedded_name.c_str(),
                 n);
     ImGui::TextDisabled("World View shows the first drawable frame from each target sequence. Load Seq opens the full target sequence.");
+    ImGui::SameLine();
+    int stop_tick = state.stop_tick[slot];
+    ImGui::TextDisabled("Stop@");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(56.0f);
+    if (ImGui::InputInt("##script_stop_tick", &stop_tick, 0, 0))
+        state.stop_tick[slot] = ClampWorldMarkedVisibleFrom(stop_tick);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Freeze this script lane at the given global preview tick. 0 disables the tick stop.");
 
     ImGuiTableFlags flags =
         ImGuiTableFlags_Borders |
@@ -3567,7 +3619,8 @@ static void WorldEmbeddedSequenceRefreshMetadata(WorldMarkedSequenceState &state
     }
 
     EnsureWorldMarkedFrameDelays(state, slot, n);
-    lane.frame_pos = WorldMarkedFrameForTick(state, slot, n, state.frame,
+    lane.tick = WorldMarkedEffectiveTickForSlot(state, slot, n, state.frame);
+    lane.frame_pos = WorldMarkedFrameForTick(state, slot, n, lane.tick,
                                              state.hold_end[slot]);
     if (lane.frame_pos < 0) lane.frame_pos = 0;
     if (lane.frame_pos >= n) lane.frame_pos = n - 1;
@@ -3655,7 +3708,8 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
                                        const WorldMarkedLane &lane,
                                        int start_frame, int link_count,
                                        int gap_px, int delay_ticks,
-                                       int visual_vy, bool ping_pong);
+                                       int visual_vy, bool ping_pong,
+                                       int ping_pong_delay_ticks);
 static void WorldMarkedClearMotionFrom(WorldMarkedSequenceState &state,
                                        int slot, int start_frame);
 static bool WorldDrawSubframeSwapTool(WorldMarkedSequenceState &state,
@@ -3688,6 +3742,9 @@ static void WorldMarkedClampAutoChainSettings(WorldMarkedSequenceState &state,
     if (state.chain_delay[slot] > 9999) state.chain_delay[slot] = 9999;
     state.chain_vy[slot] = ClampWorldMarkedMotion(state.chain_vy[slot]);
     if (state.chain_vy[slot] == 0) state.chain_vy[slot] = 1;
+    state.pingpong_delay[slot] =
+        ClampWorldMarkedVisibleFrom(state.pingpong_delay[slot]);
+    state.stop_tick[slot] = ClampWorldMarkedVisibleFrom(state.stop_tick[slot]);
     state.subframe_swap_tick[slot] =
         ClampWorldMarkedVisibleFrom(state.subframe_swap_tick[slot]);
 }
@@ -3710,6 +3767,7 @@ static void WorldDrawEmbeddedSequenceAutoTools(WorldMarkedSequenceState &state,
     int &chain_delay = state.chain_delay[slot];
     int &chain_vy = state.chain_vy[slot];
     bool &chain_pingpong = state.chain_pingpong[slot];
+    int &pingpong_delay = state.pingpong_delay[slot];
 
     ImGui::TextDisabled("Auto Y");
     if (ImGui::IsItemHovered())
@@ -3791,10 +3849,19 @@ static void WorldDrawEmbeddedSequenceAutoTools(WorldMarkedSequenceState &state,
     ImGui::Checkbox("Ping Pong##world_embed_chain_pingpong",
                     &chain_pingpong);
     ImGui::SameLine();
+    ImGui::TextDisabled("PongDelay");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(56.0f);
+    if (ImGui::InputInt("##world_embed_pingpong_delay", &pingpong_delay, 0, 0))
+        WorldMarkedClampAutoChainSettings(state, slot);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Extra ticks to hold the fully extended chain before the reverse pass starts.");
+    ImGui::SameLine();
     if (ImGui::SmallButton("Build Chain##world_embed_chain_apply")) {
         WorldMarkedApplyYLinkChain(state, lane, edit_fi,
                                    chain_count, chain_gap, chain_delay,
-                                   chain_vy, chain_pingpong);
+                                   chain_vy, chain_pingpong,
+                                   pingpong_delay);
         WorldEmbeddedSequenceRefreshMetadata(state, lane);
     }
 
@@ -3823,6 +3890,15 @@ static void WorldDrawEmbeddedSequenceTable(WorldMarkedSequenceState &state,
                 n);
     ImGui::SameLine();
     ImGui::TextDisabled("Entry %d/%d", edit_fi + 1, n);
+    ImGui::SameLine();
+    int stop_tick = state.stop_tick[slot];
+    ImGui::TextDisabled("Stop@");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(56.0f);
+    if (ImGui::InputInt("##world_embed_stop_tick", &stop_tick, 0, 0))
+        state.stop_tick[slot] = ClampWorldMarkedVisibleFrom(stop_tick);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Freeze this sequence lane at the given global preview tick. 0 disables the tick stop.");
     ImGui::SameLine();
     ImGui::TextDisabled("Order");
     ImGui::SameLine();
@@ -4266,6 +4342,27 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
     ImGui::Text("Slot %d  [%d] %s", display_slot + 1, lane.doc_idx, doc_name);
     ImGui::SameLine();
     ImGui::Checkbox("Stop##world_lane_stop", &state.hold_end[lane.delay_slot]);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Hold this slot on its final entry instead of looping.");
+    ImGui::SameLine();
+    int stop_tick = state.stop_tick[lane.delay_slot];
+    ImGui::TextDisabled("Stop@");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(54.0f);
+    if (ImGui::InputInt("##world_lane_stop_tick", &stop_tick, 0, 0))
+        state.stop_tick[lane.delay_slot] = ClampWorldMarkedVisibleFrom(stop_tick);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Freeze this slot at the given global preview tick. 0 disables the tick stop.");
+    ImGui::SameLine();
+    int pingpong_delay = state.pingpong_delay[lane.delay_slot];
+    ImGui::TextDisabled("PongDelay");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(54.0f);
+    if (ImGui::InputInt("##world_lane_pingpong_delay", &pingpong_delay, 0, 0))
+        state.pingpong_delay[lane.delay_slot] =
+            ClampWorldMarkedVisibleFrom(pingpong_delay);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Extra ticks chain Ping Pong waits before it reverses for this slot.");
     if (lane.dummy_decap) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset Body##world_dummy_decap_reset")) {
@@ -4522,6 +4619,7 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             int &chain_delay = state.chain_delay[slot];
             int &chain_vy = state.chain_vy[slot];
             bool &chain_pingpong = state.chain_pingpong[slot];
+            int &pingpong_delay = state.pingpong_delay[slot];
 
             ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("Auto Y");
@@ -4624,13 +4722,23 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             ImGui::Checkbox("Ping Pong##world_chain_pingpong",
                             &chain_pingpong);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Append a reverse pass so linked copies retract toward the top.");
+                ImGui::SetTooltip("Append a delayed reverse pass so linked copies retract in the opposite order.");
+            ImGui::SameLine();
+            ImGui::TextDisabled("PongDelay");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(48.0f);
+            if (ImGui::InputInt("##world_chain_pingpong_delay",
+                                &pingpong_delay, 0, 0))
+                WorldMarkedClampAutoChainSettings(state, slot);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Extra ticks to hold the fully extended chain before the reverse pass starts.");
             ImGui::SameLine();
             if (ImGui::SmallButton("Build Chain##world_chain_apply")) {
                 WorldMarkedApplyYLinkChain(state, lane, edit_fi,
                                            chain_count, chain_gap,
                                            chain_delay, chain_vy,
-                                           chain_pingpong);
+                                           chain_pingpong,
+                                           pingpong_delay);
                 WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
             }
             if (ImGui::IsItemHovered())
@@ -4760,6 +4868,26 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                  (int)lane.frames.size(), lane.frames.size() == 1 ? "" : "s",
                  state.hold_end[lane.delay_slot] ? "  stop-on-final" : "  looping");
         out += comment;
+        int slot_stop_tick = (lane.delay_slot >= 0 &&
+                              lane.delay_slot < kWorldMarkedMaxTabs)
+                           ? ClampWorldMarkedVisibleFrom(
+                                 state.stop_tick[lane.delay_slot])
+                           : 0;
+        int slot_pong_delay = (lane.delay_slot >= 0 &&
+                               lane.delay_slot < kWorldMarkedMaxTabs)
+                            ? ClampWorldMarkedVisibleFrom(
+                                  state.pingpong_delay[lane.delay_slot])
+                            : 0;
+        if (slot_stop_tick > 0) {
+            out += "; Preview Stop@ freezes this lane at tick ";
+            out += std::to_string(slot_stop_tick);
+            out += ".\n";
+        }
+        if (slot_pong_delay > 0) {
+            out += "; Chain Ping Pong delay before reverse: ";
+            out += std::to_string(slot_pong_delay);
+            out += " ticks.\n";
+        }
         if (lane.dummy_decap)
             out += "; Stock decap body timing: stand, fall-to-knees, wobble, fall-to-ground.\n";
 
@@ -4782,7 +4910,12 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             dual_table += "_dual_anipts\n";
         }
         int tick = 0;
+        bool reached_stop_tick = false;
         for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+            if (slot_stop_tick > 0 && tick > slot_stop_tick) {
+                reached_stop_tick = true;
+                break;
+            }
             IMG *frame_img = doc_get_img(lane.doc, lane.frames[fi]);
             char fallback[32];
             snprintf(fallback, sizeof(fallback), "slot%d_frame%d", slot + 1, fi + 1);
@@ -4807,6 +4940,10 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             int dual_dy = state.dual_dy[lane.delay_slot][fi];
             int dual_z = state.dual_z[lane.delay_slot][fi];
             for (int repeat = 0; repeat < delay; repeat++) {
+                if (slot_stop_tick > 0 && tick > slot_stop_tick) {
+                    reached_stop_tick = true;
+                    break;
+                }
                 bool hidden = tick < visible_from ||
                               (visible_until > 0 && tick >= visible_until);
                 int eff_dx = 0;
@@ -4908,8 +5045,16 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 }
                 tick++;
             }
+            if (reached_stop_tick)
+                break;
         }
-        if (state.hold_end[lane.delay_slot]) {
+        if (slot_stop_tick > 0 && tick > slot_stop_tick)
+            reached_stop_tick = true;
+        if (reached_stop_tick) {
+            out += "\t.long\t0\t; stop at preview tick ";
+            out += std::to_string(slot_stop_tick);
+            out += "\n\n";
+        } else if (state.hold_end[lane.delay_slot]) {
             out += "\t.long\t0\t; stop on final frame\n\n";
         } else {
             out += "\t.long\tani_jump,";
@@ -5360,7 +5505,8 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
                                        const WorldMarkedLane &lane,
                                        int start_frame, int link_count,
                                        int gap_px, int delay_ticks,
-                                       int visual_vy, bool ping_pong)
+                                       int visual_vy, bool ping_pong,
+                                       int ping_pong_delay_ticks)
 {
     int slot = lane.delay_slot;
     if (slot < 0 || slot >= kWorldMarkedMaxTabs)
@@ -5381,6 +5527,7 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
     if (gap_px > 9999) gap_px = 9999;
     if (delay_ticks < 0) delay_ticks = 0;
     if (delay_ticks > 9999) delay_ticks = 9999;
+    ping_pong_delay_ticks = ClampWorldMarkedVisibleFrom(ping_pong_delay_ticks);
     visual_vy = ClampWorldMarkedMotion(visual_vy);
     if (visual_vy == 0) visual_vy = 1;
 
@@ -5440,6 +5587,7 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
         int done = base_show + i * launch_delay + (travel > 0 ? travel : 1);
         if (done > forward_done) forward_done = done;
     }
+    int reverse_start = forward_done + (ping_pong ? ping_pong_delay_ticks : 0);
 
     for (int i = 0; i < entry_count; i++) {
         int fi = start_frame + i;
@@ -5464,19 +5612,27 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
     for (int i = 0; i < link_count; i++) {
         int fi = start_frame + i;
         int show_tick = base_show + i * launch_delay;
-        int reverse_show = forward_done + i * launch_delay;
+        int reverse_order = (link_count - 1) - i;
+        int reverse_show = reverse_start + reverse_order * launch_delay;
         state.visible_from[slot][fi] = ClampWorldMarkedVisibleFrom(show_tick);
         state.visible_until[slot][fi] =
-            ping_pong ? ClampWorldMarkedVisibleUntil(reverse_show) : hide_at;
+            (ping_pong && i > 0)
+                ? ClampWorldMarkedVisibleUntil(reverse_show)
+                : hide_at;
         state.motion_dy[slot][fi] = (i == 0) ? 0 : visual_vy;
         state.motion_cap_y[slot][fi] =
             (i == 0) ? 0 : ClampWorldMarkedMotionCap(gap_px * i);
     }
+    if (ping_pong && link_count > 1) {
+        state.frame_delays[slot][start_frame + link_count - 1] =
+            ClampTimelineHold(delay + ping_pong_delay_ticks);
+    }
 
     if (ping_pong) {
-        for (int i = 1; i < link_count; i++) {
-            int fi = start_frame + link_count + i - 1;
-            int reverse_show = forward_done + i * launch_delay;
+        for (int ri = 0; ri < link_count - 1; ri++) {
+            int i = (link_count - 1) - ri;
+            int fi = start_frame + link_count + ri;
+            int reverse_show = reverse_start + ri * launch_delay;
             int reverse_travel = (gap_px * i + speed - 1) / speed;
             if (reverse_travel < 1) reverse_travel = 1;
             frames[(size_t)fi] = base_frame;
@@ -5778,6 +5934,8 @@ void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
         ref.vec->clear();
+    state.pingpong_delay[slot] = 0;
+    state.stop_tick[slot] = 0;
 }
 
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
@@ -5805,9 +5963,12 @@ void WorldRefreshMarkedLaneAfterSequenceEdit(WorldMarkedSequenceState &state,
     }
 
     EnsureWorldMarkedFrameDelays(state, lane.delay_slot, (int)lane.frames.size());
+    lane.tick = WorldMarkedEffectiveTickForSlot(state, lane.delay_slot,
+                                                (int)lane.frames.size(),
+                                                state.frame);
     lane.frame_pos = WorldMarkedFrameForTick(state, lane.delay_slot,
                                              (int)lane.frames.size(),
-                                             state.frame,
+                                             lane.tick,
                                              state.hold_end[lane.delay_slot]);
     if (lane.frame_pos < 0) lane.frame_pos = 0;
     if (lane.frame_pos >= (int)lane.frames.size())
@@ -5958,6 +6119,8 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
     state.sequence_frames[dst_slot] = tail;
     state.lane_visible[dst_slot] = state.lane_visible[src_slot];
     state.hold_end[dst_slot] = state.hold_end[src_slot];
+    state.pingpong_delay[dst_slot] = state.pingpong_delay[src_slot];
+    state.stop_tick[dst_slot] = state.stop_tick[src_slot];
     bool *src_mirror = WorldMarkedMirrorFlag(state, src_slot);
     bool *dst_mirror = WorldMarkedMirrorFlag(state, dst_slot);
     if (src_mirror && dst_mirror)
@@ -6012,6 +6175,8 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
 
     state.lane_visible[dst_slot] = state.lane_visible[src_slot];
     state.hold_end[dst_slot] = state.hold_end[src_slot];
+    state.pingpong_delay[dst_slot] = state.pingpong_delay[src_slot];
+    state.stop_tick[dst_slot] = state.stop_tick[src_slot];
     bool *src_mirror = WorldMarkedMirrorFlag(state, src_slot);
     bool *dst_mirror = WorldMarkedMirrorFlag(state, dst_slot);
     if (src_mirror && dst_mirror)
@@ -6296,14 +6461,18 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
             dl->AddText(tag_pos, sprite_border, tag);
         }
 
-        char buf[96];
+        char buf[128];
         snprintf(buf, sizeof(buf),
-                 "[%d] %s%s   anix=%d aniy=%d   world=%dx%d",
+                 "[%d] %s%s   anix=%d aniy=%d   y=%d..%d   world=%dx%d",
                  image_idx, img->n_s,
                  mirror_active ? " mirror" : "",
-                 ax, ay, world_w, world_h);
+                 ax, ay, sprite_rect.top, sprite_rect.bottom,
+                 world_w, world_h);
+        ImVec2 buf_sz = ImGui::CalcTextSize(buf);
+        float bg_w = buf_sz.x + 8.0f;
+        if (bg_w > ww) bg_w = ww;
         dl->AddRectFilled(ImVec2(wpos.x, wpos.y),
-                          ImVec2(wpos.x + 320, wpos.y + 18),
+                          ImVec2(wpos.x + bg_w, wpos.y + 18),
                           IM_COL32(0, 0, 0, 180));
         dl->AddText(ImVec2(wpos.x + 4, wpos.y + 2),
                     IM_COL32(220, 220, 220, 255), buf);

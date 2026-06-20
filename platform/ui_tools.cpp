@@ -18,8 +18,8 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
 {
     /* ===== LEFT TOOLBAR =====
      * The toolbar column owns the full left edge from just below the tab bar
-     * down to the top of the bottom palette bar (or to the screen bottom when
-     * the palette bar is hidden, e.g. in World View). Sizing it dynamically
+     * down to the top of any full-width bottom dock (timeline/palette), or to
+     * the screen bottom when that dock is hidden in World View. Sizing it dynamically
      * keeps the toolbar background filling that column instead of cutting off
      * partway down. */
     ImGui::SetNextWindowPos(ImVec2(0, work_y + 5.0f));
