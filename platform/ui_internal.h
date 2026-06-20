@@ -576,6 +576,8 @@ extern int g_load2_selected_idx;
 extern bool g_show_load2_verify;
 extern bool g_show_mk2_fatality;
 extern bool g_request_save_world_asm;
+extern bool g_request_save_world_project;
+extern bool g_request_load_world_project;
 extern bool g_request_load_asm;
 extern bool g_request_load_opp_asm;
 extern bool g_request_asm_autoload;

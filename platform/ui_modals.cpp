@@ -89,6 +89,9 @@ static int  g_sheet_padding       = 2;
 static bool g_sheet_crop          = true;
 static char g_sheet_prefix[12]    = "FRAME";
 
+static bool SaveWorldProjectFile(const char *path);
+static bool LoadWorldProjectFile(const char *path);
+
 static bool g_show_opacity_gradient = false;
 static bool g_opacity_gradient_marked = false;
 static int  g_opacity_gradient_direction = 2;
@@ -154,6 +157,8 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::SaveMarkedLbm:   return "lbm";
         case FileDialogMode::LoadAsmAnim:
         case FileDialogMode::SaveAsmAnim:     return "asm";
+        case FileDialogMode::LoadWorldProject:
+        case FileDialogMode::SaveWorldProject:return "world";
     }
     return "img";
 }
@@ -945,6 +950,8 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::WriteIrw:  return "IRW";
         case FileDialogMode::LoadAsmAnim:
         case FileDialogMode::SaveAsmAnim: return "ASM";
+        case FileDialogMode::LoadWorldProject:
+        case FileDialogMode::SaveWorldProject: return "WVP";
     }
     return "";
 }
@@ -1023,6 +1030,9 @@ void OpenFileDialog(FileDialogMode mode) {
             if (le == std::string::npos) break;
             ls = le + 1;
         }
+    } else if (mode == FileDialogMode::SaveWorldProject) {
+        snprintf(g_file_dialog_file, sizeof(g_file_dialog_file),
+                 "world_view.WVP");
     } else if (g_doc->fname_s[0] != '\0') {
         size_t n = 0;
         while (n < 12 && g_doc->fname_s[n] != '\0') n++;
@@ -1140,6 +1150,8 @@ void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::WriteIrw) title = "Write IRW";
     else if (g_file_dialog_mode == FileDialogMode::LoadAsmAnim) title = "Load Character ASM";
     else if (g_file_dialog_mode == FileDialogMode::SaveAsmAnim) title = "Save World View ASM";
+    else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) title = "Load World View Project";
+    else if (g_file_dialog_mode == FileDialogMode::SaveWorldProject) title = "Save World View Project";
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
     
@@ -1359,6 +1371,7 @@ void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::OpenLod ||
                                 g_file_dialog_mode == FileDialogMode::LoadLbm ||
                                 g_file_dialog_mode == FileDialogMode::LoadTga ||
+                                g_file_dialog_mode == FileDialogMode::LoadWorldProject ||
                                 g_file_dialog_mode == FileDialogMode::LoadAsmAnim ||
                                 g_file_dialog_mode == FileDialogMode::ImportPalette) ? "Open" : "Save";
         if (ImGui::Button(btn_text, ImVec2(100, 0)) || dbl_click_commit) {
@@ -1466,6 +1479,12 @@ void DrawFileDialog() {
                     snprintf(g_restore_msg, sizeof(g_restore_msg), "Could not write ASM file.");
                 }
                 g_restore_msg_timer = 4.0f;
+            } else if (g_file_dialog_mode == FileDialogMode::SaveWorldProject) {
+                size_t dot = full_path.find_last_of('.');
+                if (dot == std::string::npos) full_path += ".WVP";
+                SaveWorldProjectFile(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) {
+                LoadWorldProjectFile(full_path.c_str());
             } else if (g_file_dialog_mode == FileDialogMode::WriteTbl) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".TBL";
@@ -2493,6 +2512,606 @@ void AsmProcessOppAutoload(void)
     for (auto &fr : g_asm_opp_anims[g_asm_opp_sel].frames)
         for (int ri : fr.piece_img) if (ri >= 0) resolved++;
     if (resolved == 0) g_request_locate_opp_img = true;
+}
+
+static std::string WvpKey(const char *prefix, int idx, const char *field)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s.%d.%s", prefix, idx, field);
+    return std::string(buf);
+}
+
+static std::string WvpJoinInts(const std::vector<int> &values)
+{
+    std::string out;
+    for (size_t i = 0; i < values.size(); i++) {
+        if (i) out += ",";
+        out += std::to_string(values[i]);
+    }
+    return out;
+}
+
+static std::vector<int> WvpParseInts(const std::string &text)
+{
+    std::vector<int> out;
+    const char *p = text.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        char *end = NULL;
+        long v = strtol(p, &end, 10);
+        if (end == p) break;
+        out.push_back((int)v);
+        p = end;
+        while (*p && *p != ',') p++;
+    }
+    return out;
+}
+
+static void WvpWriteString(FILE *f, const char *key, const std::string &value)
+{
+    fprintf(f, "%s=%s\n", key, value.c_str());
+}
+
+static void WvpWriteInt(FILE *f, const char *key, int value)
+{
+    fprintf(f, "%s=%d\n", key, value);
+}
+
+static void WvpWriteFloat(FILE *f, const char *key, float value)
+{
+    fprintf(f, "%s=%.6g\n", key, value);
+}
+
+static void WvpWriteBool(FILE *f, const char *key, bool value)
+{
+    WvpWriteInt(f, key, value ? 1 : 0);
+}
+
+static void WvpWriteVec(FILE *f, const std::string &key,
+                        const std::vector<int> &values)
+{
+    WvpWriteString(f, key.c_str(), WvpJoinInts(values));
+}
+
+static bool WvpReadFile(const char *path,
+                        std::unordered_map<std::string, std::string> &kv)
+{
+    kv.clear();
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+
+    char line[8192];
+    while (fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+            line[--n] = '\0';
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '#') continue;
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *kend = eq - 1;
+        while (kend >= p && (*kend == ' ' || *kend == '\t'))
+            *kend-- = '\0';
+        kv[std::string(p)] = std::string(eq + 1);
+    }
+    fclose(f);
+    return true;
+}
+
+static std::string WvpGetString(
+    const std::unordered_map<std::string, std::string> &kv,
+    const std::string &key,
+    const std::string &fallback = std::string())
+{
+    auto it = kv.find(key);
+    return it == kv.end() ? fallback : it->second;
+}
+
+static int WvpGetInt(const std::unordered_map<std::string, std::string> &kv,
+                     const std::string &key, int fallback)
+{
+    auto it = kv.find(key);
+    if (it == kv.end() || it->second.empty()) return fallback;
+    char *end = NULL;
+    long v = strtol(it->second.c_str(), &end, 10);
+    return end == it->second.c_str() ? fallback : (int)v;
+}
+
+static float WvpGetFloat(const std::unordered_map<std::string, std::string> &kv,
+                         const std::string &key, float fallback)
+{
+    auto it = kv.find(key);
+    if (it == kv.end() || it->second.empty()) return fallback;
+    char *end = NULL;
+    float v = strtof(it->second.c_str(), &end);
+    return end == it->second.c_str() ? fallback : v;
+}
+
+static bool WvpGetBool(const std::unordered_map<std::string, std::string> &kv,
+                       const std::string &key, bool fallback)
+{
+    return WvpGetInt(kv, key, fallback ? 1 : 0) != 0;
+}
+
+static std::vector<int> WvpGetVec(
+    const std::unordered_map<std::string, std::string> &kv,
+    const std::string &key)
+{
+    auto it = kv.find(key);
+    return it == kv.end() ? std::vector<int>() : WvpParseInts(it->second);
+}
+
+static int WvpDocIndexForPointer(Document *doc)
+{
+    if (!doc) return -1;
+    for (int i = 0; i < document_tab_count(); i++)
+        if (document_get(i) == doc)
+            return i;
+    return -1;
+}
+
+static std::vector<int> WvpMarkedIndices(Document *doc)
+{
+    std::vector<int> out;
+    int idx = 0;
+    for (IMG *img = doc ? (IMG *)doc->img_p : NULL;
+         img; img = (IMG *)img->nxt_p, idx++) {
+        if (img->flags & 1)
+            out.push_back(idx);
+    }
+    return out;
+}
+
+static void WvpApplyMarkedIndices(Document *doc, const std::vector<int> &marked)
+{
+    if (!doc) return;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p)
+        img->flags = (unsigned short)(img->flags & ~1);
+    for (int idx : marked) {
+        IMG *img = doc_get_img(doc, idx);
+        if (img) img->flags = (unsigned short)(img->flags | 1);
+    }
+}
+
+static int WvpFindAsmByLabel(const std::vector<AsmAnim> &anims,
+                             const std::string &label,
+                             int fallback)
+{
+    if (!label.empty()) {
+        for (int i = 0; i < (int)anims.size(); i++)
+            if (anims[i].label == label)
+                return i;
+    }
+    if (fallback >= 0 && fallback < (int)anims.size()) return fallback;
+    return anims.empty() ? -1 : 0;
+}
+
+static void WvpClearAsmState(void)
+{
+    g_asm_anims.clear();
+    g_asm_anim_sel = -1;
+    g_asm_anim_file.clear();
+    g_asm_anim_doc = NULL;
+    g_asm_anim_doc_idx = -1;
+    g_asm_lane_enabled = false;
+    g_asm_opp_anims.clear();
+    g_asm_opp_sel = -1;
+    g_asm_opp_file.clear();
+    g_asm_opp_doc = NULL;
+    g_asm_opp_doc_idx = -1;
+    g_asm_opp_enabled = false;
+    g_request_asm_autoload = false;
+    g_request_asm_opp_autoload = false;
+    g_request_locate_img = false;
+    g_request_locate_opp_img = false;
+    ClearAsmAnimTexture();
+}
+
+static int WvpResolveDocIndex(int saved_idx,
+                              const std::string &path,
+                              const std::vector<int> &doc_map)
+{
+    bool had_path = !path.empty();
+    if (!path.empty()) {
+        int idx = FindOpenDocumentByPath(path);
+        if (idx < 0 && PathReadable(path)) {
+            OpenImgFile(path);
+            idx = FindOpenDocumentByPath(path);
+        }
+        if (idx >= 0) return idx;
+    }
+    if (saved_idx >= 0 && saved_idx < (int)doc_map.size() &&
+        doc_map[(size_t)saved_idx] >= 0)
+        return doc_map[(size_t)saved_idx];
+    if (!had_path && saved_idx >= 0 && saved_idx < document_tab_count())
+        return saved_idx;
+    return -1;
+}
+
+static int WvpSlotFrameCount(const WorldMarkedSequenceState &state, int slot)
+{
+    int n = (int)state.sequence_frames[slot].size();
+    if ((int)state.default_frames[slot].size() > n) n = (int)state.default_frames[slot].size();
+    if ((int)state.frame_delays[slot].size() > n) n = (int)state.frame_delays[slot].size();
+    if ((int)state.local_dx[slot].size() > n) n = (int)state.local_dx[slot].size();
+    if ((int)state.local_dy[slot].size() > n) n = (int)state.local_dy[slot].size();
+    if ((int)state.visible_from[slot].size() > n) n = (int)state.visible_from[slot].size();
+    if ((int)state.visible_until[slot].size() > n) n = (int)state.visible_until[slot].size();
+    if ((int)state.motion_dx[slot].size() > n) n = (int)state.motion_dx[slot].size();
+    if ((int)state.motion_dy[slot].size() > n) n = (int)state.motion_dy[slot].size();
+    if ((int)state.motion_cap_x[slot].size() > n) n = (int)state.motion_cap_x[slot].size();
+    if ((int)state.motion_cap_y[slot].size() > n) n = (int)state.motion_cap_y[slot].size();
+    if ((int)state.frame_mirror[slot].size() > n) n = (int)state.frame_mirror[slot].size();
+    if ((int)state.frame_z[slot].size() > n) n = (int)state.frame_z[slot].size();
+    if ((int)state.dual_on[slot].size() > n) n = (int)state.dual_on[slot].size();
+    if ((int)state.dual_dx[slot].size() > n) n = (int)state.dual_dx[slot].size();
+    if ((int)state.dual_dy[slot].size() > n) n = (int)state.dual_dy[slot].size();
+    if ((int)state.dual_z[slot].size() > n) n = (int)state.dual_z[slot].size();
+    return n;
+}
+
+static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
+                         int slot)
+{
+    char key[128];
+    int doc_idx = state.sequence_doc_idx[slot];
+    if (doc_idx < 0)
+        doc_idx = WvpDocIndexForPointer(state.sequence_doc[slot]);
+    std::string doc_path = DocFullPath(document_get(doc_idx));
+
+    snprintf(key, sizeof(key), "slot.%d.visible", slot);
+    WvpWriteBool(f, key, state.lane_visible[slot]);
+    snprintf(key, sizeof(key), "slot.%d.hold_end", slot);
+    WvpWriteBool(f, key, state.hold_end[slot]);
+    snprintf(key, sizeof(key), "slot.%d.mirror", slot);
+    {
+        WorldMarkedSequenceState &mutable_state =
+            const_cast<WorldMarkedSequenceState &>(state);
+        bool *mirror = WorldMarkedMirrorFlag(mutable_state, slot);
+        WvpWriteBool(f, key, mirror ? *mirror : false);
+    }
+    snprintf(key, sizeof(key), "slot.%d.doc_idx", slot);
+    WvpWriteInt(f, key, doc_idx);
+    snprintf(key, sizeof(key), "slot.%d.doc_path", slot);
+    WvpWriteString(f, key, doc_path);
+    WvpWriteVec(f, WvpKey("slot", slot, "sequence_frames"), state.sequence_frames[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "default_frames"), state.default_frames[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "frame_delays"), state.frame_delays[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "local_dx"), state.local_dx[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "local_dy"), state.local_dy[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "visible_from"), state.visible_from[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "visible_until"), state.visible_until[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "motion_dx"), state.motion_dx[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "motion_dy"), state.motion_dy[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "motion_cap_x"), state.motion_cap_x[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "motion_cap_y"), state.motion_cap_y[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "frame_mirror"), state.frame_mirror[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "frame_z"), state.frame_z[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "dual_on"), state.dual_on[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "dual_dx"), state.dual_dx[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "dual_dy"), state.dual_dy[slot]);
+    WvpWriteVec(f, WvpKey("slot", slot, "dual_z"), state.dual_z[slot]);
+    snprintf(key, sizeof(key), "slot.%d.pingpong_delay", slot);
+    WvpWriteInt(f, key, state.pingpong_delay[slot]);
+    snprintf(key, sizeof(key), "slot.%d.stop_tick", slot);
+    WvpWriteInt(f, key, state.stop_tick[slot]);
+    snprintf(key, sizeof(key), "slot.%d.auto_step", slot);
+    WvpWriteInt(f, key, state.auto_step[slot]);
+    snprintf(key, sizeof(key), "slot.%d.auto_life", slot);
+    WvpWriteInt(f, key, state.auto_life[slot]);
+    snprintf(key, sizeof(key), "slot.%d.auto_vx", slot);
+    WvpWriteInt(f, key, state.auto_vx[slot]);
+    snprintf(key, sizeof(key), "slot.%d.auto_vy", slot);
+    WvpWriteInt(f, key, state.auto_vy[slot]);
+    snprintf(key, sizeof(key), "slot.%d.auto_y", slot);
+    WvpWriteInt(f, key, state.auto_y[slot]);
+    snprintf(key, sizeof(key), "slot.%d.chain_count", slot);
+    WvpWriteInt(f, key, state.chain_count[slot]);
+    snprintf(key, sizeof(key), "slot.%d.chain_gap", slot);
+    WvpWriteInt(f, key, state.chain_gap[slot]);
+    snprintf(key, sizeof(key), "slot.%d.chain_delay", slot);
+    WvpWriteInt(f, key, state.chain_delay[slot]);
+    snprintf(key, sizeof(key), "slot.%d.chain_vy", slot);
+    WvpWriteInt(f, key, state.chain_vy[slot]);
+    snprintf(key, sizeof(key), "slot.%d.chain_pingpong", slot);
+    WvpWriteBool(f, key, state.chain_pingpong[slot]);
+    snprintf(key, sizeof(key), "slot.%d.subframe_swap_tick", slot);
+    WvpWriteInt(f, key, state.subframe_swap_tick[slot]);
+}
+
+static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
+                        WorldMarkedSequenceState &state,
+                        int slot,
+                        const std::vector<int> &doc_map)
+{
+    std::string prefix = "slot." + std::to_string(slot) + ".";
+    state.lane_visible[slot] = WvpGetBool(kv, prefix + "visible", state.lane_visible[slot]);
+    state.hold_end[slot] = WvpGetBool(kv, prefix + "hold_end", state.hold_end[slot]);
+    bool *mirror = WorldMarkedMirrorFlag(state, slot);
+    if (mirror) *mirror = WvpGetBool(kv, prefix + "mirror", *mirror);
+
+    int saved_doc_idx = WvpGetInt(kv, prefix + "doc_idx", -1);
+    std::string doc_path = WvpGetString(kv, prefix + "doc_path");
+    int doc_idx = WvpResolveDocIndex(saved_doc_idx, doc_path, doc_map);
+    state.sequence_doc_idx[slot] = doc_idx;
+    state.sequence_doc[slot] = document_get(doc_idx);
+
+    state.sequence_frames[slot] = WvpGetVec(kv, prefix + "sequence_frames");
+    state.default_frames[slot] = WvpGetVec(kv, prefix + "default_frames");
+    state.frame_delays[slot] = WvpGetVec(kv, prefix + "frame_delays");
+    state.local_dx[slot] = WvpGetVec(kv, prefix + "local_dx");
+    state.local_dy[slot] = WvpGetVec(kv, prefix + "local_dy");
+    state.visible_from[slot] = WvpGetVec(kv, prefix + "visible_from");
+    state.visible_until[slot] = WvpGetVec(kv, prefix + "visible_until");
+    state.motion_dx[slot] = WvpGetVec(kv, prefix + "motion_dx");
+    state.motion_dy[slot] = WvpGetVec(kv, prefix + "motion_dy");
+    state.motion_cap_x[slot] = WvpGetVec(kv, prefix + "motion_cap_x");
+    state.motion_cap_y[slot] = WvpGetVec(kv, prefix + "motion_cap_y");
+    state.frame_mirror[slot] = WvpGetVec(kv, prefix + "frame_mirror");
+    state.frame_z[slot] = WvpGetVec(kv, prefix + "frame_z");
+    state.dual_on[slot] = WvpGetVec(kv, prefix + "dual_on");
+    state.dual_dx[slot] = WvpGetVec(kv, prefix + "dual_dx");
+    state.dual_dy[slot] = WvpGetVec(kv, prefix + "dual_dy");
+    state.dual_z[slot] = WvpGetVec(kv, prefix + "dual_z");
+
+    state.pingpong_delay[slot] = WvpGetInt(kv, prefix + "pingpong_delay", state.pingpong_delay[slot]);
+    state.stop_tick[slot] = WvpGetInt(kv, prefix + "stop_tick", state.stop_tick[slot]);
+    state.auto_step[slot] = WvpGetInt(kv, prefix + "auto_step", state.auto_step[slot]);
+    state.auto_life[slot] = WvpGetInt(kv, prefix + "auto_life", state.auto_life[slot]);
+    state.auto_vx[slot] = WvpGetInt(kv, prefix + "auto_vx", state.auto_vx[slot]);
+    state.auto_vy[slot] = WvpGetInt(kv, prefix + "auto_vy", state.auto_vy[slot]);
+    state.auto_y[slot] = WvpGetInt(kv, prefix + "auto_y", state.auto_y[slot]);
+    state.chain_count[slot] = WvpGetInt(kv, prefix + "chain_count", state.chain_count[slot]);
+    state.chain_gap[slot] = WvpGetInt(kv, prefix + "chain_gap", state.chain_gap[slot]);
+    state.chain_delay[slot] = WvpGetInt(kv, prefix + "chain_delay", state.chain_delay[slot]);
+    state.chain_vy[slot] = WvpGetInt(kv, prefix + "chain_vy", state.chain_vy[slot]);
+    state.chain_pingpong[slot] = WvpGetBool(kv, prefix + "chain_pingpong", state.chain_pingpong[slot]);
+    state.subframe_swap_tick[slot] = WvpGetInt(kv, prefix + "subframe_swap_tick", state.subframe_swap_tick[slot]);
+
+    EnsureWorldMarkedFrameDelays(state, slot, WvpSlotFrameCount(state, slot));
+}
+
+static bool SaveWorldProjectFile(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Could not write World View project.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+
+    WorldMarkedSequenceState &state = g_world_marked_state;
+    fprintf(f, "format=imgtool_world_project\n");
+    WvpWriteInt(f, "version", 1);
+    WvpWriteString(f, "app", "midway-imgtool");
+
+    WvpWriteBool(f, "world.enabled", g_world_state.enabled);
+    WvpWriteInt(f, "world.w", g_world_state.w);
+    WvpWriteInt(f, "world.h", g_world_state.h);
+    WvpWriteInt(f, "world.origin_x", g_world_state.origin_x);
+    WvpWriteInt(f, "world.origin_y", g_world_state.origin_y);
+    WvpWriteBool(f, "world.onion", g_world_state.onion);
+
+    WvpWriteBool(f, "state.marked_play", state.marked_play);
+    WvpWriteFloat(f, "state.fps", state.fps);
+    WvpWriteFloat(f, "state.timer", state.timer);
+    WvpWriteInt(f, "state.frame", state.frame);
+    WvpWriteBool(f, "state.paused", state.paused);
+    WvpWriteBool(f, "state.dummy_decap_body", state.dummy_decap_body);
+    WvpWriteBool(f, "state.dummy_decap_reset", state.dummy_decap_reset);
+    WvpWriteBool(f, "state.dummy_decap_manual", state.dummy_decap_manual);
+    WvpWriteInt(f, "state.dummy_decap_doc_idx", state.dummy_decap_doc_idx);
+    WvpWriteString(f, "state.dummy_decap_doc_path",
+                   DocFullPath(document_get(state.dummy_decap_doc_idx)));
+    WvpWriteString(f, "state.dummy_decap_prefix", state.dummy_decap_prefix);
+    WvpWriteBool(f, "state.draw_sprite_borders", state.draw_sprite_borders);
+    WvpWriteBool(f, "state.show_boundary_overlay", state.show_boundary_overlay);
+    WvpWriteBool(f, "state.embedded_active", state.embedded_active);
+    WvpWriteBool(f, "state.embedded_is_script", state.embedded_is_script);
+    WvpWriteBool(f, "state.embedded_show_companions", state.embedded_show_companions);
+    WvpWriteInt(f, "state.embedded_record_index", state.embedded_record_index);
+    WvpWriteInt(f, "state.embedded_doc_idx", state.embedded_doc_idx);
+    WvpWriteString(f, "state.embedded_doc_path",
+                   DocFullPath(document_get(state.embedded_doc_idx)));
+    WvpWriteString(f, "state.embedded_name", state.embedded_name);
+    WvpWriteVec(f, "state.embedded_targets", state.embedded_targets);
+    WvpWriteInt(f, "state.embedded_label_count",
+                (int)state.embedded_frame_labels.size());
+    for (int i = 0; i < (int)state.embedded_frame_labels.size(); i++)
+        WvpWriteString(f, WvpKey("embedded_label", i, "text").c_str(),
+                       state.embedded_frame_labels[(size_t)i]);
+
+    int doc_count = document_tab_count();
+    WvpWriteInt(f, "doc.count", doc_count);
+    WvpWriteInt(f, "doc.active", document_active_index());
+    for (int i = 0; i < doc_count; i++) {
+        Document *doc = document_get(i);
+        WvpWriteString(f, WvpKey("doc", i, "path").c_str(), DocFullPath(doc));
+        WvpWriteVec(f, WvpKey("doc", i, "marked"), WvpMarkedIndices(doc));
+    }
+
+    WvpWriteString(f, "asm.player.path", g_asm_anim_file);
+    WvpWriteInt(f, "asm.player.sel", g_asm_anim_sel);
+    WvpWriteString(f, "asm.player.label",
+                   (g_asm_anim_sel >= 0 && g_asm_anim_sel < (int)g_asm_anims.size())
+                       ? g_asm_anims[g_asm_anim_sel].label : std::string());
+    WvpWriteBool(f, "asm.player.enabled", g_asm_lane_enabled);
+    WvpWriteString(f, "asm.opp.path", g_asm_opp_file);
+    WvpWriteInt(f, "asm.opp.sel", g_asm_opp_sel);
+    WvpWriteString(f, "asm.opp.label",
+                   (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
+                       ? g_asm_opp_anims[g_asm_opp_sel].label : std::string());
+    WvpWriteBool(f, "asm.opp.enabled", g_asm_opp_enabled);
+    WvpWriteBool(f, "asm.window.show", g_show_asm_anim);
+    WvpWriteInt(f, "asm.window.frame", g_asm_anim_frame);
+    WvpWriteBool(f, "asm.window.play", g_asm_anim_play);
+    WvpWriteFloat(f, "asm.window.fps", g_asm_anim_fps);
+
+    WvpWriteInt(f, "slot.count", kWorldMarkedMaxTabs);
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++)
+        WvpWriteSlot(f, state, slot);
+
+    WvpWriteInt(f, "split.count", (int)state.split_lanes.size());
+    for (int i = 0; i < (int)state.split_lanes.size(); i++) {
+        const WorldMarkedSplitLane &split = state.split_lanes[(size_t)i];
+        WvpWriteInt(f, WvpKey("split", i, "slot").c_str(), split.slot);
+        WvpWriteInt(f, WvpKey("split", i, "doc_idx").c_str(), split.doc_idx);
+        WvpWriteString(f, WvpKey("split", i, "doc_path").c_str(),
+                       DocFullPath(document_get(split.doc_idx)));
+    }
+
+    fclose(f);
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Saved World View project.");
+    g_restore_msg_timer = 4.0f;
+    return true;
+}
+
+static bool LoadWorldProjectFile(const char *path)
+{
+    std::unordered_map<std::string, std::string> kv;
+    if (!WvpReadFile(path, kv) ||
+        WvpGetString(kv, "format") != "imgtool_world_project") {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Not an imgtool World View project.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+
+    int doc_count = WvpGetInt(kv, "doc.count", 0);
+    std::vector<int> doc_map((size_t)(doc_count > 0 ? doc_count : 0), -1);
+    int missing_docs = 0;
+    for (int i = 0; i < doc_count; i++) {
+        std::string doc_path = WvpGetString(kv, WvpKey("doc", i, "path"));
+        if (doc_path.empty()) continue;
+        if (!PathReadable(doc_path)) {
+            missing_docs++;
+            continue;
+        }
+        OpenImgFile(doc_path);
+        int idx = FindOpenDocumentByPath(doc_path);
+        Document *doc = document_get(idx);
+        if (!doc || doc->imgcnt == 0) {
+            missing_docs++;
+            continue;
+        }
+        doc_map[(size_t)i] = idx;
+        WvpApplyMarkedIndices(doc, WvpGetVec(kv, WvpKey("doc", i, "marked")));
+    }
+
+    WvpClearAsmState();
+    std::string player_path = WvpGetString(kv, "asm.player.path");
+    if (!player_path.empty() && PathReadable(player_path) &&
+        LoadAsmAnimations(player_path.c_str())) {
+        int sel = WvpFindAsmByLabel(g_asm_anims,
+                                    WvpGetString(kv, "asm.player.label"),
+                                    WvpGetInt(kv, "asm.player.sel", 0));
+        AsmAnimSelect(sel);
+        g_request_asm_autoload = false;
+        AsmProcessAutoload();
+    }
+    std::string opp_path = WvpGetString(kv, "asm.opp.path");
+    if (!opp_path.empty() && PathReadable(opp_path) &&
+        LoadAsmOpponent(opp_path.c_str())) {
+        g_asm_opp_sel = WvpFindAsmByLabel(g_asm_opp_anims,
+                                          WvpGetString(kv, "asm.opp.label"),
+                                          WvpGetInt(kv, "asm.opp.sel", 0));
+        if (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
+            AsmResolveAnimGlobal(g_asm_opp_anims[g_asm_opp_sel]);
+        g_request_asm_opp_autoload = false;
+        AsmProcessOppAutoload();
+    }
+
+    WorldViewState loaded_world;
+    loaded_world.enabled = WvpGetBool(kv, "world.enabled", true);
+    loaded_world.w = WvpGetInt(kv, "world.w", loaded_world.w);
+    loaded_world.h = WvpGetInt(kv, "world.h", loaded_world.h);
+    loaded_world.origin_x = WvpGetInt(kv, "world.origin_x", loaded_world.origin_x);
+    loaded_world.origin_y = WvpGetInt(kv, "world.origin_y", loaded_world.origin_y);
+    loaded_world.onion = WvpGetBool(kv, "world.onion", loaded_world.onion);
+
+    WorldMarkedSequenceState loaded_state;
+    loaded_state.marked_play = WvpGetBool(kv, "state.marked_play", true);
+    loaded_state.fps = WvpGetFloat(kv, "state.fps", loaded_state.fps);
+    loaded_state.timer = WvpGetFloat(kv, "state.timer", 0.0f);
+    loaded_state.frame = WvpGetInt(kv, "state.frame", 0);
+    loaded_state.paused = WvpGetBool(kv, "state.paused", loaded_state.paused);
+    loaded_state.dummy_decap_body = WvpGetBool(kv, "state.dummy_decap_body", false);
+    loaded_state.dummy_decap_reset = WvpGetBool(kv, "state.dummy_decap_reset", true);
+    loaded_state.dummy_decap_manual = WvpGetBool(kv, "state.dummy_decap_manual", false);
+    loaded_state.dummy_decap_doc_idx =
+        WvpResolveDocIndex(WvpGetInt(kv, "state.dummy_decap_doc_idx", -1),
+                           WvpGetString(kv, "state.dummy_decap_doc_path"),
+                           doc_map);
+    loaded_state.dummy_decap_prefix = WvpGetString(kv, "state.dummy_decap_prefix");
+    loaded_state.draw_sprite_borders = WvpGetBool(kv, "state.draw_sprite_borders", true);
+    loaded_state.show_boundary_overlay = WvpGetBool(kv, "state.show_boundary_overlay", true);
+    loaded_state.embedded_active = WvpGetBool(kv, "state.embedded_active", false);
+    loaded_state.embedded_is_script = WvpGetBool(kv, "state.embedded_is_script", false);
+    loaded_state.embedded_show_companions =
+        WvpGetBool(kv, "state.embedded_show_companions", false);
+    loaded_state.embedded_record_index =
+        WvpGetInt(kv, "state.embedded_record_index", -1);
+    loaded_state.embedded_doc_idx =
+        WvpResolveDocIndex(WvpGetInt(kv, "state.embedded_doc_idx", -1),
+                           WvpGetString(kv, "state.embedded_doc_path"),
+                           doc_map);
+    loaded_state.embedded_name = WvpGetString(kv, "state.embedded_name");
+    loaded_state.embedded_targets = WvpGetVec(kv, "state.embedded_targets");
+    int label_count = WvpGetInt(kv, "state.embedded_label_count", 0);
+    loaded_state.embedded_frame_labels.clear();
+    for (int i = 0; i < label_count; i++)
+        loaded_state.embedded_frame_labels.push_back(
+            WvpGetString(kv, WvpKey("embedded_label", i, "text")));
+
+    int slot_count = WvpGetInt(kv, "slot.count", kWorldMarkedMaxTabs);
+    if (slot_count > kWorldMarkedMaxTabs) slot_count = kWorldMarkedMaxTabs;
+    for (int slot = 0; slot < slot_count; slot++)
+        WvpReadSlot(kv, loaded_state, slot, doc_map);
+
+    int split_count = WvpGetInt(kv, "split.count", 0);
+    loaded_state.split_lanes.clear();
+    for (int i = 0; i < split_count; i++) {
+        WorldMarkedSplitLane split = {};
+        split.slot = WvpGetInt(kv, WvpKey("split", i, "slot"), -1);
+        split.doc_idx =
+            WvpResolveDocIndex(WvpGetInt(kv, WvpKey("split", i, "doc_idx"), -1),
+                               WvpGetString(kv, WvpKey("split", i, "doc_path")),
+                               doc_map);
+        if (split.slot >= 0 && split.slot < kWorldMarkedSourceTabs &&
+            document_get(split.doc_idx))
+            loaded_state.split_lanes.push_back(split);
+    }
+
+    g_world_state = loaded_world;
+    g_world_marked_state = loaded_state;
+    g_asm_lane_enabled = WvpGetBool(kv, "asm.player.enabled", g_asm_lane_enabled);
+    g_asm_opp_enabled = WvpGetBool(kv, "asm.opp.enabled", g_asm_opp_enabled);
+    g_show_asm_anim = WvpGetBool(kv, "asm.window.show", g_show_asm_anim);
+    g_asm_anim_frame = WvpGetInt(kv, "asm.window.frame", 0);
+    g_asm_anim_play = WvpGetBool(kv, "asm.window.play", g_asm_anim_play);
+    g_asm_anim_fps = WvpGetFloat(kv, "asm.window.fps", g_asm_anim_fps);
+    if (g_asm_anim_fps < 1.0f) g_asm_anim_fps = 1.0f;
+    if (g_asm_anim_fps > 30.0f) g_asm_anim_fps = 30.0f;
+
+    int active_saved = WvpGetInt(kv, "doc.active", -1);
+    int active_idx = WvpResolveDocIndex(active_saved, std::string(), doc_map);
+    if (active_idx >= 0)
+        ActivateDocumentTab(active_idx);
+
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             missing_docs > 0
+                 ? "Loaded World View project (%d missing IMG file%s)."
+                 : "Loaded World View project.",
+             missing_docs, missing_docs == 1 ? "" : "s");
+    g_restore_msg_timer = 5.0f;
+    return true;
 }
 
 /* (Re)fill the playback texture with the current frame's composited pieces. */

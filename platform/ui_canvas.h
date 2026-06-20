@@ -479,6 +479,8 @@ struct WorldMarkedPanelAction {
     int copied_lane_count = 0;
     bool request_save_asm = false;
     bool request_load_asm = false;
+    bool request_save_project = false;
+    bool request_load_project = false;
     bool dummy_assigned = false;
     bool dummy_assign_failed = false;
 };

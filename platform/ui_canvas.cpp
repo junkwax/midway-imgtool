@@ -3427,6 +3427,16 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
                           "The sprite IMGs it references are opened automatically.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Save Project##world_marked_save_project"))
+        action.request_save_project = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Save the World View layout, slots, timing, offsets, marks, and source file links.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Load Project##world_marked_load_project"))
+        action.request_load_project = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Restore a World View project exactly as it was saved.");
     if (!state.split_lanes.empty()) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Clear Splits##world_marked_clear_splits"))
@@ -12729,6 +12739,10 @@ static void WorldHandleMarkedPanelResult(const WorldMarkedPanelResult &panel_res
     }
     if (panel_action.request_save_asm)
         g_request_save_world_asm = true;   /* dialog opened in main loop */
+    if (panel_action.request_save_project)
+        g_request_save_world_project = true;
+    if (panel_action.request_load_project)
+        g_request_load_world_project = true;
     if (panel_action.request_load_asm) {
         g_show_asm_anim = true;
         g_request_load_asm = true;
