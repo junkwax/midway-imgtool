@@ -2197,7 +2197,8 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
         a.missing = 0;
 
         const std::vector<std::string> &toks = body[lbl];
-        int cur_dx = 0, cur_dy = 0; bool cur_mirror = false;
+        int cur_dx = 0, cur_dy = 0;
+        bool cur_mirror = false, cur_mirror_v = false;
         bool stop = false;
         for (size_t ti = 0; ti < toks.size() && !stop; ti++) {
             const std::string &tok = toks[ti];
@@ -2218,6 +2219,7 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
                     if (std::find(a.control.begin(), a.control.end(), "flip") == a.control.end())
                         a.control.push_back("flip");
                 } else if (tok == "ani_flip_v") {
+                    cur_mirror_v = !cur_mirror_v;
                     a.control.push_back("vflip");
                 } else if (nops >= 0) {
                     a.control.push_back(tok);  /* known opcode: note + skip operands */
@@ -2230,7 +2232,9 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
             }
             /* uppercase token = a frame-group label (or lone piece symbol) */
             AsmAnimFrame fr;
-            fr.dx = cur_dx; fr.dy = cur_dy; fr.mirror = cur_mirror;
+            fr.dx = cur_dx; fr.dy = cur_dy;
+            fr.mirror = cur_mirror;
+            fr.mirror_v = cur_mirror_v;
             auto bit = body.find(tok);
             if (bit != body.end()) {
                 for (auto &p : bit->second) { if (p == "0") break; fr.piece_syms.push_back(p); }
@@ -2534,11 +2538,12 @@ static void AsmAnimRefillTexture(void)
         int oy = -(int)(short)img->aniy + fr.dy - g_asm_anim_miny;
         for (int y = 0; y < img->h; y++) {
             int dy = oy + y; if (dy < 0 || dy >= h) continue;
+            int srcy = fr.mirror_v ? (img->h - 1 - y) : y;
             for (int x = 0; x < img->w; x++) {
-                /* ani_flip mirrors horizontally about the piece's anipoint */
+                /* ani_flip mirrors horizontally; ani_flip_v mirrors vertically. */
                 int srcx = fr.mirror ? (img->w - 1 - x) : x;
                 int dx = ox + x; if (dx < 0 || dx >= w) continue;
-                unsigned char ci = sp[y * stride + srcx];
+                unsigned char ci = sp[srcy * stride + srcx];
                 if (ci == 0) continue;
                 Uint32 r = 200, g = 200, b = 200;
                 if (pd) {

@@ -65,6 +65,7 @@ struct AsmAnimFrame {
     std::vector<Document*>   piece_doc;  /* doc each piece resolved against (parallel) */
     int  dx = 0, dy = 0;                 /* cumulative ani_adjustx/xy offset at this frame */
     bool mirror = false;                 /* ani_flip state at this frame */
+    bool mirror_v = false;               /* ani_flip_v state at this frame */
 };
 struct AsmAnim {
     std::string              label;      /* e.g. a_rdstance */

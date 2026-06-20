@@ -342,6 +342,17 @@ struct WorldMarkedSequenceState {
         for (int i = 0; i < kWorldMarkedMaxTabs; i++) {
             sequence_doc_idx[i] = -1;
             lane_visible[i] = true;
+            auto_step[i] = 3;
+            auto_life[i] = 32;
+            auto_vx[i] = 0;
+            auto_vy[i] = 1;
+            auto_y[i] = 200;
+            chain_count[i] = 3;
+            chain_gap[i] = 20;
+            chain_delay[i] = 0;
+            chain_vy[i] = 1;
+            chain_pingpong[i] = false;
+            subframe_swap_tick[i] = 0;
         }
         hold_end[kWorldDummyDecapSlot] = true;
     }
@@ -365,7 +376,10 @@ struct WorldMarkedSequenceState {
     ImVec2 drag_mouse = ImVec2(0, 0);
     int drag_dx = 0;
     int drag_dy = 0;
-    bool drag_mirror = false;
+    bool drag_mirror_x = false;
+    bool drag_mirror_y = false;
+    std::vector<int> drag_all_dx;
+    std::vector<int> drag_all_dy;
     bool show_asm = false;
     bool draw_sprite_borders = true;
     bool show_boundary_overlay = true;
@@ -390,7 +404,7 @@ struct WorldMarkedSequenceState {
     std::vector<int> motion_dy[kWorldMarkedMaxTabs];     /* visual pixels per tick; +Y moves down */
     std::vector<int> motion_cap_x[kWorldMarkedMaxTabs];  /* visual motion distance before stopping; 0 = unlimited */
     std::vector<int> motion_cap_y[kWorldMarkedMaxTabs];
-    std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip (ASM ani_flip) */
+    std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip bits: X=ani_flip, Y=ani_flip_v */
     std::vector<int> frame_z[kWorldMarkedMaxTabs];      /* per-entry draw priority; higher draws on top */
     std::vector<int> dual_on[kWorldMarkedMaxTabs];      /* per-entry second sprite instance enabled */
     std::vector<int> dual_dx[kWorldMarkedMaxTabs];      /* second instance local anipoint X delta */
@@ -400,6 +414,17 @@ struct WorldMarkedSequenceState {
     std::vector<int> default_frames[kWorldMarkedMaxTabs];
     Document *sequence_doc[kWorldMarkedMaxTabs] = {};
     int sequence_doc_idx[kWorldMarkedMaxTabs] = {};
+    int auto_step[kWorldMarkedMaxTabs] = {};
+    int auto_life[kWorldMarkedMaxTabs] = {};
+    int auto_vx[kWorldMarkedMaxTabs] = {};
+    int auto_vy[kWorldMarkedMaxTabs] = {};
+    int auto_y[kWorldMarkedMaxTabs] = {};
+    int chain_count[kWorldMarkedMaxTabs] = {};
+    int chain_gap[kWorldMarkedMaxTabs] = {};
+    int chain_delay[kWorldMarkedMaxTabs] = {};
+    int chain_vy[kWorldMarkedMaxTabs] = {};
+    bool chain_pingpong[kWorldMarkedMaxTabs] = {};
+    int subframe_swap_tick[kWorldMarkedMaxTabs] = {};
 };
 
 struct WorldMarkedLane {
@@ -426,6 +451,7 @@ struct WorldAsmLaneFrame {
     int dx = 0;
     int dy = 0;
     bool mirror = false;
+    bool mirror_v = false;
 };
 
 struct WorldMarkedAsmLaneInput {
@@ -466,6 +492,7 @@ struct WorldMarkedTabsResult {
 struct WorldMarkedLaneRenderInfo {
     bool lane_rect_valid[kWorldMarkedMaxTabs] = {};
     bool lane_mirror_x[kWorldMarkedMaxTabs] = {};
+    bool lane_mirror_y[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_min[kWorldMarkedMaxTabs] = {};
     ImVec2 lane_rect_max[kWorldMarkedMaxTabs] = {};
     bool lane_bad_y_anchor[kWorldMarkedMaxTabs] = {};
