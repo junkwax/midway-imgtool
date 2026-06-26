@@ -624,6 +624,7 @@ int ClampWorldMarkedMotion(int value);
 int ClampWorldMarkedMotionCap(int value);
 void WorldMarkedRestart(WorldMarkedSequenceState &state);
 void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta);
+void WorldMarkedSetTick(WorldMarkedSequenceState &state, int tick);
 /* True when an embedded World View sequence/script table is loaded and showing
    its entries (so Up/Down can step through its frames instead of the image list). */
 bool WorldEmbeddedSeqScrActive(const WorldMarkedSequenceState &state);

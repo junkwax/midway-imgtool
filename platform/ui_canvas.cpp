@@ -3377,7 +3377,14 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     ImGui::SetNextItemWidth(105.0f);
     ImGui::SliderFloat("FPS##world_marked_panel_fps", &state.fps, 1.0f, 60.0f, "%.1f");
     ImGui::SameLine();
-    ImGui::TextDisabled("Tick %d", state.frame);
+    ImGui::TextDisabled("Tick");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70.0f);
+    int goto_tick = state.frame;
+    if (ImGui::InputInt("##world_marked_goto_tick", &goto_tick, 0, 0))
+        WorldMarkedSetTick(state, goto_tick);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Jump straight to this exact tick (pauses playback).");
     if (state.embedded_active) {
         ImGui::SameLine();
         ImGui::Checkbox("Companions##world_marked_companions",
@@ -5493,6 +5500,13 @@ void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta)
     state.frame += delta;
     if (state.frame < 0)
         state.frame = 0;
+}
+
+void WorldMarkedSetTick(WorldMarkedSequenceState &state, int tick)
+{
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = ClampWorldMarkedVisibleFrom(tick);
 }
 
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count)
