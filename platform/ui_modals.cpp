@@ -2820,6 +2820,10 @@ static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
     WvpWriteBool(f, key, state.chain_pingpong[slot]);
     snprintf(key, sizeof(key), "slot.%d.subframe_swap_tick", slot);
     WvpWriteInt(f, key, state.subframe_swap_tick[slot]);
+    snprintf(key, sizeof(key), "slot.%d.subframe_waterline_y", slot);
+    WvpWriteInt(f, key, state.subframe_waterline_y[slot]);
+    snprintf(key, sizeof(key), "slot.%d.subframe_fine_source", slot);
+    WvpWriteInt(f, key, state.subframe_fine_source[slot]);
 }
 
 static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
@@ -2870,6 +2874,8 @@ static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
     state.chain_vy[slot] = WvpGetInt(kv, prefix + "chain_vy", state.chain_vy[slot]);
     state.chain_pingpong[slot] = WvpGetBool(kv, prefix + "chain_pingpong", state.chain_pingpong[slot]);
     state.subframe_swap_tick[slot] = WvpGetInt(kv, prefix + "subframe_swap_tick", state.subframe_swap_tick[slot]);
+    state.subframe_waterline_y[slot] = WvpGetInt(kv, prefix + "subframe_waterline_y", state.subframe_waterline_y[slot]);
+    state.subframe_fine_source[slot] = WvpGetInt(kv, prefix + "subframe_fine_source", state.subframe_fine_source[slot]);
 
     EnsureWorldMarkedFrameDelays(state, slot, WvpSlotFrameCount(state, slot));
 }

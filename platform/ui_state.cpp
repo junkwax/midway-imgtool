@@ -107,6 +107,7 @@ PastedImage g_pasted = {false};
 FreeTransform g_xform = {false, true, 0,0,0,0, 0,0,0,0, 0.0f,0.0f, TransformHandle::None, 0,0, 0,0,0,0, 0.0f, 1.0f};
 PasteBlendMode g_paste_blend_mode = PasteBlendMode::Normal;
 int g_paste_opacity = 100;
+bool g_paste_smooth_resize = true;
 int g_hitbox_x = 0;
 int g_hitbox_y = 0;
 int g_hitbox_w = 32;

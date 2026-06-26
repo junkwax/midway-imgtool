@@ -127,6 +127,7 @@ struct CanvasPasteControlsLayout {
     ImVec2 blend_control_pos = ImVec2(0, 0);
     ImVec2 opacity_label_pos = ImVec2(0, 0);
     ImVec2 opacity_control_pos = ImVec2(0, 0);
+    ImVec2 smooth_control_pos = ImVec2(0, 0);
     float item_width = 0.0f;
     bool blocks_mouse = false;
 };
@@ -348,13 +349,15 @@ struct WorldMarkedSequenceState {
             auto_vy[i] = 1;
             auto_y[i] = 200;
             chain_count[i] = 3;
-            chain_gap[i] = 20;
+            chain_gap[i] = 0; /* 0 = unset; auto-fills from the sprite's height on first use */
             chain_delay[i] = 0;
             chain_vy[i] = 1;
             chain_pingpong[i] = false;
             pingpong_delay[i] = 0;
             stop_tick[i] = 0;
             subframe_swap_tick[i] = 0;
+            subframe_waterline_y[i] = 0;
+            subframe_fine_source[i] = -1;
         }
         hold_end[kWorldDummyDecapSlot] = true;
     }
@@ -412,6 +415,7 @@ struct WorldMarkedSequenceState {
     std::vector<int> dual_dx[kWorldMarkedMaxTabs];      /* second instance local anipoint X delta */
     std::vector<int> dual_dy[kWorldMarkedMaxTabs];      /* second instance local anipoint Y delta */
     std::vector<int> dual_z[kWorldMarkedMaxTabs];       /* second instance draw priority */
+    std::vector<std::vector<int>> entry_pieces[kWorldMarkedMaxTabs]; /* empty = single image (sequence_frames[fi]); non-empty = composite of these IMG indices, drawn together as one frame */
     std::vector<int> sequence_frames[kWorldMarkedMaxTabs];
     std::vector<int> default_frames[kWorldMarkedMaxTabs];
     Document *sequence_doc[kWorldMarkedMaxTabs] = {};
@@ -429,6 +433,8 @@ struct WorldMarkedSequenceState {
     int chain_vy[kWorldMarkedMaxTabs] = {};
     bool chain_pingpong[kWorldMarkedMaxTabs] = {};
     int subframe_swap_tick[kWorldMarkedMaxTabs] = {};
+    int subframe_waterline_y[kWorldMarkedMaxTabs] = {};   /* absolute world Y; 0 = unset */
+    int subframe_fine_source[kWorldMarkedMaxTabs] = {};   /* IMG index used to look up fine subframes; -1 = unset */
 };
 
 struct WorldMarkedLane {
@@ -642,12 +648,14 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
                                  const std::vector<WorldMarkedLane> &lanes,
                                  int frame_idx);
 void WorldMarkedClearSplitLanes(WorldMarkedSequenceState &state);
+bool WorldMarkedDeleteSplitSlot(WorldMarkedSequenceState &state, int slot);
 void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
 void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx, int dir);
 void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
-                                     std::vector<std::string> &frame_labels);
+                                     std::vector<std::string> &frame_labels,
+                                     const std::vector<std::vector<int>> *piece_overrides = NULL);
 void WorldRefreshMarkedLaneAfterSequenceEdit(WorldMarkedSequenceState &state,
                                              WorldMarkedLane &lane,
                                              int &edit_frame);

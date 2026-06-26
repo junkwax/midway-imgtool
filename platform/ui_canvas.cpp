@@ -385,7 +385,7 @@ CanvasPasteControlsLayout CanvasPasteControlsLayoutFor(ImVec2 canvas_origin,
     layout.min = ImVec2(canvas_origin.x + 10.0f,
                         canvas_origin.y + 10.0f);
     layout.max = ImVec2(layout.min.x + 276.0f,
-                        layout.min.y + 62.0f);
+                        layout.min.y + 89.0f);
     layout.blend_label_pos = ImVec2(layout.min.x + 8.0f,
                                     layout.min.y + 7.0f);
     layout.blend_control_pos = ImVec2(layout.min.x + 76.0f,
@@ -394,6 +394,8 @@ CanvasPasteControlsLayout CanvasPasteControlsLayoutFor(ImVec2 canvas_origin,
                                       layout.min.y + 34.0f);
     layout.opacity_control_pos = ImVec2(layout.min.x + 76.0f,
                                         layout.min.y + 32.0f);
+    layout.smooth_control_pos = ImVec2(layout.min.x + 8.0f,
+                                       layout.min.y + 61.0f);
     layout.item_width = layout.max.x - layout.min.x - 86.0f;
     layout.blocks_mouse = CanvasPointInRect(mouse, layout.min, layout.max);
     return layout;
@@ -1933,7 +1935,8 @@ bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
     lane.frames = marked_frames;
 
     WorldMarkedBuildSingleFrameLane(doc, lane.frames,
-                                    lane.frame_pieces, lane.frame_labels);
+                                    lane.frame_pieces, lane.frame_labels,
+                                    &state.entry_pieces[source_slot]);
     WorldMarkedSyncSequenceOverride(state, source_slot, doc, doc_idx,
                                     lane.frames, lane.frame_pieces,
                                     lane.frame_labels);
@@ -1977,7 +1980,8 @@ static bool WorldAppendMarkedSplitLanes(WorldMarkedSequenceState &state,
         lane.asm_label_part = WorldMarkedAsmLabelPart(label, split.slot);
 
         WorldMarkedBuildSingleFrameLane(doc, lane.frames,
-                                        lane.frame_pieces, lane.frame_labels);
+                                        lane.frame_pieces, lane.frame_labels,
+                                        &state.entry_pieces[split.slot]);
         EnsureWorldMarkedFrameDelays(state, split.slot, (int)lane.frames.size());
         used_source_slots[split.slot] = true;
         lanes.push_back(lane);
@@ -2528,7 +2532,8 @@ static bool WorldAppendEmbeddedSeqScrLane(WorldMarkedSequenceState &state,
     lane.asm_label_part = WorldMarkedAsmLabelPart(state.embedded_name.c_str(),
                                                   kWorldEmbeddedSeqScrSlot);
     WorldMarkedBuildSingleFrameLane(doc, lane.frames,
-                                    lane.frame_pieces, lane.frame_labels);
+                                    lane.frame_pieces, lane.frame_labels,
+                                    &state.entry_pieces[kWorldEmbeddedSeqScrSlot]);
     for (int i = 0; i < (int)lane.frame_labels.size() &&
                     i < (int)state.embedded_frame_labels.size(); i++) {
         if (!state.embedded_frame_labels[(size_t)i].empty())
@@ -3610,7 +3615,8 @@ static void WorldEmbeddedSequenceRefreshMetadata(WorldMarkedSequenceState &state
     state.embedded_targets.resize((size_t)n);
     state.embedded_frame_labels.resize((size_t)n);
     WorldMarkedBuildSingleFrameLane(lane.doc, lane.frames,
-                                    lane.frame_pieces, lane.frame_labels);
+                                    lane.frame_pieces, lane.frame_labels,
+                                    &state.entry_pieces[slot]);
     for (int fi = 0; fi < n; fi++) {
         int target = lane.frames[(size_t)fi];
         state.embedded_targets[(size_t)fi] = target;
@@ -3731,6 +3737,17 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
                                      const std::vector<WorldMarkedLane> &lanes);
 static int ClampWorldMarkedFrameMirror(int value);
 
+static int WorldMarkedSpriteHeightForChain(const WorldMarkedLane &lane,
+                                           int frame_idx)
+{
+    if (frame_idx < 0 || frame_idx >= (int)lane.frames.size())
+        return 20;
+    IMG *img = doc_get_img(lane.doc, lane.frames[(size_t)frame_idx]);
+    if (!img || img->h <= 0)
+        return 20;
+    return img->h > 9999 ? 9999 : img->h;
+}
+
 static void WorldMarkedClampAutoChainSettings(WorldMarkedSequenceState &state,
                                               int slot)
 {
@@ -3766,6 +3783,8 @@ static void WorldDrawEmbeddedSequenceAutoTools(WorldMarkedSequenceState &state,
     int slot = lane.delay_slot;
     if (slot < 0 || slot >= kWorldMarkedMaxTabs)
         return;
+    if (state.chain_gap[slot] <= 0)
+        state.chain_gap[slot] = WorldMarkedSpriteHeightForChain(lane, edit_fi);
     WorldMarkedClampAutoChainSettings(state, slot);
     int &auto_step = state.auto_step[slot];
     int &auto_life = state.auto_life[slot];
@@ -3828,7 +3847,7 @@ static void WorldDrawEmbeddedSequenceAutoTools(WorldMarkedSequenceState &state,
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Chain");
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Duplicate the selected sprite into linked copies. Each later copy moves down and stops one Gap farther.");
+        ImGui::SetTooltip("Stack the selected sprite into a falling chain. New copies spawn above and feed down; it holds once Count copies exist (or ping-pongs back if enabled).");
     ImGui::SameLine();
     ImGui::TextDisabled("Count");
     ImGui::SameLine();
@@ -4183,6 +4202,22 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
     return result;
 }
 
+static bool WorldMarkedImageWorldYBounds(Document *doc, int img_idx, int local_dy,
+                                         bool mirror_y,
+                                         int *out_top, int *out_bottom)
+{
+    IMG *img = doc_get_img(doc, img_idx);
+    if (!img) return false;
+
+    int ay = (int)(short)img->aniy + local_dy;
+    int top = mirror_y ? g_world_state.origin_y - ((int)img->h - ay)
+                       : g_world_state.origin_y - ay;
+    int bottom = top + (int)img->h;
+    if (out_top) *out_top = top;
+    if (out_bottom) *out_bottom = bottom;
+    return true;
+}
+
 static bool WorldMarkedFrameWorldYBounds(const WorldMarkedLane &lane,
                                          int frame_idx, int local_dy,
                                          bool mirror_y,
@@ -4211,14 +4246,11 @@ static bool WorldMarkedFrameWorldYBounds(const WorldMarkedLane &lane,
     for (size_t pi = 0; pi < pieces->size(); pi++) {
         Document *pdoc = (piece_docs && pi < piece_docs->size() && (*piece_docs)[pi])
                        ? (*piece_docs)[pi] : lane.doc;
-        IMG *img = doc_get_img(pdoc, (*pieces)[pi]);
-        if (!img) continue;
-
-        int ay = (int)(short)img->aniy + local_dy;
-        int piece_top = mirror_y
-                      ? g_world_state.origin_y - ((int)img->h - ay)
-                      : g_world_state.origin_y - ay;
-        int piece_bottom = piece_top + (int)img->h;
+        int piece_top = 0;
+        int piece_bottom = 0;
+        if (!WorldMarkedImageWorldYBounds(pdoc, (*pieces)[pi], local_dy, mirror_y,
+                                          &piece_top, &piece_bottom))
+            continue;
         if (!valid) {
             top = piece_top;
             bottom = piece_bottom;
@@ -4257,6 +4289,38 @@ static int WorldMarkedTicksUntilYBreach(const WorldMarkedLane &lane,
     if (visual_vy < 0) {
         int speed = -visual_vy;
         int dist = top - breach_y + 1;    /* top moves past the line */
+        if (dist <= 0) return 1;
+        int ticks = (dist + speed - 1) / speed;
+        return ticks < 1 ? 1 : ticks;
+    }
+    return life;
+}
+
+/* Same dist/ticks formula as WorldMarkedTicksUntilYBreach, but for one
+   specific image rather than a frame's whole piece group — used so each
+   fine subframe can hide individually as its own bottom crosses the
+   waterline, instead of the group hiding all at once. */
+static int WorldMarkedPieceTicksUntilYBreach(Document *doc, int img_idx,
+                                             int local_dy, bool mirror_y,
+                                             int visual_vy, int breach_y,
+                                             int fallback_life)
+{
+    int life = fallback_life < 1 ? 1 : fallback_life;
+    int top = 0;
+    int bottom = 0;
+    if (!WorldMarkedImageWorldYBounds(doc, img_idx, local_dy, mirror_y,
+                                      &top, &bottom))
+        return life;
+
+    if (visual_vy > 0) {
+        int dist = breach_y - bottom + 1;
+        if (dist <= 0) return 1;
+        int ticks = (dist + visual_vy - 1) / visual_vy;
+        return ticks < 1 ? 1 : ticks;
+    }
+    if (visual_vy < 0) {
+        int speed = -visual_vy;
+        int dist = top - breach_y + 1;
         if (dist <= 0) return 1;
         int ticks = (dist + speed - 1) / speed;
         return ticks < 1 ? 1 : ticks;
@@ -4465,6 +4529,20 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Copy this whole row into a new editable World View slot.");
+            ImGui::SameLine();
+            bool can_delete_slot = WorldMarkedSlotReservedForSplit(state, lane.delay_slot);
+            ImGui::BeginDisabled(!can_delete_slot);
+            if (ImGui::SmallButton("Delete Slot##world_seq_delete_slot")) {
+                if (WorldMarkedDeleteSplitSlot(state, lane.delay_slot)) {
+                    ImGui::EndDisabled();
+                    return; /* row is gone; nothing below is safe to draw this frame */
+                }
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(can_delete_slot
+                    ? "Remove this split/duplicated row entirely so it's excluded from the ASM export."
+                    : "Only split or duplicated rows can be deleted; base marked-sprite rows can't.");
         }
 
         int delay = state.frame_delays[lane.delay_slot][edit_fi];
@@ -4618,6 +4696,8 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         if (!lane.dummy_decap &&
             lane.delay_slot >= 0 && lane.delay_slot < kWorldMarkedMaxTabs) {
             int slot = lane.delay_slot;
+            if (state.chain_gap[slot] <= 0)
+                state.chain_gap[slot] = WorldMarkedSpriteHeightForChain(lane, edit_fi);
             WorldMarkedClampAutoChainSettings(state, slot);
             int &auto_step = state.auto_step[slot];
             int &auto_life = state.auto_life[slot];
@@ -4695,7 +4775,7 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("Chain");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Duplicate the selected sprite into linked copies. Each later copy moves down and stops one Gap farther.");
+                ImGui::SetTooltip("Stack the selected sprite into a falling chain. New copies spawn above and feed down; it holds once Count copies exist (or ping-pongs back if enabled).");
             ImGui::SameLine();
             ImGui::TextDisabled("Count");
             ImGui::SameLine();
@@ -4711,7 +4791,7 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             if (ImGui::InputInt("##world_chain_gap", &chain_gap, 0, 0))
                 WorldMarkedClampAutoChainSettings(state, slot);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Pixels each link travels before it stops. A value of 20 makes copy 2 stop at 20px, copy 3 at 40px.");
+                ImGui::SetTooltip("Pixels between each stacked copy. Set this to the sprite's pixel length for a seamless, gap-free stack.");
             ImGui::SameLine();
             ImGui::TextDisabled("Delay");
             ImGui::SameLine();
@@ -4852,6 +4932,12 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; object's draw priority, dual draws the same sprite a second time.\n";
     out += "; Lanes with dual entries also emit a *_dual_anipts table aligned\n";
     out += "; 1:1 with the rows; -32768,-32768 means no second copy that tick.\n";
+    out += "; Entries built from Use Subframe are a single composite of several\n";
+    out += "; sprites (e.g. head/body/legs) drawn together every tick. Each extra\n";
+    out += "; piece beyond the primary gets its own *_pieceN_sprites table (.long\n";
+    out += "; label-or-0, aligned 1:1 with the rows); all pieces share the\n";
+    out += "; primary's *_local_anipts offset and rely on their own art anipoint\n";
+    out += "; for relative placement, same as the World View preview.\n";
     out += "; Run these lanes at the same animation sleep/FPS used in the preview.\n\n";
 
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
@@ -4919,6 +5005,18 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             dual_table += anim_label;
             dual_table += "_dual_anipts\n";
         }
+        int extra_piece_cols = 0;
+        for (int fi = 0; fi < (int)lane.frame_pieces.size(); fi++) {
+            int extra = (int)lane.frame_pieces[fi].size() - 1;
+            if (extra > extra_piece_cols) extra_piece_cols = extra;
+        }
+        std::vector<std::string> piece_tables((size_t)extra_piece_cols);
+        for (int c = 0; c < extra_piece_cols; c++) {
+            piece_tables[(size_t)c] += anim_label;
+            piece_tables[(size_t)c] += "_piece";
+            piece_tables[(size_t)c] += std::to_string(c + 2);
+            piece_tables[(size_t)c] += "_sprites\n";
+        }
         int tick = 0;
         bool reached_stop_tick = false;
         for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
@@ -4949,6 +5047,26 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             int dual_dx = state.dual_dx[lane.delay_slot][fi];
             int dual_dy = state.dual_dy[lane.delay_slot][fi];
             int dual_z = state.dual_z[lane.delay_slot][fi];
+            std::vector<std::string> extra_sprites((size_t)extra_piece_cols, "0");
+            if (fi < (int)lane.frame_pieces.size()) {
+                const std::vector<int> &pieces = lane.frame_pieces[fi];
+                const std::vector<Document*> *piece_docs =
+                    (fi < (int)lane.frame_piece_docs.size())
+                        ? &lane.frame_piece_docs[fi] : NULL;
+                for (int c = 0; c < extra_piece_cols; c++) {
+                    size_t pi = (size_t)c + 1;
+                    if (pi >= pieces.size()) continue;
+                    Document *pdoc = (piece_docs && pi < piece_docs->size() &&
+                                      (*piece_docs)[pi])
+                                   ? (*piece_docs)[pi] : lane.doc;
+                    IMG *piece_img = doc_get_img(pdoc, pieces[pi]);
+                    char piece_fallback[40];
+                    snprintf(piece_fallback, sizeof(piece_fallback),
+                             "slot%d_frame%d_piece%d", slot + 1, fi + 1, c + 2);
+                    extra_sprites[(size_t)c] = WorldMarkedAsmToken(
+                        img_name_string(piece_img), piece_fallback);
+                }
+            }
             for (int repeat = 0; repeat < delay; repeat++) {
                 if (slot_stop_tick > 0 && tick > slot_stop_tick) {
                     reached_stop_tick = true;
@@ -5053,6 +5171,14 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                     }
                     dual_table += "\n";
                 }
+
+                for (int c = 0; c < extra_piece_cols; c++) {
+                    piece_tables[(size_t)c] += "\t.long\t";
+                    piece_tables[(size_t)c] += hidden ? "0" : extra_sprites[(size_t)c];
+                    piece_tables[(size_t)c] += "\t; tick ";
+                    piece_tables[(size_t)c] += std::to_string(tick);
+                    piece_tables[(size_t)c] += "\n";
+                }
                 tick++;
             }
             if (reached_stop_tick)
@@ -5075,6 +5201,10 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
         out += "\n";
         if (lane_has_dual) {
             out += dual_table;
+            out += "\n";
+        }
+        for (int c = 0; c < extra_piece_cols; c++) {
+            out += piece_tables[(size_t)c];
             out += "\n";
         }
     }
@@ -5463,6 +5593,11 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
         dy = ClampWorldMarkedAniptDelta(dy);
     for (int &z : dz)
         z = ClampWorldMarkedZ(z);
+
+    /* End-resize only; callers that splice frames in the middle insert/erase
+       matching entries here explicitly, same as they do for the other
+       per-fi arrays. */
+    state.entry_pieces[slot].resize((size_t)frame_count);
 }
 
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
@@ -5568,8 +5703,11 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
     if (launch_delay < 1) launch_delay = 1;
     int delay = ClampTimelineHold(launch_delay);
     int hide_at = ClampWorldMarkedVisibleUntil(99999);
-    int entry_count = ping_pong ? (link_count * 2 - 1) : link_count;
+    /* Every link gets a forward (falling) entry; ping-pong adds one
+       reverse (rising) entry per link, all starting the same tick. */
+    int entry_count = ping_pong ? (link_count * 2) : link_count;
 
+    std::vector<std::vector<int>> &entry_pieces = state.entry_pieces[slot];
     if (run_len < entry_count) {
         int insert_at = start_frame + run_len;
         int add = entry_count - run_len;
@@ -5579,6 +5717,8 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
                      ? (*ref.vec)[(size_t)start_frame] : ref.fresh;
             ref.vec->insert(ref.vec->begin() + insert_at, (size_t)add, seed);
         }
+        entry_pieces.insert(entry_pieces.begin() + insert_at, (size_t)add,
+                            std::vector<int>());
     } else if (run_len > entry_count) {
         int erase_first = start_frame + entry_count;
         int erase_last = start_frame + run_len;
@@ -5586,31 +5726,56 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
         for (const WorldSeqArrayRef &ref : refs)
             ref.vec->erase(ref.vec->begin() + erase_first,
                            ref.vec->begin() + erase_last);
+        entry_pieces.erase(entry_pieces.begin() + erase_first,
+                           entry_pieces.begin() + erase_last);
     }
 
     n = (int)frames.size();
     EnsureWorldMarkedFrameDelays(state, slot, n);
+    /* Chain links are always single-image; clear any composite a prior
+       Use Subframe build may have left at these indices. */
+    for (int i = 0; i < entry_count; i++)
+        entry_pieces[(size_t)(start_frame + i)].clear();
 
-    int forward_done = base_show;
+    /* Link 0 (the anchor) and link 1 (stacked one sprite-length above it,
+       at -gap_px) both spawn immediately. Every later link spawns one
+       travel-phase after the previous one, always at the same -gap_px
+       slot, so the chain reads as a continuous feed rather than copies
+       sliding out from underneath the anchor. Once the last link spawns
+       (stop_tick) every link freezes in place — that's the held, fully
+       built formation. Ping Pong holds that freeze for ping_pong_delay_
+       ticks, then reverses all links together from their frozen spots. */
+    auto spawn_offset = [&](int i) {
+        return (i <= 1) ? 0 : (i - 1) * launch_delay;
+    };
+    int last_spawn_offset = spawn_offset(link_count - 1);
+    int stop_tick = base_show + last_spawn_offset;
+    int reverse_start = stop_tick + (ping_pong ? ping_pong_delay_ticks : 0);
+
     for (int i = 0; i < link_count; i++) {
-        int travel = (gap_px * i + speed - 1) / speed;
-        int done = base_show + i * launch_delay + (travel > 0 ? travel : 1);
-        if (done > forward_done) forward_done = done;
-    }
-    int reverse_start = forward_done + (ping_pong ? ping_pong_delay_ticks : 0);
-
-    for (int i = 0; i < entry_count; i++) {
         int fi = start_frame + i;
+        int spawn_tick = base_show + spawn_offset(i);
+        int stack_y = (i == 0) ? 0 : gap_px;
+        int elapsed_at_stop = stop_tick - spawn_tick;
+        if (elapsed_at_stop < 0) elapsed_at_stop = 0;
+        int forward_cap = speed * elapsed_at_stop;
+
         frames[(size_t)fi] = base_frame;
         state.frame_delays[slot][fi] = delay;
         state.local_dx[slot][fi] = base_dx;
-        state.local_dy[slot][fi] = base_dy;
-        state.visible_from[slot][fi] = base_show;
-        state.visible_until[slot][fi] = hide_at;
+        state.local_dy[slot][fi] = ClampWorldMarkedAniptDelta(base_dy + stack_y);
+        state.visible_from[slot][fi] = ClampWorldMarkedVisibleFrom(spawn_tick);
+        state.visible_until[slot][fi] = ping_pong
+            ? ClampWorldMarkedVisibleUntil(reverse_start)
+            : hide_at;
         state.motion_dx[slot][fi] = 0;
-        state.motion_dy[slot][fi] = 0;
+        /* A cap of 0 reads as "uncapped" to the renderer, so a link that
+           is already at its frozen spot the instant it spawns (forward_cap
+           == 0, always true for the last-spawned link) must get zero
+           velocity instead of relying on the cap to hold it still. */
+        state.motion_dy[slot][fi] = forward_cap > 0 ? visual_vy : 0;
         state.motion_cap_x[slot][fi] = 0;
-        state.motion_cap_y[slot][fi] = 0;
+        state.motion_cap_y[slot][fi] = ClampWorldMarkedMotionCap(forward_cap);
         state.frame_mirror[slot][fi] = base_mirror;
         state.frame_z[slot][fi] = base_z;
         state.dual_on[slot][fi] = 0;
@@ -5619,46 +5784,41 @@ static void WorldMarkedApplyYLinkChain(WorldMarkedSequenceState &state,
         state.dual_z[slot][fi] = 0;
     }
 
-    for (int i = 0; i < link_count; i++) {
-        int fi = start_frame + i;
-        int show_tick = base_show + i * launch_delay;
-        int reverse_order = (link_count - 1) - i;
-        int reverse_show = reverse_start + reverse_order * launch_delay;
-        state.visible_from[slot][fi] = ClampWorldMarkedVisibleFrom(show_tick);
-        state.visible_until[slot][fi] =
-            (ping_pong && i > 0)
-                ? ClampWorldMarkedVisibleUntil(reverse_show)
-                : hide_at;
-        state.motion_dy[slot][fi] = (i == 0) ? 0 : visual_vy;
-        state.motion_cap_y[slot][fi] =
-            (i == 0) ? 0 : ClampWorldMarkedMotionCap(gap_px * i);
-    }
-    if (ping_pong && link_count > 1) {
-        state.frame_delays[slot][start_frame + link_count - 1] =
-            ClampTimelineHold(delay + ping_pong_delay_ticks);
-    }
-
+    /* Reverse pass: every link flips direction together at reverse_start
+       (from its frozen, fully-built position) and rises until its
+       trailing edge clears the source sprite's top (Y=0), i.e. until it
+       reaches the same -gap_px slot it once spawned from, at which point
+       it is hidden. */
     if (ping_pong) {
-        for (int ri = 0; ri < link_count - 1; ri++) {
-            int i = (link_count - 1) - ri;
-            int fi = start_frame + link_count + ri;
-            int reverse_show = reverse_start + ri * launch_delay;
-            int reverse_travel = (gap_px * i + speed - 1) / speed;
-            if (reverse_travel < 1) reverse_travel = 1;
+        for (int i = 0; i < link_count; i++) {
+            int fi = start_frame + link_count + i;
+            int spawn_tick = base_show + spawn_offset(i);
+            int stack_y = (i == 0) ? 0 : gap_px;
+            int elapsed_at_stop = stop_tick - spawn_tick;
+            if (elapsed_at_stop < 0) elapsed_at_stop = 0;
+            int pos_at_stop = stack_y - visual_vy * elapsed_at_stop;
+            int travel = gap_px - pos_at_stop;
+            if (travel < 0) travel = 0;
+            int reverse_ticks = (travel + speed - 1) / speed;
+            if (reverse_ticks < 1) reverse_ticks = 1;
+
             frames[(size_t)fi] = base_frame;
             state.frame_delays[slot][fi] = delay;
             state.local_dx[slot][fi] = base_dx;
             state.local_dy[slot][fi] =
-                ClampWorldMarkedAniptDelta(base_dy - gap_px * i);
+                ClampWorldMarkedAniptDelta(base_dy + pos_at_stop);
             state.visible_from[slot][fi] =
-                ClampWorldMarkedVisibleFrom(reverse_show);
+                ClampWorldMarkedVisibleFrom(reverse_start);
             state.visible_until[slot][fi] =
-                ClampWorldMarkedVisibleUntil(reverse_show + reverse_travel);
+                ClampWorldMarkedVisibleUntil(reverse_start + reverse_ticks);
             state.motion_dx[slot][fi] = 0;
-            state.motion_dy[slot][fi] = -visual_vy;
+            /* Same uncapped-at-zero pitfall as the forward pass: the
+               last-spawned link is already at the hide threshold the
+               instant it starts reversing (travel == 0), so it needs zero
+               velocity rather than a 0 cap. */
+            state.motion_dy[slot][fi] = travel > 0 ? -visual_vy : 0;
             state.motion_cap_x[slot][fi] = 0;
-            state.motion_cap_y[slot][fi] =
-                ClampWorldMarkedMotionCap(gap_px * i);
+            state.motion_cap_y[slot][fi] = ClampWorldMarkedMotionCap(travel);
             state.frame_mirror[slot][fi] = base_mirror;
             state.frame_z[slot][fi] = base_z;
             state.dual_on[slot][fi] = 0;
@@ -5809,27 +5969,37 @@ static bool WorldMarkedSwapEntryWithSubframesAtTick(
     int parent_mirror = state.frame_mirror[slot][parent_frame_idx];
     int parent_z = state.frame_z[slot][parent_frame_idx];
 
+    /* Any earlier swap at this entry inserted either a run of separate
+       subframe entries (the old behavior) or a single composite entry (this
+       function's own prior output) right after the parent. Either way, drop
+       it before inserting the new composite so repeated swaps don't pile up. */
     int erase_first = parent_frame_idx + 1;
     int erase_last = erase_first;
     while (erase_last < (int)frames.size() &&
-           WorldMarkedSubframeRunContains(subframes, frames[(size_t)erase_last])) {
+           (WorldMarkedSubframeRunContains(subframes, frames[(size_t)erase_last]) ||
+            !state.entry_pieces[slot][(size_t)erase_last].empty())) {
         erase_last++;
     }
 
     std::vector<WorldSeqArrayRef> refs = WorldMarkedSeqArrays(state, slot);
+    std::vector<std::vector<int>> &entry_pieces = state.entry_pieces[slot];
     if (erase_last > erase_first) {
         frames.erase(frames.begin() + erase_first, frames.begin() + erase_last);
         for (const WorldSeqArrayRef &ref : refs)
             ref.vec->erase(ref.vec->begin() + erase_first,
                            ref.vec->begin() + erase_last);
+        entry_pieces.erase(entry_pieces.begin() + erase_first,
+                           entry_pieces.begin() + erase_last);
     }
 
+    /* One composite entry replaces the parent from swap_tick onward — it
+       draws every subframe together as a single whole frame instead of
+       stepping through them as a sequence. */
     int insert_at = parent_frame_idx + 1;
-    frames.insert(frames.begin() + insert_at,
-                  subframes.begin(), subframes.end());
+    frames.insert(frames.begin() + insert_at, subframes[0]);
     for (const WorldSeqArrayRef &ref : refs)
-        ref.vec->insert(ref.vec->begin() + insert_at,
-                        subframes.size(), ref.fresh);
+        ref.vec->insert(ref.vec->begin() + insert_at, ref.fresh);
+    entry_pieces.insert(entry_pieces.begin() + insert_at, std::vector<int>());
 
     n = (int)frames.size();
     EnsureWorldMarkedFrameDelays(state, slot, n);
@@ -5845,13 +6015,160 @@ static bool WorldMarkedSwapEntryWithSubframesAtTick(
             ClampWorldMarkedVisibleUntil(swap_tick);
     }
 
-    for (int i = 0; i < (int)subframes.size(); i++) {
-        int fi = insert_at + i;
+    state.frame_delays[slot][insert_at] = 1;
+    state.local_dx[slot][insert_at] = sub_dx;
+    state.local_dy[slot][insert_at] = sub_dy;
+    state.visible_from[slot][insert_at] = swap_tick;
+    state.visible_until[slot][insert_at] = 0;
+    state.motion_dx[slot][insert_at] = sub_vx;
+    state.motion_dy[slot][insert_at] = sub_vy;
+    state.motion_cap_x[slot][insert_at] = sub_cap_x;
+    state.motion_cap_y[slot][insert_at] = sub_cap_y;
+    state.frame_mirror[slot][insert_at] = parent_mirror;
+    state.frame_z[slot][insert_at] = parent_z;
+    state.dual_on[slot][insert_at] = 0;
+    state.dual_dx[slot][insert_at] = 0;
+    state.dual_dy[slot][insert_at] = 0;
+    state.dual_z[slot][insert_at] = 0;
+    entry_pieces[insert_at] = subframes;
+
+    state.sequence_doc[slot] = lane.doc;
+    state.sequence_doc_idx[slot] = lane.doc_idx;
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = swap_tick;
+    if (subframe_count_out)
+        *subframe_count_out = (int)subframes.size();
+    return true;
+}
+
+/* Hands a (possibly composite) entry off to a finer set of subframes once
+   its bottom crosses a configured waterline Y, then hides each fine piece
+   individually as ITS OWN bottom crosses that same line — so a body sinking
+   into water eats away piece by piece instead of clipping as one block. */
+static bool WorldMarkedChopEntryAtWaterline(WorldMarkedSequenceState &state,
+                                            WorldMarkedLane &lane,
+                                            int parent_frame_idx,
+                                            int *fine_count_out)
+{
+    if (fine_count_out) *fine_count_out = 0;
+
+    int slot = lane.delay_slot;
+    if (!WorldMarkedSequenceSlotEditableForSubframes(slot) || !lane.doc)
+        return false;
+
+    int fine_source = state.subframe_fine_source[slot];
+    int waterline_y = state.subframe_waterline_y[slot];
+    if (fine_source < 0 || waterline_y <= 0)
+        return false;
+
+    std::vector<int> &frames = state.sequence_frames[slot];
+    if (frames.empty())
+        frames = lane.frames;
+    int n = (int)frames.size();
+    if (n <= 0)
+        return false;
+    if (parent_frame_idx < 0)
+        parent_frame_idx = 0;
+    if (parent_frame_idx >= n)
+        parent_frame_idx = n - 1;
+
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+
+    std::vector<int> fine_subframes;
+    if (WorldCollectSubframesForParent(lane.doc, fine_source, fine_subframes) <= 0)
+        return false;
+
+    int parent_local_dy = state.local_dy[slot][parent_frame_idx];
+    int parent_vy = state.motion_dy[slot][parent_frame_idx];
+    int parent_mirror = state.frame_mirror[slot][parent_frame_idx];
+    bool mirror_y = (parent_mirror & kWorldFrameMirrorY) != 0;
+    int parent_z = state.frame_z[slot][parent_frame_idx];
+
+    int motion_start = WorldMarkedEntryMotionStartTick(state, slot, n, parent_frame_idx);
+    int ticks_to_chop = WorldMarkedTicksUntilYBreach(lane, parent_frame_idx,
+                                                      parent_local_dy, mirror_y,
+                                                      parent_vy, waterline_y, 9999);
+    int chop_tick = ClampWorldMarkedVisibleFrom(motion_start + ticks_to_chop);
+
+    if (state.visible_from[slot][parent_frame_idx] >= chop_tick)
+        state.visible_from[slot][parent_frame_idx] = 0;
+    state.visible_until[slot][parent_frame_idx] =
+        ClampWorldMarkedVisibleUntil(chop_tick);
+
+    int sub_dx = 0;
+    int sub_dy = 0;
+    WorldMarkedEffectiveLocalDelta(state, slot, n, parent_frame_idx,
+                                   false, chop_tick, &sub_dx, &sub_dy);
+
+    int parent_vx = state.motion_dx[slot][parent_frame_idx];
+    int sub_vx = parent_vx;
+    int sub_vy = parent_vy;
+    int sub_cap_x = state.motion_cap_x[slot][parent_frame_idx];
+    int sub_cap_y = state.motion_cap_y[slot][parent_frame_idx];
+    int elapsed = WorldMarkedEntryMotionElapsed(state, slot, n,
+                                                parent_frame_idx, chop_tick);
+    if (sub_cap_x > 0) {
+        int moved_x = WorldMarkedAbsMotion(
+            WorldMarkedClampedMotion(parent_vx, elapsed, sub_cap_x));
+        sub_cap_x -= moved_x;
+        if (sub_cap_x <= 0) {
+            sub_cap_x = 0;
+            sub_vx = 0;
+        }
+    }
+    if (sub_cap_y > 0) {
+        int moved_y = WorldMarkedAbsMotion(
+            WorldMarkedClampedMotion(parent_vy, elapsed, sub_cap_y));
+        sub_cap_y -= moved_y;
+        if (sub_cap_y <= 0) {
+            sub_cap_y = 0;
+            sub_vy = 0;
+        }
+    }
+
+    /* Drop any fine-piece run a previous chop at this entry already left
+       behind before inserting the new one. */
+    int erase_first = parent_frame_idx + 1;
+    int erase_last = erase_first;
+    while (erase_last < (int)frames.size() &&
+           WorldMarkedSubframeRunContains(fine_subframes, frames[(size_t)erase_last])) {
+        erase_last++;
+    }
+
+    std::vector<WorldSeqArrayRef> refs = WorldMarkedSeqArrays(state, slot);
+    std::vector<std::vector<int>> &entry_pieces = state.entry_pieces[slot];
+    if (erase_last > erase_first) {
+        frames.erase(frames.begin() + erase_first, frames.begin() + erase_last);
+        for (const WorldSeqArrayRef &ref : refs)
+            ref.vec->erase(ref.vec->begin() + erase_first,
+                           ref.vec->begin() + erase_last);
+        entry_pieces.erase(entry_pieces.begin() + erase_first,
+                           entry_pieces.begin() + erase_last);
+    }
+
+    int insert_at = parent_frame_idx + 1;
+    frames.insert(frames.begin() + insert_at,
+                  fine_subframes.begin(), fine_subframes.end());
+    for (const WorldSeqArrayRef &ref : refs)
+        ref.vec->insert(ref.vec->begin() + insert_at,
+                        fine_subframes.size(), ref.fresh);
+    entry_pieces.insert(entry_pieces.begin() + insert_at,
+                        fine_subframes.size(), std::vector<int>());
+
+    n = (int)frames.size();
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+
+    for (size_t i = 0; i < fine_subframes.size(); i++) {
+        int fi = insert_at + (int)i;
+        int piece_ticks = WorldMarkedPieceTicksUntilYBreach(
+            lane.doc, fine_subframes[i], sub_dy, mirror_y, sub_vy, waterline_y, 9999);
         state.frame_delays[slot][fi] = 1;
         state.local_dx[slot][fi] = sub_dx;
         state.local_dy[slot][fi] = sub_dy;
-        state.visible_from[slot][fi] = swap_tick;
-        state.visible_until[slot][fi] = 0;
+        state.visible_from[slot][fi] = ClampWorldMarkedVisibleFrom(chop_tick);
+        state.visible_until[slot][fi] =
+            ClampWorldMarkedVisibleUntil(chop_tick + piece_ticks);
         state.motion_dx[slot][fi] = sub_vx;
         state.motion_dy[slot][fi] = sub_vy;
         state.motion_cap_x[slot][fi] = sub_cap_x;
@@ -5868,9 +6185,9 @@ static bool WorldMarkedSwapEntryWithSubframesAtTick(
     state.sequence_doc_idx[slot] = lane.doc_idx;
     state.paused = true;
     state.timer = 0.0f;
-    state.frame = swap_tick;
-    if (subframe_count_out)
-        *subframe_count_out = (int)subframes.size();
+    state.frame = chop_tick;
+    if (fine_count_out)
+        *fine_count_out = (int)fine_subframes.size();
     return true;
 }
 
@@ -5898,11 +6215,12 @@ static bool WorldDrawSubframeSwapTool(WorldMarkedSequenceState &state,
     WorldMarkedClampAutoChainSettings(state, slot);
     int &swap_tick = state.subframe_swap_tick[slot];
     const char *kind = embedded ? "embed" : "lane";
+    bool changed = false;
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Subframes");
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Swap the selected parent sprite to its child subframes at a global preview tick.");
+        ImGui::SetTooltip("Replace the selected sprite with one composite of its child subframes, drawn together as a single whole frame from a tick onward (not stepped through as a sequence).");
     ImGui::SameLine();
     ImGui::TextDisabled("%d", (int)subframes.size());
     ImGui::SameLine();
@@ -5923,20 +6241,64 @@ static bool WorldDrawSubframeSwapTool(WorldMarkedSequenceState &state,
     ImGui::SameLine();
     char swap_id[80];
     snprintf(swap_id, sizeof(swap_id), "Swap with Subframes##world_%s_subframe_swap", kind);
-    if (!ImGui::SmallButton(swap_id))
-        return false;
+    if (ImGui::SmallButton(swap_id)) {
+        int subframe_count = 0;
+        if (WorldMarkedSwapEntryWithSubframesAtTick(state, lane, edit_fi,
+                                                     swap_tick,
+                                                     &subframe_count)) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "World View: composited parent into %d subframe%s at tick %d.",
+                     subframe_count, subframe_count == 1 ? "" : "s", swap_tick);
+            g_restore_msg_timer = 4.0f;
+            changed = true;
+        }
+    }
 
-    int subframe_count = 0;
-    if (!WorldMarkedSwapEntryWithSubframesAtTick(state, lane, edit_fi,
-                                                 swap_tick,
-                                                 &subframe_count))
-        return false;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Waterline Y");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Absolute world Y. The composite hands off to the fine subframes once its bottom crosses this line, and each fine piece hides individually as its own bottom crosses it.");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(56.0f);
+    char waterline_id[64];
+    snprintf(waterline_id, sizeof(waterline_id), "##world_%s_waterline_y", kind);
+    int &waterline_y = state.subframe_waterline_y[slot];
+    if (ImGui::InputInt(waterline_id, &waterline_y, 0, 0)) {
+        if (waterline_y < 0) waterline_y = 0;
+        if (waterline_y > 9999) waterline_y = 9999;
+    }
+    ImGui::SameLine();
+    int fine_source = state.subframe_fine_source[slot];
+    IMG *fine_img = fine_source >= 0 ? doc_get_img(lane.doc, fine_source) : NULL;
+    std::string fine_label = fine_img ? img_name_string(fine_img) : std::string("none");
+    ImGui::TextDisabled("Fine: %s", fine_label.c_str());
+    ImGui::SameLine();
+    char pick_id[64];
+    snprintf(pick_id, sizeof(pick_id), "Pick##world_%s_fine_pick", kind);
+    if (ImGui::SmallButton(pick_id))
+        state.subframe_fine_source[slot] = g_doc ? g_doc->ilselected : -1;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Capture the sprite currently selected in the editor as the fine-subframe source (its children are found the same way the Subframes above are).");
+    ImGui::SameLine();
+    char chop_id[64];
+    snprintf(chop_id, sizeof(chop_id), "Chop at Waterline##world_%s_chop", kind);
+    bool chop_ready = fine_source >= 0 && waterline_y > 0;
+    ImGui::BeginDisabled(!chop_ready);
+    if (ImGui::SmallButton(chop_id)) {
+        int fine_count = 0;
+        if (WorldMarkedChopEntryAtWaterline(state, lane, edit_fi, &fine_count)) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "World View: chopped into %d fine subframe%s at waterline Y=%d.",
+                     fine_count, fine_count == 1 ? "" : "s", waterline_y);
+            g_restore_msg_timer = 4.0f;
+            changed = true;
+        }
+    }
+    ImGui::EndDisabled();
+    if (!chop_ready && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Set a Fine source and a Waterline Y above 0 first.");
 
-    snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "World View: swapped parent to %d subframe%s at tick %d.",
-             subframe_count, subframe_count == 1 ? "" : "s", swap_tick);
-    g_restore_msg_timer = 4.0f;
-    return true;
+    return changed;
 }
 
 void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
@@ -5944,20 +6306,27 @@ void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
         ref.vec->clear();
+    state.entry_pieces[slot].clear();
     state.pingpong_delay[slot] = 0;
     state.stop_tick[slot] = 0;
 }
 
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
-                                     std::vector<std::string> &frame_labels)
+                                     std::vector<std::string> &frame_labels,
+                                     const std::vector<std::vector<int>> *piece_overrides)
 {
     frame_pieces.clear();
     frame_labels.clear();
     frame_pieces.reserve(frames.size());
     frame_labels.reserve(frames.size());
-    for (int idx : frames) {
-        frame_pieces.push_back(std::vector<int>(1, idx));
+    for (size_t i = 0; i < frames.size(); i++) {
+        int idx = frames[i];
+        if (piece_overrides && i < piece_overrides->size() &&
+            !(*piece_overrides)[i].empty())
+            frame_pieces.push_back((*piece_overrides)[i]);
+        else
+            frame_pieces.push_back(std::vector<int>(1, idx));
         frame_labels.push_back(img_name_string(doc_get_img(doc, idx)));
     }
 }
@@ -5969,7 +6338,8 @@ void WorldRefreshMarkedLaneAfterSequenceEdit(WorldMarkedSequenceState &state,
     if (!lane.dummy_decap) {
         lane.frames = state.sequence_frames[lane.delay_slot];
         WorldMarkedBuildSingleFrameLane(lane.doc, lane.frames,
-                                        lane.frame_pieces, lane.frame_labels);
+                                        lane.frame_pieces, lane.frame_labels,
+                                        &state.entry_pieces[lane.delay_slot]);
     }
 
     EnsureWorldMarkedFrameDelays(state, lane.delay_slot, (int)lane.frames.size());
@@ -6038,9 +6408,11 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
         old_vals.reserve(refs.size());
         for (const WorldSeqArrayRef &ref : refs)
             old_vals.push_back(*ref.vec);
+        std::vector<std::vector<int>> old_pieces = state.entry_pieces[slot];
 
         std::vector<int> new_seq;
         std::vector<std::vector<int>> new_vals(refs.size());
+        std::vector<std::vector<int>> new_pieces;
         new_seq.reserve(old_seq.size() + defaults.size());
         for (size_t i = 0; i < old_seq.size(); i++) {
             int idx = old_seq[i];
@@ -6050,6 +6422,8 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
             new_seq.push_back(idx);
             for (size_t a = 0; a < refs.size(); a++)
                 new_vals[a].push_back(old_vals[a][i]);
+            new_pieces.push_back(i < old_pieces.size() ? old_pieces[i]
+                                                       : std::vector<int>());
         }
         for (int idx : defaults) {
             /* Only frames newly added to the marked set get appended; frames
@@ -6062,17 +6436,20 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
             new_seq.push_back(idx);
             for (size_t a = 0; a < refs.size(); a++)
                 new_vals[a].push_back(refs[a].fresh);
+            new_pieces.push_back(std::vector<int>());
         }
 
         state.default_frames[slot] = defaults;
         state.sequence_frames[slot] = new_seq;
         for (size_t a = 0; a < refs.size(); a++)
             *refs[a].vec = new_vals[a];
+        state.entry_pieces[slot] = new_pieces;
         EnsureWorldMarkedFrameDelays(state, slot, (int)new_seq.size());
     }
 
     frames = state.sequence_frames[slot];
-    WorldMarkedBuildSingleFrameLane(doc, frames, frame_pieces, frame_labels);
+    WorldMarkedBuildSingleFrameLane(doc, frames, frame_pieces, frame_labels,
+                                    &state.entry_pieces[slot]);
     EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
 }
 
@@ -6122,6 +6499,10 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
         dst.assign(src.begin() + frame_idx, src.end());
         src.erase(src.begin() + frame_idx, src.end());
     }
+    std::vector<std::vector<int>> &src_pieces = state.entry_pieces[src_slot];
+    std::vector<std::vector<int>> &dst_pieces = state.entry_pieces[dst_slot];
+    dst_pieces.assign(src_pieces.begin() + frame_idx, src_pieces.end());
+    src_pieces.erase(src_pieces.begin() + frame_idx, src_pieces.end());
 
     state.sequence_doc[dst_slot] = lane.doc;
     state.sequence_doc_idx[dst_slot] = lane.doc_idx;
@@ -6182,6 +6563,7 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
         WorldMarkedSeqArrays(state, dst_slot);
     for (size_t i = 0; i < src_refs.size(); i++)
         *dst_refs[i].vec = *src_refs[i].vec;
+    state.entry_pieces[dst_slot] = state.entry_pieces[src_slot];
 
     state.lane_visible[dst_slot] = state.lane_visible[src_slot];
     state.hold_end[dst_slot] = state.hold_end[src_slot];
@@ -6203,6 +6585,8 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
     state.chain_vy[dst_slot] = state.chain_vy[src_slot];
     state.chain_pingpong[dst_slot] = state.chain_pingpong[src_slot];
     state.subframe_swap_tick[dst_slot] = state.subframe_swap_tick[src_slot];
+    state.subframe_waterline_y[dst_slot] = state.subframe_waterline_y[src_slot];
+    state.subframe_fine_source[dst_slot] = state.subframe_fine_source[src_slot];
 
     WorldMarkedSplitLane split = {};
     split.slot = dst_slot;
@@ -6213,6 +6597,34 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
     EnsureWorldMarkedFrameDelays(state, dst_slot,
                                  (int)state.sequence_frames[dst_slot].size());
     WorldMarkedClampAutoChainSettings(state, dst_slot);
+    state.paused = true;
+    WorldMarkedRestart(state);
+    return true;
+}
+
+bool WorldMarkedDeleteSplitSlot(WorldMarkedSequenceState &state, int slot)
+{
+    if (!WorldMarkedSlotReservedForSplit(state, slot))
+        return false;
+
+    state.sequence_frames[slot].clear();
+    state.default_frames[slot].clear();
+    state.entry_pieces[slot].clear();
+    state.sequence_doc[slot] = NULL;
+    state.sequence_doc_idx[slot] = -1;
+    state.lane_visible[slot] = true;
+    state.hold_end[slot] = false;
+    bool *mirror = WorldMarkedMirrorFlag(state, slot);
+    if (mirror) *mirror = false;
+    WorldMarkedClearSequenceState(state, slot);
+
+    for (size_t i = 0; i < state.split_lanes.size(); i++) {
+        if (state.split_lanes[i].slot == slot) {
+            state.split_lanes.erase(state.split_lanes.begin() + (long)i);
+            break;
+        }
+    }
+
     state.paused = true;
     WorldMarkedRestart(state);
     return true;
@@ -6264,6 +6676,8 @@ void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot
     frames.insert(frames.begin() + insert_at, frames[frame_idx]);
     for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
         ref.vec->insert(ref.vec->begin() + insert_at, (*ref.vec)[frame_idx]);
+    std::vector<std::vector<int>> &entry_pieces = state.entry_pieces[slot];
+    entry_pieces.insert(entry_pieces.begin() + insert_at, entry_pieces[frame_idx]);
     state.paused = true;
     state.timer = 0.0f;
     state.frame = WorldMarkedTickForFrame(state, slot, (int)frames.size(), insert_at);
@@ -6281,6 +6695,7 @@ void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int
     std::swap(frames[frame_idx], frames[j]);
     for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
         std::swap((*ref.vec)[frame_idx], (*ref.vec)[j]);
+    std::swap(state.entry_pieces[slot][frame_idx], state.entry_pieces[slot][j]);
 
     state.paused = true;
     state.timer = 0.0f;
@@ -6297,6 +6712,8 @@ void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, i
     frames.erase(frames.begin() + frame_idx);
     for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
         ref.vec->erase(ref.vec->begin() + frame_idx);
+    std::vector<std::vector<int>> &entry_pieces = state.entry_pieces[slot];
+    entry_pieces.erase(entry_pieces.begin() + frame_idx);
     if (frame_idx >= (int)frames.size())
         frame_idx = (int)frames.size() - 1;
     state.paused = true;
@@ -7567,6 +7984,13 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 ImGui::SetCursorScreenPos(paste_controls.opacity_control_pos);
                 ImGui::SetNextItemWidth(paste_controls.item_width);
                 ImGui::SliderInt("##opacity", &g_paste_opacity, 0, 100, "%d%%");
+                ImGui::SetCursorScreenPos(paste_controls.smooth_control_pos);
+                ImGui::Checkbox("Smooth Scaling", &g_paste_smooth_resize);
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("On: blends colors when stretching/rotating this paste,\n"
+                                      "so it doesn't look as blocky when enlarged.\n"
+                                      "Off: keeps crisp pixel-art edges (nearest-neighbor).");
+                }
                 ImGui::PopID();
 
                 /* ----- Free Transform handles + interaction ----- */
@@ -11224,6 +11648,41 @@ void apply_pasted_region(void)
 }
 
 
+/* Builds a 256-entry RGB table for the clipboard's own colors (its captured
+   palette snapshot if it has one, else its source image's current palette,
+   else the global default) so resize sampling can blend in RGB space
+   instead of interpolating raw index values. */
+static void BuildClipboardResizePalette(ResizeRgb out[256], int *out_count)
+{
+    int count;
+    if (g_clipboard.has_palette && g_clipboard.palette_numc > 0) {
+        count = g_clipboard.palette_numc;
+        if (count > 256) count = 256;
+        for (int i = 0; i < count; i++)
+            pal_word_to_rgb8(g_clipboard.palette_data + i * 2,
+                             &out[i].r, &out[i].g, &out[i].b);
+    } else {
+        PAL *src_pal = get_pal(g_clipboard.palnum);
+        if (src_pal && src_pal->data_p && src_pal->numc > 1) {
+            count = src_pal->numc;
+            if (count > 256) count = 256;
+            const unsigned char *pd = (const unsigned char *)src_pal->data_p;
+            for (int i = 0; i < count; i++)
+                pal_word_to_rgb8(pd + i * 2, &out[i].r, &out[i].g, &out[i].b);
+        } else {
+            count = 256;
+            for (int i = 0; i < 256; i++) {
+                out[i].r = g_palette[i].r;
+                out[i].g = g_palette[i].g;
+                out[i].b = g_palette[i].b;
+            }
+        }
+    }
+    for (int i = count; i < 256; i++) out[i].r = out[i].g = out[i].b = 0;
+    if (out_count) *out_count = count;
+}
+
+
 static void scale_clipboard_to(int nw, int nh)
 {
     if (!g_clipboard.valid || !g_clipboard.data_p) return;
@@ -11233,26 +11692,42 @@ static void scale_clipboard_to(int nw, int nh)
     if (nw == sw && nh == sh) return;
 
     unsigned short src_stride = g_clipboard.stride;
-    unsigned short dst_stride = (unsigned short)((nw + 3) & ~3);
     unsigned char *src = (unsigned char *)g_clipboard.data_p;
-    unsigned char *dst = (unsigned char *)malloc((size_t)dst_stride * nh);
-    if (!dst) return;
-    memset(dst, 0, (size_t)dst_stride * nh);
 
-    /* Inverse mapping: for each destination pixel, sample the source pixel
-       nearest to the center of that destination cell. Avoids the gaps you
-       get from forward mapping when the ratio isn't integral. Works for
-       both upscale and downscale. */
-    for (int dy = 0; dy < nh; dy++) {
-        int sy_idx = (int)(((long long)dy * sh + sh / 2) / nh);
-        if (sy_idx >= sh) sy_idx = sh - 1;
-        unsigned char *srow = src + sy_idx * src_stride;
-        unsigned char *drow = dst + dy * dst_stride;
-        for (int dx = 0; dx < nw; dx++) {
-            int sx_idx = (int)(((long long)dx * sw + sw / 2) / nw);
-            if (sx_idx >= sw) sx_idx = sw - 1;
-            drow[dx] = srow[sx_idx];
+    /* When "Smooth Scaling" is on, blend in RGB space (using the clipboard's
+       own captured palette) and remap back to the nearest matching index,
+       rather than picking a raw nearest-neighbor index. This avoids the
+       blocky/degraded look from stretching a small paste, since adjacent
+       indices aren't necessarily similar colors. When it's off, fall through
+       to nearest-neighbor to keep crisp pixel-art edges. */
+    unsigned char *dst = NULL;
+    unsigned int dst_stride_u = 0;
+    if (g_paste_smooth_resize) {
+        ResizeRgb pal_rgb[256];
+        int pal_count = 0;
+        BuildClipboardResizePalette(pal_rgb, &pal_count);
+        dst = ResizeIndexedPixelsQuality(src, src_stride, sw, sh,
+                                         pal_rgb, pal_count,
+                                         nw, nh, false, &dst_stride_u);
+    }
+    unsigned short dst_stride = (unsigned short)((nw + 3) & ~3);
+    if (!dst) {
+        dst = (unsigned char *)malloc((size_t)dst_stride * nh);
+        if (!dst) return;
+        memset(dst, 0, (size_t)dst_stride * nh);
+        for (int dy = 0; dy < nh; dy++) {
+            int sy_idx = (int)(((long long)dy * sh + sh / 2) / nh);
+            if (sy_idx >= sh) sy_idx = sh - 1;
+            unsigned char *srow = src + sy_idx * src_stride;
+            unsigned char *drow = dst + dy * dst_stride;
+            for (int dx = 0; dx < nw; dx++) {
+                int sx_idx = (int)(((long long)dx * sw + sw / 2) / nw);
+                if (sx_idx >= sw) sx_idx = sw - 1;
+                drow[dx] = srow[sx_idx];
+            }
         }
+    } else {
+        dst_stride = (unsigned short)dst_stride_u;
     }
 
     free(g_clipboard.data_p);
@@ -11298,6 +11773,15 @@ static void transform_clipboard_to(int scaled_w, int scaled_h, float angle_deg,
     if (!dst) return;
     memset(dst, 0, (size_t)dst_stride * dh);
 
+    /* When "Smooth Scaling" is on, blend in RGB space and remap to the
+       nearest palette index, same as scale_clipboard_to, so rotated/stretched
+       pastes don't degrade as fast as raw index-space nearest-neighbor
+       sampling. When it's off, keep crisp pixel-art edges. */
+    ResizeRgb pal_rgb[256];
+    int pal_count = 0;
+    BuildClipboardResizePalette(pal_rgb, &pal_count);
+    bool use_quality = g_paste_smooth_resize && pal_count > 1;
+
     float dst_cx = (float)dw * 0.5f;
     float dst_cy = (float)dh * 0.5f;
     float scaled_cx = (float)scaled_w * 0.5f;
@@ -11313,8 +11797,18 @@ static void transform_clipboard_to(int scaled_w, int scaled_h, float angle_deg,
             if (ux < 0.0f || uy < 0.0f || ux >= (float)scaled_w || uy >= (float)scaled_h)
                 continue;
 
-            int sx_idx = (int)(ux * (float)sw / (float)scaled_w);
-            int sy_idx = (int)(uy * (float)sh / (float)scaled_h);
+            float src_ux = ux * (float)sw / (float)scaled_w;
+            float src_uy = uy * (float)sh / (float)scaled_h;
+
+            if (use_quality) {
+                drow[x] = SampleIndexedBilinear(src, src_stride, sw, sh,
+                                                pal_rgb, pal_count,
+                                                src_ux, src_uy, false);
+                continue;
+            }
+
+            int sx_idx = (int)src_ux;
+            int sy_idx = (int)src_uy;
             if (sx_idx < 0) sx_idx = 0;
             if (sy_idx < 0) sy_idx = 0;
             if (sx_idx >= sw) sx_idx = sw - 1;

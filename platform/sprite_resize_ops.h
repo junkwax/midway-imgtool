@@ -29,3 +29,23 @@ unsigned char *ResizeSpritePixelsQuality(const IMG *img, PAL *pal,
                                          const ResizeRgb fallback_rgb[256],
                                          int nw, int nh, bool optimize_bytes,
                                          unsigned int *out_stride);
+
+/* Same RGB-area/bilinear resize, but for callers that hold a raw indexed
+   buffer rather than an IMG (e.g. the clipboard) and have already built the
+   256-entry RGB table themselves. Returns NULL if pal_count <= 1; caller
+   should fall back to nearest-neighbor in that case. */
+unsigned char *ResizeIndexedPixelsQuality(const unsigned char *src, int src_stride,
+                                          int sw, int sh,
+                                          const ResizeRgb pal_rgb[256], int pal_count,
+                                          int nw, int nh, bool optimize_bytes,
+                                          unsigned int *out_stride);
+
+/* Single-point bilinear RGB sample at a possibly-fractional source
+   coordinate, remapped to the nearest palette index. Used for rotated
+   transforms where each destination pixel maps to an arbitrary
+   (non-grid-aligned) source point. Returns 0 (transparent) if the blended
+   alpha falls below threshold, or if (ux,uy) falls outside the source. */
+unsigned char SampleIndexedBilinear(const unsigned char *src, int src_stride,
+                                    int sw, int sh,
+                                    const ResizeRgb pal_rgb[256], int pal_count,
+                                    double ux, double uy, bool optimize_bytes);

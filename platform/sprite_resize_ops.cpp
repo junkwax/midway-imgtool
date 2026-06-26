@@ -95,16 +95,30 @@ unsigned char *ResizeSpritePixelsQuality(const IMG *img, PAL *pal,
 
     int sw = img->w, sh = img->h;
     int src_stride = (sw + 3) & ~3;
+    ResizeRgb pal_rgb[256];
+    BuildResizePalette(pal, fallback_rgb, pal_rgb);
+
+    unsigned char *dst = ResizeIndexedPixelsQuality((const unsigned char *)img->data_p,
+                                                    src_stride, sw, sh,
+                                                    pal_rgb, pal->numc,
+                                                    nw, nh, optimize_bytes, out_stride);
+    return dst ? dst : ResizeSpritePixelsNearest(img, nw, nh, out_stride);
+}
+
+unsigned char *ResizeIndexedPixelsQuality(const unsigned char *src, int src_stride,
+                                          int sw, int sh,
+                                          const ResizeRgb pal_rgb[256], int pal_count,
+                                          int nw, int nh, bool optimize_bytes,
+                                          unsigned int *out_stride)
+{
+    if (pal_count <= 1) return NULL;
+    if (pal_count > 256) pal_count = 256;
+
     unsigned int dst_stride = ((unsigned int)nw + 3) & ~3u;
     unsigned char *dst = (unsigned char *)PoolAlloc((size_t)dst_stride * nh);
     if (!dst) return NULL;
 
-    ResizeRgb pal_rgb[256];
-    BuildResizePalette(pal, fallback_rgb, pal_rgb);
-    int pal_count = pal->numc;
-    if (pal_count > 256) pal_count = 256;
     int alpha_threshold = optimize_bytes ? 176 : 96;
-    const unsigned char *src = (const unsigned char *)img->data_p;
 
     bool pure_upscale = (nw >= sw && nh >= sh);
     for (int dy = 0; dy < nh; dy++) {
@@ -177,4 +191,41 @@ unsigned char *ResizeSpritePixelsQuality(const IMG *img, PAL *pal,
 
     *out_stride = dst_stride;
     return dst;
+}
+
+unsigned char SampleIndexedBilinear(const unsigned char *src, int src_stride,
+                                    int sw, int sh,
+                                    const ResizeRgb pal_rgb[256], int pal_count,
+                                    double ux, double uy, bool optimize_bytes)
+{
+    if (pal_count <= 1) return 0;
+    if (pal_count > 256) pal_count = 256;
+    if (ux < 0.0 || uy < 0.0 || ux >= (double)sw || uy >= (double)sh) return 0;
+
+    int alpha_threshold = optimize_bytes ? 176 : 96;
+    double sx = ux - 0.5;
+    double sy = uy - 0.5;
+    int x0 = (int)floor(sx);
+    int y0 = (int)floor(sy);
+    double tx = sx - (double)x0;
+    double ty = sy - (double)y0;
+
+    double r = 0.0, g = 0.0, b = 0.0, a = 0.0;
+    for (int yy = 0; yy <= 1; yy++) {
+        int syi = y0 + yy;
+        if (syi < 0) syi = 0;
+        if (syi >= sh) syi = sh - 1;
+        double wy = yy ? ty : (1.0 - ty);
+        for (int xx = 0; xx <= 1; xx++) {
+            int sxi = x0 + xx;
+            if (sxi < 0) sxi = 0;
+            if (sxi >= sw) sxi = sw - 1;
+            double wx = xx ? tx : (1.0 - tx);
+            accum_source_pixel(src, src_stride, sxi, syi, pal_rgb, wx * wy,
+                               &r, &g, &b, &a);
+        }
+    }
+
+    if (a <= 0.0 || a * 255.0 < (double)alpha_threshold) return 0;
+    return nearest_palette_color(pal_rgb, pal_count, r / a, g / a, b / a);
 }

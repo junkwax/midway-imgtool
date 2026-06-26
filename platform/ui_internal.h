@@ -416,6 +416,7 @@ extern PastedImage g_pasted;
 extern FreeTransform g_xform;
 extern PasteBlendMode g_paste_blend_mode;
 extern int g_paste_opacity;
+extern bool g_paste_smooth_resize;
 extern int g_hitbox_x, g_hitbox_y, g_hitbox_w, g_hitbox_h;
 extern int g_hitbox_drag_corner;
 

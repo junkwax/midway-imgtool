@@ -681,11 +681,17 @@ int main(int argc, char *argv[])
     SDL_Window *window = SDL_CreateWindow(title,
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         1024, 768, SDL_WINDOW_RESIZABLE);
-    if (!window) { SDL_Quit(); return 1; }
+    if (!window) {
+        MessageBoxA(NULL, SDL_GetError(), "SDL_CreateWindow Error", MB_OK | MB_ICONERROR);
+        SDL_Quit(); return 1;
+    }
 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1,
         SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
-    if (!renderer) { SDL_DestroyWindow(window); SDL_Quit(); return 1; }
+    if (!renderer) {
+        MessageBoxA(NULL, SDL_GetError(), "SDL_CreateRenderer Error", MB_OK | MB_ICONERROR);
+        SDL_DestroyWindow(window); SDL_Quit(); return 1;
+    }
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
