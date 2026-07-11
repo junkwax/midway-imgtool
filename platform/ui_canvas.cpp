@@ -1946,7 +1946,7 @@ bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
     WorldMarkedSyncSequenceOverride(state, source_slot, doc, doc_idx,
                                     lane.frames, lane.frame_pieces,
                                     lane.frame_labels);
-    lane.frame_docs = state.frame_doc[source_slot];
+    lane.frame_docs = WorldMarkedResolveFrameDocs(doc, state.frame_doc[source_slot]);
     used_source_slots[source_slot] = true;
     lanes.push_back(lane);
     return true;
@@ -1991,7 +1991,7 @@ static bool WorldAppendMarkedSplitLanes(WorldMarkedSequenceState &state,
                                         lane.frame_pieces, lane.frame_labels,
                                         &state.entry_pieces[split.slot],
                                         &state.frame_doc[split.slot]);
-        lane.frame_docs = state.frame_doc[split.slot];
+        lane.frame_docs = WorldMarkedResolveFrameDocs(doc, state.frame_doc[split.slot]);
         used_source_slots[split.slot] = true;
         lanes.push_back(lane);
         appended = true;
@@ -2546,7 +2546,7 @@ static bool WorldAppendEmbeddedSeqScrLane(WorldMarkedSequenceState &state,
                                     lane.frame_pieces, lane.frame_labels,
                                     &state.entry_pieces[kWorldEmbeddedSeqScrSlot],
                                     &state.frame_doc[kWorldEmbeddedSeqScrSlot]);
-    lane.frame_docs = state.frame_doc[kWorldEmbeddedSeqScrSlot];
+    lane.frame_docs = WorldMarkedResolveFrameDocs(doc, state.frame_doc[kWorldEmbeddedSeqScrSlot]);
     for (int i = 0; i < (int)lane.frame_labels.size() &&
                     i < (int)state.embedded_frame_labels.size(); i++) {
         if (!state.embedded_frame_labels[(size_t)i].empty())
@@ -3639,7 +3639,7 @@ static void WorldEmbeddedSequenceRefreshMetadata(WorldMarkedSequenceState &state
                                     lane.frame_pieces, lane.frame_labels,
                                     &state.entry_pieces[slot],
                                     &state.frame_doc[slot]);
-    lane.frame_docs = state.frame_doc[slot];
+    lane.frame_docs = WorldMarkedResolveFrameDocs(lane.doc, state.frame_doc[slot]);
     for (int fi = 0; fi < n; fi++) {
         int target = lane.frames[(size_t)fi];
         state.embedded_targets[(size_t)fi] = target;
@@ -4970,10 +4970,10 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
         dragging_frame_idx >= 0 &&
         dragging_frame_idx < (int)state.sequence_frames[dragging_slot].size()) {
         int drag_img_idx = state.sequence_frames[dragging_slot][dragging_frame_idx];
-        Document *drag_doc = (dragging_frame_idx < (int)state.frame_doc[dragging_slot].size() &&
-                              state.frame_doc[dragging_slot][dragging_frame_idx])
-                            ? state.frame_doc[dragging_slot][dragging_frame_idx]
-                            : state.sequence_doc[dragging_slot];
+        int drag_doc_idx = (dragging_frame_idx < (int)state.frame_doc[dragging_slot].size())
+                         ? state.frame_doc[dragging_slot][dragging_frame_idx] : -1;
+        Document *drag_doc = WorldMarkedResolveEntryDoc(state.sequence_doc[dragging_slot],
+                                                        drag_doc_idx);
         IMG *drag_img = doc_get_img(drag_doc, drag_img_idx);
         SDL_Texture *drag_tex = BuildWorldSpriteTexture(drag_doc, drag_img, 230);
         if (drag_tex) {
@@ -5849,11 +5849,11 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
        per-fi arrays. */
     state.entry_pieces[slot].resize((size_t)frame_count);
 
-    std::vector<Document*> &fdoc = state.frame_doc[slot];
+    std::vector<int> &fdoc = state.frame_doc[slot];
     size_t old_fdoc_size = fdoc.size();
     fdoc.resize((size_t)frame_count);
     for (size_t i = old_fdoc_size; i < fdoc.size(); i++)
-        fdoc[i] = state.sequence_doc[slot];
+        fdoc[i] = -1; /* defer to this row's own sequence_doc[slot] */
 }
 
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
@@ -6619,11 +6619,32 @@ void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
     state.stop_tick[slot] = 0;
 }
 
+/* frame_doc[slot] stores a doc TAB INDEX per entry, not a Document* — the
+   document list can reshuffle or replace its backing storage on reorder/
+   close, so a pointer cached across frames can dangle. -1 means "this row's
+   own doc". Always re-derive the pointer via document_get() the same frame
+   it's used; never store the result anywhere longer-lived than a lane. */
+Document *WorldMarkedResolveEntryDoc(Document *row_doc, int doc_idx_override)
+{
+    if (doc_idx_override < 0) return row_doc;
+    Document *resolved = document_get(doc_idx_override);
+    return resolved ? resolved : row_doc;
+}
+
+std::vector<Document*> WorldMarkedResolveFrameDocs(Document *row_doc,
+                                                   const std::vector<int> &doc_idx_overrides)
+{
+    std::vector<Document*> out(doc_idx_overrides.size());
+    for (size_t i = 0; i < doc_idx_overrides.size(); i++)
+        out[i] = WorldMarkedResolveEntryDoc(row_doc, doc_idx_overrides[i]);
+    return out;
+}
+
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
                                      std::vector<std::string> &frame_labels,
                                      const std::vector<std::vector<int>> *piece_overrides,
-                                     const std::vector<Document*> *doc_overrides)
+                                     const std::vector<int> *doc_idx_overrides)
 {
     frame_pieces.clear();
     frame_labels.clear();
@@ -6636,8 +6657,9 @@ void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &fram
             frame_pieces.push_back((*piece_overrides)[i]);
         else
             frame_pieces.push_back(std::vector<int>(1, idx));
-        Document *entry_doc = (doc_overrides && i < doc_overrides->size() &&
-                               (*doc_overrides)[i]) ? (*doc_overrides)[i] : doc;
+        int doc_idx_override = (doc_idx_overrides && i < doc_idx_overrides->size())
+                             ? (*doc_idx_overrides)[i] : -1;
+        Document *entry_doc = WorldMarkedResolveEntryDoc(doc, doc_idx_override);
         frame_labels.push_back(img_name_string(doc_get_img(entry_doc, idx)));
     }
 }
@@ -6653,7 +6675,7 @@ void WorldRefreshMarkedLaneAfterSequenceEdit(WorldMarkedSequenceState &state,
                                         lane.frame_pieces, lane.frame_labels,
                                         &state.entry_pieces[lane.delay_slot],
                                         &state.frame_doc[lane.delay_slot]);
-        lane.frame_docs = state.frame_doc[lane.delay_slot];
+        lane.frame_docs = WorldMarkedResolveFrameDocs(lane.doc, state.frame_doc[lane.delay_slot]);
     }
 
     EnsureWorldMarkedFrameDelays(state, lane.delay_slot, (int)lane.frames.size());
@@ -6704,9 +6726,9 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
     bool stale_entry = false;
     if (!doc_changed && initialized) {
         const std::vector<int> &cur_seq = state.sequence_frames[slot];
-        const std::vector<Document*> &cur_fdoc = state.frame_doc[slot];
+        const std::vector<int> &cur_fdoc = state.frame_doc[slot];
         for (size_t i = 0; i < cur_seq.size(); i++) {
-            Document *entry_doc = (i < cur_fdoc.size() && cur_fdoc[i]) ? cur_fdoc[i] : doc;
+            Document *entry_doc = WorldMarkedResolveEntryDoc(doc, i < cur_fdoc.size() ? cur_fdoc[i] : -1);
             if (!doc_get_img(entry_doc, cur_seq[i])) { stale_entry = true; break; }
         }
     }
@@ -6739,16 +6761,17 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
         for (const WorldSeqArrayRef &ref : refs)
             old_vals.push_back(*ref.vec);
         std::vector<std::vector<int>> old_pieces = state.entry_pieces[slot];
-        std::vector<Document*> old_fdoc = state.frame_doc[slot];
+        std::vector<int> old_fdoc = state.frame_doc[slot];
 
         std::vector<int> new_seq;
         std::vector<std::vector<int>> new_vals(refs.size());
         std::vector<std::vector<int>> new_pieces;
-        std::vector<Document*> new_fdoc;
+        std::vector<int> new_fdoc;
         new_seq.reserve(old_seq.size() + defaults.size());
         for (size_t i = 0; i < old_seq.size(); i++) {
             int idx = old_seq[i];
-            Document *entry_doc = (i < old_fdoc.size() && old_fdoc[i]) ? old_fdoc[i] : doc;
+            int entry_doc_idx = i < old_fdoc.size() ? old_fdoc[i] : -1;
+            Document *entry_doc = WorldMarkedResolveEntryDoc(doc, entry_doc_idx);
             if (!doc_get_img(entry_doc, idx)) continue;   /* frame deleted from its doc */
             /* Only drop an entry here if it WAS a directly-marked sprite of
                THIS row's own doc and got unmarked. Entries dragged in from
@@ -6773,7 +6796,7 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
                 new_vals[a].push_back(old_vals[a][i]);
             new_pieces.push_back(i < old_pieces.size() ? old_pieces[i]
                                                        : std::vector<int>());
-            new_fdoc.push_back(entry_doc);
+            new_fdoc.push_back(entry_doc_idx);
         }
         for (int idx : defaults) {
             /* Only frames newly added to the marked set get appended; frames
@@ -6787,7 +6810,7 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
             for (size_t a = 0; a < refs.size(); a++)
                 new_vals[a].push_back(refs[a].fresh);
             new_pieces.push_back(std::vector<int>());
-            new_fdoc.push_back(doc);
+            new_fdoc.push_back(-1);
         }
 
         state.default_frames[slot] = defaults;
@@ -6856,8 +6879,8 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
     dst_pieces.assign(src_pieces.begin() + frame_idx, src_pieces.end());
     src_pieces.erase(src_pieces.begin() + frame_idx, src_pieces.end());
 
-    std::vector<Document*> &src_fdoc = state.frame_doc[src_slot];
-    std::vector<Document*> &dst_fdoc = state.frame_doc[dst_slot];
+    std::vector<int> &src_fdoc = state.frame_doc[src_slot];
+    std::vector<int> &dst_fdoc = state.frame_doc[dst_slot];
     dst_fdoc.assign(src_fdoc.begin() + frame_idx, src_fdoc.end());
     src_fdoc.erase(src_fdoc.begin() + frame_idx, src_fdoc.end());
 
@@ -7116,7 +7139,7 @@ void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot
         ref.vec->insert(ref.vec->begin() + insert_at, (*ref.vec)[frame_idx]);
     std::vector<std::vector<int>> &entry_pieces = state.entry_pieces[slot];
     entry_pieces.insert(entry_pieces.begin() + insert_at, entry_pieces[frame_idx]);
-    std::vector<Document*> &fdoc = state.frame_doc[slot];
+    std::vector<int> &fdoc = state.frame_doc[slot];
     fdoc.insert(fdoc.begin() + insert_at, fdoc[frame_idx]);
     state.paused = true;
     state.timer = 0.0f;
@@ -7155,7 +7178,7 @@ void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, i
         ref.vec->erase(ref.vec->begin() + frame_idx);
     std::vector<std::vector<int>> &entry_pieces = state.entry_pieces[slot];
     entry_pieces.erase(entry_pieces.begin() + frame_idx);
-    std::vector<Document*> &fdoc = state.frame_doc[slot];
+    std::vector<int> &fdoc = state.frame_doc[slot];
     fdoc.erase(fdoc.begin() + frame_idx);
     if (frame_idx >= (int)frames.size())
         frame_idx = (int)frames.size() - 1;
@@ -7185,10 +7208,10 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
        WorldMarkedSyncSequenceOverride. */
 
     bool dst_has_frames = !state.sequence_frames[dst_slot].empty();
-    Document *src_entry_doc = (src_frame_idx < (int)state.frame_doc[src_slot].size() &&
-                               state.frame_doc[src_slot][src_frame_idx])
-                            ? state.frame_doc[src_slot][src_frame_idx]
-                            : state.sequence_doc[src_slot];
+    int src_entry_doc_idx = (src_frame_idx < (int)state.frame_doc[src_slot].size())
+                          ? state.frame_doc[src_slot][src_frame_idx] : -1;
+    Document *src_entry_doc = WorldMarkedResolveEntryDoc(state.sequence_doc[src_slot],
+                                                         src_entry_doc_idx);
 
     /* A composite ("Use Subframe") entry's extra pieces still resolve
        against this row's own bound doc — per-piece cross-doc tracking isn't
@@ -7227,6 +7250,15 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
         state.sequence_doc_idx[dst_slot] = state.sequence_doc_idx[src_slot];
     }
 
+    /* Within the same row, the original value (whether -1 "this row's own
+       doc" or an absolute index) still means the same thing after the move.
+       Across rows, "-1" would silently flip to mean the DESTINATION row's
+       own doc instead, so resolve a deferred entry to its source row's
+       current absolute doc index before handing it to a different row. */
+    int insert_doc_idx = same_slot ? src_entry_doc_idx
+                        : (src_entry_doc_idx >= 0 ? src_entry_doc_idx
+                                                  : state.sequence_doc_idx[src_slot]);
+
     EnsureWorldMarkedFrameDelays(state, dst_slot, (int)dst_frames.size());
     dst_frames.insert(dst_frames.begin() + insert_at, frame_val);
     std::vector<WorldSeqArrayRef> dst_refs = WorldMarkedSeqArrays(state, dst_slot);
@@ -7235,7 +7267,7 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
     state.entry_pieces[dst_slot].insert(state.entry_pieces[dst_slot].begin() + insert_at,
                                         saved_pieces);
     state.frame_doc[dst_slot].insert(state.frame_doc[dst_slot].begin() + insert_at,
-                                     src_entry_doc);
+                                     insert_doc_idx);
 
     state.paused = true;
     state.timer = 0.0f;
