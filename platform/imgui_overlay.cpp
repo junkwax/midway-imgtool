@@ -64,19 +64,138 @@ extern struct SDL_Color g_palette[256];
 #include <windows.h>
 #include <direct.h>
 #include <dbghelp.h>
+#include <ctime>
 #pragma comment(lib, "dbghelp.lib")
 
+/* Best-effort symbolized stack walk written alongside the .dmp so a crash can
+   often be diagnosed from the .txt log alone, without loading the dump in a
+   debugger. Symbol names/lines only resolve if a matching .pdb sits next to
+   the exe (see CMakeLists.txt Release PDB settings); otherwise this still
+   prints module+offset, which is enough to look up manually. */
+static void WriteCrashStackTrace(FILE *log, CONTEXT *ctx) {
+    HANDLE process = GetCurrentProcess();
+    HANDLE thread = GetCurrentThread();
+
+    SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+    if (!SymInitialize(process, NULL, TRUE)) {
+        fprintf(log, "(SymInitialize failed, error %lu; showing raw addresses only)\n",
+                (unsigned long)GetLastError());
+    }
+
+    STACKFRAME64 frame = {};
+    DWORD machine;
+    CONTEXT ctxCopy = *ctx; /* StackWalk64 mutates the context as it unwinds */
+#if defined(_M_X64)
+    machine = IMAGE_FILE_MACHINE_AMD64;
+    frame.AddrPC.Offset    = ctxCopy.Rip;
+    frame.AddrFrame.Offset = ctxCopy.Rbp;
+    frame.AddrStack.Offset = ctxCopy.Rsp;
+#elif defined(_M_IX86)
+    machine = IMAGE_FILE_MACHINE_I386;
+    frame.AddrPC.Offset    = ctxCopy.Eip;
+    frame.AddrFrame.Offset = ctxCopy.Ebp;
+    frame.AddrStack.Offset = ctxCopy.Esp;
+#else
+    machine = IMAGE_FILE_MACHINE_AMD64;
+#endif
+    frame.AddrPC.Mode    = AddrModeFlat;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Mode = AddrModeFlat;
+
+    unsigned char symbolBuffer[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO *symbol = (SYMBOL_INFO *)symbolBuffer;
+
+    for (int i = 0; i < 64; i++) {
+        if (!StackWalk64(machine, process, thread, &frame, &ctxCopy, NULL,
+                          SymFunctionTableAccess64, SymGetModuleBase64, NULL))
+            break;
+        if (frame.AddrPC.Offset == 0)
+            break;
+
+        char moduleName[MAX_PATH] = "?";
+        DWORD64 modBase = SymGetModuleBase64(process, frame.AddrPC.Offset);
+        if (modBase) {
+            char path[MAX_PATH];
+            if (GetModuleFileNameA((HMODULE)(uintptr_t)modBase, path, MAX_PATH)) {
+                const char *base = strrchr(path, '\\');
+                strncpy(moduleName, base ? base + 1 : path, sizeof(moduleName) - 1);
+            }
+        }
+
+        memset(symbolBuffer, 0, sizeof(symbolBuffer));
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = 255;
+        DWORD64 displacement = 0;
+        if (SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol)) {
+            IMAGEHLP_LINE64 line = {};
+            line.SizeOfStruct = sizeof(line);
+            DWORD lineDisplacement = 0;
+            if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &lineDisplacement, &line)) {
+                fprintf(log, "  #%d %s!%s+0x%llx  (%s:%lu)\n", i, moduleName, symbol->Name,
+                        (unsigned long long)displacement, line.FileName, (unsigned long)line.LineNumber);
+            } else {
+                fprintf(log, "  #%d %s!%s+0x%llx\n", i, moduleName, symbol->Name,
+                        (unsigned long long)displacement);
+            }
+        } else {
+            fprintf(log, "  #%d %s+0x%llx (no symbol)\n", i, moduleName,
+                    (unsigned long long)(frame.AddrPC.Offset - modBase));
+        }
+    }
+
+    SymCleanup(process);
+}
+
 static LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) {
-    HANDLE hFile = CreateFileA("crashdump.dmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_s(&tmv, &now);
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
+
+    char dumpPath[MAX_PATH * 2];
+    char logPath[MAX_PATH * 2];
+    if (exe_dir[0]) {
+        _snprintf(dumpPath, sizeof(dumpPath), "%s\\crashdump_%s.dmp", exe_dir, stamp);
+        _snprintf(logPath,  sizeof(logPath),  "%s\\crashlog_%s.txt", exe_dir, stamp);
+    } else {
+        _snprintf(dumpPath, sizeof(dumpPath), "crashdump_%s.dmp", stamp);
+        _snprintf(logPath,  sizeof(logPath),  "crashlog_%s.txt", stamp);
+    }
+
+    HANDLE hFile = CreateFileA(dumpPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile != INVALID_HANDLE_VALUE) {
         MINIDUMP_EXCEPTION_INFORMATION dumpInfo;
         dumpInfo.ThreadId = GetCurrentThreadId();
         dumpInfo.ExceptionPointers = pExceptionPointers;
         dumpInfo.ClientPointers = FALSE;
-        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &dumpInfo, NULL, NULL);
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
+                           (MINIDUMP_TYPE)(MiniDumpWithDataSegs | MiniDumpWithIndirectlyReferencedMemory),
+                           &dumpInfo, NULL, NULL);
         CloseHandle(hFile);
     }
-    MessageBoxA(NULL, "The application has crashed.\nA crashdump.dmp file has been generated.", "Fatal Error", MB_ICONERROR | MB_OK);
+
+    FILE *log = fopen(logPath, "w");
+    if (log) {
+        EXCEPTION_RECORD *er = pExceptionPointers->ExceptionRecord;
+        fprintf(log, "IMGTOOL crash log\n");
+        fprintf(log, "Exception code: 0x%08lX\n", (unsigned long)er->ExceptionCode);
+        fprintf(log, "Exception address: %p\n", er->ExceptionAddress);
+        if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
+            fprintf(log, "Access violation %s address %p\n",
+                    er->ExceptionInformation[0] == 1 ? "writing to" : "reading from",
+                    (void*)er->ExceptionInformation[1]);
+        }
+        fprintf(log, "\nStack trace:\n");
+        WriteCrashStackTrace(log, pExceptionPointers->ContextRecord);
+        fclose(log);
+    }
+
+    char msg[(MAX_PATH * 2) * 2 + 128];
+    _snprintf(msg, sizeof(msg),
+        "The application has crashed.\n\nDump: %s\nLog:  %s\n\nPlease share the .txt log.",
+        dumpPath, logPath);
+    MessageBoxA(NULL, msg, "Fatal Error", MB_ICONERROR | MB_OK);
     return EXCEPTION_EXECUTE_HANDLER;
 }
 #else

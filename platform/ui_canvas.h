@@ -416,6 +416,10 @@ struct WorldMarkedSequenceState {
     std::vector<int> dual_dy[kWorldMarkedMaxTabs];      /* second instance local anipoint Y delta */
     std::vector<int> dual_z[kWorldMarkedMaxTabs];       /* second instance draw priority */
     std::vector<std::vector<int>> entry_pieces[kWorldMarkedMaxTabs]; /* empty = single image (sequence_frames[fi]); non-empty = composite of these IMG indices, drawn together as one frame */
+    /* Owning doc per entry. Rows default every entry to sequence_doc[slot],
+       but a frame dragged in from another row's document keeps its own doc
+       here so mixed-source rows resolve/render/export correctly. */
+    std::vector<Document*> frame_doc[kWorldMarkedMaxTabs];
     std::vector<int> sequence_frames[kWorldMarkedMaxTabs];
     std::vector<int> default_frames[kWorldMarkedMaxTabs];
     Document *sequence_doc[kWorldMarkedMaxTabs] = {};
@@ -649,14 +653,19 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
                                  const std::vector<WorldMarkedLane> &lanes,
                                  int frame_idx);
 void WorldMarkedClearSplitLanes(WorldMarkedSequenceState &state);
+bool WorldMarkedReverseSlot(WorldMarkedSequenceState &state, WorldMarkedLane &lane);
 bool WorldMarkedDeleteSplitSlot(WorldMarkedSequenceState &state, int slot);
 void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
 void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx, int dir);
 void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
+bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
+                                      int src_slot, int src_frame_idx,
+                                      int dst_slot, int dst_frame_idx);
 void WorldMarkedBuildSingleFrameLane(Document *doc, const std::vector<int> &frames,
                                      std::vector<std::vector<int>> &frame_pieces,
                                      std::vector<std::string> &frame_labels,
-                                     const std::vector<std::vector<int>> *piece_overrides = NULL);
+                                     const std::vector<std::vector<int>> *piece_overrides = NULL,
+                                     const std::vector<Document*> *doc_overrides = NULL);
 void WorldRefreshMarkedLaneAfterSequenceEdit(WorldMarkedSequenceState &state,
                                              WorldMarkedLane &lane,
                                              int &edit_frame);

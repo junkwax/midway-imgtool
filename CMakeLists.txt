@@ -151,6 +151,13 @@ if(MSVC)
     target_compile_options(imgtool-cli PRIVATE /W3)
     target_compile_definitions(imgtool PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_definitions(imgtool-cli PRIVATE _CRT_SECURE_NO_WARNINGS)
+
+    # Emit a PDB for Release builds too (optimizations stay on; this only adds
+    # debug symbols alongside the exe) so the in-app crash handler's stack
+    # walk and any .dmp from a Release crash can resolve real function
+    # names/lines instead of just module+offset.
+    target_compile_options(imgtool PRIVATE $<$<CONFIG:Release>:/Zi /FS>)
+    target_link_options(imgtool PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
 endif()
 
 target_compile_definitions(imgtool PRIVATE

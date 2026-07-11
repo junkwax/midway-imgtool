@@ -2750,6 +2750,7 @@ static int WvpSlotFrameCount(const WorldMarkedSequenceState &state, int slot)
     if ((int)state.dual_dx[slot].size() > n) n = (int)state.dual_dx[slot].size();
     if ((int)state.dual_dy[slot].size() > n) n = (int)state.dual_dy[slot].size();
     if ((int)state.dual_z[slot].size() > n) n = (int)state.dual_z[slot].size();
+    if ((int)state.frame_doc[slot].size() > n) n = (int)state.frame_doc[slot].size();
     return n;
 }
 
@@ -2794,6 +2795,16 @@ static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
     WvpWriteVec(f, WvpKey("slot", slot, "dual_dx"), state.dual_dx[slot]);
     WvpWriteVec(f, WvpKey("slot", slot, "dual_dy"), state.dual_dy[slot]);
     WvpWriteVec(f, WvpKey("slot", slot, "dual_z"), state.dual_z[slot]);
+    {
+        /* Per-entry doc override: -1 means "use this row's own doc"
+           (doc_idx above), any other value is a doc.count index — same
+           frames dragged in from another row's document. */
+        std::vector<int> fdoc_idx;
+        fdoc_idx.reserve(state.frame_doc[slot].size());
+        for (Document *fd : state.frame_doc[slot])
+            fdoc_idx.push_back(fd == state.sequence_doc[slot] ? -1 : WvpDocIndexForPointer(fd));
+        WvpWriteVec(f, WvpKey("slot", slot, "frame_doc_idx"), fdoc_idx);
+    }
     snprintf(key, sizeof(key), "slot.%d.pingpong_delay", slot);
     WvpWriteInt(f, key, state.pingpong_delay[slot]);
     snprintf(key, sizeof(key), "slot.%d.stop_tick", slot);
@@ -2860,6 +2871,15 @@ static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
     state.dual_dx[slot] = WvpGetVec(kv, prefix + "dual_dx");
     state.dual_dy[slot] = WvpGetVec(kv, prefix + "dual_dy");
     state.dual_z[slot] = WvpGetVec(kv, prefix + "dual_z");
+
+    std::vector<int> fdoc_idx = WvpGetVec(kv, prefix + "frame_doc_idx");
+    state.frame_doc[slot].assign(fdoc_idx.size(), state.sequence_doc[slot]);
+    for (size_t i = 0; i < fdoc_idx.size(); i++) {
+        if (fdoc_idx[i] < 0) continue; /* -1 = this row's own doc, already set */
+        int resolved = WvpResolveDocIndex(fdoc_idx[i], std::string(), doc_map);
+        Document *fd = document_get(resolved);
+        if (fd) state.frame_doc[slot][i] = fd;
+    }
 
     state.pingpong_delay[slot] = WvpGetInt(kv, prefix + "pingpong_delay", state.pingpong_delay[slot]);
     state.stop_tick[slot] = WvpGetInt(kv, prefix + "stop_tick", state.stop_tick[slot]);
