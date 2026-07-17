@@ -431,6 +431,8 @@ struct WorldMarkedSequenceState {
     std::vector<int> motion_dy[kWorldMarkedMaxTabs];     /* visual pixels per tick; +Y moves down */
     std::vector<int> motion_cap_x[kWorldMarkedMaxTabs];  /* visual motion distance before stopping; 0 = unlimited */
     std::vector<int> motion_cap_y[kWorldMarkedMaxTabs];
+    int lane_base_dx[kWorldMarkedMaxTabs] = {}; /* game-style lane spawn offset */
+    int lane_base_dy[kWorldMarkedMaxTabs] = {};
     std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip bits: X=ani_flip, Y=ani_flip_v */
     std::vector<int> frame_z[kWorldMarkedMaxTabs];      /* per-entry draw priority; higher draws on top */
     std::vector<int> dual_on[kWorldMarkedMaxTabs];      /* per-entry second sprite instance enabled */

@@ -2086,8 +2086,10 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
     for (int k = 0; k < n; k++) {
         const WorldAsmLaneFrame &fr = frames[k];
         state.frame_delays[slot_id][k] = 1;
-        state.local_dx[slot_id][k] = fr.dx;
-        state.local_dy[slot_id][k] = fr.dy;
+        state.local_dx[slot_id][k] = ClampWorldMarkedAniptDelta(
+            fr.dx + state.lane_base_dx[slot_id]);
+        state.local_dy[slot_id][k] = ClampWorldMarkedAniptDelta(
+            fr.dy + state.lane_base_dy[slot_id]);
         state.visible_from[slot_id][k] = 0;
         state.visible_until[slot_id][k] = 0;
         state.motion_dx[slot_id][k] = 0;
@@ -2486,7 +2488,21 @@ bool WorldLoadSeqScrRecord(int record_index)
     state.sequence_doc_idx[slot] = document_active_index();
     state.embedded_active = true;
     state.embedded_is_script = is_script;
-    state.embedded_show_companions = false;
+    /* A SEQSCR row is the attacker/source side of the presentation.  Bring
+       in the default Liu Kang reaction companion when its sibling character
+       ASM can be located; its frames then share this world's anipoint/tick
+       playback automatically. */
+    state.embedded_show_companions = AutoLoadDefaultLiuKangOpponent();
+    if (state.embedded_show_companions) {
+        /* MK2 fighters begin apart, not on one another's anchor.  The
+           renderer subtracts local anipoint X, so a negative delta places
+           the default victim to the right of the active SEQSCR actor. */
+        state.lane_base_dx[kWorldAsmOpponentSlot] = -96;
+        state.lane_base_dy[kWorldAsmOpponentSlot] = 0;
+        bool *victim_mirror = WorldMarkedMirrorFlag(state,
+                                                     kWorldAsmOpponentSlot);
+        if (victim_mirror) *victim_mirror = true;
+    }
     state.embedded_record_index = record_index;
     state.embedded_doc_idx = document_active_index();
     state.embedded_name = name;
@@ -3743,7 +3759,10 @@ static void WorldSyncEditorSelectionToSprite(Document *doc, int doc_idx,
 
     if (doc_idx >= 0 && doc_idx != document_active_index()) {
         document_set_active(doc_idx);
-        ResetPerDocumentUiState(false);
+        /* Selecting a frame in a World View lane commonly crosses IMG tabs.
+           Preserve the active multi-document workspace while doing so. */
+        if (!(g_world_state.enabled && g_world_marked_state.marked_play))
+            ResetPerDocumentUiState(false);
         g_doc_tab_select_request = doc_idx;
     }
 
@@ -7779,6 +7798,36 @@ bool DrawAnipointLinkCanvas(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     if (state.target_offset_y < -4096) state.target_offset_y = -4096;
     if (state.target_offset_y >  4096) state.target_offset_y =  4096;
 
+    /* Link is often entered from an old embedded SEQSCR table.  Surface that
+       table's current rendered entry here, rather than forcing the user to
+       manually hunt down the same sprite in a document picker. */
+    if (WorldEmbeddedSeqScrActive(g_world_marked_state)) {
+        const int seq_slot = kWorldEmbeddedSeqScrSlot;
+        const std::vector<int> &frames =
+            g_world_marked_state.sequence_frames[seq_slot];
+        int fi = g_world_marked_state.frame;
+        if (fi < 0) fi = 0;
+        if (fi >= (int)frames.size()) fi = (int)frames.size() - 1;
+        if (fi >= 0 && fi < (int)frames.size()) {
+            int seq_doc_idx = g_world_marked_state.embedded_doc_idx;
+            Document *seq_doc = document_get(seq_doc_idx);
+            IMG *seq_img = doc_get_img(seq_doc, frames[(size_t)fi]);
+            int dx = fi < (int)g_world_marked_state.local_dx[seq_slot].size()
+                   ? g_world_marked_state.local_dx[seq_slot][(size_t)fi] : 0;
+            int dy = fi < (int)g_world_marked_state.local_dy[seq_slot].size()
+                   ? g_world_marked_state.local_dy[seq_slot][(size_t)fi] : 0;
+            ImGui::TextDisabled("SEQSCR %s  entry %d/%d  %s  dAX=%d dAY=%d",
+                                g_world_marked_state.embedded_name.c_str(),
+                                fi + 1, (int)frames.size(),
+                                seq_img ? seq_img->n_s : "(missing)", dx, dy);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Use SEQSCR Frame as Reference")) {
+                state.reference_doc_idx = seq_doc_idx;
+                state.reference_img_idx = frames[(size_t)fi];
+            }
+        }
+    }
+
     Document *reference_doc = document_get(state.reference_doc_idx);
     Document *target_doc = document_get(state.target_doc_idx);
     IMG *reference = doc_get_img(reference_doc, state.reference_img_idx);
@@ -7913,6 +7962,8 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
             if (ImGui::BeginTabItem("Link", NULL,
                                     sync_canvas_tab && requested_canvas_mode == 2
                                         ? ImGuiTabItemFlags_SetSelected : 0)) {
+                if (ImGui::IsItemActivated())
+                    g_request_animation_sidebar = true;
                 AnipointLink().enabled = true;
                 g_world_state.enabled = false;
                 ImGui::EndTabItem();
@@ -14071,6 +14122,111 @@ static int create_variant_shadow_slot(int base_idx, int target_pal_idx, unsigned
 
     if (created) *created = true;
     return slot;
+}
+
+int ApplySelectedInnerStroke(unsigned char r, unsigned char g, unsigned char b)
+{
+    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return 0;
+    PAL *target_pal = get_pal((int)img->palnum);
+    if (!target_pal || !target_pal->data_p || target_pal->bitspix < 2) return 0;
+
+    int bpp = target_pal->bitspix > 8 ? 8 : target_pal->bitspix;
+    int color_cap = 1 << bpp;
+    if (g_sel_color <= 0 || g_sel_color >= color_cap) return 0;
+
+    /* A 2bpp image has transparent #0 plus only three opaque indices.  Its
+       selected fill therefore doubles as the lightest (third) inside band. */
+    int dedicated_slots = (bpp == 2) ? 2 : 3;
+    bool used[256];
+    collect_library_used_indices(used);
+    int slots[3] = { g_sel_color, g_sel_color, g_sel_color };
+    for (int band = 0; band < dedicated_slots; band++) {
+        int slot = -1;
+        for (int i = 1; i < color_cap; i++) {
+            if (i != g_sel_color && !used[i]) { slot = i; break; }
+        }
+        if (slot < 0) return 0;
+        slots[band] = slot;
+        used[slot] = true;
+    }
+    if (bpp == 2) slots[2] = g_sel_color;
+
+    int highest_slot = slots[0];
+    for (int i = 1; i < dedicated_slots; i++)
+        if (slots[i] > highest_slot) highest_slot = slots[i];
+    if (!doc_undo_push() || !ensure_all_palettes_numc(highest_slot + 1)) return 0;
+
+    const float shade[3] = { 0.34f, 0.62f, 0.92f };
+    unsigned short stroke_words[3];
+    for (int band = 0; band < 3; band++) {
+        stroke_words[band] = rgb_to_word15(
+            (unsigned char)(r * shade[band] + 0.5f),
+            (unsigned char)(g * shade[band] + 0.5f),
+            (unsigned char)(b * shade[band] + 0.5f));
+    }
+
+    int pal_idx = 0;
+    for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p, pal_idx++) {
+        unsigned char *pd = (unsigned char *)pal->data_p;
+        for (int band = 0; band < dedicated_slots; band++) {
+            unsigned short word = pal_idx == (int)img->palnum
+                ? stroke_words[band]
+                : pal_word_or_black(pal, g_sel_color);
+            pd[slots[band] * 2] = (unsigned char)(word & 0xff);
+            pd[slots[band] * 2 + 1] = (unsigned char)(word >> 8);
+        }
+    }
+
+    int w = img->w, h = img->h;
+    int stride = (w + 3) & ~3;
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    std::vector<int> distance((size_t)w * h, -1);
+    std::vector<int> queue;
+    queue.reserve((size_t)w * h);
+    static const int dx[4] = { -1, 1, 0, 0 };
+    static const int dy[4] = { 0, 0, -1, 1 };
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        if (pixels[y * stride + x] == 0) continue;
+        bool edge = false;
+        for (int n = 0; n < 4; n++) {
+            int nx = x + dx[n], ny = y + dy[n];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h || pixels[ny * stride + nx] == 0) {
+                edge = true; break;
+            }
+        }
+        if (edge) { distance[y * w + x] = 0; queue.push_back(y * w + x); }
+    }
+    for (size_t head = 0; head < queue.size(); head++) {
+        int at = queue[head], d = distance[at];
+        if (d >= 2) continue;
+        int x = at % w, y = at / w;
+        for (int n = 0; n < 4; n++) {
+            int nx = x + dx[n], ny = y + dy[n];
+            int ni = ny * w + nx;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h &&
+                pixels[ny * stride + nx] != 0 && distance[ni] < 0) {
+                distance[ni] = d + 1;
+                queue.push_back(ni);
+            }
+        }
+    }
+
+    int changed = 0;
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        unsigned char *pixel = pixels + y * stride + x;
+        if (*pixel == 0) continue;
+        int d = distance[y * w + x];
+        unsigned char replacement = (d >= 0 && d < 3) ? (unsigned char)slots[d]
+                                                       : (unsigned char)g_sel_color;
+        if (*pixel != replacement) { *pixel = replacement; changed++; }
+    }
+
+    ApplyPalette((int)img->palnum);
+    InvalidateThumb(g_doc->ilselected);
+    g_img_tex_idx = -2;
+    mark_dirty();
+    return changed;
 }
 
 static VariantPaintResult ApplyVariantPaintToPixels(IMG *img, const std::vector<std::pair<int,int>>& pixels)

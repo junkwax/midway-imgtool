@@ -475,6 +475,7 @@ void DrawMainLayout(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Fade sprites to transparent index #0 using a directional\n"
                 "dithered opacity gradient. Can target selected or marked sprites.");
+            if (ImGui::MenuItem("3-Tone Inner Stroke...", NULL, false, g_doc->ilselected >= 0)) OpenInnerStrokeDialog();
             if (ImGui::BeginMenu("Transform Selected", g_doc->ilselected >= 0)) {
                 DrawSpriteTransformMenuItems();
                 ImGui::EndMenu();
@@ -1639,7 +1640,10 @@ void DrawMainLayout(void)
         ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Animation")) {
+        if (ImGui::BeginTabItem("Animation", NULL,
+                                g_request_animation_sidebar
+                                    ? ImGuiTabItemFlags_SetSelected : 0)) {
+        g_request_animation_sidebar = false;
         /* --- Library Info --- */
         if (ImGui::CollapsingHeader("Library")) {
             int altpal_tables = 0;
@@ -2236,6 +2240,7 @@ void DrawMainLayout(void)
 
     DrawResizeSpriteDialog();
     DrawOpacityGradientDialog();
+    DrawInnerStrokeDialog();
     DrawSpriteCleanupDialog();
 
     DrawBulkResizeDialog();

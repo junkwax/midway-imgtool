@@ -92,6 +92,7 @@ void AsmAnimSelect(int i);
 void AsmResolveAnimAgainstDoc(AsmAnim &a, Document *doc);
 bool LoadAsmOpponent(const char *path);
 bool LoadAsmAnimations(const char *path);
+bool AutoLoadDefaultLiuKangOpponent(void);
 
 /* ---- Shared overlay state & functions ---- */
 extern int g_doc_tab_select_request;
@@ -500,6 +501,10 @@ struct VariantPaintResult {
     int skipped_no_slot;
 };
 VariantPaintResult ApplyVariantBrush(IMG *img, int cx, int cy, int brush);
+/* Recolour the selected sprite to g_sel_color and add a 3px inside outline.
+   2bpp palettes use the fill as the lightest band (there are only 3 opaque
+   indices available); 3bpp+ palettes receive three dedicated ramp slots. */
+int ApplySelectedInnerStroke(unsigned char r, unsigned char g, unsigned char b);
 void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous, bool defringe);
 void FloodFill(IMG *img, int sx, int sy, unsigned char new_color);
 
@@ -565,6 +570,8 @@ void OpenSpriteCleanupDialog(void);
 void DrawSpriteCleanupDialog(void);
 void OpenOpacityGradientDialog(void);
 void DrawOpacityGradientDialog(void);
+void OpenInnerStrokeDialog(void);
+void DrawInnerStrokeDialog(void);
 void DrawDeleteImagesConfirm(void);
 void DrawSeqScrEditorWindow(void);
 void DrawDebugInfoModal(void);
@@ -652,6 +659,7 @@ extern Document     *g_asm_anim_doc;
 extern int           g_asm_anim_doc_idx;
 extern bool          g_asm_lane_enabled;
 extern bool          g_asm_opp_enabled;
+extern bool          g_request_animation_sidebar;
 
 void update_drift_texture(IMG *img);
 void Mk2SelectRecord(int rec_idx);

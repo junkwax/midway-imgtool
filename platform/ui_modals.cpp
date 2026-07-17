@@ -103,6 +103,9 @@ static bool g_opacity_gradient_trim = false;
 static int  g_opacity_gradient_seed = 17;
 static bool g_opacity_gradient_preview = true;
 
+static bool g_show_inner_stroke = false;
+static float g_inner_stroke_rgb[3] = { 0.52f, 0.25f, 0.84f };
+
 static bool g_show_sprite_cleanup = false;
 static int  g_sprite_cleanup_radius = 3;
 static int  g_sprite_cleanup_similarity = 8;
@@ -763,7 +766,11 @@ void ActivateDocumentTab(int idx)
     if (idx < 0 || idx >= document_tab_count()) return;
     if (idx != document_active_index()) {
         document_set_active(idx);
-        ResetPerDocumentUiState(false);
+        /* A World View sequence deliberately spans open IMG documents.  Tab
+           activation is then ordinary editing/navigation, not a new session;
+           resetting the UI here used to discard its split/sequence staging. */
+        if (!(g_world_state.enabled && g_world_marked_state.marked_play))
+            ResetPerDocumentUiState(false);
     }
     g_doc_tab_select_request = idx;
     Mk2AutoSelectFromImg();
@@ -2454,6 +2461,58 @@ bool LoadAsmOpponent(const char *path)      /* fatality opponent */
              (int)g_asm_opp_anims.size(), g_asm_opp_anims.size() == 1 ? "" : "s", base);
     g_restore_msg_timer = 4.0f;
     return !g_asm_opp_anims.empty();
+}
+
+bool AutoLoadDefaultLiuKangOpponent(void)
+{
+    /* Preserve an explicitly loaded opponent.  Otherwise MK2 character ASM
+       files normally live beside one another, so a loaded player ASM gives
+       us a reliable project-local MKLK.ASM path without hard-coding a root. */
+    if (g_asm_opp_anims.empty()) {
+        std::vector<std::string> candidates;
+        if (!g_asm_anim_file.empty()) {
+            std::string path = g_asm_anim_file;
+            size_t slash = path.find_last_of("\\/");
+            if (slash != std::string::npos) {
+                path.resize(slash + 1);
+                candidates.push_back(path + "MKLK.ASM");
+            }
+        }
+        if (g_doc && g_doc->fpath_s[0]) {
+            std::string img_dir = g_doc->fpath_s;
+            candidates.push_back(img_dir + "\\MKLK.ASM");
+            candidates.push_back(img_dir + "\\..\\src\\MKLK.ASM");
+        }
+        bool loaded = false;
+        for (const std::string &path : candidates) {
+            FILE *probe = fopen(path.c_str(), "rb");
+            if (!probe) continue;
+            fclose(probe);
+            if (LoadAsmOpponent(path.c_str())) { loaded = true; break; }
+        }
+        if (!loaded) return false;
+    }
+
+    int best = -1;
+    int best_score = -1;
+    for (int i = 0; i < (int)g_asm_opp_anims.size(); i++) {
+        std::string key = g_asm_opp_anims[i].label + " " + g_asm_opp_anims[i].name;
+        for (char &c : key) c = (char)tolower((unsigned char)c);
+        int score = 0;
+        if (key.find("react") != std::string::npos) score += 100;
+        if (key.find("dizzy") != std::string::npos) score += 80;
+        if (key.find("hit") != std::string::npos) score += 60;
+        if (key.find("fall") != std::string::npos) score += 50;
+        if (key.find("die") != std::string::npos) score += 40;
+        if (key.find("stance") != std::string::npos) score += 10;
+        if (score > best_score) { best_score = score; best = i; }
+    }
+    if (best < 0) return false;
+    g_asm_opp_sel = best;
+    AsmResolveAnimGlobal(g_asm_opp_anims[best]);
+    g_asm_opp_enabled = true;
+    g_request_asm_opp_autoload = true;
+    return true;
 }
 
 /* Re-resolve the selected anim against the current IMG and size the playback
@@ -6867,6 +6926,58 @@ void DrawOpacityGradientDialog(void)
     if (ImGui::Button("Cancel", ImVec2(90, 0)))
         g_show_opacity_gradient = false;
 
+    ImGui::EndPopup();
+}
+
+void OpenInnerStrokeDialog(void)
+{
+    if (g_doc && g_doc->ilselected >= 0) g_show_inner_stroke = true;
+}
+
+void DrawInnerStrokeDialog(void)
+{
+    if (g_show_inner_stroke) ImGui::OpenPopup("3-Tone Inner Stroke");
+    if (!ImGui::BeginPopupModal("3-Tone Inner Stroke", &g_show_inner_stroke,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    PAL *pal = img ? get_pal((int)img->palnum) : NULL;
+    bool valid = img && img->data_p && pal && pal->data_p && pal->bitspix >= 2 &&
+                 g_sel_color > 0 && g_sel_color < (1 << (pal->bitspix > 8 ? 8 : pal->bitspix));
+    if (!valid) {
+        ImGui::TextWrapped("Select a sprite with a 2bpp-or-higher palette and choose an opaque palette swatch for the fill.");
+    } else {
+        ImGui::Text("%s  %dx%d  (%dbpp)", img->n_s, img->w, img->h, pal->bitspix);
+        ImGui::Text("Fill index: #%d", g_sel_color);
+        ImGui::ColorEdit3("Inner stroke hue", g_inner_stroke_rgb,
+                          ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_NoInputs);
+        ImGui::TextWrapped("The silhouette becomes the selected fill index. Its first three inside pixel bands become dark, medium, and light versions of this hue.");
+        if (pal->bitspix == 2)
+            ImGui::TextWrapped("2bpp note: only three opaque indices exist, so the selected fill is used as the lightest third band.");
+        ImGui::TextDisabled("Three unused palette indices are reserved so other sprites keep their colors.");
+    }
+
+    ImGui::Separator();
+    if (!valid) ImGui::BeginDisabled();
+    if (ImGui::Button("Apply", ImVec2(110, 0))) {
+        int changed = ApplySelectedInnerStroke(
+            (unsigned char)(g_inner_stroke_rgb[0] * 255.0f + 0.5f),
+            (unsigned char)(g_inner_stroke_rgb[1] * 255.0f + 0.5f),
+            (unsigned char)(g_inner_stroke_rgb[2] * 255.0f + 0.5f));
+        if (changed > 0) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Applied 3-tone inner stroke to %d pixel%s.",
+                     changed, changed == 1 ? "" : "s");
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Need unused palette indices for the inner stroke.");
+        }
+        g_restore_msg_timer = 4.0f;
+        g_show_inner_stroke = false;
+    }
+    if (!valid) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(90, 0))) g_show_inner_stroke = false;
     ImGui::EndPopup();
 }
 

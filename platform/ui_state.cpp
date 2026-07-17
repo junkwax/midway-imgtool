@@ -184,6 +184,7 @@ Document     *g_asm_anim_doc = NULL;
 int           g_asm_anim_doc_idx = -1;
 bool          g_asm_lane_enabled = false;
 bool          g_asm_opp_enabled = false;
+bool          g_request_animation_sidebar = false;
 
 int g_last_delete_removed_palettes = 0;
 bool g_show_mk2_unsaved_confirm = false;
