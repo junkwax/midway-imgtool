@@ -49,6 +49,12 @@ WorldViewState &WorldView(void)
     return state;
 }
 
+AnipointLinkState &AnipointLink(void)
+{
+    static AnipointLinkState state;
+    return state;
+}
+
 float ZoomFitScaleForAvailable(const ImVec2 &avail)
 {
     if (g_img_tex_w <= 0 || g_img_tex_h <= 0) return 1.0f;
@@ -2241,6 +2247,22 @@ static std::string WorldSeqScrRecordAsmLabel(const SeqScrRecordView &rec)
     return label;
 }
 
+/* ani_flip and ani_flip_v are toggle opcodes, while World View stores an
+   absolute orientation for each entry.  Emit only the toggles needed to
+   reach the next entry's orientation so exported ASM has the same image
+   state as the preview (not merely a descriptive flipX/flipY comment). */
+static void WorldAppendFrameFlipOps(std::string &out, int *emitted_mirror,
+                                    int wanted_mirror)
+{
+    if (!emitted_mirror) return;
+    wanted_mirror &= kWorldFrameMirrorX | kWorldFrameMirrorY;
+    if (((*emitted_mirror) ^ wanted_mirror) & kWorldFrameMirrorX)
+        out += "\t.long\tani_flip\n";
+    if (((*emitted_mirror) ^ wanted_mirror) & kWorldFrameMirrorY)
+        out += "\t.long\tani_flip_v\n";
+    *emitted_mirror = wanted_mirror;
+}
+
 static bool WorldSeqScrExportUsesLiveState(const SeqScrRecordView &rec)
 {
     const WorldMarkedSequenceState &state = g_world_marked_state;
@@ -2274,6 +2296,7 @@ static void WorldAppendSeqScrSequenceAsm(std::string &out,
     out += "_frames\n";
     std::string anipts = label + "_anipts\n";
     int expanded_ticks = 0;
+    int emitted_mirror = 0;
     for (int display_e = 0; display_e < entry_count; display_e++) {
         int e = display_e < rec.num ? rec.num - 1 - display_e : -1;
         int target = -1;
@@ -2304,6 +2327,7 @@ static void WorldAppendSeqScrSequenceAsm(std::string &out,
         std::string sprite = WorldMarkedAsmToken(img ? img_name_string(img) : "",
                                                  fallback);
         for (int t = 0; t < hold; t++) {
+            WorldAppendFrameFlipOps(out, &emitted_mirror, frame_mirror);
             snprintf(line, sizeof(line),
                      "\t.long\t%s\t; entry %d visual %d tick %d/%d img=%d dX=%d dY=%d%s%s\n",
                      sprite.c_str(), e, display_e, t + 1, hold, target, dx, dy,
@@ -3369,6 +3393,39 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
         ImGui::Text("%s: %s   Entry %d/%d   Tick %d/%d",
                     kind, name, n > 0 ? entry + 1 : 0, n,
                     state.frame, total_ticks);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Exit Seq/Script##world_embedded_exit")) {
+            WorldExitEmbeddedSeqScr(state);
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Returned to normal mixed World View.");
+            g_restore_msg_timer = 4.0f;
+            return action;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Leave this loaded table and show the normal marked World View rows.");
+
+        /* A sequence entry can be a multi-sprite frame.  Capture the sprite
+           selected in the editor as another piece; its own anipoint anchors
+           it to the same world frame as the primary sprite. */
+        if (!state.embedded_is_script && active_doc_idx == state.embedded_doc_idx &&
+            selected_img && g_doc && g_doc->ilselected >= 0 && n > 0) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Add Selected to Frame##world_embedded_add_piece")) {
+                if (WorldMarkedAttachSpriteToFrame(state, slot, entry, g_doc,
+                                                    active_doc_idx,
+                                                    g_doc->ilselected)) {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Added selected sprite to sequence frame %d (each piece uses its own anipoint).",
+                             entry + 1);
+                } else {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Sprite is already in this frame, or belongs to another IMG tab.");
+                }
+                g_restore_msg_timer = 4.0f;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Make the currently selected sprite a second piece of this frame. Its anipoint is preserved, and the composite exports with the frame.");
+        }
     } else {
         ImGui::Text("Frame Sequence");
     }
@@ -3415,6 +3472,11 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
         ImGui::SetTooltip("Draw TV-safe World View guides: green is 0..399 x 0..253,\n"
                           "yellow extends to DMA X 511 while vertically safe,\n"
                           "red is outside those limits.");
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Link Anchors##world_anchor_link", &state.anchor_link_mode))
+        state.anchor_link_active = false;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Drag from a feature on one World View sprite to its matching feature on another. On release, the target sprite's anipoint is moved so the two points meet.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Copy ASM##world_marked_copy_asm")) {
         state.generated_asm = state.embedded_active
@@ -3718,6 +3780,62 @@ bool WorldEmbeddedSeqScrActive(const WorldMarkedSequenceState &state)
     return state.embedded_active &&
            state.embedded_doc_idx >= 0 &&
            !state.sequence_frames[kWorldEmbeddedSeqScrSlot].empty();
+}
+
+void WorldExitEmbeddedSeqScr(WorldMarkedSequenceState &state)
+{
+    const int slot = kWorldEmbeddedSeqScrSlot;
+    WorldMarkedClearSequenceState(state, slot);
+    state.default_frames[slot].clear();
+    state.sequence_doc[slot] = NULL;
+    state.sequence_doc_idx[slot] = -1;
+    state.embedded_active = false;
+    state.embedded_is_script = false;
+    state.embedded_show_companions = false;
+    state.embedded_record_index = -1;
+    state.embedded_doc_idx = -1;
+    state.embedded_name.clear();
+    state.embedded_frame_labels.clear();
+    state.embedded_targets.clear();
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = 0;
+    WorldMarkedRestart(state);
+}
+
+bool WorldMarkedAttachSpriteToFrame(WorldMarkedSequenceState &state,
+                                    int slot, int frame_idx,
+                                    Document *doc, int doc_idx,
+                                    int sprite_idx)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || !doc ||
+        sprite_idx < 0 || !doc_get_img(doc, sprite_idx))
+        return false;
+    std::vector<int> &frames = state.sequence_frames[slot];
+    if (frame_idx < 0 || frame_idx >= (int)frames.size())
+        return false;
+    EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
+
+    /* A composite frame currently has one owning document.  Refuse a
+       cross-tab mix rather than silently resolving the extra piece against
+       the wrong IMG library. */
+    int owner_doc_idx = state.sequence_doc_idx[slot];
+    if (frame_idx < (int)state.frame_doc[slot].size() &&
+        state.frame_doc[slot][frame_idx] >= 0)
+        owner_doc_idx = state.frame_doc[slot][frame_idx];
+    if (owner_doc_idx >= 0 && owner_doc_idx != doc_idx)
+        return false;
+
+    std::vector<int> &pieces = state.entry_pieces[slot][frame_idx];
+    if (pieces.empty())
+        pieces.push_back(frames[frame_idx]);
+    if (std::find(pieces.begin(), pieces.end(), sprite_idx) != pieces.end())
+        return false;
+    pieces.push_back(sprite_idx);
+    state.paused = true;
+    state.timer = 0.0f;
+    state.frame = WorldMarkedTickForFrame(state, slot, (int)frames.size(), frame_idx);
+    return true;
 }
 
 void StepWorldEmbeddedSeqScrEntry(WorldMarkedSequenceState &state, int delta)
@@ -5158,6 +5276,7 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; label-or-0, aligned 1:1 with the rows); all pieces share the\n";
     out += "; primary's *_local_anipts offset and rely on their own art anipoint\n";
     out += "; for relative placement, same as the World View preview.\n";
+    out += "; Per-entry Flip X/Y controls emit ani_flip/ani_flip_v toggles.\n";
     out += "; Run these lanes at the same animation sleep/FPS used in the preview.\n\n";
 
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
@@ -5227,6 +5346,7 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
         std::string local_table;
         local_table += anim_label;
         local_table += "_local_anipts\n";
+        int emitted_mirror = 0;
         bool lane_has_dual = false;
         for (int fi = 0; fi < (int)lane.frames.size(); fi++)
             if (state.dual_on[lane.delay_slot][fi]) { lane_has_dual = true; break; }
@@ -5324,6 +5444,7 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                     has_wide_local = true;
                     if (first_wide_tick < 0) first_wide_tick = tick;
                 }
+                WorldAppendFrameFlipOps(out, &emitted_mirror, frame_mirror);
                 out += "\t.long\t";
                 out += hidden ? "0" : sprite;
                 if (repeat == 0) {
@@ -5533,6 +5654,79 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                         IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
         }
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+
+    /* Link mode is deliberately separate from ordinary lane dragging. It
+       operates on the actual individual pieces of a composite frame, rather
+       than the lane's union rectangle. */
+    struct AnchorHit { IMG *img = NULL; bool mirror = false; };
+    auto piece_at = [&](ImVec2 p) -> AnchorHit {
+        AnchorHit hit;
+        if (!over_world || over_panel) return hit;
+        for (int li = (int)lanes.size() - 1; li >= 0; li--) {
+            const WorldMarkedLane &lane = lanes[li];
+            int fi = lane.frame_pos;
+            if (fi < 0 || fi >= (int)lane.frames.size()) continue;
+            int ss = lane.delay_slot;
+            if (!state.lane_visible[ss]) continue;
+            bool mirror = render_info.lane_mirror_x[li] ||
+                          render_info.lane_mirror_y[li];
+            const std::vector<int> *pieces =
+                fi < (int)lane.frame_pieces.size() ? &lane.frame_pieces[fi] : NULL;
+            std::vector<int> fallback;
+            if (!pieces || pieces->empty()) { fallback.push_back(lane.frames[fi]); pieces = &fallback; }
+            Document *fdoc = (fi < (int)lane.frame_docs.size() && lane.frame_docs[fi])
+                           ? lane.frame_docs[fi] : lane.doc;
+            int dx = 0, dy = 0;
+            WorldMarkedEffectiveLocalDelta(state, ss, (int)lane.frames.size(), fi,
+                                           false, lane.tick, &dx, &dy);
+            for (int pi = (int)pieces->size() - 1; pi >= 0; pi--) {
+                IMG *img = doc_get_img(fdoc, (*pieces)[(size_t)pi]);
+                if (!img) continue;
+                float left = world_layout.origin_x - ((int)(short)img->anix + dx) * world_layout.scale;
+                float top = world_layout.origin_y - ((int)(short)img->aniy + dy) * world_layout.scale;
+                float right = left + (float)img->w * world_layout.scale;
+                float bottom = top + (float)img->h * world_layout.scale;
+                if (p.x >= left && p.x <= right && p.y >= top && p.y <= bottom) {
+                    hit.img = img;
+                    hit.mirror = mirror;
+                    return hit;
+                }
+            }
+        }
+        return hit;
+    };
+
+    if (state.anchor_link_mode) {
+        if (!state.anchor_link_active && over_world && !over_panel &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            AnchorHit source = piece_at(mouse);
+            if (source.img && !source.mirror) {
+                state.anchor_link_active = true;
+                state.anchor_link_source_img = source.img;
+                state.anchor_link_source = mouse;
+                state.paused = true;
+            }
+        }
+        if (state.anchor_link_active && dl) {
+            dl->AddLine(state.anchor_link_source, mouse, IM_COL32(90, 235, 255, 255), 2.0f);
+            dl->AddCircleFilled(state.anchor_link_source, 4.0f, IM_COL32(90, 235, 255, 255));
+        }
+        if (state.anchor_link_active && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            AnchorHit target = piece_at(mouse);
+            if (target.img && target.img != state.anchor_link_source_img && !target.mirror) {
+                int dx = (int)lroundf((mouse.x - state.anchor_link_source.x) / world_layout.scale);
+                int dy = (int)lroundf((mouse.y - state.anchor_link_source.y) / world_layout.scale);
+                target.img->anix = (unsigned short)ClampWorldMarkedAniptDelta((int)(short)target.img->anix + dx);
+                target.img->aniy = (unsigned short)ClampWorldMarkedAniptDelta((int)(short)target.img->aniy + dy);
+                mark_dirty();
+                snprintf(g_restore_msg, sizeof(g_restore_msg), "Linked anchors: target moved %d, %d px.", dx, dy);
+                g_restore_msg_timer = 4.0f;
+            }
+            state.anchor_link_active = false;
+            state.anchor_link_source_img = NULL;
+        }
+        return;
     }
 
     if (hover_slot >= 0 && ImGui::IsWindowHovered() &&
@@ -7474,6 +7668,211 @@ void ClearCanvasUiTextures(void)
     s_world_onion_idx = -1;
 }
 
+bool DrawAnipointLinkCanvas(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
+{
+    AnipointLinkState &state = AnipointLink();
+    /* The left toolbar and Ctrl+/- shortcuts use the shared canvas zoom
+       queue.  Consume it here too, rather than making Link a special case
+       that only responds to its local controls. */
+    if (g_zoom_pending_fit) {
+        state.zoom = 1.0f;
+        g_zoom_pending_fit = false;
+    }
+    while (g_zoom_pending_steps > 0) {
+        state.zoom *= 1.25f;
+        g_zoom_pending_steps--;
+    }
+    while (g_zoom_pending_steps < 0) {
+        state.zoom /= 1.25f;
+        g_zoom_pending_steps++;
+    }
+    if (state.zoom < 0.25f) state.zoom = 0.25f;
+    if (state.zoom > 16.0f) state.zoom = 16.0f;
+    int doc_count = document_tab_count();
+    if (doc_count <= 0) return false;
+
+    auto clamp_pick = [&](int *doc_idx, int *img_idx) {
+        if (!doc_idx || !img_idx) return;
+        if (*doc_idx < 0 || *doc_idx >= doc_count) *doc_idx = document_active_index();
+        Document *doc = document_get(*doc_idx);
+        if (!doc || doc->imgcnt == 0) { *img_idx = -1; return; }
+        if (*img_idx < 0 || *img_idx >= (int)doc->imgcnt) *img_idx = doc->ilselected;
+        if (*img_idx < 0 || *img_idx >= (int)doc->imgcnt) *img_idx = 0;
+    };
+    clamp_pick(&state.reference_doc_idx, &state.reference_img_idx);
+    clamp_pick(&state.target_doc_idx, &state.target_img_idx);
+
+    auto draw_picker = [&](const char *title, int *doc_idx, int *img_idx) {
+        ImGui::TextUnformatted(title);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(145.0f);
+        Document *doc = document_get(*doc_idx);
+        const char *doc_name = doc && doc->fname_s[0] ? doc->fname_s : "Untitled";
+        if (ImGui::BeginCombo((std::string("##link_doc_") + title).c_str(), doc_name)) {
+            for (int i = 0; i < doc_count; i++) {
+                Document *candidate = document_get(i);
+                const char *name = candidate && candidate->fname_s[0]
+                                 ? candidate->fname_s : "Untitled";
+                char label[180];
+                snprintf(label, sizeof(label), "[%d] %s", i + 1, name);
+                if (ImGui::Selectable(label, i == *doc_idx)) {
+                    *doc_idx = i;
+                    *img_idx = candidate ? candidate->ilselected : -1;
+                    clamp_pick(doc_idx, img_idx);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        doc = document_get(*doc_idx);
+        IMG *img = doc_get_img(doc, *img_idx);
+        ImGui::SetNextItemWidth(180.0f);
+        const char *img_name = img ? img->n_s : "(none)";
+        if (ImGui::BeginCombo((std::string("##link_img_") + title).c_str(), img_name)) {
+            if (doc) {
+                for (int i = 0; i < (int)doc->imgcnt; i++) {
+                    IMG *candidate = doc_get_img(doc, i);
+                    if (!candidate) continue;
+                    char label[128];
+                    snprintf(label, sizeof(label), "%d  %s", i, candidate->n_s);
+                    if (ImGui::Selectable(label, i == *img_idx)) *img_idx = i;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton((std::string("Use Active##link_") + title).c_str())) {
+            *doc_idx = document_active_index();
+            *img_idx = g_doc ? g_doc->ilselected : -1;
+            clamp_pick(doc_idx, img_idx);
+        }
+    };
+
+    draw_picker("Reference", &state.reference_doc_idx, &state.reference_img_idx);
+    draw_picker("Target", &state.target_doc_idx, &state.target_img_idx);
+    ImGui::TextDisabled("Drag from a feature on Reference to its matching feature on Target.");
+    ImGui::SameLine();
+    if (ImGui::Button("Zoom -##link_zoom_out")) state.zoom /= 1.25f;
+    ImGui::SameLine();
+    if (ImGui::Button("Zoom +##link_zoom_in")) state.zoom *= 1.25f;
+    ImGui::SameLine();
+    if (ImGui::Button("Fit##link_zoom_fit")) state.zoom = 1.0f;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(115.0f);
+    ImGui::SliderFloat("Zoom##link_zoom", &state.zoom, 1.0f, 16.0f,
+                       "%.1fx", ImGuiSliderFlags_Logarithmic);
+    if (state.zoom < 0.25f) state.zoom = 0.25f;
+    if (state.zoom > 16.0f) state.zoom = 16.0f;
+    ImGui::SameLine();
+    ImGui::TextDisabled("Stage X/Y");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(52.0f);
+    ImGui::InputInt("##link_stage_x", &state.target_offset_x, 0, 0);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(52.0f);
+    ImGui::InputInt("##link_stage_y", &state.target_offset_y, 0, 0);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(68.0f);
+    ImGui::SliderInt("Ghost##link_ref_alpha", &state.reference_alpha, 25, 255, "%d");
+    if (state.target_offset_x < -4096) state.target_offset_x = -4096;
+    if (state.target_offset_x >  4096) state.target_offset_x =  4096;
+    if (state.target_offset_y < -4096) state.target_offset_y = -4096;
+    if (state.target_offset_y >  4096) state.target_offset_y =  4096;
+
+    Document *reference_doc = document_get(state.reference_doc_idx);
+    Document *target_doc = document_get(state.target_doc_idx);
+    IMG *reference = doc_get_img(reference_doc, state.reference_img_idx);
+    IMG *target = doc_get_img(target_doc, state.target_img_idx);
+    if (!reference || !target || !reference->data_p || !target->data_p) return false;
+
+    ImVec2 stage_pos = ImGui::GetCursorScreenPos();
+    float top = ImGui::GetCursorPosY();
+    float stage_h = avail.y - top;
+    if (stage_h < 80.0f) stage_h = 80.0f;
+    float stage_w = avail.x;
+    float scale_x = stage_w / 512.0f;
+    float scale_y = stage_h / 320.0f;
+    float scale = floorf(scale_x < scale_y ? scale_x : scale_y) * state.zoom;
+    if (scale < 1.0f) scale = 1.0f;
+    ImVec2 stage_size(stage_w, stage_h);
+    ImVec2 anchor(stage_pos.x + stage_w * 0.5f, stage_pos.y + stage_h * 0.5f);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(stage_pos, ImVec2(stage_pos.x + stage_w, stage_pos.y + stage_h),
+                      IM_COL32(0, 0, 0, 255));
+    dl->AddLine(ImVec2(anchor.x - 10, anchor.y), ImVec2(anchor.x + 10, anchor.y),
+                IM_COL32(255, 210, 70, 255), 2.0f);
+    dl->AddLine(ImVec2(anchor.x, anchor.y - 10), ImVec2(anchor.x, anchor.y + 10),
+                IM_COL32(255, 210, 70, 255), 2.0f);
+
+    auto sprite_pos = [&](IMG *img) {
+        return ImVec2(anchor.x - (float)(short)img->anix * scale,
+                      anchor.y - (float)(short)img->aniy * scale);
+    };
+    ImVec2 ref_pos = sprite_pos(reference);
+    ImVec2 target_pos = sprite_pos(target);
+    target_pos.x += (float)state.target_offset_x * scale;
+    target_pos.y += (float)state.target_offset_y * scale;
+    SDL_Texture *ref_tex = BuildWorldSpriteTexture(reference_doc, reference, 255);
+    SDL_Texture *target_tex = BuildWorldSpriteTexture(target_doc, target, 255);
+    if (ref_tex)
+        dl->AddImage((ImTextureID)(intptr_t)ref_tex, ref_pos,
+                     ImVec2(ref_pos.x + reference->w * scale, ref_pos.y + reference->h * scale),
+                     ImVec2(0, 0), ImVec2(1, 1),
+                     IM_COL32(255, 255, 255, state.reference_alpha));
+    if (target_tex)
+        dl->AddImage((ImTextureID)(intptr_t)target_tex, target_pos,
+                     ImVec2(target_pos.x + target->w * scale, target_pos.y + target->h * scale));
+    dl->AddRect(ref_pos, ImVec2(ref_pos.x + reference->w * scale, ref_pos.y + reference->h * scale),
+                IM_COL32(90, 180, 255, 255), 0.0f, 0, 2.0f);
+    dl->AddRect(target_pos, ImVec2(target_pos.x + target->w * scale, target_pos.y + target->h * scale),
+                IM_COL32(90, 255, 150, 255), 0.0f, 0, 2.0f);
+    dl->AddText(ref_pos, IM_COL32(120, 200, 255, 255), "Reference");
+    dl->AddText(target_pos, IM_COL32(120, 255, 170, 255), "Target");
+
+    bool over_stage = ImGui::IsMouseHoveringRect(stage_pos,
+                                                  ImVec2(stage_pos.x + stage_w, stage_pos.y + stage_h));
+    if (over_stage && io.MouseWheel != 0.0f) {
+        state.zoom *= powf(1.20f, io.MouseWheel);
+        if (state.zoom < 0.25f) state.zoom = 0.25f;
+        if (state.zoom > 16.0f) state.zoom = 16.0f;
+    }
+    auto inside = [](ImVec2 p, ImVec2 origin, IMG *img, float s) {
+        return p.x >= origin.x && p.y >= origin.y &&
+               p.x < origin.x + img->w * s && p.y < origin.y + img->h * s;
+    };
+    if (!io.WantCaptureMouse && over_stage && !state.dragging &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        inside(io.MousePos, ref_pos, reference, scale)) {
+        state.dragging = true;
+        state.drag_start = io.MousePos;
+    }
+    if (state.dragging) {
+        dl->AddLine(state.drag_start, io.MousePos, IM_COL32(90, 235, 255, 255), 2.0f);
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            if (inside(io.MousePos, target_pos, target, scale)) {
+                int dx = (int)lroundf((io.MousePos.x - state.drag_start.x) / scale);
+                int dy = (int)lroundf((io.MousePos.y - state.drag_start.y) / scale);
+                /* The target may belong to another open document.  Do not use
+                   the active-document sequence helper here: its propagation
+                   and undo record are intentionally scoped to g_doc. */
+                target->anix = signed_to_img_word((int)(short)target->anix + dx);
+                target->aniy = signed_to_img_word((int)(short)target->aniy + dy);
+                target_doc->dirty = true;
+                if (target_doc == g_doc) {
+                    InvalidateThumb(state.target_img_idx);
+                    g_img_tex_idx = -2;
+                }
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Linked target anipoint by %d, %d px.", dx, dy);
+                g_restore_msg_timer = 3.0f;
+            }
+            state.dragging = false;
+        }
+    }
+    ImGui::Dummy(stage_size);
+    return true;
+}
+
 void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canvas_h)
 {
     ImGui::SetNextWindowPos(ImVec2(canvas_x, canvas_y));
@@ -7487,6 +7886,41 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
     ImGui::PopStyleVar();
     {
         ImGuiIO &io = ImGui::GetIO();
+        /* Main-view modes deliberately live above the canvas rather than in
+           the sidebar: Image is the normal pixel editor, World is the
+           animation staging view, and Link is the focused two-sprite anchor
+           matcher. */
+        int requested_canvas_mode = AnipointLink().enabled ? 2
+                                  : g_world_state.enabled ? 1 : 0;
+        static int last_canvas_mode = -1;
+        bool sync_canvas_tab = requested_canvas_mode != last_canvas_mode;
+        if (ImGui::BeginTabBar("##canvas_mode_tabs",
+                               ImGuiTabBarFlags_FittingPolicyResizeDown)) {
+            if (ImGui::BeginTabItem("Image", NULL,
+                                    sync_canvas_tab && requested_canvas_mode == 0
+                                        ? ImGuiTabItemFlags_SetSelected : 0)) {
+                g_world_state.enabled = false;
+                AnipointLink().enabled = false;
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("World", NULL,
+                                    sync_canvas_tab && requested_canvas_mode == 1
+                                        ? ImGuiTabItemFlags_SetSelected : 0)) {
+                g_world_state.enabled = true;
+                AnipointLink().enabled = false;
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Link", NULL,
+                                    sync_canvas_tab && requested_canvas_mode == 2
+                                        ? ImGuiTabItemFlags_SetSelected : 0)) {
+                AnipointLink().enabled = true;
+                g_world_state.enabled = false;
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        last_canvas_mode = AnipointLink().enabled ? 2
+                         : g_world_state.enabled ? 1 : 0;
         ImVec2 avail   = ImGui::GetContentRegionAvail();
         ImVec2 img_pos = ImGui::GetCursorScreenPos();
         ImVec2 canvas_origin = img_pos;
@@ -7506,7 +7940,10 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
          * When this branch runs, the rest of the canvas pipeline (pixel
          * paint, marquee, anim-point handles, hitboxes, DMA overlay,
          * grid-selection) is skipped. */
-        if (g_world_state.enabled) {
+        if (AnipointLink().enabled) {
+            DrawAnipointLinkCanvas(avail, img_pos, io);
+        }
+        else if (g_world_state.enabled) {
             bool drew_dual_marked = DrawWorldMarkedTabs(avail, img_pos, io);
             if (!drew_dual_marked && g_img_texture && g_img_tex_w > 0 && g_img_tex_h > 0) {
                 IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -7798,7 +8235,8 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                        Consumes the click so the pencil branch below is skipped. */
                     if (g_active_tool == ActiveTool::Eyedropper &&
                         ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                        g_sel_color = *pix;
+                        if (!ApplyEyedropperColorToLockedSwatches(*pix))
+                            g_sel_color = *pix;
                         widget_consumed_click = true;
                     }
                     /* Left-click: pencil, paint bucket, background eraser, clone stamp, or smart remap.

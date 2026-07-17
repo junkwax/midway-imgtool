@@ -34,6 +34,22 @@ struct WorldViewState {
     bool onion = false; /* faintly draw prev frame underneath */
 };
 
+/* Two-sprite anipoint staging workspace.  The selected target is adjusted
+   directly, so its corrected anchor persists in the IMG on save. */
+struct AnipointLinkState {
+    bool enabled = false;
+    int reference_doc_idx = -1;
+    int reference_img_idx = -1;
+    int target_doc_idx = -1;
+    int target_img_idx = -1;
+    float zoom = 1.0f;
+    int target_offset_x = 0; /* preview-only game/local placement offset */
+    int target_offset_y = 0;
+    int reference_alpha = 145;
+    bool dragging = false;
+    ImVec2 drag_start = ImVec2(0, 0);
+};
+
 struct WorldCanvasLayout {
     float scale = 1.0f;
     float width = 0.0f;
@@ -385,6 +401,12 @@ struct WorldMarkedSequenceState {
     bool drag_mirror_y = false;
     std::vector<int> drag_all_dx;
     std::vector<int> drag_all_dy;
+    /* Anchor-link mode: drag from a feature on one sprite to its matching
+       feature on another. The release point's sprite moves by its anipoint. */
+    bool anchor_link_mode = false;
+    bool anchor_link_active = false;
+    IMG *anchor_link_source_img = NULL;
+    ImVec2 anchor_link_source = ImVec2(0, 0);
     bool show_asm = false;
     bool draw_sprite_borders = true;
     bool show_boundary_overlay = true;
@@ -531,6 +553,7 @@ struct WorldMarkedSceneResult {
 };
 
 WorldViewState &WorldView(void);
+AnipointLinkState &AnipointLink(void);
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,
@@ -636,6 +659,16 @@ void WorldMarkedSetTick(WorldMarkedSequenceState &state, int tick);
 /* True when an embedded World View sequence/script table is loaded and showing
    its entries (so Up/Down can step through its frames instead of the image list). */
 bool WorldEmbeddedSeqScrActive(const WorldMarkedSequenceState &state);
+/* Leave the loaded WIMP sequence/script table and return to the ordinary
+   marked-row World View.  The source SEQSCR data is left untouched. */
+void WorldExitEmbeddedSeqScr(WorldMarkedSequenceState &state);
+/* Attach one more sprite to an existing World View frame.  Every piece is
+   placed from its own IMG anipoint, so the resulting composite stays tied to
+   the frame and is preserved by the World View ASM/project export. */
+bool WorldMarkedAttachSpriteToFrame(WorldMarkedSequenceState &state,
+                                    int slot, int frame_idx,
+                                    Document *doc, int doc_idx,
+                                    int sprite_idx);
 /* Advance the loaded embedded sequence/script by `delta` entries (wrapping) and
    sync the editor selection to the target sprite. */
 void StepWorldEmbeddedSeqScrEntry(WorldMarkedSequenceState &state, int delta);
@@ -686,6 +719,7 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
                                int world_w, int world_h,
                                int world_origin_x, int world_origin_y,
                                bool onion_enabled, bool mirror_active);
+bool DrawAnipointLinkCanvas(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io);
 
 /* Destroy module-owned transient/cached canvas textures. */
 void ClearCanvasUiTextures(void);

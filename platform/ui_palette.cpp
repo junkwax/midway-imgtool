@@ -49,6 +49,16 @@ static bool g_palette_merge_preview_only = false;
 static bool g_merge_opt_grow = true;
 static bool g_merge_opt_perceptual = false;
 
+/* Single-color palette ramp dialog. Preview deliberately writes the palette
+   from this private baseline, then Cancel restores it without creating an
+   undo step. Apply restores first, snapshots undo, then writes the ramp. */
+static bool g_show_palette_single_color = false;
+static bool g_palette_single_color_ready = false;
+static unsigned char g_palette_single_color_baseline[512] = {};
+static int g_palette_single_color_count = 0;
+static int g_palette_single_color_idx = -1;
+static float g_palette_single_color_rgb[3] = { 1.0f, 0.48f, 0.04f };
+
 /* g_show_histogram is defined in ui_state.cpp */
 static float g_histogram_data[256] = {0};
 static float g_histogram_max = 0.0f;
@@ -619,6 +629,68 @@ static void palette_writeback(int color_idx)
 
     SDL_Color &c = g_palette[color_idx];
     rgb8_to_pal_word(c.r, c.g, c.b, (unsigned char *)pal->data_p + color_idx * 2);
+}
+
+struct PaletteColorClipboard {
+    bool valid = false;
+    SDL_Color color = {0, 0, 0, 255};
+};
+static PaletteColorClipboard g_palette_color_clipboard;
+
+void CopySelectedPaletteColor(void)
+{
+    if (g_sel_color < 0 || g_sel_color >= 256) return;
+    g_palette_color_clipboard.color = g_palette[g_sel_color];
+    g_palette_color_clipboard.valid = true;
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Copied palette color #%d (%d, %d, %d).", g_sel_color,
+             g_palette[g_sel_color].r, g_palette[g_sel_color].g,
+             g_palette[g_sel_color].b);
+    g_restore_msg_timer = 3.0f;
+}
+
+bool PastePaletteColorAt(int color_idx)
+{
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!g_palette_color_clipboard.valid || !pal || !pal->data_p ||
+        color_idx < 0 || color_idx >= (int)pal->numc)
+        return false;
+    if (g_palette[color_idx].r == g_palette_color_clipboard.color.r &&
+        g_palette[color_idx].g == g_palette_color_clipboard.color.g &&
+        g_palette[color_idx].b == g_palette_color_clipboard.color.b)
+        return true;
+    doc_undo_push();
+    g_palette[color_idx] = g_palette_color_clipboard.color;
+    palette_writeback(color_idx);
+    InvalidatePaletteUsage();
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Pasted copied color into palette index #%d.", color_idx);
+    g_restore_msg_timer = 3.0f;
+    return true;
+}
+
+bool ApplyEyedropperColorToLockedSwatches(int source_color_idx)
+{
+    if (source_color_idx < 0 || source_color_idx >= 256) return false;
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || !pal->data_p) return false;
+    int locked = 0;
+    for (int i = 0; i < (int)pal->numc && i < 256; i++)
+        if (g_palette_selection[i]) locked++;
+    if (locked == 0) return false;
+    SDL_Color sampled = g_palette[source_color_idx];
+    doc_undo_push();
+    for (int i = 0; i < (int)pal->numc && i < 256; i++) {
+        if (!g_palette_selection[i]) continue;
+        g_palette[i] = sampled;
+        palette_writeback(i);
+    }
+    InvalidatePaletteUsage();
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Eyedropper updated %d locked palette swatch%s.",
+             locked, locked == 1 ? "" : "es");
+    g_restore_msg_timer = 3.0f;
+    return true;
 }
 
 static int palette_sort_hue(int r, int g, int b)
@@ -2566,6 +2638,15 @@ void DrawBottomPaletteBar(ImVec2 avail)
             }
         }
         if (ImGui::BeginPopupContextItem(("##swctx" + std::to_string(i)).c_str())) {
+            if (ImGui::MenuItem("Copy This Color")) {
+                g_sel_color = i;
+                CopySelectedPaletteColor();
+            }
+            if (!g_palette_color_clipboard.valid) ImGui::BeginDisabled();
+            if (ImGui::MenuItem("Paste Copied Color Here"))
+                PastePaletteColorAt(i);
+            if (!g_palette_color_clipboard.valid) ImGui::EndDisabled();
+            ImGui::Separator();
             if (i == 0) {
                 if (ImGui::MenuItem("Copy #0 to Free Opaque Slot")) {
                     CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None, -1);
@@ -2881,6 +2962,107 @@ void DrawPaletteReduceDialog(void)
     if (!g_show_palette_reduce) ClearPaletteReducePreviewTextures();
 }
 
+static void ApplySingleColorRamp(const unsigned char *baseline, int count,
+                                 float r, float g, float b, unsigned char *out)
+{
+    if (!baseline || !out || count <= 0) return;
+    if (r < 0.0f) r = 0.0f; if (r > 1.0f) r = 1.0f;
+    if (g < 0.0f) g = 0.0f; if (g > 1.0f) g = 1.0f;
+    if (b < 0.0f) b = 0.0f; if (b > 1.0f) b = 1.0f;
+    for (int i = 0; i < count; i++) {
+        unsigned short word = palette_word_at(baseline, i);
+        if (i == 0) { /* transparent index remains untouched */
+            out[0] = (unsigned char)word;
+            out[1] = (unsigned char)(word >> 8);
+            continue;
+        }
+        int sr = (word >> 10) & 31;
+        int sg = (word >> 5) & 31;
+        int sb = word & 31;
+        /* Preserve each original swatch's perceptual brightness; the chosen
+           color supplies hue/saturation, yielding a usable shade ramp. */
+        float light = (30.0f * sr + 59.0f * sg + 11.0f * sb) / (100.0f * 31.0f);
+        unsigned char rr = (unsigned char)lroundf(255.0f * r * light);
+        unsigned char gg = (unsigned char)lroundf(255.0f * g * light);
+        unsigned char bb = (unsigned char)lroundf(255.0f * b * light);
+        rgb8_to_pal_word(rr, gg, bb, out + i * 2);
+    }
+}
+
+void OpenPaletteSingleColorDialog(void)
+{
+    g_show_palette_single_color = true;
+    g_palette_single_color_ready = false;
+}
+
+void DrawPaletteSingleColorDialog(void)
+{
+    if (g_show_palette_single_color) ImGui::OpenPopup("Single-Color Shading");
+    if (!ImGui::BeginPopupModal("Single-Color Shading", &g_show_palette_single_color,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    PAL *pal = (g_doc && g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || !pal->data_p) {
+        ImGui::TextDisabled("Select a palette first.");
+        if (ImGui::Button("Close")) { g_show_palette_single_color = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+        return;
+    }
+    int n = (int)pal->numc;
+    if (n > 256) n = 256;
+    if (!g_palette_single_color_ready || g_palette_single_color_idx != g_doc->plselected ||
+        g_palette_single_color_count != n) {
+        memcpy(g_palette_single_color_baseline, pal->data_p, (size_t)n * 2);
+        g_palette_single_color_count = n;
+        g_palette_single_color_idx = g_doc->plselected;
+        g_palette_single_color_ready = true;
+    }
+
+    ImGui::TextWrapped("Choose the tree's base color. The preview keeps the source palette's brightness per swatch, so its shadows and highlights become one coherent color ramp.");
+    bool changed = ImGui::ColorPicker3("Base color", g_palette_single_color_rgb,
+                                        ImGuiColorEditFlags_DisplayRGB |
+                                        ImGuiColorEditFlags_InputRGB);
+    if (changed) {
+        ApplySingleColorRamp(g_palette_single_color_baseline, n,
+                             g_palette_single_color_rgb[0],
+                             g_palette_single_color_rgb[1],
+                             g_palette_single_color_rgb[2],
+                             (unsigned char *)pal->data_p);
+        ApplyPalette(g_doc->plselected);
+        g_img_tex_idx = -2;
+    }
+    ImGui::TextDisabled("Live preview — index 0 stays transparent.");
+    ImGui::Separator();
+    if (ImGui::Button("Apply", ImVec2(110, 0))) {
+        /* Put the original back before taking undo so Ctrl+Z returns to it. */
+        memcpy(pal->data_p, g_palette_single_color_baseline, (size_t)n * 2);
+        doc_undo_push();
+        ApplySingleColorRamp(g_palette_single_color_baseline, n,
+                             g_palette_single_color_rgb[0],
+                             g_palette_single_color_rgb[1],
+                             g_palette_single_color_rgb[2],
+                             (unsigned char *)pal->data_p);
+        ApplyPalette(g_doc->plselected);
+        g_img_tex_idx = -2;
+        mark_dirty();
+        commit_palette_adjustments();
+        g_palette_single_color_ready = false;
+        g_show_palette_single_color = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(110, 0))) {
+        memcpy(pal->data_p, g_palette_single_color_baseline, (size_t)n * 2);
+        ApplyPalette(g_doc->plselected);
+        g_img_tex_idx = -2;
+        g_palette_single_color_ready = false;
+        g_show_palette_single_color = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 void DrawPaletteHistogramDialog(void)
 {
     if (g_show_histogram) ImGui::OpenPopup("Palette Histogram");
@@ -2959,6 +3141,10 @@ void DrawRightPanelPaletteEditor(float panel_h)
                         "Clean up, then cluster similar colors so each hue family\n"
                         "sits together as its own dark-to-light ramp.");
                     if (ImGui::MenuItem("Clean Copy Palette")) CreateCleanedPaletteCopy();
+                    if (ImGui::MenuItem("Single-Color Shading...")) OpenPaletteSingleColorDialog();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                        "Choose one base color and turn every opaque palette swatch\n"
+                        "into a matching dark-to-light shade of that color.");
                     if (ImGui::MenuItem("Inherit Colors from Marked")) InheritSelectedPaletteFromMarked();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                         "Mark the source palette, select the target palette.\n"

@@ -320,6 +320,7 @@ void DrawMainLayout(void)
     }
     /* Tab toggles World View mode (anipoint alignment workspace). */
     if (ImGui::Shortcut(ImGuiKey_Tab, route)) {
+        AnipointLink().enabled = false;
         g_world_state.enabled = !g_world_state.enabled;
     }
 
@@ -661,6 +662,7 @@ void DrawMainLayout(void)
                 "Clean up, then cluster similar colors so each hue family\n"
                 "sits together as its own dark-to-light ramp.");
             if (ImGui::MenuItem("Clean Copy Palette"))           CreateCleanedPaletteCopy();
+            if (ImGui::MenuItem("Single-Color Shading..."))      OpenPaletteSingleColorDialog();
             if (ImGui::MenuItem("Inherit Colors from Marked"))   InheritSelectedPaletteFromMarked();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Mark the source palette, select the target palette.\n"
@@ -705,6 +707,11 @@ void DrawMainLayout(void)
             ImGui::MenuItem("Anim Scripts / Seqs", NULL, &g_show_seqscr_editor);
             ImGui::Separator();
             ImGui::MenuItem("World View",      NULL,   &g_world_state.enabled);
+            if (ImGui::MenuItem("Anipoint Link Workspace", NULL,
+                                &AnipointLink().enabled)) {
+                if (AnipointLink().enabled)
+                    g_world_state.enabled = false;
+            }
             if (g_world_state.enabled) {
                 if (ImGui::MenuItem("Marked Row Playback", NULL, &g_world_marked_state.marked_play)) {
                     WorldMarkedRestart(g_world_marked_state);
@@ -967,6 +974,9 @@ void DrawMainLayout(void)
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoSavedSettings);
     {
+        if (ImGui::BeginTabBar("##right_panel_tabs",
+                               ImGuiTabBarFlags_FittingPolicyScroll)) {
+        if (ImGui::BeginTabItem("Assets")) {
         /* --- Image List --- */
         int n_imgs = count_imgs();
         if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1071,6 +1081,8 @@ void DrawMainLayout(void)
                         if (ImGui::MenuItem("Rename"))        OpenRenameImage();
                         if (ImGui::MenuItem("Duplicate"))     DuplicateImage();
                         if (ImGui::MenuItem("Resize..."))     OpenResizeSpriteDialog();
+                        if (ImGui::MenuItem("Break into Subframes (Auto-Chop)..."))
+                            OpenAutoChopDialog();
                         if (ImGui::BeginMenu("Transform")) {
                             DrawSpriteTransformMenuItems();
                             ImGui::EndMenu();
@@ -1440,6 +1452,11 @@ void DrawMainLayout(void)
         /* --- Palette List & Color Tools --- */
         DrawRightPanelPaletteEditor(panel_h);
 
+        ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Sprite")) {
+
         /* --- Properties --- */
         if (ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
@@ -1581,6 +1598,25 @@ void DrawMainLayout(void)
             }
         }
 
+        /* --- Two-sprite Anipoint Link workspace --- */
+        if (ImGui::CollapsingHeader("Anipoint Link")) {
+            AnipointLinkState &link = AnipointLink();
+            if (ImGui::Button(link.enabled ? "Close Link Workspace" : "Open Link Workspace",
+                              ImVec2(-1, 0))) {
+                link.enabled = !link.enabled;
+                if (link.enabled) {
+                    g_world_state.enabled = false;
+                    link.reference_doc_idx = document_active_index();
+                    link.reference_img_idx = g_doc ? g_doc->ilselected : -1;
+                    if (link.target_doc_idx < 0) {
+                        link.target_doc_idx = link.reference_doc_idx;
+                        link.target_img_idx = link.reference_img_idx;
+                    }
+                }
+            }
+            ImGui::TextWrapped("Stage a Reference and Target sprite from any open IMG tab in the main view. Drag from a reference feature to the matching target feature to set the target anipoint.");
+        }
+
         /* --- Hitbox Editor --- */
         if (ImGui::CollapsingHeader("Hitbox")) {
             ImGui::SetNextItemWidth(-1);
@@ -1600,6 +1636,10 @@ void DrawMainLayout(void)
             }
         }
 
+        ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Animation")) {
         /* --- Library Info --- */
         if (ImGui::CollapsingHeader("Library")) {
             int altpal_tables = 0;
@@ -1846,6 +1886,10 @@ void DrawMainLayout(void)
                 g_restore_msg_timer = 4.0f;
             }
             ImGui::TextDisabled("Use Export > Write TBL for marked image records.");
+        }
+        ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
         }
     }
     ImGui::End();
@@ -2179,6 +2223,8 @@ void DrawMainLayout(void)
     DrawAsmAnimWindow();
 
     DrawPaletteHistogramDialog();
+
+    DrawPaletteSingleColorDialog();
 
     DrawPaletteReduceDialog();
 

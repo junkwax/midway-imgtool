@@ -69,6 +69,7 @@ static char g_file_dialog_file[256] = "";
 static std::vector<std::string> g_file_dialog_multi_files;
 static std::string g_file_dialog_anchor_file;
 static char g_lod_override_dir[1024] = "";
+static std::string g_last_world_project_path;
 
 static unsigned int g_tbl_base_address = 0x02000000;
 static bool g_tbl_export_mk3_format = false;
@@ -1031,8 +1032,18 @@ void OpenFileDialog(FileDialogMode mode) {
             ls = le + 1;
         }
     } else if (mode == FileDialogMode::SaveWorldProject) {
-        snprintf(g_file_dialog_file, sizeof(g_file_dialog_file),
-                 "world_view.WVP");
+        if (!g_last_world_project_path.empty()) {
+            size_t sep = g_last_world_project_path.find_last_of("\\/");
+            std::string dir = sep == std::string::npos ? std::string()
+                                                       : g_last_world_project_path.substr(0, sep);
+            std::string file = sep == std::string::npos ? g_last_world_project_path
+                                                         : g_last_world_project_path.substr(sep + 1);
+            snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s", file.c_str());
+            if (!dir.empty())
+                snprintf(g_file_dialog_dir, sizeof(g_file_dialog_dir), "%s", dir.c_str());
+        } else {
+            snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "world_view.WVP");
+        }
     } else if (g_doc->fname_s[0] != '\0') {
         size_t n = 0;
         while (n < 12 && g_doc->fname_s[n] != '\0') n++;
@@ -1482,7 +1493,8 @@ void DrawFileDialog() {
             } else if (g_file_dialog_mode == FileDialogMode::SaveWorldProject) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".WVP";
-                SaveWorldProjectFile(full_path.c_str());
+                if (SaveWorldProjectFile(full_path.c_str()))
+                    g_last_world_project_path = full_path;
             } else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) {
                 LoadWorldProjectFile(full_path.c_str());
             } else if (g_file_dialog_mode == FileDialogMode::WriteTbl) {
@@ -3004,13 +3016,34 @@ static bool LoadWorldProjectFile(const char *path)
         return false;
     }
 
+    /* A project is a complete workspace, not an overlay on its caller's
+       tabs. Start clean so every saved IMG gets the same document index it
+       had when the WVP was written. */
+    while (document_tab_count() > 1)
+        document_close_tab(document_tab_count() - 1);
+    document_set_active(0);
+    document_clear_contents(g_doc);
+    ResetPerDocumentUiState(false);
+
+    std::string project_path(path ? path : "");
+    size_t project_sep = project_path.find_last_of("\\/");
+    std::string project_dir = project_sep == std::string::npos
+                            ? std::string() : project_path.substr(0, project_sep);
+    auto resolve_img_path = [&](const std::string &saved) -> std::string {
+        if (saved.empty()) return std::string();
+        if (PathReadable(saved)) return saved;
+        std::string relative = project_dir.empty() ? saved : PathCombine(project_dir, saved);
+        return PathReadable(relative) ? relative : std::string();
+    };
+
     int doc_count = WvpGetInt(kv, "doc.count", 0);
     std::vector<int> doc_map((size_t)(doc_count > 0 ? doc_count : 0), -1);
     int missing_docs = 0;
     for (int i = 0; i < doc_count; i++) {
-        std::string doc_path = WvpGetString(kv, WvpKey("doc", i, "path"));
-        if (doc_path.empty()) continue;
-        if (!PathReadable(doc_path)) {
+        std::string saved_path = WvpGetString(kv, WvpKey("doc", i, "path"));
+        if (saved_path.empty()) { missing_docs++; continue; }
+        std::string doc_path = resolve_img_path(saved_path);
+        if (doc_path.empty()) {
             missing_docs++;
             continue;
         }
@@ -3024,6 +3057,7 @@ static bool LoadWorldProjectFile(const char *path)
         doc_map[(size_t)i] = idx;
         WvpApplyMarkedIndices(doc, WvpGetVec(kv, WvpKey("doc", i, "marked")));
     }
+    g_last_world_project_path = project_path;
 
     WvpClearAsmState();
     std::string player_path = WvpGetString(kv, "asm.player.path");
@@ -5468,6 +5502,69 @@ bool SeqScrAddRecord(bool script)
     return true;
 }
 
+bool SeqScrAppendEntry(int record_index, int target_index)
+{
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    if (!SeqScrBuildRecords(records, &truncated) || truncated ||
+        record_index < 0 || record_index >= (int)records.size())
+        return false;
+    const SeqScrRecordView &rec = records[(size_t)record_index];
+    if (rec.truncated || target_index < 0 ||
+        (!rec.script && target_index >= (int)g_doc->imgcnt) ||
+        (rec.script && target_index >= (int)g_doc->seqcnt))
+        return false;
+    const SeqScrLayoutInfo li = SeqScrLayout();
+    size_t old_bytes = (size_t)g_doc->scrseqbytes;
+    size_t insert_at = rec.entries_offset + (size_t)rec.num * (size_t)li.entry_size;
+    size_t new_bytes = old_bytes + (size_t)li.entry_size;
+    unsigned char *nb = (unsigned char *)malloc(new_bytes);
+    if (!nb) return false;
+    memcpy(nb, g_doc->scrseqmem_p, insert_at);
+    memset(nb + insert_at, 0, (size_t)li.entry_size);
+    SeqScrWriteU16(nb + insert_at + li.entry_index_off,
+                   (unsigned short)(short)target_index);
+    nb[insert_at + li.entry_ticks_off] = 1;
+    memcpy(nb + insert_at + li.entry_size,
+           (unsigned char *)g_doc->scrseqmem_p + insert_at,
+           old_bytes - insert_at);
+    SeqScrWriteU16(nb + rec.offset + 18, (unsigned short)(rec.num + 1));
+    doc_undo_push();
+    free(g_doc->scrseqmem_p);
+    g_doc->scrseqmem_p = nb;
+    g_doc->scrseqbytes = (unsigned int)new_bytes;
+    mark_dirty();
+    return true;
+}
+
+bool SeqScrDeleteEntry(int record_index, int entry_index)
+{
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    if (!SeqScrBuildRecords(records, &truncated) || truncated ||
+        record_index < 0 || record_index >= (int)records.size())
+        return false;
+    const SeqScrRecordView &rec = records[(size_t)record_index];
+    if (rec.truncated || entry_index < 0 || entry_index >= rec.num)
+        return false;
+    const SeqScrLayoutInfo li = SeqScrLayout();
+    size_t old_bytes = (size_t)g_doc->scrseqbytes;
+    size_t erase_at = rec.entries_offset + (size_t)entry_index * (size_t)li.entry_size;
+    size_t new_bytes = old_bytes - (size_t)li.entry_size;
+    unsigned char *nb = (unsigned char *)malloc(new_bytes ? new_bytes : 1);
+    if (!nb) return false;
+    memcpy(nb, g_doc->scrseqmem_p, erase_at);
+    memcpy(nb + erase_at, (unsigned char *)g_doc->scrseqmem_p + erase_at + li.entry_size,
+           old_bytes - erase_at - li.entry_size);
+    SeqScrWriteU16(nb + rec.offset + 18, (unsigned short)(rec.num - 1));
+    doc_undo_push();
+    free(g_doc->scrseqmem_p);
+    g_doc->scrseqmem_p = nb;
+    g_doc->scrseqbytes = (unsigned int)new_bytes;
+    mark_dirty();
+    return true;
+}
+
 const char *SeqScrEntryTargetName(const SeqScrRecordView &rec,
                                   int entry_index,
                                   const std::vector<SeqScrRecordView> &records)
@@ -5568,6 +5665,14 @@ static bool SeqScrInputI8(const char *label, unsigned char *base, int off,
     return true;
 }
 
+/* Blob-resizing operations are deferred until the record list has finished
+   drawing; record views point into that blob and must not be invalidated
+   halfway through the ImGui pass. */
+static int s_seqscr_pending_append_record = -1;
+static int s_seqscr_pending_append_target = -1;
+static int s_seqscr_pending_delete_record = -1;
+static int s_seqscr_pending_delete_entry = -1;
+
 static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
                                    const SeqScrLayoutInfo &li,
                                    const std::vector<SeqScrRecordView> &records,
@@ -5637,6 +5742,41 @@ static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
     ImGui::SameLine();
     SeqScrInputI16("##seqscr_starty", base, li.starty_off, editing);
 
+    ImGui::Separator();
+    if (rec.script) {
+        static int s_script_target_seq = 0;
+        if (s_script_target_seq < 0) s_script_target_seq = 0;
+        if (s_script_target_seq >= (int)g_doc->seqcnt)
+            s_script_target_seq = (int)g_doc->seqcnt - 1;
+        ImGui::TextDisabled("Add a sequence call to this script:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::InputInt("Seq##seqscr_add_script_target", &s_script_target_seq, 0, 0);
+        bool can_add = g_doc->seqcnt > 0 && s_script_target_seq >= 0 &&
+                       s_script_target_seq < (int)g_doc->seqcnt;
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!can_add);
+        if (ImGui::SmallButton("Add Sequence##seqscr_append_script")) {
+            s_seqscr_pending_append_record = rec.index;
+            s_seqscr_pending_append_target = s_script_target_seq;
+        }
+        ImGui::EndDisabled();
+    } else {
+        int selected = g_doc->ilselected;
+        IMG *selected_img = get_img(selected);
+        ImGui::TextDisabled("Add the selected sprite as the next frame:");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!selected_img);
+        if (ImGui::SmallButton("Add Selected Sprite##seqscr_append_sprite")) {
+            s_seqscr_pending_append_record = rec.index;
+            s_seqscr_pending_append_target = selected;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered() && selected_img)
+            ImGui::SetTooltip("Adds [%d] %.16s with a 1-tick hold. Edit Ticks/dX/dY below afterwards.",
+                              selected, selected_img->n_s);
+    }
+
     if (li.far_model) {
         ImGui::TextDisabled("Damage table refs");
         for (int i = 0; i < 6; i++) {
@@ -5675,6 +5815,12 @@ static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::Text("%d", e);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x##seqscr_delete_entry")) {
+                s_seqscr_pending_delete_record = rec.index;
+                s_seqscr_pending_delete_entry = e;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this entry from the record.");
 
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(SeqScrEntryTargetName(rec, item_index, records));
@@ -5727,6 +5873,11 @@ void DrawSeqScrEditorWindow(void)
                 g_doc->seqcnt, g_doc->scrcnt, g_doc->scrseqbytes,
                 g_doc->fileversion >= 0x0634 ? "far pointer" : "near pointer");
     ImGui::TextDisabled("Edits are fixed-size only and save back into the IMG's SEQSCR/ENTRY blob.");
+    if (ImGui::Button("New Sequence")) SeqScrAddRecord(false);
+    ImGui::SameLine();
+    if (ImGui::Button("New Script")) SeqScrAddRecord(true);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Scripts call sequences; create sequences first, then add those sequences to a script.");
     if (ImGui::CollapsingHeader("How to read this", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextWrapped("Sequences are the simple frame lists: each entry usually targets an IMG sprite, with Ticks as the frame hold and dX/dY as local animation offsets.");
         ImGui::TextWrapped("Scripts are higher-level animation lists: each entry targets a sequence, so a script can chain multiple sprite sequences together.");
@@ -5738,7 +5889,7 @@ void DrawSeqScrEditorWindow(void)
     bool has_blob = g_doc->scrseqmem_p && g_doc->scrseqbytes > 0;
     if (!has_blob) {
         ImGui::Spacing();
-        ImGui::TextDisabled("This IMG has no embedded sequence/script blob.");
+        ImGui::TextDisabled("This IMG has no embedded sequence/script blob yet. Use New Sequence or New Script above to create one.");
         ImGui::End();
         return;
     }
@@ -5779,6 +5930,18 @@ void DrawSeqScrEditorWindow(void)
         }
     }
     ImGui::EndChild();
+
+    if (s_seqscr_pending_append_record >= 0) {
+        SeqScrAppendEntry(s_seqscr_pending_append_record,
+                          s_seqscr_pending_append_target);
+        s_seqscr_pending_append_record = -1;
+        s_seqscr_pending_append_target = -1;
+    } else if (s_seqscr_pending_delete_record >= 0) {
+        SeqScrDeleteEntry(s_seqscr_pending_delete_record,
+                          s_seqscr_pending_delete_entry);
+        s_seqscr_pending_delete_record = -1;
+        s_seqscr_pending_delete_entry = -1;
+    }
 
     ImGui::End();
 }
