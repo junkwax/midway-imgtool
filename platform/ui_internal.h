@@ -225,6 +225,10 @@ bool PastePaletteColorAt(int color_idx);
 /* Applies the sampled source swatch RGB to Ctrl-selected locked swatches.
    Returns false when no swatch is locked. */
 bool ApplyEyedropperColorToLockedSwatches(int source_color_idx);
+/* Right-click canvas eyedropper for the Single-Color Shading window.
+   Returns false (letting the caller fall back to the normal fill-color
+   eyedropper) when that window isn't open. */
+bool PickColorForSingleColorDialog(int source_color_idx);
 
 extern int g_hue_slider;
 extern int g_sat_slider;
@@ -560,6 +564,7 @@ void DrawAsmAnimWindow(void);
 void DrawPaletteHistogramDialog(void);
 void DrawPaletteReduceDialog(void);
 void DrawPaletteSingleColorDialog(void);
+void DrawIndexedGradientDialog(void);
 void DrawMk2HitboxWindow(void);
 void DrawMk2FatalityWindow(void);
 void DrawAutoChopDialog(void);

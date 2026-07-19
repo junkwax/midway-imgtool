@@ -475,6 +475,10 @@ void DrawMainLayout(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Fade sprites to transparent index #0 using a directional\n"
                 "dithered opacity gradient. Can target selected or marked sprites.");
+            if (ImGui::MenuItem("Indexed Color Gradient...", NULL, false, g_doc->ilselected >= 0)) OpenIndexedGradientDialog();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Fade through up to 11 existing palette indices without\n"
+                "moving or editing palette colors. Applies to the selected sprite.");
             if (ImGui::MenuItem("3-Tone Inner Stroke...", NULL, false, g_doc->ilselected >= 0)) OpenInnerStrokeDialog();
             if (ImGui::BeginMenu("Transform Selected", g_doc->ilselected >= 0)) {
                 DrawSpriteTransformMenuItems();
@@ -2229,6 +2233,8 @@ void DrawMainLayout(void)
     DrawPaletteHistogramDialog();
 
     DrawPaletteSingleColorDialog();
+
+    DrawIndexedGradientDialog();
 
     DrawPaletteReduceDialog();
 

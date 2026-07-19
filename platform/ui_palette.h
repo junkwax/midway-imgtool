@@ -85,6 +85,7 @@ void DrawPaletteMergeQualityDialog(void);
 void DrawPaletteReduceDialog(void);
 void DrawPaletteHistogramDialog(void);
 void DrawPaletteSingleColorDialog(void);
+void DrawIndexedGradientDialog(void);
 
 /* ---- Palette Operations & Helpers ---- */
 void AddNewPalette(void);
@@ -114,6 +115,7 @@ void ClearWorkingPalette(void);
 void ApplyPalette(int pal_idx);
 void OpenPaletteReduceDialog(int bpp);
 void OpenPaletteSingleColorDialog(void);
+void OpenIndexedGradientDialog(void);
 void InvalidatePaletteUsage(void);
 bool ensure_palette_numc(PAL *pal, int min_numc);
 void CleanupSelectedPalette(void);

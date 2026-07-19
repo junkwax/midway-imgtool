@@ -122,7 +122,8 @@ enum GifBlendMode {
     GifBlend_Count
 };
 const char *GifBlendModeName(int mode);
-void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames);
+void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames,
+               bool trim_transparent_border);
 void ExportPng(const char *path);
 void ExportPalette(const char *path, bool adobe_act);
 void ImportPalette(const char *path);

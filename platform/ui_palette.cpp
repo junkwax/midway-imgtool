@@ -58,6 +58,21 @@ static unsigned char g_palette_single_color_baseline[512] = {};
 static int g_palette_single_color_count = 0;
 static int g_palette_single_color_idx = -1;
 static float g_palette_single_color_rgb[3] = { 1.0f, 0.48f, 0.04f };
+static float g_palette_single_color_opacity = 1.0f;
+static float g_palette_single_color_brightness = 0.0f;
+static float g_palette_single_color_contrast = 0.0f;
+static void ApplySingleColorRamp(const unsigned char *baseline, int count,
+                                 float r, float g, float b, float opacity,
+                                 float brightness, float contrast, unsigned char *out);
+
+/* Spatial gradient made exclusively from existing palette slots. */
+static bool g_show_indexed_gradient = false;
+static int g_indexed_gradient_stops[11] = {};
+static int g_indexed_gradient_stop_count = 0;
+static int g_indexed_gradient_axis = 0; /* 0 = left/right, 1 = up/down */
+static bool g_indexed_gradient_reverse = false;
+static bool g_indexed_gradient_selected_only = false;
+static int g_indexed_gradient_target = 1;
 
 /* g_show_histogram is defined in ui_state.cpp */
 static float g_histogram_data[256] = {0};
@@ -690,6 +705,39 @@ bool ApplyEyedropperColorToLockedSwatches(int source_color_idx)
              "Eyedropper updated %d locked palette swatch%s.",
              locked, locked == 1 ? "" : "es");
     g_restore_msg_timer = 3.0f;
+    return true;
+}
+
+/* Right-click-on-canvas eyedropper for the Single-Color Shading window.
+   Only handles the click (returning true) while that window is open, so
+   the canvas's normal fill-color eyedropper still works otherwise. */
+bool PickColorForSingleColorDialog(int source_color_idx)
+{
+    if (!g_show_palette_single_color) return false;
+    if (source_color_idx < 0 || source_color_idx >= 256) return false;
+    PAL *pal = (g_doc && g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || !pal->data_p) return false;
+
+    SDL_Color sampled = g_palette[source_color_idx];
+    g_palette_single_color_rgb[0] = sampled.r / 255.0f;
+    g_palette_single_color_rgb[1] = sampled.g / 255.0f;
+    g_palette_single_color_rgb[2] = sampled.b / 255.0f;
+
+    int n = (int)pal->numc;
+    if (n > 256) n = 256;
+    if (g_palette_single_color_ready && g_palette_single_color_idx == g_doc->plselected &&
+        g_palette_single_color_count == n) {
+        ApplySingleColorRamp(g_palette_single_color_baseline, n,
+                             g_palette_single_color_rgb[0],
+                             g_palette_single_color_rgb[1],
+                             g_palette_single_color_rgb[2],
+                             g_palette_single_color_opacity,
+                             g_palette_single_color_brightness,
+                             g_palette_single_color_contrast,
+                             (unsigned char *)pal->data_p);
+        ApplyPalette(g_doc->plselected);
+        g_img_tex_idx = -2;
+    }
     return true;
 }
 
@@ -2962,13 +3010,30 @@ void DrawPaletteReduceDialog(void)
     if (!g_show_palette_reduce) ClearPaletteReducePreviewTextures();
 }
 
+static unsigned char ApplyBrightnessContrast(float v, float brightness, float contrast)
+{
+    /* Contrast pivots around mid-gray, then brightness is a flat offset.
+       contrast_factor: 0 -> unchanged, +1 -> doubled spread, -1 -> flat gray. */
+    float contrast_factor = 1.0f + contrast;
+    if (contrast_factor < 0.0f) contrast_factor = 0.0f;
+    v = (v - 127.5f) * contrast_factor + 127.5f;
+    v += brightness * 255.0f;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 255.0f) v = 255.0f;
+    return (unsigned char)lroundf(v);
+}
+
 static void ApplySingleColorRamp(const unsigned char *baseline, int count,
-                                 float r, float g, float b, unsigned char *out)
+                                 float r, float g, float b, float opacity,
+                                 float brightness, float contrast, unsigned char *out)
 {
     if (!baseline || !out || count <= 0) return;
     if (r < 0.0f) r = 0.0f; if (r > 1.0f) r = 1.0f;
     if (g < 0.0f) g = 0.0f; if (g > 1.0f) g = 1.0f;
     if (b < 0.0f) b = 0.0f; if (b > 1.0f) b = 1.0f;
+    if (opacity < 0.0f) opacity = 0.0f; if (opacity > 1.0f) opacity = 1.0f;
+    if (brightness < -1.0f) brightness = -1.0f; if (brightness > 1.0f) brightness = 1.0f;
+    if (contrast < -1.0f) contrast = -1.0f; if (contrast > 1.0f) contrast = 1.0f;
     for (int i = 0; i < count; i++) {
         unsigned short word = palette_word_at(baseline, i);
         if (i == 0) { /* transparent index remains untouched */
@@ -2982,9 +3047,20 @@ static void ApplySingleColorRamp(const unsigned char *baseline, int count,
         /* Preserve each original swatch's perceptual brightness; the chosen
            color supplies hue/saturation, yielding a usable shade ramp. */
         float light = (30.0f * sr + 59.0f * sg + 11.0f * sb) / (100.0f * 31.0f);
-        unsigned char rr = (unsigned char)lroundf(255.0f * r * light);
-        unsigned char gg = (unsigned char)lroundf(255.0f * g * light);
-        unsigned char bb = (unsigned char)lroundf(255.0f * b * light);
+        float shade_r = 255.0f * r * light;
+        float shade_g = 255.0f * g * light;
+        float shade_b = 255.0f * b * light;
+        /* Opacity blends the shaded ramp back toward the untouched original
+           swatch color, so it acts as an effect-strength control. */
+        float orig_r = sr * (255.0f / 31.0f);
+        float orig_g = sg * (255.0f / 31.0f);
+        float orig_b = sb * (255.0f / 31.0f);
+        float mix_r = orig_r + (shade_r - orig_r) * opacity;
+        float mix_g = orig_g + (shade_g - orig_g) * opacity;
+        float mix_b = orig_b + (shade_b - orig_b) * opacity;
+        unsigned char rr = ApplyBrightnessContrast(mix_r, brightness, contrast);
+        unsigned char gg = ApplyBrightnessContrast(mix_g, brightness, contrast);
+        unsigned char bb = ApplyBrightnessContrast(mix_b, brightness, contrast);
         rgb8_to_pal_word(rr, gg, bb, out + i * 2);
     }
 }
@@ -2997,16 +3073,35 @@ void OpenPaletteSingleColorDialog(void)
 
 void DrawPaletteSingleColorDialog(void)
 {
-    if (g_show_palette_single_color) ImGui::OpenPopup("Single-Color Shading");
-    if (!ImGui::BeginPopupModal("Single-Color Shading", &g_show_palette_single_color,
-                                ImGuiWindowFlags_AlwaysAutoResize))
+    if (!g_show_palette_single_color) return;
+
+    /* A regular floating window (not a modal popup) so the canvas stays
+       interactive underneath it — needed for the right-click eyedropper. */
+    ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_FirstUseEver);
+    bool open = true;
+    if (!ImGui::Begin("Single-Color Shading", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
         return;
+    }
+    if (!open) {
+        /* Closed via the window's X button: restore, same as Cancel. */
+        PAL *close_pal = (g_palette_single_color_idx >= 0) ? get_pal(g_palette_single_color_idx) : NULL;
+        if (close_pal && close_pal->data_p && g_palette_single_color_ready) {
+            memcpy(close_pal->data_p, g_palette_single_color_baseline, (size_t)g_palette_single_color_count * 2);
+            ApplyPalette(g_palette_single_color_idx);
+            g_img_tex_idx = -2;
+        }
+        g_palette_single_color_ready = false;
+        g_show_palette_single_color = false;
+        ImGui::End();
+        return;
+    }
 
     PAL *pal = (g_doc && g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
     if (!pal || !pal->data_p) {
         ImGui::TextDisabled("Select a palette first.");
-        if (ImGui::Button("Close")) { g_show_palette_single_color = false; ImGui::CloseCurrentPopup(); }
-        ImGui::EndPopup();
+        if (ImGui::Button("Close")) { g_show_palette_single_color = false; }
+        ImGui::End();
         return;
     }
     int n = (int)pal->numc;
@@ -3019,15 +3114,49 @@ void DrawPaletteSingleColorDialog(void)
         g_palette_single_color_ready = true;
     }
 
-    ImGui::TextWrapped("Choose the tree's base color. The preview keeps the source palette's brightness per swatch, so its shadows and highlights become one coherent color ramp.");
+    ImGui::TextWrapped("Choose the tree's base color. The preview keeps the source palette's brightness per swatch, so its shadows and highlights become one coherent color ramp. Right-click a sprite in the canvas to sample its color.");
     bool changed = ImGui::ColorPicker3("Base color", g_palette_single_color_rgb,
                                         ImGuiColorEditFlags_DisplayRGB |
                                         ImGuiColorEditFlags_InputRGB);
+
+    /* Hex text entry, kept in sync with the picker except while the user is
+       actively typing in it. */
+    static char s_hex_buf[16] = "";
+    static bool s_hex_active = false;
+    if (!s_hex_active) {
+        snprintf(s_hex_buf, sizeof(s_hex_buf), "#%02X%02X%02X",
+                 (int)lroundf(g_palette_single_color_rgb[0] * 255.0f),
+                 (int)lroundf(g_palette_single_color_rgb[1] * 255.0f),
+                 (int)lroundf(g_palette_single_color_rgb[2] * 255.0f));
+    }
+    ImGui::SetNextItemWidth(100);
+    bool hex_submit = ImGui::InputText("Hex", s_hex_buf, sizeof(s_hex_buf),
+                                       ImGuiInputTextFlags_EnterReturnsTrue |
+                                       ImGuiInputTextFlags_CharsUppercase);
+    s_hex_active = ImGui::IsItemActive();
+    if (hex_submit || ImGui::IsItemDeactivatedAfterEdit()) {
+        const char *s = s_hex_buf;
+        if (*s == '#') s++;
+        unsigned int rv, gv, bv;
+        if (sscanf(s, "%2x%2x%2x", &rv, &gv, &bv) == 3) {
+            g_palette_single_color_rgb[0] = rv / 255.0f;
+            g_palette_single_color_rgb[1] = gv / 255.0f;
+            g_palette_single_color_rgb[2] = bv / 255.0f;
+            changed = true;
+        }
+    }
+
+    changed |= ImGui::SliderFloat("Opacity", &g_palette_single_color_opacity, 0.0f, 1.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Brightness", &g_palette_single_color_brightness, -1.0f, 1.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Contrast", &g_palette_single_color_contrast, -1.0f, 1.0f, "%.2f");
     if (changed) {
         ApplySingleColorRamp(g_palette_single_color_baseline, n,
                              g_palette_single_color_rgb[0],
                              g_palette_single_color_rgb[1],
                              g_palette_single_color_rgb[2],
+                             g_palette_single_color_opacity,
+                             g_palette_single_color_brightness,
+                             g_palette_single_color_contrast,
                              (unsigned char *)pal->data_p);
         ApplyPalette(g_doc->plselected);
         g_img_tex_idx = -2;
@@ -3042,6 +3171,9 @@ void DrawPaletteSingleColorDialog(void)
                              g_palette_single_color_rgb[0],
                              g_palette_single_color_rgb[1],
                              g_palette_single_color_rgb[2],
+                             g_palette_single_color_opacity,
+                             g_palette_single_color_brightness,
+                             g_palette_single_color_contrast,
                              (unsigned char *)pal->data_p);
         ApplyPalette(g_doc->plselected);
         g_img_tex_idx = -2;
@@ -3049,7 +3181,6 @@ void DrawPaletteSingleColorDialog(void)
         commit_palette_adjustments();
         g_palette_single_color_ready = false;
         g_show_palette_single_color = false;
-        ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(110, 0))) {
@@ -3058,9 +3189,162 @@ void DrawPaletteSingleColorDialog(void)
         g_img_tex_idx = -2;
         g_palette_single_color_ready = false;
         g_show_palette_single_color = false;
-        ImGui::CloseCurrentPopup();
     }
-    ImGui::EndPopup();
+    ImGui::End();
+}
+
+void OpenIndexedGradientDialog(void)
+{
+    g_indexed_gradient_stop_count = 0;
+    PAL *pal = NULL;
+    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (img) pal = get_pal((int)img->palnum);
+    int limit = pal ? (int)pal->numc : 0;
+    if (limit > 256) limit = 256;
+    for (int i = 1; i < limit && g_indexed_gradient_stop_count < 11; i++) {
+        if (g_palette_selection[i])
+            g_indexed_gradient_stops[g_indexed_gradient_stop_count++] = i;
+    }
+    if (g_indexed_gradient_stop_count == 0 && g_sel_color > 0 && g_sel_color < limit)
+        g_indexed_gradient_stops[g_indexed_gradient_stop_count++] = g_sel_color;
+    g_indexed_gradient_target = (g_sel_color > 0 && g_sel_color < limit) ? g_sel_color : 1;
+    g_show_indexed_gradient = true;
+}
+
+static void IndexedGradientRgb(const unsigned char *data, int idx, int *r, int *g, int *b)
+{
+    unsigned short word = (unsigned short)(data[idx * 2] | (data[idx * 2 + 1] << 8));
+    *r = ((word >> 10) & 31) * 255 / 31;
+    *g = ((word >> 5) & 31) * 255 / 31;
+    *b = (word & 31) * 255 / 31;
+}
+
+static int ApplyIndexedGradientToSelected(void)
+{
+    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || g_indexed_gradient_stop_count < 2) return 0;
+    PAL *pal = get_pal((int)img->palnum);
+    if (!pal || !pal->data_p) return 0;
+
+    PixelHist snap = {};
+    if (!pixel_hist_capture(&snap, false)) return 0;
+    const unsigned char *pd = (const unsigned char *)pal->data_p;
+    int stop_rgb[11][3];
+    for (int i = 0; i < g_indexed_gradient_stop_count; i++)
+        IndexedGradientRgb(pd, g_indexed_gradient_stops[i], &stop_rgb[i][0], &stop_rgb[i][1], &stop_rgb[i][2]);
+
+    int changed = 0;
+    int stride = (img->w + 3) & ~3;
+    unsigned char *pixels = (unsigned char *)img->data_p;
+    for (int y = 0; y < (int)img->h; y++) {
+        for (int x = 0; x < (int)img->w; x++) {
+            unsigned char &px = pixels[y * stride + x];
+            if (px == 0 || (g_indexed_gradient_selected_only && px != g_indexed_gradient_target)) continue;
+            int pos = g_indexed_gradient_axis == 0 ? x : y;
+            int span = g_indexed_gradient_axis == 0 ? (int)img->w - 1 : (int)img->h - 1;
+            float t = span > 0 ? (float)pos / (float)span : 0.0f;
+            if (g_indexed_gradient_reverse) t = 1.0f - t;
+            float scaled = t * (float)(g_indexed_gradient_stop_count - 1);
+            int seg = (int)floorf(scaled);
+            if (seg >= g_indexed_gradient_stop_count - 1) seg = g_indexed_gradient_stop_count - 2;
+            float f = scaled - (float)seg;
+            int rr = (int)lroundf(stop_rgb[seg][0] + (stop_rgb[seg + 1][0] - stop_rgb[seg][0]) * f);
+            int gg = (int)lroundf(stop_rgb[seg][1] + (stop_rgb[seg + 1][1] - stop_rgb[seg][1]) * f);
+            int bb = (int)lroundf(stop_rgb[seg][2] + (stop_rgb[seg + 1][2] - stop_rgb[seg][2]) * f);
+            int best = 0, best_dist = 0x7fffffff;
+            for (int i = 0; i < g_indexed_gradient_stop_count; i++) {
+                int dr = rr - stop_rgb[i][0], dg = gg - stop_rgb[i][1], db = bb - stop_rgb[i][2];
+                int dist = dr * dr + dg * dg + db * db;
+                if (dist < best_dist) { best_dist = dist; best = i; }
+            }
+            unsigned char replacement = (unsigned char)g_indexed_gradient_stops[best];
+            if (px != replacement) { px = replacement; changed++; }
+        }
+    }
+    if (changed > 0) {
+        push_pixel_history_entry(&snap);
+        InvalidateThumb(g_doc->ilselected);
+        g_img_tex_idx = -2;
+        mark_dirty();
+    } else {
+        pixel_hist_free(&snap);
+    }
+    return changed;
+}
+
+void DrawIndexedGradientDialog(void)
+{
+    if (!g_show_indexed_gradient) return;
+    ImGui::SetNextWindowSize(ImVec2(470, 0), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Indexed Color Gradient", &g_show_indexed_gradient,
+                      ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        return;
+    }
+    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    PAL *pal = img ? get_pal((int)img->palnum) : NULL;
+    if (!img || !pal || !pal->data_p) {
+        ImGui::TextDisabled("Select a sprite with a palette first.");
+        ImGui::End();
+        return;
+    }
+    int limit = (int)pal->numc > 256 ? 256 : (int)pal->numc;
+    ImGui::TextWrapped("Build an ordered fade from existing palette slots. The palette itself is never reordered or edited; sprite pixels are assigned the nearest chosen stop.");
+    ImGui::Separator();
+    ImGui::Text("Gradient stops (%d / 11)", g_indexed_gradient_stop_count);
+    const unsigned char *pd = (const unsigned char *)pal->data_p;
+    for (int i = 0; i < g_indexed_gradient_stop_count; i++) {
+        ImGui::PushID(i);
+        int idx = g_indexed_gradient_stops[i], r, g, b;
+        IndexedGradientRgb(pd, idx, &r, &g, &b);
+        ImGui::ColorButton("##stop", ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f), 0, ImVec2(24, 24));
+        ImGui::SameLine(); ImGui::Text("#%d", idx);
+        ImGui::SameLine(100);
+        if (ImGui::SmallButton("Up") && i > 0) std::swap(g_indexed_gradient_stops[i], g_indexed_gradient_stops[i - 1]);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Down") && i + 1 < g_indexed_gradient_stop_count) std::swap(g_indexed_gradient_stops[i], g_indexed_gradient_stops[i + 1]);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) {
+            for (int j = i; j + 1 < g_indexed_gradient_stop_count; j++) g_indexed_gradient_stops[j] = g_indexed_gradient_stops[j + 1];
+            g_indexed_gradient_stop_count--; i--;
+        }
+        ImGui::PopID();
+    }
+    bool already_added = false;
+    for (int i = 0; i < g_indexed_gradient_stop_count; i++)
+        if (g_indexed_gradient_stops[i] == g_sel_color) already_added = true;
+    if (g_indexed_gradient_stop_count >= 11 || g_sel_color <= 0 || g_sel_color >= limit || already_added) ImGui::BeginDisabled();
+    if (ImGui::Button("Add current swatch")) g_indexed_gradient_stops[g_indexed_gradient_stop_count++] = g_sel_color;
+    if (g_indexed_gradient_stop_count >= 11 || g_sel_color <= 0 || g_sel_color >= limit || already_added) ImGui::EndDisabled();
+    ImGui::SameLine(); ImGui::TextDisabled("Current: #%d", g_sel_color);
+
+    ImGui::Separator();
+    ImGui::RadioButton("Left / Right", &g_indexed_gradient_axis, 0); ImGui::SameLine();
+    ImGui::RadioButton("Up / Down", &g_indexed_gradient_axis, 1); ImGui::SameLine();
+    ImGui::Checkbox("Reverse", &g_indexed_gradient_reverse);
+    if (ImGui::RadioButton("All opaque pixels", !g_indexed_gradient_selected_only))
+        g_indexed_gradient_selected_only = false;
+    if (ImGui::RadioButton("Only one palette index", g_indexed_gradient_selected_only))
+        g_indexed_gradient_selected_only = true;
+    if (g_indexed_gradient_selected_only) {
+        ImGui::SameLine(); ImGui::SetNextItemWidth(90);
+        ImGui::InputInt("##gradient_target", &g_indexed_gradient_target, 0, 0);
+        if (g_indexed_gradient_target < 1) g_indexed_gradient_target = 1;
+        if (g_indexed_gradient_target >= limit) g_indexed_gradient_target = limit - 1;
+    }
+    ImGui::TextDisabled("Transparent index #0 is always preserved.");
+    ImGui::Separator();
+    if (g_indexed_gradient_stop_count < 2) ImGui::BeginDisabled();
+    if (ImGui::Button("Apply", ImVec2(110, 0))) {
+        int changed = ApplyIndexedGradientToSelected();
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Indexed gradient changed %d pixel%s.", changed, changed == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+        if (changed > 0) g_show_indexed_gradient = false;
+    }
+    if (g_indexed_gradient_stop_count < 2) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(110, 0))) g_show_indexed_gradient = false;
+    ImGui::End();
 }
 
 void DrawPaletteHistogramDialog(void)

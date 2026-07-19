@@ -8277,9 +8277,12 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                     unsigned short stride = (cimg->w + 3) & ~3;
                     unsigned char *pix = (unsigned char *)cimg->data_p + py * stride + px;
 
-                    /* Right-click: eyedropper (works in any tool mode) */
+                    /* Right-click: eyedropper (works in any tool mode). When the
+                       Single-Color Shading window is open, feed it the sampled
+                       color instead of the normal fill-color slot. */
                     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                        g_sel_color = *pix;
+                        if (!PickColorForSingleColorDialog(*pix))
+                            g_sel_color = *pix;
                         widget_consumed_click = true;
                     }
                     /* Eyedropper tool active: left-click also picks color.
@@ -14128,34 +14131,47 @@ int ApplySelectedInnerStroke(unsigned char r, unsigned char g, unsigned char b)
 {
     IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !img->data_p || img->w == 0 || img->h == 0) return 0;
-    PAL *target_pal = get_pal((int)img->palnum);
-    if (!target_pal || !target_pal->data_p || target_pal->bitspix < 2) return 0;
+    PAL *source_pal = get_pal((int)img->palnum);
+    if (!source_pal || !source_pal->data_p || source_pal->bitspix < 2) return 0;
 
-    int bpp = target_pal->bitspix > 8 ? 8 : target_pal->bitspix;
+    int bpp = source_pal->bitspix > 8 ? 8 : source_pal->bitspix;
     int color_cap = 1 << bpp;
     if (g_sel_color <= 0 || g_sel_color >= color_cap) return 0;
 
     /* A 2bpp image has transparent #0 plus only three opaque indices.  Its
        selected fill therefore doubles as the lightest (third) inside band. */
     int dedicated_slots = (bpp == 2) ? 2 : 3;
-    bool used[256];
-    collect_library_used_indices(used);
     int slots[3] = { g_sel_color, g_sel_color, g_sel_color };
+    int next_slot = 1;
     for (int band = 0; band < dedicated_slots; band++) {
-        int slot = -1;
-        for (int i = 1; i < color_cap; i++) {
-            if (i != g_sel_color && !used[i]) { slot = i; break; }
-        }
+        while (next_slot == g_sel_color) next_slot++;
+        int slot = next_slot++;
         if (slot < 0) return 0;
         slots[band] = slot;
-        used[slot] = true;
     }
     if (bpp == 2) slots[2] = g_sel_color;
 
     int highest_slot = slots[0];
     for (int i = 1; i < dedicated_slots; i++)
         if (slots[i] > highest_slot) highest_slot = slots[i];
-    if (!doc_undo_push() || !ensure_all_palettes_numc(highest_slot + 1)) return 0;
+    if (!doc_undo_push()) return 0;
+
+    /* This operation is deliberately self-contained.  The source palette can
+       be shared by a whole animation library, so give this one sprite a copy
+       before turning every opaque entry into the requested fill/stroke ramp. */
+    PAL *target_pal = (PAL *)AllocPal();
+    if (!target_pal) return 0;
+    target_pal->flags = source_pal->flags;
+    target_pal->bitspix = source_pal->bitspix;
+    target_pal->numc = source_pal->numc > highest_slot ? source_pal->numc
+                                                        : (unsigned short)(highest_slot + 1);
+    target_pal->pad = 0;
+    snprintf(target_pal->n_s, sizeof(target_pal->n_s), "STRK%03u", g_doc->palcnt - 1);
+    unsigned char *palette_data = (unsigned char *)malloc(512);
+    if (!palette_data) return 0;
+    memset(palette_data, 0, 512);
+    memcpy(palette_data, source_pal->data_p, (size_t)source_pal->numc * 2);
+    target_pal->data_p = palette_data;
 
     const float shade[3] = { 0.34f, 0.62f, 0.92f };
     unsigned short stroke_words[3];
@@ -14166,17 +14182,17 @@ int ApplySelectedInnerStroke(unsigned char r, unsigned char g, unsigned char b)
             (unsigned char)(b * shade[band] + 0.5f));
     }
 
-    int pal_idx = 0;
-    for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p, pal_idx++) {
-        unsigned char *pd = (unsigned char *)pal->data_p;
-        for (int band = 0; band < dedicated_slots; band++) {
-            unsigned short word = pal_idx == (int)img->palnum
-                ? stroke_words[band]
-                : pal_word_or_black(pal, g_sel_color);
-            pd[slots[band] * 2] = (unsigned char)(word & 0xff);
-            pd[slots[band] * 2 + 1] = (unsigned char)(word >> 8);
-        }
+    unsigned short fill_word = pal_word_or_black(source_pal, g_sel_color);
+    for (int i = 1; i < (int)target_pal->numc; i++) {
+        palette_data[i * 2] = (unsigned char)(fill_word & 0xff);
+        palette_data[i * 2 + 1] = (unsigned char)(fill_word >> 8);
     }
+    for (int band = 0; band < dedicated_slots; band++) {
+        palette_data[slots[band] * 2] = (unsigned char)(stroke_words[band] & 0xff);
+        palette_data[slots[band] * 2 + 1] = (unsigned char)(stroke_words[band] >> 8);
+    }
+    img->palnum = (unsigned short)(g_doc->palcnt - 1);
+    g_doc->plselected = (int)img->palnum;
 
     int w = img->w, h = img->h;
     int stride = (w + 3) & ~3;
@@ -14223,6 +14239,9 @@ int ApplySelectedInnerStroke(unsigned char r, unsigned char g, unsigned char b)
     }
 
     ApplyPalette((int)img->palnum);
+    save_palette_baseline();
+    reset_palette_adjust_sliders();
+    InvalidatePaletteSync();
     InvalidateThumb(g_doc->ilselected);
     g_img_tex_idx = -2;
     mark_dirty();

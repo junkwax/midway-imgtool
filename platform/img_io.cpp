@@ -4301,7 +4301,32 @@ static bool read_entire_file(const char *path, std::vector<unsigned char> &bytes
     return ok;
 }
 
-void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames)
+/* Union (not per-frame) bounding box of non-transparent pixels across every
+   frame, so a shared crop keeps all frames aligned to each other. */
+static bool gif_frames_alpha_bbox(const unsigned char *rgba, int w, int h, int frame_count,
+                                  int *out_x0, int *out_y0, int *out_x1, int *out_y1)
+{
+    int x0 = w, y0 = h, x1 = -1, y1 = -1;
+    const size_t pixels_per_frame = (size_t)w * (size_t)h;
+    for (int f = 0; f < frame_count; f++) {
+        const unsigned char *frame = rgba + (size_t)f * pixels_per_frame * 4;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (frame[((size_t)y * w + x) * 4 + 3] < 128) continue;
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                if (y > y1) y1 = y;
+            }
+        }
+    }
+    if (x1 < x0 || y1 < y0) return false;
+    *out_x0 = x0; *out_y0 = y0; *out_x1 = x1; *out_y1 = y1;
+    return true;
+}
+
+void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames,
+              bool trim_transparent_border)
 {
     verbose_log("ImportGif: %s", path);
     if (blend_mode < 0 || blend_mode >= GifBlend_Count) blend_mode = GifBlend_Normal;
@@ -4351,6 +4376,31 @@ void ImportGif(const char *path, int blend_mode, int opacity_percent, bool impor
         }
     }
 
+    bool trimmed = false;
+    if (trim_transparent_border) {
+        int x0, y0, x1, y1;
+        if (gif_frames_alpha_bbox(frames_rgba.data(), w, h, import_count, &x0, &y0, &x1, &y1)) {
+            int crop_w = x1 - x0 + 1;
+            int crop_h = y1 - y0 + 1;
+            if (crop_w != w || crop_h != h) {
+                std::vector<unsigned char> cropped((size_t)import_count * crop_w * crop_h * 4);
+                for (int f = 0; f < import_count; f++) {
+                    const unsigned char *src_frame = frames_rgba.data() + (size_t)f * pixels_per_frame * 4;
+                    unsigned char *dst_frame = cropped.data() + (size_t)f * crop_w * crop_h * 4;
+                    for (int y = 0; y < crop_h; y++) {
+                        const unsigned char *src_row = src_frame + ((size_t)(y + y0) * w + x0) * 4;
+                        unsigned char *dst_row = dst_frame + (size_t)y * crop_w * 4;
+                        memcpy(dst_row, src_row, (size_t)crop_w * 4);
+                    }
+                }
+                frames_rgba = std::move(cropped);
+                w = crop_w;
+                h = crop_h;
+                trimmed = true;
+            }
+        }
+    }
+
     int pal_colors = 0, unique_colors = 0;
     int imported = import_rgba_frames_as_images(path, frames_rgba.data(), w, h,
                                                 import_count, &pal_colors, &unique_colors);
@@ -4360,10 +4410,11 @@ void ImportGif(const char *path, int blend_mode, int opacity_percent, bool impor
 
     if (imported > 0) {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
-                 "Imported %d GIF frame(s), %d palette color(s).", imported, pal_colors + 1);
-        verbose_log("  -> %dx%d px, %d/%d frame(s), %d colors from %d unique source colors, blend=%s opacity=%d%%",
+                 "Imported %d GIF frame(s), %d palette color(s)%s.", imported, pal_colors + 1,
+                 trimmed ? ", trimmed" : "");
+        verbose_log("  -> %dx%d px, %d/%d frame(s), %d colors from %d unique source colors, blend=%s opacity=%d%% trim=%s",
                     w, h, imported, frames, pal_colors + 1, unique_colors,
-                    GifBlendModeName(blend_mode), opacity_percent);
+                    GifBlendModeName(blend_mode), opacity_percent, trimmed ? "yes" : "no");
     } else {
         snprintf(g_restore_msg, sizeof(g_restore_msg), "GIF import failed: no frames imported.");
     }

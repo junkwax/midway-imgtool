@@ -84,6 +84,7 @@ static bool g_irw_align_16bit     = true;
 static int  g_gif_blend_mode      = GifBlend_Normal;
 static int  g_gif_opacity_percent = 100;
 static bool g_gif_import_all      = true;
+static bool g_gif_trim_transparent = true;
 static int  g_sheet_bg_threshold  = 245;
 static int  g_sheet_min_pixels    = 160;
 static int  g_sheet_padding       = 2;
@@ -1134,7 +1135,7 @@ extern "C" void imgui_overlay_open_path(const char *path)
         g_img_tex_idx = -2;
     } else if (ext == "gif") {
         ensure_new_doc_if_empty();
-        ImportGif(p.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all);
+        ImportGif(p.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all, g_gif_trim_transparent);
         mark_dirty();
         g_img_tex_idx = -2;
     } else {
@@ -1352,6 +1353,9 @@ void DrawFileDialog() {
             }
             ImGui::SliderInt("Opacity", &g_gif_opacity_percent, 0, 100, "%d%%");
             ImGui::Checkbox("Import All Frames", &g_gif_import_all);
+            ImGui::Checkbox("Trim Transparent Border", &g_gif_trim_transparent);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Crop away any border that's transparent across every imported frame.\nFrames stay aligned to each other.");
         }
 
         if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) {
@@ -1468,7 +1472,7 @@ void DrawFileDialog() {
                 unsigned int before_count = g_doc->imgcnt;
                 for (const std::string &file : selected_files) {
                     std::string path = PathCombine(g_file_dialog_dir, file);
-                    ImportGif(path.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all);
+                    ImportGif(path.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all, g_gif_trim_transparent);
                 }
                 if (selected_files.size() > 1) {
                     unsigned int added = g_doc->imgcnt - before_count;
@@ -6954,7 +6958,7 @@ void DrawInnerStrokeDialog(void)
         ImGui::TextWrapped("The silhouette becomes the selected fill index. Its first three inside pixel bands become dark, medium, and light versions of this hue.");
         if (pal->bitspix == 2)
             ImGui::TextWrapped("2bpp note: only three opaque indices exist, so the selected fill is used as the lightest third band.");
-        ImGui::TextDisabled("Three unused palette indices are reserved so other sprites keep their colors.");
+        ImGui::TextDisabled("The sprite gets its own palette copy; every opaque palette entry becomes the fill, then the three stroke entries are applied.");
     }
 
     ImGui::Separator();
@@ -6970,7 +6974,7 @@ void DrawInnerStrokeDialog(void)
                      changed, changed == 1 ? "" : "s");
         } else {
             snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Need unused palette indices for the inner stroke.");
+                     "Could not create the sprite's inner-stroke palette.");
         }
         g_restore_msg_timer = 4.0f;
         g_show_inner_stroke = false;
