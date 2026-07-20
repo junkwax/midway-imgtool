@@ -22,6 +22,7 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <cctype>
 
 struct PaletteCleanupResult {
     int removed;
@@ -65,14 +66,104 @@ static void ApplySingleColorRamp(const unsigned char *baseline, int count,
                                  float r, float g, float b, float opacity,
                                  float brightness, float contrast, unsigned char *out);
 
-/* Spatial gradient made exclusively from existing palette slots. */
+/* Multi-stop palette gradient. It changes selected palette words only; sprite
+   pixels keep their original index values and therefore their exact mapping. */
 static bool g_show_indexed_gradient = false;
-static int g_indexed_gradient_stops[11] = {};
-static int g_indexed_gradient_stop_count = 0;
-static int g_indexed_gradient_axis = 0; /* 0 = left/right, 1 = up/down */
-static bool g_indexed_gradient_reverse = false;
-static bool g_indexed_gradient_selected_only = false;
-static int g_indexed_gradient_target = 1;
+static float g_indexed_gradient_colors[11][3] = {};
+static bool g_indexed_gradient_color_set[11] = {};
+static int g_indexed_gradient_color_count = 2;
+static int g_indexed_gradient_palette_idx = -1;
+static bool g_indexed_gradient_targets[256] = {};
+static unsigned char g_indexed_gradient_baseline[512] = {};
+static int g_indexed_gradient_palette_count = 0;
+static int g_indexed_gradient_image_idx = -1;
+static SDL_Texture *g_indexed_gradient_preview_tex = NULL;
+struct IndexedGradientPreset {
+    std::string name;
+    std::vector<ImVec4> colors;
+};
+static std::vector<IndexedGradientPreset> g_indexed_gradient_presets;
+static bool g_indexed_gradient_presets_loaded = false;
+static bool g_indexed_gradient_applied = false;
+static bool g_indexed_gradient_open_name_popup = false;
+static char g_indexed_gradient_preset_name[96] = {};
+
+static std::string IndexedGradientPresetPath(void)
+{
+    char *pref = SDL_GetPrefPath("midway", "imgtool");
+    if (!pref) return "indexed_gradients.txt";
+    std::string path(pref);
+    SDL_free(pref);
+    path += "indexed_gradients.txt";
+    return path;
+}
+
+static void LoadIndexedGradientPresets(void)
+{
+    if (g_indexed_gradient_presets_loaded) return;
+    g_indexed_gradient_presets_loaded = true;
+    FILE *f = fopen(IndexedGradientPresetPath().c_str(), "r");
+    if (!f) return;
+    char line[2048];
+    while (fgets(line, sizeof(line), f)) {
+        char *nl = strpbrk(line, "\r\n");
+        if (nl) *nl = '\0';
+        char *sep1 = strchr(line, '|');
+        if (!sep1) continue;
+        *sep1++ = '\0';
+        char *sep2 = strchr(sep1, '|');
+        if (!sep2) continue;
+        *sep2++ = '\0';
+        int count = atoi(sep1);
+        if (!line[0] || count < 2 || count > 11) continue;
+        IndexedGradientPreset preset;
+        preset.name = line;
+        char *token = strtok(sep2, ",");
+        while (token && (int)preset.colors.size() < count) {
+            unsigned int rgb = 0;
+            if (sscanf(token, "%06x", &rgb) != 1) break;
+            preset.colors.push_back(ImVec4(((rgb >> 16) & 255) / 255.0f,
+                                           ((rgb >> 8) & 255) / 255.0f,
+                                           (rgb & 255) / 255.0f, 1.0f));
+            token = strtok(NULL, ",");
+        }
+        if ((int)preset.colors.size() == count)
+            g_indexed_gradient_presets.push_back(std::move(preset));
+    }
+    fclose(f);
+}
+
+static bool SaveIndexedGradientPresets(void)
+{
+    FILE *f = fopen(IndexedGradientPresetPath().c_str(), "w");
+    if (!f) return false;
+    for (const IndexedGradientPreset &preset : g_indexed_gradient_presets) {
+        fprintf(f, "%s|%d|", preset.name.c_str(), (int)preset.colors.size());
+        for (size_t i = 0; i < preset.colors.size(); i++) {
+            const ImVec4 &c = preset.colors[i];
+            int r = (int)lroundf(c.x * 255.0f);
+            int g = (int)lroundf(c.y * 255.0f);
+            int b = (int)lroundf(c.z * 255.0f);
+            fprintf(f, "%s%02X%02X%02X", i ? "," : "", r, g, b);
+        }
+        fputc('\n', f);
+    }
+    bool ok = ferror(f) == 0;
+    fclose(f);
+    return ok;
+}
+
+static void SelectIndexedGradientPreset(const IndexedGradientPreset &preset)
+{
+    g_indexed_gradient_color_count = (int)preset.colors.size();
+    for (int i = 0; i < g_indexed_gradient_color_count; i++) {
+        g_indexed_gradient_colors[i][0] = preset.colors[i].x;
+        g_indexed_gradient_colors[i][1] = preset.colors[i].y;
+        g_indexed_gradient_colors[i][2] = preset.colors[i].z;
+        g_indexed_gradient_color_set[i] = true;
+    }
+    g_indexed_gradient_applied = false;
+}
 
 /* g_show_histogram is defined in ui_state.cpp */
 static float g_histogram_data[256] = {0};
@@ -3195,19 +3286,21 @@ void DrawPaletteSingleColorDialog(void)
 
 void OpenIndexedGradientDialog(void)
 {
-    g_indexed_gradient_stop_count = 0;
-    PAL *pal = NULL;
-    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (img) pal = get_pal((int)img->palnum);
-    int limit = pal ? (int)pal->numc : 0;
-    if (limit > 256) limit = 256;
-    for (int i = 1; i < limit && g_indexed_gradient_stop_count < 11; i++) {
-        if (g_palette_selection[i])
-            g_indexed_gradient_stops[g_indexed_gradient_stop_count++] = i;
-    }
-    if (g_indexed_gradient_stop_count == 0 && g_sel_color > 0 && g_sel_color < limit)
-        g_indexed_gradient_stops[g_indexed_gradient_stop_count++] = g_sel_color;
-    g_indexed_gradient_target = (g_sel_color > 0 && g_sel_color < limit) ? g_sel_color : 1;
+    PAL *pal = (g_doc && g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || !pal->data_p) return;
+    g_indexed_gradient_palette_idx = g_doc->plselected;
+    g_indexed_gradient_image_idx = g_doc->ilselected;
+    g_indexed_gradient_palette_count = (int)pal->numc > 256 ? 256 : (int)pal->numc;
+    memcpy(g_indexed_gradient_baseline, pal->data_p,
+           (size_t)g_indexed_gradient_palette_count * 2);
+    memset(g_indexed_gradient_targets, 0, sizeof(g_indexed_gradient_targets));
+    for (int i = 1; i < g_indexed_gradient_palette_count; i++)
+        g_indexed_gradient_targets[i] = g_palette_selection[i];
+    g_indexed_gradient_color_count = 2;
+    memset(g_indexed_gradient_colors, 0, sizeof(g_indexed_gradient_colors));
+    memset(g_indexed_gradient_color_set, 0, sizeof(g_indexed_gradient_color_set));
+    g_indexed_gradient_applied = false;
+    LoadIndexedGradientPresets();
     g_show_indexed_gradient = true;
 }
 
@@ -3219,131 +3312,305 @@ static void IndexedGradientRgb(const unsigned char *data, int idx, int *r, int *
     *b = (word & 31) * 255 / 31;
 }
 
-static int ApplyIndexedGradientToSelected(void)
+static int BuildIndexedGradientPalette(unsigned char out[512])
 {
-    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!img || !img->data_p || g_indexed_gradient_stop_count < 2) return 0;
-    PAL *pal = get_pal((int)img->palnum);
-    if (!pal || !pal->data_p) return 0;
+    if (!out || g_indexed_gradient_color_count < 2) return -1;
+    for (int i = 0; i < g_indexed_gradient_color_count; i++)
+        if (!g_indexed_gradient_color_set[i]) return -1;
+    memcpy(out, g_indexed_gradient_baseline,
+           (size_t)g_indexed_gradient_palette_count * 2);
 
-    PixelHist snap = {};
-    if (!pixel_hist_capture(&snap, false)) return 0;
-    const unsigned char *pd = (const unsigned char *)pal->data_p;
-    int stop_rgb[11][3];
-    for (int i = 0; i < g_indexed_gradient_stop_count; i++)
-        IndexedGradientRgb(pd, g_indexed_gradient_stops[i], &stop_rgb[i][0], &stop_rgb[i][1], &stop_rgb[i][2]);
-
-    int changed = 0;
-    int stride = (img->w + 3) & ~3;
-    unsigned char *pixels = (unsigned char *)img->data_p;
-    for (int y = 0; y < (int)img->h; y++) {
-        for (int x = 0; x < (int)img->w; x++) {
-            unsigned char &px = pixels[y * stride + x];
-            if (px == 0 || (g_indexed_gradient_selected_only && px != g_indexed_gradient_target)) continue;
-            int pos = g_indexed_gradient_axis == 0 ? x : y;
-            int span = g_indexed_gradient_axis == 0 ? (int)img->w - 1 : (int)img->h - 1;
-            float t = span > 0 ? (float)pos / (float)span : 0.0f;
-            if (g_indexed_gradient_reverse) t = 1.0f - t;
-            float scaled = t * (float)(g_indexed_gradient_stop_count - 1);
-            int seg = (int)floorf(scaled);
-            if (seg >= g_indexed_gradient_stop_count - 1) seg = g_indexed_gradient_stop_count - 2;
-            float f = scaled - (float)seg;
-            int rr = (int)lroundf(stop_rgb[seg][0] + (stop_rgb[seg + 1][0] - stop_rgb[seg][0]) * f);
-            int gg = (int)lroundf(stop_rgb[seg][1] + (stop_rgb[seg + 1][1] - stop_rgb[seg][1]) * f);
-            int bb = (int)lroundf(stop_rgb[seg][2] + (stop_rgb[seg + 1][2] - stop_rgb[seg][2]) * f);
-            int best = 0, best_dist = 0x7fffffff;
-            for (int i = 0; i < g_indexed_gradient_stop_count; i++) {
-                int dr = rr - stop_rgb[i][0], dg = gg - stop_rgb[i][1], db = bb - stop_rgb[i][2];
-                int dist = dr * dr + dg * dg + db * db;
-                if (dist < best_dist) { best_dist = dist; best = i; }
-            }
-            unsigned char replacement = (unsigned char)g_indexed_gradient_stops[best];
-            if (px != replacement) { px = replacement; changed++; }
-        }
+    int min_luma = 0x7fffffff, max_luma = -1, target_count = 0;
+    int luma[256] = {};
+    for (int i = 1; i < g_indexed_gradient_palette_count; i++) {
+        if (!g_indexed_gradient_targets[i]) continue;
+        int r, g, b;
+        IndexedGradientRgb(g_indexed_gradient_baseline, i, &r, &g, &b);
+        luma[i] = 30 * r + 59 * g + 11 * b;
+        if (luma[i] < min_luma) min_luma = luma[i];
+        if (luma[i] > max_luma) max_luma = luma[i];
+        target_count++;
     }
-    if (changed > 0) {
-        push_pixel_history_entry(&snap);
-        InvalidateThumb(g_doc->ilselected);
-        g_img_tex_idx = -2;
-        mark_dirty();
-    } else {
-        pixel_hist_free(&snap);
+    if (target_count == 0) return -1;
+    int changed = 0;
+    for (int i = 1; i < g_indexed_gradient_palette_count; i++) {
+        if (!g_indexed_gradient_targets[i]) continue;
+        float t = max_luma > min_luma
+                ? (float)(luma[i] - min_luma) / (float)(max_luma - min_luma)
+                : 0.5f;
+        float scaled = t * (float)(g_indexed_gradient_color_count - 1);
+        int seg = (int)floorf(scaled);
+        if (seg >= g_indexed_gradient_color_count - 1) seg = g_indexed_gradient_color_count - 2;
+        float f = scaled - (float)seg;
+        int rgb[3];
+        for (int c = 0; c < 3; c++)
+            rgb[c] = (int)lroundf(255.0f * (g_indexed_gradient_colors[seg][c] +
+                     (g_indexed_gradient_colors[seg + 1][c] - g_indexed_gradient_colors[seg][c]) * f));
+        unsigned short word = (unsigned short)(((rgb[0] >> 3) << 10) |
+                                               ((rgb[1] >> 3) << 5) |
+                                                (rgb[2] >> 3));
+        unsigned short old = (unsigned short)(out[i * 2] | (out[i * 2 + 1] << 8));
+        if (word != old) changed++;
+        out[i * 2] = (unsigned char)(word & 0xff);
+        out[i * 2 + 1] = (unsigned char)(word >> 8);
     }
     return changed;
 }
 
+static int ApplyIndexedGradientToPalette(void)
+{
+    PAL *pal = get_pal(g_indexed_gradient_palette_idx);
+    if (!pal || !pal->data_p) return 0;
+    unsigned char result[512] = {};
+    int changed = BuildIndexedGradientPalette(result);
+    if (changed < 0) return 0;
+    doc_undo_push();
+    memcpy(pal->data_p, result, (size_t)g_indexed_gradient_palette_count * 2);
+    ApplyPalette(g_indexed_gradient_palette_idx);
+    save_palette_baseline();
+    InvalidatePaletteSync();
+    InvalidatePaletteUsage();
+    g_img_tex_idx = -2;
+    mark_dirty();
+    return changed;
+}
+
+static SDL_Texture *BuildIndexedGradientPreview(void)
+{
+    if (g_indexed_gradient_preview_tex) {
+        SDL_DestroyTexture(g_indexed_gradient_preview_tex);
+        g_indexed_gradient_preview_tex = NULL;
+    }
+    IMG *img = get_img(g_indexed_gradient_image_idx);
+    if (!g_imgui_renderer || !img || !img->data_p ||
+        (int)img->palnum != g_indexed_gradient_palette_idx) return NULL;
+    unsigned char preview_pal[512] = {};
+    if (BuildIndexedGradientPalette(preview_pal) < 0) return NULL;
+    g_indexed_gradient_preview_tex = SDL_CreateTexture(
+        g_imgui_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+        img->w, img->h);
+    if (!g_indexed_gradient_preview_tex) return NULL;
+    SDL_SetTextureBlendMode(g_indexed_gradient_preview_tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(g_indexed_gradient_preview_tex, SDL_ScaleModeNearest);
+    void *locked = NULL; int pitch = 0;
+    if (SDL_LockTexture(g_indexed_gradient_preview_tex, NULL, &locked, &pitch) != 0) {
+        SDL_DestroyTexture(g_indexed_gradient_preview_tex);
+        g_indexed_gradient_preview_tex = NULL;
+        return NULL;
+    }
+    int stride = (img->w + 3) & ~3;
+    const unsigned char *src = (const unsigned char *)img->data_p;
+    for (int y = 0; y < (int)img->h; y++) {
+        Uint32 *row = (Uint32 *)((unsigned char *)locked + y * pitch);
+        for (int x = 0; x < (int)img->w; x++) {
+            unsigned char ci = src[y * stride + x];
+            int r = 0, g = 0, b = 0;
+            if (ci < g_indexed_gradient_palette_count)
+                IndexedGradientRgb(preview_pal, ci, &r, &g, &b);
+            row[x] = (ci == 0 ? 0u : 0xff000000u) |
+                     ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
+        }
+    }
+    SDL_UnlockTexture(g_indexed_gradient_preview_tex);
+    return g_indexed_gradient_preview_tex;
+}
+
 void DrawIndexedGradientDialog(void)
 {
-    if (!g_show_indexed_gradient) return;
+    if (!g_show_indexed_gradient) {
+        if (g_indexed_gradient_preview_tex) {
+            SDL_DestroyTexture(g_indexed_gradient_preview_tex);
+            g_indexed_gradient_preview_tex = NULL;
+        }
+        return;
+    }
     ImGui::SetNextWindowSize(ImVec2(470, 0), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Indexed Color Gradient", &g_show_indexed_gradient,
                       ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         return;
     }
-    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    PAL *pal = img ? get_pal((int)img->palnum) : NULL;
-    if (!img || !pal || !pal->data_p) {
-        ImGui::TextDisabled("Select a sprite with a palette first.");
+    PAL *pal = get_pal(g_indexed_gradient_palette_idx);
+    if (!pal || !pal->data_p) {
+        ImGui::TextDisabled("The original palette is no longer available.");
         ImGui::End();
         return;
     }
-    int limit = (int)pal->numc > 256 ? 256 : (int)pal->numc;
-    ImGui::TextWrapped("Build an ordered fade from existing palette slots. The palette itself is never reordered or edited; sprite pixels are assigned the nearest chosen stop.");
+    int target_count = 0;
+    for (int i = 1; i < g_indexed_gradient_palette_count; i++)
+        if (g_indexed_gradient_targets[i]) target_count++;
+    ImGui::TextWrapped("The %d palette color%s selected before opening will be fitted to this ramp by original brightness. Palette slots and every sprite pixel index stay in exactly the same place.",
+                       target_count, target_count == 1 ? "" : "s");
+    if (!g_indexed_gradient_presets.empty()) {
+        ImGui::SeparatorText("Saved gradients");
+        const float swatch_w = 56.0f, swatch_h = 56.0f;
+        for (size_t pi = 0; pi < g_indexed_gradient_presets.size(); pi++) {
+            const IndexedGradientPreset &preset = g_indexed_gradient_presets[pi];
+            ImGui::PushID((int)pi);
+            if (pi > 0 && (pi % 5) != 0) ImGui::SameLine();
+            ImGui::BeginGroup();
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            if (ImGui::InvisibleButton("##gradient_preset", ImVec2(swatch_w, swatch_h)))
+                SelectIndexedGradientPreset(preset);
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            int n = (int)preset.colors.size();
+            const int slices = 32;
+            for (int i = 0; i < slices; i++) {
+                float t = (float)i / (float)(slices - 1);
+                float scaled = t * (float)(n - 1);
+                int seg = (int)floorf(scaled);
+                if (seg >= n - 1) seg = n - 2;
+                float f = scaled - (float)seg;
+                ImVec4 c;
+                c.x = preset.colors[seg].x + (preset.colors[seg + 1].x - preset.colors[seg].x) * f;
+                c.y = preset.colors[seg].y + (preset.colors[seg + 1].y - preset.colors[seg].y) * f;
+                c.z = preset.colors[seg].z + (preset.colors[seg + 1].z - preset.colors[seg].z) * f;
+                c.w = 1.0f;
+                float x0 = p.x + swatch_w * (float)i / (float)slices;
+                float x1 = p.x + swatch_w * (float)(i + 1) / (float)slices;
+                dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1 + 1.0f, p.y + swatch_h),
+                                  ImGui::ColorConvertFloat4ToU32(c));
+            }
+            dl->AddRect(p, ImVec2(p.x + swatch_w, p.y + swatch_h),
+                        ImGui::IsItemHovered() ? IM_COL32(255, 220, 90, 255)
+                                               : IM_COL32(150, 150, 150, 255),
+                        2.0f, 0, ImGui::IsItemHovered() ? 2.0f : 1.0f);
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + swatch_w);
+            ImGui::TextUnformatted(preset.name.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndGroup();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Use %s (%d colors)", preset.name.c_str(), n);
+            ImGui::PopID();
+        }
+    }
     ImGui::Separator();
-    ImGui::Text("Gradient stops (%d / 11)", g_indexed_gradient_stop_count);
-    const unsigned char *pd = (const unsigned char *)pal->data_p;
-    for (int i = 0; i < g_indexed_gradient_stop_count; i++) {
+    ImGui::Text("Gradient colors (%d / 11)", g_indexed_gradient_color_count);
+    bool all_set = true;
+    for (int i = 0; i < g_indexed_gradient_color_count; i++) {
         ImGui::PushID(i);
-        int idx = g_indexed_gradient_stops[i], r, g, b;
-        IndexedGradientRgb(pd, idx, &r, &g, &b);
-        ImGui::ColorButton("##stop", ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f), 0, ImVec2(24, 24));
-        ImGui::SameLine(); ImGui::Text("#%d", idx);
-        ImGui::SameLine(100);
-        if (ImGui::SmallButton("Up") && i > 0) std::swap(g_indexed_gradient_stops[i], g_indexed_gradient_stops[i - 1]);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Down") && i + 1 < g_indexed_gradient_stop_count) std::swap(g_indexed_gradient_stops[i], g_indexed_gradient_stops[i + 1]);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Remove")) {
-            for (int j = i; j + 1 < g_indexed_gradient_stop_count; j++) g_indexed_gradient_stops[j] = g_indexed_gradient_stops[j + 1];
-            g_indexed_gradient_stop_count--; i--;
+        ImGui::Text("%d", i + 1); ImGui::SameLine();
+        ImGui::SetNextItemWidth(250);
+        bool color_changed = ImGui::ColorEdit3("##color", g_indexed_gradient_colors[i],
+                                               ImGuiColorEditFlags_PickerHueWheel |
+                                               ImGuiColorEditFlags_DisplayRGB);
+        if (color_changed || ImGui::IsItemActivated())
+            g_indexed_gradient_color_set[i] = true;
+        if (!g_indexed_gradient_color_set[i]) {
+            all_set = false;
+            ImGui::SameLine(); ImGui::TextDisabled("empty");
+        }
+        if (g_indexed_gradient_color_count > 2) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remove")) {
+                for (int j = i; j + 1 < g_indexed_gradient_color_count; j++) {
+                    memcpy(g_indexed_gradient_colors[j], g_indexed_gradient_colors[j + 1], sizeof(g_indexed_gradient_colors[j]));
+                    g_indexed_gradient_color_set[j] = g_indexed_gradient_color_set[j + 1];
+                }
+                g_indexed_gradient_color_count--; i--;
+            }
         }
         ImGui::PopID();
     }
-    bool already_added = false;
-    for (int i = 0; i < g_indexed_gradient_stop_count; i++)
-        if (g_indexed_gradient_stops[i] == g_sel_color) already_added = true;
-    if (g_indexed_gradient_stop_count >= 11 || g_sel_color <= 0 || g_sel_color >= limit || already_added) ImGui::BeginDisabled();
-    if (ImGui::Button("Add current swatch")) g_indexed_gradient_stops[g_indexed_gradient_stop_count++] = g_sel_color;
-    if (g_indexed_gradient_stop_count >= 11 || g_sel_color <= 0 || g_sel_color >= limit || already_added) ImGui::EndDisabled();
-    ImGui::SameLine(); ImGui::TextDisabled("Current: #%d", g_sel_color);
-
-    ImGui::Separator();
-    ImGui::RadioButton("Left / Right", &g_indexed_gradient_axis, 0); ImGui::SameLine();
-    ImGui::RadioButton("Up / Down", &g_indexed_gradient_axis, 1); ImGui::SameLine();
-    ImGui::Checkbox("Reverse", &g_indexed_gradient_reverse);
-    if (ImGui::RadioButton("All opaque pixels", !g_indexed_gradient_selected_only))
-        g_indexed_gradient_selected_only = false;
-    if (ImGui::RadioButton("Only one palette index", g_indexed_gradient_selected_only))
-        g_indexed_gradient_selected_only = true;
-    if (g_indexed_gradient_selected_only) {
-        ImGui::SameLine(); ImGui::SetNextItemWidth(90);
-        ImGui::InputInt("##gradient_target", &g_indexed_gradient_target, 0, 0);
-        if (g_indexed_gradient_target < 1) g_indexed_gradient_target = 1;
-        if (g_indexed_gradient_target >= limit) g_indexed_gradient_target = limit - 1;
+    if (g_indexed_gradient_color_count >= 11) ImGui::BeginDisabled();
+    if (ImGui::Button("Add color")) {
+        memset(g_indexed_gradient_colors[g_indexed_gradient_color_count], 0,
+               sizeof(g_indexed_gradient_colors[g_indexed_gradient_color_count]));
+        g_indexed_gradient_color_set[g_indexed_gradient_color_count] = false;
+        g_indexed_gradient_color_count++;
     }
-    ImGui::TextDisabled("Transparent index #0 is always preserved.");
+    if (g_indexed_gradient_color_count >= 11) ImGui::EndDisabled();
+    ImGui::TextDisabled("Click a swatch to open its color wheel. All colors must be chosen before Apply.");
+    ImGui::SeparatorText("Preview");
+    SDL_Texture *preview = all_set ? BuildIndexedGradientPreview() : NULL;
+    IMG *preview_img = get_img(g_indexed_gradient_image_idx);
+    if (preview && preview_img) {
+        const float max_w = 400.0f, max_h = 260.0f;
+        float scale_w = max_w / (float)preview_img->w;
+        float scale_h = max_h / (float)preview_img->h;
+        float scale = scale_w < scale_h ? scale_w : scale_h;
+        if (scale > 8.0f) scale = 8.0f;
+        if (scale < 1.0f) scale = 1.0f;
+        ImVec2 size((float)preview_img->w * scale,
+                    (float)preview_img->h * scale);
+        ImGui::Image((ImTextureID)(intptr_t)preview, size);
+    } else {
+        ImGui::TextDisabled(all_set ? "Preview unavailable for this sprite."
+                                    : "Choose every gradient color to preview the result.");
+    }
     ImGui::Separator();
-    if (g_indexed_gradient_stop_count < 2) ImGui::BeginDisabled();
+    if (!all_set || target_count == 0) ImGui::BeginDisabled();
     if (ImGui::Button("Apply", ImVec2(110, 0))) {
-        int changed = ApplyIndexedGradientToSelected();
-        snprintf(g_restore_msg, sizeof(g_restore_msg), "Indexed gradient changed %d pixel%s.", changed, changed == 1 ? "" : "s");
+        int changed = ApplyIndexedGradientToPalette();
+        g_indexed_gradient_applied = true;
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Gradient recolored %d palette slot%s; sprite indices unchanged.", changed, changed == 1 ? "" : "s");
         g_restore_msg_timer = 4.0f;
-        if (changed > 0) g_show_indexed_gradient = false;
+        /* Keep the configured colors and tool open for further refinement. */
     }
-    if (g_indexed_gradient_stop_count < 2) ImGui::EndDisabled();
+    if (!all_set || target_count == 0) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!all_set || !g_indexed_gradient_applied);
+    if (ImGui::Button("Save Gradient...", ImVec2(130, 0))) {
+        g_indexed_gradient_preset_name[0] = '\0';
+        g_indexed_gradient_open_name_popup = true;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(g_indexed_gradient_applied
+            ? "Save this ramp to your user profile for reuse."
+            : "Apply the gradient before saving it as a preset.");
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(110, 0))) g_show_indexed_gradient = false;
+
+    if (g_indexed_gradient_open_name_popup) {
+        ImGui::OpenPopup("Name Gradient");
+        g_indexed_gradient_open_name_popup = false;
+    }
+    if (ImGui::BeginPopupModal("Name Gradient", NULL,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Name this gradient preset:");
+        ImGui::SetNextItemWidth(300.0f);
+        bool submitted = ImGui::InputText("##gradient_name",
+                                          g_indexed_gradient_preset_name,
+                                          sizeof(g_indexed_gradient_preset_name),
+                                          ImGuiInputTextFlags_EnterReturnsTrue |
+                                          ImGuiInputTextFlags_AutoSelectAll);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
+        char *begin = g_indexed_gradient_preset_name;
+        while (*begin && std::isspace((unsigned char)*begin)) begin++;
+        char *end = begin + strlen(begin);
+        while (end > begin && std::isspace((unsigned char)end[-1])) *--end = '\0';
+        for (char *p = begin; *p; p++) if (*p == '|') *p = '-';
+        bool has_name = *begin != '\0';
+        ImGui::BeginDisabled(!has_name);
+        if (ImGui::Button("Save", ImVec2(100, 0)) || (submitted && has_name)) {
+            IndexedGradientPreset preset;
+            preset.name = begin;
+            for (int i = 0; i < g_indexed_gradient_color_count; i++)
+                preset.colors.push_back(ImVec4(g_indexed_gradient_colors[i][0],
+                                               g_indexed_gradient_colors[i][1],
+                                               g_indexed_gradient_colors[i][2], 1.0f));
+            bool replaced = false;
+            for (IndexedGradientPreset &existing : g_indexed_gradient_presets) {
+                if (_stricmp(existing.name.c_str(), preset.name.c_str()) == 0) {
+                    existing = preset;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) g_indexed_gradient_presets.push_back(std::move(preset));
+            bool saved = SaveIndexedGradientPresets();
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     saved ? "Saved gradient preset '%s'." : "Could not save gradient preset.",
+                     begin);
+            g_restore_msg_timer = 4.0f;
+            if (saved) ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
     ImGui::End();
 }
 

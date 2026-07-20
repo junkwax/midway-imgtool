@@ -391,6 +391,7 @@ struct WorldMarkedSequenceState {
     bool dummy_decap_manual = false;
     int dummy_decap_doc_idx = -1;
     std::string dummy_decap_prefix;
+    int active_slot = -1;         /* slot controlled by Left/Right + hard-anipoint tools */
     int drag_slot = -1;
     int drag_frame = -1;
     bool drag_dual = false;        /* dragging the dual (second) instance */

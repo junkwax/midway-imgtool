@@ -4375,15 +4375,19 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
 
                 WorldMarkedLaneThumbClick thumb_click =
                     WorldDrawMarkedLaneThumbnails(state, lane);
-                if (thumb_click.clicked)
+                if (thumb_click.clicked) {
+                    state.active_slot = lane.delay_slot;
                     result.thumb_click = thumb_click;
+                }
             } else {
                 WorldDrawMarkedLaneControls(state, lane, lanes, slot);
 
                 WorldMarkedLaneThumbClick thumb_click =
                     WorldDrawMarkedLaneThumbnails(state, lane);
-                if (thumb_click.clicked)
+                if (thumb_click.clicked) {
+                    state.active_slot = lane.delay_slot;
                     result.thumb_click = thumb_click;
+                }
             }
             ImGui::PopID();
         }
@@ -4587,6 +4591,92 @@ static void WorldMarkedClearMotionFrom(WorldMarkedSequenceState &state,
     }
 }
 
+static int WorldGroundAlignLaneAnipoints(const WorldMarkedLane &lane)
+{
+    /* Undo storage is document-local. Require this slot's IMG tab to be active
+       so the whole correction remains one clean, reversible operation. */
+    if (!g_doc || lane.doc != g_doc || lane.frames.empty())
+        return -1;
+
+    struct GroundAnchor { IMG *img; int img_idx; int x; int y; };
+    std::vector<GroundAnchor> anchors;
+    anchors.reserve(lane.frames.size());
+
+    int previous_x = 0;
+    bool have_previous_x = false;
+    for (size_t fi = 0; fi < lane.frames.size(); fi++) {
+        Document *entry_doc = (fi < lane.frame_docs.size() && lane.frame_docs[fi])
+                            ? lane.frame_docs[fi] : lane.doc;
+        if (entry_doc != lane.doc)
+            return -1; /* mixed-document ASM lanes need cross-document undo */
+
+        int img_idx = lane.frames[fi];
+        IMG *img = doc_get_img(entry_doc, img_idx);
+        if (!img || img->w == 0 || img->h == 0)
+            continue;
+
+        bool duplicate = false;
+        for (const GroundAnchor &anchor : anchors) {
+            if (anchor.img == img) { duplicate = true; break; }
+        }
+        if (duplicate)
+            continue;
+
+        CanvasContentBounds bounds = CanvasFindOpaqueBounds(img);
+        int left = bounds.valid ? bounds.min_x : 0;
+        int right = bounds.valid ? bounds.max_x + 1 : (int)img->w;
+        int bottom = bounds.valid ? bounds.max_y + 1 : (int)img->h;
+
+        int x = (int)(short)img->anix;
+        if (have_previous_x) {
+            /* Reuse the preceding frame's axis while it crosses this sprite;
+               otherwise settle on the nearest opaque edge. */
+            x = previous_x;
+            if (x < left) x = left;
+            if (x > right) x = right;
+        }
+        previous_x = x;
+        have_previous_x = true;
+        anchors.push_back({img, img_idx, x, bottom});
+    }
+
+    /* These are preview-only offsets. Leaving them behind would make correctly
+       aligned hard IMG anipoints still appear inconsistent in World View. */
+    int slot = lane.delay_slot;
+    bool preview_offsets_changed = false;
+    if (slot >= 0 && slot < kWorldMarkedMaxTabs) {
+        for (int value : g_world_marked_state.local_dx[slot])
+            if (value != 0) preview_offsets_changed = true;
+        for (int value : g_world_marked_state.local_dy[slot])
+            if (value != 0) preview_offsets_changed = true;
+    }
+
+    int changed = 0;
+    for (const GroundAnchor &anchor : anchors)
+        if ((int)(short)anchor.img->anix != anchor.x ||
+            (int)(short)anchor.img->aniy != anchor.y)
+            changed++;
+    if (changed == 0 && !preview_offsets_changed)
+        return 0;
+    if (changed > 0 && !doc_undo_push())
+        return 0;
+
+    for (const GroundAnchor &anchor : anchors) {
+        anchor.img->anix = signed_to_img_word(anchor.x);
+        anchor.img->aniy = signed_to_img_word(anchor.y);
+        InvalidateThumb(anchor.img_idx);
+    }
+    if (slot >= 0 && slot < kWorldMarkedMaxTabs) {
+        std::fill(g_world_marked_state.local_dx[slot].begin(),
+                  g_world_marked_state.local_dx[slot].end(), 0);
+        std::fill(g_world_marked_state.local_dy[slot].begin(),
+                  g_world_marked_state.local_dy[slot].end(), 0);
+    }
+    g_img_tex_idx = -2;
+    mark_dirty();
+    return changed > 0 ? changed : (preview_offsets_changed ? 1 : 0);
+}
+
 void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                                  WorldMarkedLane &lane,
                                  const std::vector<WorldMarkedLane> &lanes,
@@ -4611,6 +4701,12 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             : "Show this World View row.");
     ImGui::SameLine();
     ImGui::Text("Slot %d  [%d] %s", display_slot + 1, lane.doc_idx, doc_name);
+    if (state.active_slot == lane.delay_slot) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.2f, 1.0f), "[KEYS]");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Left/Right controls this slot and loads each frame's real IMG anipoints.");
+    }
     ImGui::SameLine();
     ImGui::Checkbox("Stop##world_lane_stop", &state.hold_end[lane.delay_slot]);
     if (ImGui::IsItemHovered())
@@ -4673,6 +4769,24 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             ImGui::SetTooltip("Play this row backward: plain entries reverse order, "
                               "while chain/composite/waterline entries mirror their "
                               "show/hide ticks and motion so they retrace in reverse.");
+        ImGui::SameLine();
+        bool can_ground_align = lane.doc == g_doc && !lane.frames.empty();
+        ImGui::BeginDisabled(!can_ground_align);
+        if (ImGui::SmallButton("Ground Align Anipts##world_lane_ground_align")) {
+            state.active_slot = lane.delay_slot;
+            int changed = WorldGroundAlignLaneAnipoints(lane);
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     changed > 0
+                         ? "Ground-aligned %d anipoint%s in this slot."
+                         : "This slot's anipoints are already ground-aligned.",
+                     changed, changed == 1 ? "" : "s");
+            g_restore_msg_timer = 4.0f;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(can_ground_align
+                ? "Put every frame's primary anipoint at its lowest opaque pixel (feet/ground).\nThe first frame keeps its X axis; later frames reuse it when possible."
+                : "Select a frame from this slot first so its IMG tab is active.");
     }
 
     EnsureWorldMarkedFrameDelays(state, lane.delay_slot, (int)lane.frames.size());
@@ -5755,6 +5869,7 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
         EnsureWorldMarkedFrameDelays(state, state_slot, (int)lane.frames.size());
         if (lane.frame_pos >= 0 && lane.frame_pos < (int)lane.frames.size()) {
             state.paused = true;
+            state.active_slot = state_slot;
             state.drag_slot = state_slot;
             state.drag_frame = lane.frame_pos;
             state.drag_dual = hover_dual;
@@ -5946,9 +6061,60 @@ void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta)
 {
     state.paused = true;
     state.timer = 0.0f;
-    state.frame += delta;
-    if (state.frame < 0)
-        state.frame = 0;
+
+    int slot = state.active_slot;
+    auto usable_slot = [&](int candidate) {
+        return candidate >= 0 && candidate < kWorldMarkedMaxTabs &&
+               !state.sequence_frames[candidate].empty();
+    };
+
+    /* If no row has been explicitly chosen yet, prefer the row containing the
+       editor's selected real IMG, then any row belonging to the active tab. */
+    if (!usable_slot(slot)) {
+        slot = -1;
+        int active_doc = document_active_index();
+        int selected_img = g_doc ? g_doc->ilselected : -1;
+        for (int s = 0; s < kWorldMarkedMaxTabs && slot < 0; s++) {
+            if (!usable_slot(s)) continue;
+            for (size_t fi = 0; fi < state.sequence_frames[s].size(); fi++) {
+                int doc_idx = (fi < state.frame_doc[s].size() && state.frame_doc[s][fi] >= 0)
+                            ? state.frame_doc[s][fi] : state.sequence_doc_idx[s];
+                if (doc_idx == active_doc && state.sequence_frames[s][fi] == selected_img) {
+                    slot = s;
+                    break;
+                }
+            }
+        }
+        if (!usable_slot(slot)) {
+            for (int s = 0; s < kWorldMarkedMaxTabs; s++) {
+                if (usable_slot(s) && state.sequence_doc_idx[s] == active_doc) {
+                    slot = s;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!usable_slot(slot)) {
+        state.frame += delta;
+        if (state.frame < 0) state.frame = 0;
+        return;
+    }
+
+    state.active_slot = slot;
+    int n = (int)state.sequence_frames[slot].size();
+    int current = WorldMarkedFrameForTick(state, slot, n, state.frame,
+                                           state.hold_end[slot]);
+    int next = (current + delta) % n;
+    if (next < 0) next += n;
+    state.frame = WorldMarkedTickForFrame(state, slot, n, next);
+
+    int doc_idx = (next < (int)state.frame_doc[slot].size() &&
+                   state.frame_doc[slot][next] >= 0)
+                ? state.frame_doc[slot][next] : state.sequence_doc_idx[slot];
+    Document *doc = document_get(doc_idx);
+    WorldSyncEditorSelectionToSprite(doc, doc_idx,
+                                     state.sequence_frames[slot][next]);
 }
 
 void WorldMarkedSetTick(WorldMarkedSequenceState &state, int tick)
@@ -7622,7 +7788,10 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
             if (dx != 0 || dy != 0) {
                 int next_ax = (int)(short)img->anix + (mirror_active ? dx : -dx);
                 int next_ay = (int)(short)img->aniy - dy;
-                set_primary_anipoint_with_sequence(img, next_ax, next_ay);
+                /* World View is a frame-by-frame alignment workspace.  Keep a
+                   drag local so stepping frames cannot rearrange anchors that
+                   were already placed on name-matched sequence frames. */
+                set_primary_anipoint_local(img, next_ax, next_ay);
             }
         }
     }

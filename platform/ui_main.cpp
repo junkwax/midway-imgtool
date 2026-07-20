@@ -253,7 +253,11 @@ void DrawMainLayout(void)
     if (ImGui::Shortcut(ImGuiKey_K, route)) imgtool_toggle_timeline_play();
     /* Left/Right scrub the animation timeline, or the marked-tab World View
        sequence when that preview is active. */
-    bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() || ImGui::IsAnyItemFocused() || io.WantTextInput;
+    /* A merely focused numeric widget must not steal Left/Right in World View.
+       Active drags and text entry still block navigation normally. */
+    bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() ||
+                                 (!g_world_state.enabled && ImGui::IsAnyItemFocused()) ||
+                                 io.WantTextInput;
     if (!widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
         if (ImGui::Shortcut(ImGuiKey_LeftArrow, route)) {
             if (g_world_state.enabled && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, -1);
@@ -477,8 +481,8 @@ void DrawMainLayout(void)
                 "dithered opacity gradient. Can target selected or marked sprites.");
             if (ImGui::MenuItem("Indexed Color Gradient...", NULL, false, g_doc->ilselected >= 0)) OpenIndexedGradientDialog();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-                "Fade through up to 11 existing palette indices without\n"
-                "moving or editing palette colors. Applies to the selected sprite.");
+                "Fit the palette colors selected before opening into a custom\n"
+                "2-11 color ramp. Sprite pixel indices remain unchanged.");
             if (ImGui::MenuItem("3-Tone Inner Stroke...", NULL, false, g_doc->ilselected >= 0)) OpenInnerStrokeDialog();
             if (ImGui::BeginMenu("Transform Selected", g_doc->ilselected >= 0)) {
                 DrawSpriteTransformMenuItems();

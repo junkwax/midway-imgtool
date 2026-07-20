@@ -309,13 +309,26 @@ void LabeledValue(const char *label, const char *fmt, ...)
 
 bool AnimPointSliderInt(const char *label, int *value, int min_value, int max_value)
 {
+    int original_value = *value;
     ImGui::SetNextItemWidth(-1);
     bool changed = ImGui::DragInt(label, value, 1.0f, min_value, max_value);
     bool selected = ImGui::IsItemActive() || ImGui::IsItemFocused();
-    ImGui::SetItemKeyOwner(ImGuiKey_LeftArrow);
-    ImGui::SetItemKeyOwner(ImGuiKey_RightArrow);
 
     ImGuiIO &io = ImGui::GetIO();
+    bool plain_left_right = !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt &&
+                            !io.KeyShift &&
+                            (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true) ||
+                             ImGui::IsKeyPressed(ImGuiKey_RightArrow, true));
+    if (g_world_state.enabled && plain_left_right) {
+        /* In World View these keys belong exclusively to frame navigation.
+           DragInt may have already applied a keyboard nudge this frame, so
+           restore the hard anipoint before the panel commits it. */
+        *value = original_value;
+        return false;
+    }
+
+    ImGui::SetItemKeyOwner(ImGuiKey_LeftArrow);
+    ImGui::SetItemKeyOwner(ImGuiKey_RightArrow);
     if (selected && !changed && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift) {
         int delta = 0;
         if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  delta--;
