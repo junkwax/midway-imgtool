@@ -125,6 +125,9 @@ const char *GifBlendModeName(int mode);
 void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames,
                bool trim_transparent_border);
 void ExportPng(const char *path);
+bool ExportAnimatedGif(const char *path, const std::vector<int> &frames,
+                       const std::vector<int> &holds, float fps,
+                       bool loop, bool pingpong, bool align_anipoints);
 void ExportPalette(const char *path, bool adobe_act);
 void ImportPalette(const char *path);
 int  RestoreMarkedFromSource(void);

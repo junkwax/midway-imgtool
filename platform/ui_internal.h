@@ -50,7 +50,9 @@ bool SeqScrBuildRecords(std::vector<SeqScrRecordView> &records,
 const char *SeqScrRecordTypeLabel(const SeqScrRecordView &rec);
 bool SeqScrAddRecord(bool script);
 bool SeqScrAppendEntry(int record_index, int target_index);
+bool SeqScrAppendEntries(int record_index, const std::vector<int> &target_indices);
 bool SeqScrDeleteEntry(int record_index, int entry_index);
+bool SeqScrMoveEntry(int record_index, int entry_index, int delta);
 const char *SeqScrEntryTargetName(const SeqScrRecordView &rec,
                                   int entry_index,
                                   const std::vector<SeqScrRecordView> &records);
@@ -429,6 +431,7 @@ extern FreeTransform g_xform;
 extern PasteBlendMode g_paste_blend_mode;
 extern int g_paste_opacity;
 extern bool g_paste_smooth_resize;
+extern bool g_cookie_cut_mode;
 extern int g_hitbox_x, g_hitbox_y, g_hitbox_w, g_hitbox_h;
 extern int g_hitbox_drag_corner;
 
@@ -442,6 +445,8 @@ void xform_begin(void);
 void xform_cancel(void);
 void xform_commit(void);
 void apply_pasted_region(void);
+void CaptureCookieCutter(void);
+void PlaceCookieCutter(void);
 bool SelectedImageWillAutoChop(void);
 bool BuildBestAutoSplitPreviewForImage(const IMG *img, bool vertical, AutoChopPreview *out);
 bool BuildAutoChopPreviewForImage(const IMG *img, AutoChopPreview *out);

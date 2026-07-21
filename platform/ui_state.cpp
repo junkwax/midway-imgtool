@@ -108,6 +108,7 @@ FreeTransform g_xform = {false, true, 0,0,0,0, 0,0,0,0, 0.0f,0.0f, TransformHand
 PasteBlendMode g_paste_blend_mode = PasteBlendMode::Normal;
 int g_paste_opacity = 100;
 bool g_paste_smooth_resize = true;
+bool g_cookie_cut_mode = false;
 int g_hitbox_x = 0;
 int g_hitbox_y = 0;
 int g_hitbox_w = 32;

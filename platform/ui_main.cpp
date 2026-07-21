@@ -36,6 +36,135 @@
 extern "C" { extern struct SDL_Color g_palette[256]; }
 extern int g_img_tex_idx;
 
+static bool g_open_set_group_anipoints = false;
+static int g_group_anipoint_x = 0;
+static int g_group_anipoint_y = 0;
+static bool g_group_set_x = true;
+static bool g_group_set_y = true;
+/* 0 preserves distance from the leading edge, 1 from center, 2 from trailing edge. */
+static int g_group_x_basis = 1;
+static int g_group_y_basis = 2;
+
+static IMG *FirstMarkedImage(void)
+{
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p)
+        if (img->flags & 1) return img;
+    return NULL;
+}
+
+static void OpenSetGroupAnipointsDialog(void)
+{
+    /* Image-list order defines the group reference, not whichever marked frame
+       happens to be selected when the menu opens. */
+    IMG *img = FirstMarkedImage();
+    if (img) {
+        g_group_anipoint_x = (int)(short)img->anix;
+        g_group_anipoint_y = (int)(short)img->aniy;
+    }
+    g_open_set_group_anipoints = true;
+}
+
+static void DrawSetGroupAnipointsDialog(void)
+{
+    if (g_open_set_group_anipoints) {
+        ImGui::OpenPopup("Set Group Animation Points");
+        g_open_set_group_anipoints = false;
+    }
+
+    if (!ImGui::BeginPopupModal("Set Group Animation Points", NULL,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    int marked = CountMarkedImages();
+    IMG *reference = FirstMarkedImage();
+    ImGui::Text("Set the primary animation point for %d marked frame%s.",
+                marked, marked == 1 ? "" : "s");
+    if (reference)
+        ImGui::TextDisabled("Reference: %.15s  %dx%d  AX/AY=%d,%d",
+                            reference->n_s, (int)reference->w, (int)reference->h,
+                            (int)(short)reference->anix, (int)(short)reference->aniy);
+    ImGui::Spacing();
+    ImGui::Checkbox("Set X", &g_group_set_x);
+    ImGui::SameLine(120.0f);
+    ImGui::BeginDisabled(!g_group_set_x);
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("X value", &g_group_anipoint_x);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(145.0f);
+    const char *x_basis[] = { "From Left", "From Center", "From Right" };
+    ImGui::Combo("##group_x_basis", &g_group_x_basis, x_basis, 3);
+    ImGui::EndDisabled();
+
+    ImGui::Checkbox("Set Y", &g_group_set_y);
+    ImGui::SameLine(120.0f);
+    ImGui::BeginDisabled(!g_group_set_y);
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("Y value", &g_group_anipoint_y);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(145.0f);
+    const char *y_basis[] = { "From Top", "From Center", "From Bottom" };
+    ImGui::Combo("##group_y_basis", &g_group_y_basis, y_basis, 3);
+    ImGui::EndDisabled();
+
+    ImGui::TextDisabled("Values apply to the first marked frame. Other frames compensate for size.");
+    ImGui::TextDisabled("Leading edge: same value. Center: + half size delta. Trailing edge: + full delta.");
+
+    bool valid = marked > 0 && reference && (g_group_set_x || g_group_set_y) &&
+                 (!g_group_set_x || (g_group_anipoint_x >= -32768 && g_group_anipoint_x <= 32767)) &&
+                 (!g_group_set_y || (g_group_anipoint_y >= -32768 && g_group_anipoint_y <= 32767));
+    if (!valid) ImGui::BeginDisabled();
+    if (ImGui::Button("Set Group", ImVec2(120, 0))) {
+        int changed = 0;
+        int reference_w = (int)reference->w;
+        int reference_h = (int)reference->h;
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+            if (!(img->flags & 1)) continue;
+            int dx_size = (int)img->w - reference_w;
+            int dy_size = (int)img->h - reference_h;
+            int next_x = g_group_anipoint_x +
+                         (g_group_x_basis == 1 ? dx_size / 2 :
+                          g_group_x_basis == 2 ? dx_size : 0);
+            int next_y = g_group_anipoint_y +
+                         (g_group_y_basis == 1 ? dy_size / 2 :
+                          g_group_y_basis == 2 ? dy_size : 0);
+            if (next_x < -32768) next_x = -32768;
+            if (next_x > 32767) next_x = 32767;
+            if (next_y < -32768) next_y = -32768;
+            if (next_y > 32767) next_y = 32767;
+            unsigned short ax = g_group_set_x ? signed_to_img_word(next_x) : img->anix;
+            unsigned short ay = g_group_set_y ? signed_to_img_word(next_y) : img->aniy;
+            if (img->anix == ax && img->aniy == ay) continue;
+            if (changed == 0) doc_undo_push();
+            img->anix = ax;
+            img->aniy = ay;
+            changed++;
+        }
+        if (changed > 0) {
+            mark_dirty();
+            g_img_tex_idx = -2;
+            ClearTimelineThumbCache();
+        }
+        if (changed > 0)
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Set %d marked animation point%s (%s%s%s), size-compensated from first frame.",
+                     changed, changed == 1 ? "" : "s",
+                     g_group_set_x ? "X" : "", g_group_set_x && g_group_set_y ? "/" : "",
+                     g_group_set_y ? "Y" : "");
+        else
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Marked animation points already match the requested %s%s%s alignment.",
+                     g_group_set_x ? "X" : "", g_group_set_x && g_group_set_y ? "/" : "",
+                     g_group_set_y ? "Y" : "");
+        g_restore_msg_timer = 4.0f;
+        ImGui::CloseCurrentPopup();
+    }
+    if (!valid) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(90, 0)))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 
 void DrawMainLayout(void)
 {
@@ -244,6 +373,18 @@ void DrawMainLayout(void)
         if (ImGui::Shortcut(ImGuiKey_V, route)) flip_clipboard_vertical();
         if (ImGui::Shortcut(ImGuiKey_L, route)) drop_paste_to_layer();
     }
+    /* A floating paste owns the cursor keys until committed or cancelled.
+       This prevents accidental frame changes and permits precise placement. */
+    if (g_pasted.active && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt) {
+        int step = io.KeyShift ? 10 : 1;
+        int dx = 0, dy = 0;
+        if (ImGui::Shortcut((io.KeyShift ? ImGuiMod_Shift : 0) | ImGuiKey_LeftArrow, route))  dx -= step;
+        if (ImGui::Shortcut((io.KeyShift ? ImGuiMod_Shift : 0) | ImGuiKey_RightArrow, route)) dx += step;
+        if (ImGui::Shortcut((io.KeyShift ? ImGuiMod_Shift : 0) | ImGuiKey_UpArrow, route))    dy -= step;
+        if (ImGui::Shortcut((io.KeyShift ? ImGuiMod_Shift : 0) | ImGuiKey_DownArrow, route))  dy += step;
+        if (g_xform.active) { g_xform.rx += dx; g_xform.ry += dy; }
+        else { g_pasted.paste_x += dx; g_pasted.paste_y += dy; }
+    }
 
     /* Image Operations */
     if (ImGui::Shortcut(ImGuiKey_Space, route)) {
@@ -258,7 +399,7 @@ void DrawMainLayout(void)
     bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() ||
                                  (!g_world_state.enabled && ImGui::IsAnyItemFocused()) ||
                                  io.WantTextInput;
-    if (!widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
+    if (!g_pasted.active && !widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
         if (ImGui::Shortcut(ImGuiKey_LeftArrow, route)) {
             if (g_world_state.enabled && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, -1);
             else StepTimelinePlayhead(-1);
@@ -269,13 +410,13 @@ void DrawMainLayout(void)
         }
     }
     /* Ctrl+Left/Right reorders the current play-head frame within the timeline. */
-    if (!widget_using_keyboard && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, route)) {
+    if (!g_pasted.active && !widget_using_keyboard && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, route)) {
         if (g_timeline_play_idx > 0 && g_timeline_play_idx < (int)g_timeline_frames.size()) {
             TimelineSwapFrames(g_timeline_play_idx, g_timeline_play_idx - 1);
             g_timeline_play_idx--;
         }
     }
-    if (!widget_using_keyboard && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, route)) {
+    if (!g_pasted.active && !widget_using_keyboard && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, route)) {
         if (g_timeline_play_idx + 1 < (int)g_timeline_frames.size()) {
             TimelineSwapFrames(g_timeline_play_idx, g_timeline_play_idx + 1);
             g_timeline_play_idx++;
@@ -293,7 +434,7 @@ void DrawMainLayout(void)
     /* Sprite / palette list navigation: cursor up/down flicks
      * between images (default) or palettes (when palette panel
      * was last clicked), matching DOS imgtool muscle memory. */
-    if (!popup_using_keyboard && !widget_using_keyboard &&
+    if (!g_pasted.active && !popup_using_keyboard && !widget_using_keyboard &&
         g_world_state.enabled &&
         WorldEmbeddedSeqScrActive(g_world_marked_state)) {
         /* When a World View script/sequence table is loaded, Up/Down step
@@ -303,7 +444,7 @@ void DrawMainLayout(void)
             StepWorldEmbeddedSeqScrEntry(g_world_marked_state, 1);
         if (ImGui::Shortcut(ImGuiKey_UpArrow, route))
             StepWorldEmbeddedSeqScrEntry(g_world_marked_state, -1);
-    } else if (!popup_using_keyboard && g_palette_nav && g_doc->palcnt > 0) {
+    } else if (!g_pasted.active && !popup_using_keyboard && g_palette_nav && g_doc->palcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
             SelectPalette((g_doc->plselected + 1) % (int)g_doc->palcnt);
             g_zoom_reset = true;
@@ -312,7 +453,7 @@ void DrawMainLayout(void)
             SelectPalette((g_doc->plselected <= 0) ? (int)g_doc->palcnt - 1 : g_doc->plselected - 1);
             g_zoom_reset = true;
         }
-    } else if (!popup_using_keyboard && g_doc->imgcnt > 0) {
+    } else if (!g_pasted.active && !popup_using_keyboard && g_doc->imgcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
             g_doc->ilselected = (g_doc->ilselected + 1) % (int)g_doc->imgcnt;
             g_zoom_reset = true;
@@ -367,6 +508,8 @@ void DrawMainLayout(void)
             }
             if (ImGui::BeginMenu("Export")) {
                 if (ImGui::MenuItem("PNG File..."))                    OpenFileDialog(FileDialogMode::ExportPng);
+                if (ImGui::MenuItem("Animated GIF (Timeline)...", NULL, false,
+                                    !g_timeline_frames.empty()))        OpenFileDialog(FileDialogMode::ExportGif);
                 if (ImGui::MenuItem("Palette..."))                     OpenFileDialog(FileDialogMode::ExportPalette);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Save LBM", "Alt+S"))        OpenFileDialog(FileDialogMode::SaveLbm);
@@ -405,6 +548,18 @@ void DrawMainLayout(void)
                 paste_image();
             if (ImGui::MenuItem("Paste as New Sprite", "Ctrl+Shift+V", false, g_clipboard.valid))
                 PasteClipboardAsNewImage();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Capture Sprite Cookie Cutter", NULL, false, g_doc->ilselected >= 0))
+                CaptureCookieCutter();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Captures the selected frame's exact non-transparent silhouette\n"
+                "and its tight pixel bounds. The cutter survives opening another IMG.");
+            if (ImGui::MenuItem("Place Cookie Cutter", NULL, false,
+                                g_clipboard.valid && g_clipboard.has_opaque && g_doc->ilselected >= 0))
+                PlaceCookieCutter();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Overlays the captured silhouette on this frame. Drag it into place,\n"
+                "then press Enter or click outside it to cut those pixels to transparent.");
             ImGui::Separator();
             /* Selection ops — disabled when nothing's available. */
             if (ImGui::MenuItem("Select All",       "Ctrl+A",       false, g_doc->ilselected >= 0))      select_all();
@@ -553,6 +708,13 @@ void DrawMainLayout(void)
                 "Sets the anipoint of every marked image to match the\n"
                 "currently-selected image's anipoint. Useful when several\n"
                 "frames should share one anchor (head, hand, hilt).");
+            if (ImGui::MenuItem("Set Marked Anipoints to X/Y...", NULL, false,
+                                CountMarkedImages() > 0)) {
+                OpenSetGroupAnipointsDialog();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Sets every marked frame's primary animation point to the\n"
+                "exact signed X and Y coordinates entered in the dialog.");
             if (ImGui::MenuItem("Mirror Marked Anipoints to Reverse")) {
                 MirrorMarkedAnipointsToReverseWithToast();
             }
@@ -2255,6 +2417,8 @@ void DrawMainLayout(void)
 
     DrawBulkResizeDialog();
 
+    DrawSetGroupAnipointsDialog();
+
     DrawBulkRestoreRegexDialog();
 
     DrawDeleteImagesConfirm();
@@ -3004,6 +3168,8 @@ float DrawDocumentTabBar(float y, float sw)
                 if (was_on) ImGui::PopStyleColor(3);
             };
             tab_toggle(g_world_state.onion ? "Onion: On" : "Onion", &g_world_state.onion);
+            tab_toggle(g_world_state.show_borders ? "Borders: On" : "Borders", &g_world_state.show_borders);
+            tab_toggle(g_world_state.show_anipoint ? "Anipt: On" : "Anipt", &g_world_state.show_anipoint);
             bool marked_was_on = g_world_marked_state.marked_play;
             tab_toggle(g_world_marked_state.marked_play ? "Marked: On" : "Marked", &g_world_marked_state.marked_play);
             if (marked_was_on != g_world_marked_state.marked_play) {

@@ -32,6 +32,8 @@ struct WorldViewState {
     int origin_x = 200; /* anchor target inside world */
     int origin_y = 20;  /* anchor target inside world (top-anchored) */
     bool onion = false; /* faintly draw prev frame underneath */
+    bool show_borders = true;
+    bool show_anipoint = true;
 };
 
 /* Two-sprite anipoint staging workspace.  The selected target is adjusted
@@ -721,7 +723,8 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
                                int image_idx, int image_count,
                                int world_w, int world_h,
                                int world_origin_x, int world_origin_y,
-                               bool onion_enabled, bool mirror_active);
+                               bool onion_enabled, bool mirror_active,
+                               bool show_borders, bool show_anipoint);
 bool DrawAnipointLinkCanvas(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io);
 
 /* Destroy module-owned transient/cached canvas textures. */

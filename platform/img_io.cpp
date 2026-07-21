@@ -4,6 +4,7 @@
  * Extracted from imgui_overlay.cpp.
  *************************************************************/
 #include "img_io.h"
+#include "anipoint.h"
 #include "load2_verify.h"
 #include "compat.h"
 #define STB_IMAGE_IMPLEMENTATION
@@ -1215,21 +1216,6 @@ int MatchAllSpritesToSourceColors(int source_idx, int *pixels_changed_out)
 }
 
 /* ---- Auto-Sprite Chopper ---- */
-static bool img_secondary_anipoint_in_use(const IMG *img)
-{
-    if (!img) return false;
-    if ((short)img->anix2 < 0 || (short)img->aniy2 < 0) return false;
-    return (short)img->aniz2 != -1;
-}
-
-static void img_clear_secondary_anipoint(IMG *img)
-{
-    if (!img) return;
-    img->anix2 = (unsigned short)-1;
-    img->aniy2 = (unsigned short)-1;
-    img->aniz2 = (unsigned short)-1;
-}
-
 static size_t img_name_len15(const char *s)
 {
     size_t n = 0;
@@ -1520,7 +1506,7 @@ static int CropOneImageToContent(IMG *img, bool apply)
     img->h = (unsigned short)new_h;
     img->anix = (unsigned short)((short)img->anix - (short)min_x);
     img->aniy = (unsigned short)((short)img->aniy - (short)min_y);
-    if (img_secondary_anipoint_in_use(img)) {
+    if (secondary_anipoint_in_use(img)) {
         img->anix2 = (unsigned short)((short)img->anix2 - (short)min_x);
         img->aniy2 = (unsigned short)((short)img->aniy2 - (short)min_y);
     }
@@ -1615,7 +1601,7 @@ int MirrorMarkedAnipointsToReverse(void)
         if (!(p->flags & 1)) continue;
 
         unsigned short mx1 = mirror_anipoint_x(p->anix, p->w);
-        bool has_second = img_secondary_anipoint_in_use(p);
+        bool has_second = secondary_anipoint_in_use(p);
         unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w) : p->anix2;
         if (p->anix != mx1 || p->anix2 != mx2) {
             any_change = true;
@@ -1630,7 +1616,7 @@ int MirrorMarkedAnipointsToReverse(void)
         if (!(p->flags & 1)) continue;
 
         unsigned short mx1 = mirror_anipoint_x(p->anix, p->w);
-        bool has_second = img_secondary_anipoint_in_use(p);
+        bool has_second = secondary_anipoint_in_use(p);
         unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w) : p->anix2;
         if (p->anix == mx1 && p->anix2 == mx2) continue;
 
@@ -2172,7 +2158,7 @@ void LoadTga(const char *filepath)
     img->palnum = (unsigned short)g_doc->palcnt;
     img->flags  = 0;
     img->anix   = 0; img->aniy  = 0;
-    img_clear_secondary_anipoint(img);
+    clear_secondary_anipoint(img);
     img->pttbl_p = NULL;
     img->opals  = (unsigned short)-1;
 
@@ -2356,7 +2342,7 @@ void LoadLbm(const char *filepath)
             if (!loaded_img->data_p) { try_close(); return; }
 
             loaded_img->palnum=(unsigned short)(g_doc->palcnt-1); loaded_img->flags=0;
-            loaded_img->anix=0; loaded_img->aniy=0; img_clear_secondary_anipoint(loaded_img);
+            loaded_img->anix=0; loaded_img->aniy=0; clear_secondary_anipoint(loaded_img);
             loaded_img->pttbl_p=NULL; loaded_img->opals=(unsigned short)-1;
             { std::string n=g_doc->fnametmp_s; size_t d=n.find_last_of('.'); if(d!=std::string::npos)n=n.substr(0,d);
               strncpy(loaded_img->n_s,n.c_str(),15); loaded_img->n_s[15]='\0'; }
@@ -2663,7 +2649,7 @@ static int import_rgba_frames_as_images(const char *path, const unsigned char *r
         if (!img) break;
         img->w = (unsigned short)w; img->h = (unsigned short)h;
         img->palnum = pal_idx; img->flags = 0;
-        img->anix = 0; img->aniy = 0; img_clear_secondary_anipoint(img);
+        img->anix = 0; img->aniy = 0; clear_secondary_anipoint(img);
         img->pttbl_p = NULL; img->opals = (unsigned short)-1;
         img->data_p = PoolAlloc((size_t)stride * h);
         if (!img->data_p) break;
@@ -3507,7 +3493,7 @@ static bool import_sheet_candidate(const unsigned char *rgba, int sheet_w, int s
     img->flags = 0;
     img->anix = 0;
     img->aniy = 0;
-    img_clear_secondary_anipoint(img);
+    clear_secondary_anipoint(img);
     img->pttbl_p = NULL;
     img->opals = (unsigned short)-1;
     make_sheet_frame_name(opts ? opts->name_prefix : "FRAME",
@@ -3970,7 +3956,7 @@ void ImportPng(const char *path)
     if (!img) { stbi_image_free(data); return; }
     img->w = (unsigned short)w; img->h = (unsigned short)h;
     img->palnum = (unsigned short)(g_doc->palcnt - 1); img->flags = 0;
-    img->anix = 0; img->aniy = 0; img_clear_secondary_anipoint(img);
+    img->anix = 0; img->aniy = 0; clear_secondary_anipoint(img);
     img->pttbl_p = NULL; img->opals = (unsigned short)-1;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
     img->data_p = PoolAlloc((size_t)stride * h);
@@ -4049,7 +4035,7 @@ void ImportPngMatch(const char *path)
     if (!img) { stbi_image_free(data); return; }
     img->w = (unsigned short)w; img->h = (unsigned short)h;
     img->palnum = active_img->palnum; img->flags = 0;
-    img->anix = 0; img->aniy = 0; img_clear_secondary_anipoint(img);
+    img->anix = 0; img->aniy = 0; clear_secondary_anipoint(img);
     img->pttbl_p = NULL; img->opals = (unsigned short)-1;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
     img->data_p = PoolAlloc((size_t)stride * h);
@@ -4436,6 +4422,145 @@ void ExportPng(const char *path)
         snprintf(g_restore_msg, sizeof(g_restore_msg), "PNG export failed.");
     }
     g_restore_msg_timer = 4.0f;
+}
+
+/* ---- Animated GIF Export ---- */
+
+static void gif_put_u16(FILE *f, int v)
+{
+    fputc(v & 255, f);
+    fputc((v >> 8) & 255, f);
+}
+
+/* GIF LZW permits a clear code at any point. Emitting clear/literal pairs is
+   deliberately simple and deterministic: it keeps every code 9 bits wide and
+   avoids a second dictionary implementation in the editor. Sprite animations
+   are small enough that the modest file-size cost is preferable to fragile
+   output. */
+static bool gif_write_indices(FILE *f, const std::vector<unsigned char> &pixels)
+{
+    std::vector<unsigned char> packed;
+    packed.reserve(pixels.size() * 3 / 2 + 16);
+    unsigned int bits = 0;
+    int bit_count = 0;
+    auto code = [&](int v) {
+        bits |= (unsigned int)v << bit_count;
+        bit_count += 9;
+        while (bit_count >= 8) {
+            packed.push_back((unsigned char)(bits & 255));
+            bits >>= 8;
+            bit_count -= 8;
+        }
+    };
+    code(256); /* clear */
+    for (unsigned char px : pixels) {
+        code(px);
+        code(256);
+    }
+    code(257); /* end */
+    if (bit_count > 0) packed.push_back((unsigned char)(bits & 255));
+
+    fputc(8, f); /* minimum LZW code size */
+    for (size_t off = 0; off < packed.size();) {
+        size_t n = std::min<size_t>(255, packed.size() - off);
+        fputc((int)n, f);
+        if (fwrite(packed.data() + off, 1, n, f) != n) return false;
+        off += n;
+    }
+    fputc(0, f);
+    return !ferror(f);
+}
+
+bool ExportAnimatedGif(const char *path, const std::vector<int> &frames,
+                       const std::vector<int> &holds, float fps,
+                       bool loop, bool pingpong, bool align_anipoints)
+{
+    if (!path || !*path || frames.empty() || fps <= 0.0f) return false;
+
+    std::vector<int> order;
+    std::vector<int> delays;
+    for (size_t i = 0; i < frames.size(); i++) {
+        IMG *img = get_img(frames[i]);
+        if (!img || !img->data_p || img->w == 0 || img->h == 0) continue;
+        order.push_back(frames[i]);
+        delays.push_back(i < holds.size() ? (std::max)(1, holds[i]) : 1);
+    }
+    if (pingpong && order.size() > 2) {
+        for (int i = (int)order.size() - 2; i > 0; i--) {
+            order.push_back(order[(size_t)i]);
+            delays.push_back(delays[(size_t)i]);
+        }
+    }
+    if (order.empty()) return false;
+
+    int left = 0, top = 0, right = 0, bottom = 0;
+    bool first = true;
+    for (int idx : order) {
+        IMG *img = get_img(idx);
+        int ax = align_anipoints ? (int)(short)img->anix : 0;
+        int ay = align_anipoints ? (int)(short)img->aniy : 0;
+        int l = -ax, t = -ay, r = l + img->w, b = t + img->h;
+        if (first) { left = l; top = t; right = r; bottom = b; first = false; }
+        else {
+            left = (std::min)(left, l); top = (std::min)(top, t);
+            right = (std::max)(right, r); bottom = (std::max)(bottom, b);
+        }
+    }
+    int canvas_w = right - left, canvas_h = bottom - top;
+    if (canvas_w <= 0 || canvas_h <= 0 || canvas_w > 65535 || canvas_h > 65535)
+        return false;
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    fwrite("GIF89a", 1, 6, f);
+    gif_put_u16(f, canvas_w); gif_put_u16(f, canvas_h);
+    fputc(0xF0, f); /* global 2-color table, 8-bit color resolution */
+    fputc(0, f); fputc(0, f);
+    unsigned char global_pal[6] = {0,0,0, 0,0,0};
+    fwrite(global_pal, 1, sizeof(global_pal), f);
+    if (loop) {
+        const unsigned char app[] = {0x21,0xFF,0x0B,'N','E','T','S','C','A','P','E','2','.','0',
+                                     0x03,0x01,0x00,0x00,0x00};
+        fwrite(app, 1, sizeof(app), f);
+    }
+
+    std::vector<unsigned char> canvas((size_t)canvas_w * canvas_h);
+    for (size_t fi = 0; fi < order.size(); fi++) {
+        IMG *img = get_img(order[fi]);
+        PAL *pal = get_pal(img->palnum);
+        std::fill(canvas.begin(), canvas.end(), 0);
+        int ax = align_anipoints ? (int)(short)img->anix : 0;
+        int ay = align_anipoints ? (int)(short)img->aniy : 0;
+        int ox = -ax - left, oy = -ay - top;
+        int stride = ((int)img->w + 3) & ~3;
+        const unsigned char *src = (const unsigned char *)img->data_p;
+        for (int y = 0; y < img->h; y++)
+            memcpy(canvas.data() + (size_t)(oy + y) * canvas_w + ox,
+                   src + (size_t)y * stride, img->w);
+
+        int delay_cs = (std::max)(1, (int)std::lround((double)delays[fi] * 100.0 / fps));
+        fputc(0x21, f); fputc(0xF9, f); fputc(4, f);
+        fputc(0x09, f); gif_put_u16(f, delay_cs); fputc(0, f); fputc(0, f);
+        fputc(0x2C, f); gif_put_u16(f, 0); gif_put_u16(f, 0);
+        gif_put_u16(f, canvas_w); gif_put_u16(f, canvas_h); fputc(0x87, f);
+        const unsigned char *pd = pal && pal->data_p ? (const unsigned char *)pal->data_p : NULL;
+        int pn = pal ? (std::min<int>)(256, pal->numc) : 0;
+        for (int i = 0; i < 256; i++) {
+            unsigned char rgb[3] = {0,0,0};
+            if (pd && i < pn) pal_word_to_rgb8(pd + i * 2, &rgb[0], &rgb[1], &rgb[2]);
+            fwrite(rgb, 1, 3, f);
+        }
+        if (!gif_write_indices(f, canvas)) { fclose(f); return false; }
+    }
+    fputc(0x3B, f);
+    bool write_ok = !ferror(f);
+    bool ok = fclose(f) == 0 && write_ok;
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             ok ? "Exported animated GIF: %d frame%s, %dx%d."
+                : "Animated GIF export failed.",
+             (int)order.size(), order.size() == 1 ? "" : "s", canvas_w, canvas_h);
+    g_restore_msg_timer = 4.0f;
+    return ok;
 }
 
 /* ---- Palette Export ---- */

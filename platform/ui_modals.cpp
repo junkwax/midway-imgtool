@@ -85,6 +85,10 @@ static int  g_gif_blend_mode      = GifBlend_Normal;
 static int  g_gif_opacity_percent = 100;
 static bool g_gif_import_all      = true;
 static bool g_gif_trim_transparent = true;
+static bool g_gif_export_loop = true;
+static bool g_gif_export_pingpong = false;
+static bool g_gif_export_align_anipoints = true;
+static float g_gif_export_fps = 12.0f;
 static int  g_sheet_bg_threshold  = 245;
 static int  g_sheet_min_pixels    = 160;
 static int  g_sheet_padding       = 2;
@@ -151,7 +155,8 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::ImportPngMatch:
         case FileDialogMode::ImportSpriteSheetMatch:
         case FileDialogMode::ExportPng:       return "png";
-        case FileDialogMode::ImportGif:       return "gif";
+        case FileDialogMode::ImportGif:
+        case FileDialogMode::ExportGif:       return "gif";
         case FileDialogMode::ExportPalette:
         case FileDialogMode::ImportPalette:   return "palette";
         case FileDialogMode::LoadTga:
@@ -951,7 +956,8 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::ImportPngMatch:
         case FileDialogMode::ExportPng: return "PNG";
         case FileDialogMode::ImportSpriteSheetMatch: return "";
-        case FileDialogMode::ImportGif: return "GIF";
+        case FileDialogMode::ImportGif:
+        case FileDialogMode::ExportGif: return "GIF";
         case FileDialogMode::ExportPalette: return g_palette_export_act ? "ACT" : "PAL";
         case FileDialogMode::ImportPalette: return "PAL";
         case FileDialogMode::WriteAniLst: return "ASM";
@@ -993,7 +999,7 @@ void OpenFileDialog(FileDialogMode mode) {
     }
     g_file_dialog_mode = mode;
     bool is_export = (mode == FileDialogMode::ExportTga || mode == FileDialogMode::SaveTga ||
-                      mode == FileDialogMode::ExportPng || mode == FileDialogMode::ExportPalette ||
+                      mode == FileDialogMode::ExportPng || mode == FileDialogMode::ExportGif || mode == FileDialogMode::ExportPalette ||
                       mode == FileDialogMode::SaveLbm);
     if (mode == FileDialogMode::ExportPalette && g_doc->plselected >= 0) {
         PAL *pal = get_pal(g_doc->plselected);
@@ -1162,6 +1168,7 @@ void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) title = "Import Sprite Sheet (Match Palette)";
     else if (g_file_dialog_mode == FileDialogMode::ImportGif) title = "Import GIF File";
     else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
+    else if (g_file_dialog_mode == FileDialogMode::ExportGif) title = "Export Animated GIF";
     else if (g_file_dialog_mode == FileDialogMode::ExportPalette) title = "Export Palette";
     else if (g_file_dialog_mode == FileDialogMode::ImportPalette) title = "Import Palette";
     else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) title = "Write ANILST";
@@ -1357,6 +1364,13 @@ void DrawFileDialog() {
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Crop away any border that's transparent across every imported frame.\nFrames stay aligned to each other.");
         }
+        if (g_file_dialog_mode == FileDialogMode::ExportGif) {
+            ImGui::SliderFloat("Frames Per Second", &g_gif_export_fps, 1.0f, 60.0f, "%.1f");
+            ImGui::Checkbox("Loop Forever", &g_gif_export_loop);
+            ImGui::Checkbox("Ping-Pong", &g_gif_export_pingpong);
+            ImGui::Checkbox("Align Frames by Primary Anipoint", &g_gif_export_align_anipoints);
+            ImGui::TextDisabled("Exports Animation Timeline order and Hold timing. Index #0 is transparent.");
+        }
 
         if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) {
             ImGui::InputText("Name Prefix", g_sheet_prefix, sizeof(g_sheet_prefix));
@@ -1410,6 +1424,13 @@ void DrawFileDialog() {
                 if (dot != std::string::npos) full_path = full_path.substr(0, dot);
                 full_path += ".PNG";
                 ExportPng(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::ExportGif) {
+                size_t dot = full_path.find_last_of('.');
+                if (dot != std::string::npos) full_path = full_path.substr(0, dot);
+                full_path += ".GIF";
+                ExportAnimatedGif(full_path.c_str(), g_timeline_frames, g_timeline_holds,
+                                  g_gif_export_fps, g_gif_export_loop,
+                                  g_gif_export_pingpong, g_gif_export_align_anipoints);
             } else if (g_file_dialog_mode == FileDialogMode::ExportPalette) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot != std::string::npos) full_path = full_path.substr(0, dot);
@@ -5567,35 +5588,77 @@ bool SeqScrAddRecord(bool script)
 
 bool SeqScrAppendEntry(int record_index, int target_index)
 {
+    std::vector<int> targets(1, target_index);
+    return SeqScrAppendEntries(record_index, targets);
+}
+
+bool SeqScrAppendEntries(int record_index, const std::vector<int> &target_indices)
+{
+    if (target_indices.empty()) return false;
     std::vector<SeqScrRecordView> records;
     bool truncated = false;
     if (!SeqScrBuildRecords(records, &truncated) || truncated ||
         record_index < 0 || record_index >= (int)records.size())
         return false;
     const SeqScrRecordView &rec = records[(size_t)record_index];
-    if (rec.truncated || target_index < 0 ||
-        (!rec.script && target_index >= (int)g_doc->imgcnt) ||
-        (rec.script && target_index >= (int)g_doc->seqcnt))
-        return false;
+    if (rec.truncated) return false;
+    for (int target_index : target_indices)
+        if (target_index < 0 ||
+            (!rec.script && target_index >= (int)g_doc->imgcnt) ||
+            (rec.script && target_index >= (int)g_doc->seqcnt))
+            return false;
     const SeqScrLayoutInfo li = SeqScrLayout();
     size_t old_bytes = (size_t)g_doc->scrseqbytes;
     size_t insert_at = rec.entries_offset + (size_t)rec.num * (size_t)li.entry_size;
-    size_t new_bytes = old_bytes + (size_t)li.entry_size;
+    size_t added_bytes = (size_t)li.entry_size * target_indices.size();
+    size_t new_bytes = old_bytes + added_bytes;
     unsigned char *nb = (unsigned char *)malloc(new_bytes);
     if (!nb) return false;
     memcpy(nb, g_doc->scrseqmem_p, insert_at);
-    memset(nb + insert_at, 0, (size_t)li.entry_size);
-    SeqScrWriteU16(nb + insert_at + li.entry_index_off,
-                   (unsigned short)(short)target_index);
-    nb[insert_at + li.entry_ticks_off] = 1;
-    memcpy(nb + insert_at + li.entry_size,
+    memset(nb + insert_at, 0, added_bytes);
+    for (size_t i = 0; i < target_indices.size(); i++) {
+        unsigned char *entry = nb + insert_at + i * (size_t)li.entry_size;
+        SeqScrWriteU16(entry + li.entry_index_off,
+                       (unsigned short)(short)target_indices[i]);
+        entry[li.entry_ticks_off] = 1;
+    }
+    memcpy(nb + insert_at + added_bytes,
            (unsigned char *)g_doc->scrseqmem_p + insert_at,
            old_bytes - insert_at);
-    SeqScrWriteU16(nb + rec.offset + 18, (unsigned short)(rec.num + 1));
+    SeqScrWriteU16(nb + rec.offset + 18,
+                   (unsigned short)(rec.num + target_indices.size()));
     doc_undo_push();
     free(g_doc->scrseqmem_p);
     g_doc->scrseqmem_p = nb;
     g_doc->scrseqbytes = (unsigned int)new_bytes;
+    mark_dirty();
+    return true;
+}
+
+bool SeqScrMoveEntry(int record_index, int entry_index, int delta)
+{
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    if (!SeqScrBuildRecords(records, &truncated) || truncated ||
+        record_index < 0 || record_index >= (int)records.size())
+        return false;
+    const SeqScrRecordView &rec = records[(size_t)record_index];
+    int other = entry_index + delta;
+    if (rec.truncated || entry_index < 0 || entry_index >= rec.num ||
+        other < 0 || other >= rec.num)
+        return false;
+
+    const SeqScrLayoutInfo li = SeqScrLayout();
+    doc_undo_push();
+    unsigned char *blob = (unsigned char *)g_doc->scrseqmem_p;
+    unsigned char *a = blob + rec.entries_offset +
+                       (size_t)entry_index * (size_t)li.entry_size;
+    unsigned char *b = blob + rec.entries_offset +
+                       (size_t)other * (size_t)li.entry_size;
+    std::vector<unsigned char> tmp((size_t)li.entry_size);
+    memcpy(tmp.data(), a, (size_t)li.entry_size);
+    memcpy(a, b, (size_t)li.entry_size);
+    memcpy(b, tmp.data(), (size_t)li.entry_size);
     mark_dirty();
     return true;
 }
@@ -5735,6 +5798,10 @@ static int s_seqscr_pending_append_record = -1;
 static int s_seqscr_pending_append_target = -1;
 static int s_seqscr_pending_delete_record = -1;
 static int s_seqscr_pending_delete_entry = -1;
+static int s_seqscr_pending_move_record = -1;
+static int s_seqscr_pending_move_entry = -1;
+static int s_seqscr_pending_move_delta = 0;
+static int s_seqscr_pending_append_marked_record = -1;
 
 static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
                                    const SeqScrLayoutInfo &li,
@@ -5838,6 +5905,14 @@ static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
         if (ImGui::IsItemHovered() && selected_img)
             ImGui::SetTooltip("Adds [%d] %.16s with a 1-tick hold. Edit Ticks/dX/dY below afterwards.",
                               selected, selected_img->n_s);
+        int marked = CountMarkedImages();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(marked <= 0);
+        if (ImGui::SmallButton("Add Marked Frames##seqscr_append_marked"))
+            s_seqscr_pending_append_marked_record = rec.index;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered() && marked > 0)
+            ImGui::SetTooltip("Appends all %d marked sprites in image-list order, each with a 1-tick hold.", marked);
     }
 
     if (li.far_model) {
@@ -5859,7 +5934,7 @@ static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                           ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
                           ImVec2(0, 240))) {
-        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 36);
+        ImGui::TableSetupColumn("# / Order", ImGuiTableColumnFlags_WidthFixed, 112);
         ImGui::TableSetupColumn("Target", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed, 74);
         ImGui::TableSetupColumn("Ticks", ImGuiTableColumnFlags_WidthFixed, 58);
@@ -5884,6 +5959,22 @@ static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
                 s_seqscr_pending_delete_entry = e;
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this entry from the record.");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(e == 0);
+            if (ImGui::SmallButton("^##seqscr_move_up")) {
+                s_seqscr_pending_move_record = rec.index;
+                s_seqscr_pending_move_entry = e;
+                s_seqscr_pending_move_delta = -1;
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(e + 1 >= rec.num);
+            if (ImGui::SmallButton("v##seqscr_move_down")) {
+                s_seqscr_pending_move_record = rec.index;
+                s_seqscr_pending_move_entry = e;
+                s_seqscr_pending_move_delta = 1;
+            }
+            ImGui::EndDisabled();
 
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(SeqScrEntryTargetName(rec, item_index, records));
@@ -5999,11 +6090,25 @@ void DrawSeqScrEditorWindow(void)
                           s_seqscr_pending_append_target);
         s_seqscr_pending_append_record = -1;
         s_seqscr_pending_append_target = -1;
+    } else if (s_seqscr_pending_append_marked_record >= 0) {
+        std::vector<int> targets;
+        int idx = 0;
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++)
+            if (img->flags & 1) targets.push_back(idx);
+        SeqScrAppendEntries(s_seqscr_pending_append_marked_record, targets);
+        s_seqscr_pending_append_marked_record = -1;
     } else if (s_seqscr_pending_delete_record >= 0) {
         SeqScrDeleteEntry(s_seqscr_pending_delete_record,
                           s_seqscr_pending_delete_entry);
         s_seqscr_pending_delete_record = -1;
         s_seqscr_pending_delete_entry = -1;
+    } else if (s_seqscr_pending_move_record >= 0) {
+        SeqScrMoveEntry(s_seqscr_pending_move_record,
+                        s_seqscr_pending_move_entry,
+                        s_seqscr_pending_move_delta);
+        s_seqscr_pending_move_record = -1;
+        s_seqscr_pending_move_entry = -1;
+        s_seqscr_pending_move_delta = 0;
     }
 
     ImGui::End();
@@ -7506,6 +7611,69 @@ Mouse on canvas:
   Right-click          Eyedrop (any tool mode)
   Blank left-drag      Starts marquee selection from transparent pixels
   Shift + left-click   Flood fill (when no select tool active)
+
+
+================================================================================
+MK2 FRAME ORIGIN, ANIPOINTS, AND FRAME CONNECTIONS
+--------------------------------------------------
+Frame origin:
+  The origin of an IMG frame is local pixel coordinate (0,0), the top-left
+  corner of its rectangular pixel buffer. Transparent padding is part of that
+  rectangle. X increases right and Y increases down. The origin is not the
+  top-left opaque pixel unless the artwork happens to touch both edges.
+
+Primary animation point (AX/AY):
+  AX/AY is a signed offset measured from the frame origin. The white crosshair
+  is drawn at local coordinate (AX,AY), so it may appear outside the rectangle.
+  For example AY=-14 places the anchor 14 pixels above the frame origin.
+
+  When the game/editor places a frame at world anchor (WX,WY):
+      frame top-left = (WX - AX, WY - AY)
+      local pixel (x,y) appears at (WX + x - AX, WY + y - AY)
+
+  Consecutive frames look stable when AX/AY identifies the same physical
+  feature in each drawing (feet, body center, hand, weapon pivot, etc.). Edit
+  X1/Y1 in Sprite > Anipts Tools, drag the white crosshair, use World View, or
+  use Operations > Set Marked Anipoints to X/Y / Align Marked Anipoints.
+  The group X/Y dialog can change either axis independently. Its first marked
+  frame is the reference; Left/Top preserves the entered coordinate, Center
+  adds half each frame-size difference, and Right/Bottom adds the full size
+  difference so the anchor keeps the same distance from that edge.
+
+Secondary animation point (AX2/AY2/AZ2):
+  This is another anchor inside the SAME frame; it does not link one animation
+  frame to the next. An active point is cyan with a yellow line to the primary.
+  -1/-1/-1 (stored as FFFF/FFFF/FFFF) means unused. Use Clear 2nd Point to
+  restore that sentinel; 0/0/0 is an active point at the frame origin.
+
+Connecting frames -- two different jobs:
+  1. Visual alignment: put matching physical features at a common world anchor.
+     Mark the frames and set/align their AX/AY, or enable World View and step
+     Left/Right. Onion skin and Ctrl-click paired timeline frames help compare
+     adjacent poses; dragging a paired sprite adjusts its anipoint.
+  2. Playback/runtime order: anipoints do not create a frame-to-frame link.
+     Embedded IMG relationships live in the SEQSCR/ENTRY blob. A Sequence is
+     an ordered list of sprite indices; each ENTRY also stores Ticks, dX/dY and
+     three preserved spare words. A Script is a higher-level ordered list that
+     calls Sequences. External MK2 game ASM may also define runtime animation.
+
+Editing embedded SEQSCR data now:
+  - Open the Animation tab. Expand Sequences or Scripts.
+  - Select a record and click Edit..., or use View/Edit Anim Data.
+  - New Sequence creates an empty frame list. Select a sprite in the normal
+    image list, then use Add Selected Sprite to append it as the next frame.
+  - Enable in-place editing to change the record name/flags/start position and
+    each ENTRY's Index, Ticks, dX/dY and spare words. The x button removes an
+    entry. New Script creates a record whose entries call sequence indices.
+  - Load a Sequence/Script in World View to preview it with its saved timing
+    and offsets. Save the IMG to persist edits to the SEQSCR/ENTRY blob.
+
+  Add Marked Frames appends the marked sprite group in image-list order. The
+  ^/v controls reorder entries. This remains a fairly low-level editor: there
+  is not yet a thumbnail/drag sequence builder or visual sprite-name picker.
+  The bottom Animation Timeline is convenient for preview and temporary order,
+  but its order is not automatically written into SEQSCR. Merely changing
+  AX/AY also does not alter SEQSCR animation order.
 
 
 ================================================================================

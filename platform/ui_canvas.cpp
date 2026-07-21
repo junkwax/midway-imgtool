@@ -7659,12 +7659,8 @@ static void rebuild_world_onion_texture(IMG *img, int image_idx)
     if (!img || !img->data_p || img->w <= 0 || img->h <= 0 || !g_imgui_renderer)
         return;
 
-    if (s_world_onion_tex &&
-        s_world_onion_tex_w == img->w &&
-        s_world_onion_tex_h == img->h &&
-        s_world_onion_idx == image_idx)
-        return;
-
+    /* Rebuild while visible: the prior frame's pixels or assigned palette can
+       change without its image-list index changing. */
     if (s_world_onion_tex) SDL_DestroyTexture(s_world_onion_tex);
     s_world_onion_tex = SDL_CreateTexture(g_imgui_renderer,
         SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
@@ -7690,14 +7686,19 @@ static void rebuild_world_onion_texture(IMG *img, int image_idx)
     int stride = (img->w + 3) & ~3;
     const unsigned char *src = (const unsigned char *)img->data_p;
     Uint32 *dst = (Uint32 *)pix;
+    PAL *pal = get_pal(img->palnum);
+    const unsigned char *pal_data = pal ? (const unsigned char *)pal->data_p : NULL;
+    int pal_count = pal ? (int)pal->numc : 0;
     for (int y = 0; y < img->h; y++) {
         for (int x = 0; x < img->w; x++) {
             unsigned char ci = src[y * stride + x];
-            SDL_Color c = g_palette[ci];
+            unsigned char r = 0, g = 0, b = 0;
+            if (pal_data && ci < pal_count)
+                pal_word_to_rgb8(pal_data + ci * 2, &r, &g, &b);
             Uint32 a = (ci == 0) ? 0u : 90u;  /* faint */
             dst[y * (pitch / 4) + x] =
-                (a << 24) | ((Uint32)c.r << 16) |
-                ((Uint32)c.g << 8) | c.b;
+                (a << 24) | ((Uint32)r << 16) |
+                ((Uint32)g << 8) | b;
         }
     }
     SDL_UnlockTexture(s_world_onion_tex);
@@ -7708,7 +7709,8 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
                                int image_idx, int image_count,
                                int world_w, int world_h,
                                int world_origin_x, int world_origin_y,
-                               bool onion_enabled, bool mirror_active)
+                               bool onion_enabled, bool mirror_active,
+                               bool show_borders, bool show_anipoint)
 {
     if (!img || !img_texture || world_w <= 0 || world_h <= 0)
         return false;
@@ -7727,14 +7729,19 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
 
     float ox = layout.origin_x;
     float oy = layout.origin_y;
-    dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy),
-                IM_COL32(120, 120, 120, 255));
-    dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
-                IM_COL32(120, 120, 120, 255));
+    if (show_anipoint) {
+        dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy),
+                    IM_COL32(120, 120, 120, 255));
+        dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
+                    IM_COL32(120, 120, 120, 255));
+    }
 
     /* Onion-skin: faintly draw the previous sprite. */
     if (onion_enabled && image_count > 1) {
         int prev_idx = (image_idx <= 0) ? image_count - 1 : image_idx - 1;
+        int timeline_pos = TimelineFramePosition(image_idx);
+        if (timeline_pos >= 0 && g_timeline_frames.size() > 1)
+            prev_idx = g_timeline_frames[(size_t)WrapTimelinePosition(timeline_pos - 1)];
         IMG *prev_img = get_img(prev_idx);
         if (prev_img && prev_img->data_p && prev_img->w > 0 && prev_img->h > 0) {
             rebuild_world_onion_texture(prev_img, prev_idx);
@@ -7769,8 +7776,9 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
     dl->AddImage((ImTextureID)(intptr_t)img_texture,
                  spos, ImVec2(spos.x + spw, spos.y + sph), suv0, suv1);
 
-    dl->AddCircle(ImVec2(ox, oy), 4.0f,
-                  IM_COL32(255, 200, 0, 255), 0, 1.5f);
+    if (show_anipoint)
+        dl->AddCircle(ImVec2(ox, oy), 4.0f,
+                      IM_COL32(255, 200, 0, 255), 0, 1.5f);
     if (g_world_marked_state.show_boundary_overlay)
         WorldDrawBoundaryGuides(dl, layout);
 
@@ -7796,7 +7804,7 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
         }
     }
 
-    if (g_world_marked_state.draw_sprite_borders) {
+    if (show_borders) {
         ImVec2 sprite_max(spos.x + spw, spos.y + sph);
         int raw_aniy = (int)img->aniy;
         bool bad_y_anchor = (short)img->aniy < 0 || raw_aniy == 0x4000 ||
@@ -8174,7 +8182,9 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                           g_doc->ilselected, (int)g_doc->imgcnt,
                                           g_world_state.w, g_world_state.h,
                                           g_world_state.origin_x, g_world_state.origin_y,
-                                          g_world_state.onion, g_world_marked_state.mirror_active);
+                                          g_world_state.onion, g_world_marked_state.mirror_active,
+                                          g_world_state.show_borders,
+                                          g_world_state.show_anipoint);
             }
         }
         else if ((timeline_composite_preview_active = DrawTimelineCompositePreview(avail, img_pos))) {
@@ -9145,11 +9155,16 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                             dst_ci = dst_pixels[cell.target_y * dst_stride +
                                                 cell.target_x];
                         int rr = 255, gg = 255, bb = 255, aa = 255;
-                        if (!paste_preview_rgba(ci, dst_ci, spal, paste_pal_map,
-                                                paste_remap,
-                                                cell.target_x, cell.target_y,
-                                                &rr, &gg, &bb, &aa))
+                        if (g_cookie_cut_mode) {
+                            /* A red translucent stencil makes the pixels that
+                               will be erased unambiguous on every palette. */
+                            rr = 255; gg = 48; bb = 48; aa = 150;
+                        } else if (!paste_preview_rgba(ci, dst_ci, spal, paste_pal_map,
+                                                       paste_remap,
+                                                       cell.target_x, cell.target_y,
+                                                       &rr, &gg, &bb, &aa)) {
                             continue;
+                        }
                         ImU32 col = IM_COL32((unsigned char)rr,
                                              (unsigned char)gg,
                                              (unsigned char)bb,
@@ -9182,7 +9197,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                             IM_COL32(90, 130, 180, 210), 4.0f, 0, 1.0f);
                 ImGui::PushID("paste_controls");
                 ImGui::SetCursorScreenPos(paste_controls.blend_label_pos);
-                ImGui::TextUnformatted("Blend");
+                ImGui::TextUnformatted(g_cookie_cut_mode ? "COOKIE CUT" : "Blend");
                 ImGui::SetCursorScreenPos(paste_controls.blend_control_pos);
                 ImGui::SetNextItemWidth(paste_controls.item_width);
                 if (ImGui::BeginCombo("##blend", PasteBlendModeName(g_paste_blend_mode))) {
@@ -12818,9 +12833,10 @@ void drop_paste_to_layer(void)
 
 void apply_pasted_region(void)
 {
-    mark_dirty();
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
+
+    mark_dirty();
 
     /* Capture pre-paste pixels so committing a paste is undoable. */
     PixelHist paste_snap = {};
@@ -12851,15 +12867,63 @@ void apply_pasted_region(void)
             /* 0 remains transparent. Opaque pixels overwrite by default;
                blend/opacity modes composite in RGB and quantize back to the
                target indexed palette. */
-            if (src[x] != 0)
-                dst[x - start_x] = paste_composite_index(src[x], dst[x - start_x],
-                                                         target_pal, pal_map,
-                                                         remap_palette,
-                                                         px + x, py + y);
+            if (src[x] != 0) {
+                if (g_cookie_cut_mode)
+                    dst[x - start_x] = 0;
+                else
+                    dst[x - start_x] = paste_composite_index(src[x], dst[x - start_x],
+                                                             target_pal, pal_map,
+                                                             remap_palette,
+                                                             px + x, py + y);
+            }
         }
     }
     if (paste_captured) push_pixel_history_entry(&paste_snap);
     g_img_tex_idx = -2;
+}
+
+void CaptureCookieCutter(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p) return;
+
+    /* A cutter always comes from the complete visible silhouette, independent
+       of a marquee that may happen to be active. copy_image supplies the tight
+       non-transparent crop and preserves it across IMG file changes. */
+    bool selection_was_active = g_grid_sel.active;
+    g_grid_sel.active = false;
+    copy_image(false);
+    g_grid_sel.active = selection_was_active;
+    g_cookie_cut_mode = false;
+
+    if (!g_clipboard.valid || !g_clipboard.has_opaque) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Cookie cutter not captured: frame has no opaque pixels.");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Cookie cutter captured: %dx%d tight silhouette.",
+                 (int)g_clipboard.w, (int)g_clipboard.h);
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
+void PlaceCookieCutter(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !g_clipboard.valid || !g_clipboard.data_p ||
+        !g_clipboard.has_opaque)
+        return;
+
+    /* Do not auto-fit: the captured bounds are exact. Parts positioned beyond
+       the target frame are simply clipped when the cutter is committed. */
+    undo_push();
+    g_cookie_cut_mode = true;
+    g_pasted.active = true;
+    g_pasted.paste_x = ((int)img->w - (int)g_clipboard.w) / 2;
+    g_pasted.paste_y = ((int)img->h - (int)g_clipboard.h) / 2;
+    g_pasted.dragging = false;
+    g_grid_sel.active = false;
+    xform_begin();
 }
 
 
@@ -13255,6 +13319,8 @@ void paste_image(void)
 {
     IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
     if (!img || !g_clipboard.valid || !g_clipboard.data_p) return;
+
+    g_cookie_cut_mode = false;
 
     undo_push();
 

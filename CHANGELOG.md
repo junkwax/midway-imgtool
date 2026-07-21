@@ -8,6 +8,35 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.16.5] — Animation authoring, GIF export, and sprite editing tools
+
+Feature release focused on animation setup and frame-to-frame sprite editing.
+
+### Animation and anipoints
+- **Animated GIF export** — exports the current timeline with Hold timing,
+  configurable FPS, transparency, looping, ping-pong, per-frame palettes, and
+  optional primary-anipoint alignment.
+- **Group anipoint editor** — set X, Y, or both across marked frames, using the
+  first marked frame as the size reference with leading-edge, center, or
+  trailing-edge compensation.
+- **SEQSCR authoring improvements** — append all marked frames to a sequence in
+  image-list order and move entries up/down while preserving the raw blob.
+- **Safe secondary-point defaults** — all new IMG records start with the proper
+  `FFFF/FFFF/FFFF` unused sentinel; duplicate helper logic now uses the canonical
+  anipoint implementation.
+
+### Sprite editing and World View
+- **Sprite cookie cutter** — capture a frame's tight opaque silhouette, place it
+  over another frame or IMG, and erase through that shape with undo support.
+- **Floating-paste navigation guard** — arrow keys move the paste instead of
+  changing frames; Shift+Arrow nudges by ten pixels.
+- **World View fixes** — onion skin follows timeline order and the prior frame's
+  palette; single-frame mode has independent Borders and Anipt toggles.
+
+### Documentation
+- Added built-in reference material for MK2 frame origins, primary/secondary
+  anipoints, frame alignment, and embedded SEQSCR sequence/script editing.
+
 ## [v3.15.8] — World View ping-pong timing
 
 Patch release: World View lane timing can now freeze at a specific tick, chain

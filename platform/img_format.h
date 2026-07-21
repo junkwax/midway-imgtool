@@ -170,6 +170,13 @@ static inline IMG *AllocImg(void)
 {
     IMG *img = (IMG *)calloc(1, sizeof(IMG));
     if (!img) return NULL;
+    /* Zero is a live secondary anipoint at the frame origin. Every new IMG
+       starts with the on-disk "unused" sentinel unless a caller explicitly
+       activates the second point. This makes the invariant safe even for new
+       import/creation paths that only initialize the primary point. */
+    img->anix2 = (unsigned short)-1;
+    img->aniy2 = (unsigned short)-1;
+    img->aniz2 = (unsigned short)-1;
     IMG **pp = (IMG **)&g_doc->img_p;
     while (*pp) pp = (IMG **)&(*pp)->nxt_p;
     *pp = img;

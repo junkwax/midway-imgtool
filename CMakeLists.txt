@@ -214,6 +214,7 @@ enable_testing()
 add_executable(sprite_sheet_import_test
     test/sprite_sheet_import_test.cpp
     platform/img_io.cpp
+    platform/anipoint.cpp
     platform/load2_verify.cpp
     platform/document.cpp
     platform/globals.c
