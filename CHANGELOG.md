@@ -8,7 +8,12 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
-## [Unreleased]
+## [v3.17.0] — World View PNG export, body-part splitting, and palette depth fixes
+
+Feature release: the World View can be exported as PNG stills or a numbered
+sequence, sprites can be cut into head/arms/torso/legs, palette colors can be
+copied between palettes at their original indices, and imported palettes now
+declare the bit depth their color count actually needs.
 
 ### World View
 - **World View PNG export** — write the composited scene, with every visible
@@ -68,6 +73,9 @@ included) so the extractor matches.
   and `Operations... > Clipboard & Files`.
 
 ### Sprite editing
+- **Cookie cutter returns the pixels it removed** — after cutting, the
+  clipboard holds the target pixels that were erased, along with that frame's
+  palette snapshot, so they remap correctly when pasted elsewhere.
 - **Split Body Parts** — detects head, arms, torso, and legs from a sprite's
   silhouette (narrowest rows for the neck and waist, the dense central column
   run for the torso core), then shows them as draggable, resizable boxes over
