@@ -6457,6 +6457,18 @@ void DrawDebugInfoModal(void)
             ImGui::Text("N_s:      %.9s",     pal->n_s);
             ImGui::Text("FLAGS:    0x%02X",   pal->flags);
             ImGui::Text("BITSPIX:  %u",       pal->bitspix);
+            if (pal->numc > 0) {
+                int want_bpp = PaletteBppForColorCount((int)pal->numc);
+                if ((int)pal->bitspix != want_bpp) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.66f, 0.30f, 1.0f),
+                                       "(should be %d for %u colors)",
+                                       want_bpp, pal->numc);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Palette Operations > Recalculate BPP fixes this.\n"
+                                          "TBL/IRW/LOAD2 exports pack pixels at BITSPIX.");
+                }
+            }
             ImGui::Text("NUMC:     %u",       pal->numc);
             ImGui::Text("PAD:      0x%04X",   pal->pad);
             ImGui::Text("DATA_p:   %p",       pal->data_p);

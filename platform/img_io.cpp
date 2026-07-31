@@ -6,6 +6,7 @@
 #include "img_io.h"
 #include "anipoint.h"
 #include "load2_verify.h"
+#include "palette_math.h"   /* PaletteBppForColorCount */
 #include "compat.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -1812,36 +1813,20 @@ void WriteIrwFromMarked(const char *filepath, unsigned int base_address,
 
         int current_bpp = bpp;
         if (current_bpp == 0) {
-            /* Auto (Image Data) */
+            /* Auto (Image Data): widest index actually used. */
             unsigned char max_val = 0;
             unsigned char *ip = (unsigned char *)img->data_p;
-            int total_pixels = img->w * img->h; /* We just scan the rect, padding zeros don't matter as they are 0 */
             unsigned short stride = (img->w + 3) & ~3;
             for (int y = 0; y < img->h; y++) {
                 for (int x = 0; x < img->w; x++) {
                     if (ip[y * stride + x] > max_val) max_val = ip[y * stride + x];
                 }
             }
-            if (max_val <= 1) current_bpp = 1;
-            else if (max_val < 4) current_bpp = 2;
-            else if (max_val < 8) current_bpp = 3;
-            else if (max_val < 16) current_bpp = 4;
-            else if (max_val < 32) current_bpp = 5;
-            else if (max_val < 64) current_bpp = 6;
-            else if (max_val < 128) current_bpp = 7;
-            else current_bpp = 8;
+            current_bpp = PaletteBppForColorCount((int)max_val + 1);
         } else if (current_bpp == -1) {
             /* Auto (Palette Size) */
             PAL *pal = get_pal(img->palnum);
-            int cols = pal ? pal->numc : 256;
-            if (cols <= 2) current_bpp = 1;
-            else if (cols <= 4) current_bpp = 2;
-            else if (cols <= 8) current_bpp = 3;
-            else if (cols <= 16) current_bpp = 4;
-            else if (cols <= 32) current_bpp = 5;
-            else if (cols <= 64) current_bpp = 6;
-            else if (cols <= 128) current_bpp = 7;
-            else current_bpp = 8;
+            current_bpp = PaletteBppForColorCount(pal ? (int)pal->numc : 256);
         } else {
             if (current_bpp < 1) current_bpp = 1;
             if (current_bpp > 8) current_bpp = 8;
@@ -1867,7 +1852,11 @@ void WriteIrwFromMarked(const char *filepath, unsigned int base_address,
         rec.bank = 0;
         fwrite(&rec, sizeof(rec), 1, f);
 
-        /* Write pixel data packed at bpp */
+        /* Write pixel data packed at this record's resolved depth.
+           NB: this must use current_bpp, not the bpp parameter — the two
+           differ in both auto modes (0 = from image data, -1 = from palette
+           size), and packing at the raw parameter wrote 0 or (unsigned)-1
+           bits per pixel. */
         uint32_t byte_count = 0;
         uint32_t checksum = 0;
         unsigned int dw = 0;
@@ -1877,14 +1866,14 @@ void WriteIrwFromMarked(const char *filepath, unsigned int base_address,
 
         for (int y = 0; y < (int)img->h; y++) {
             for (int x = 0; x < (int)img->w; x++) {
-                irw_write_bits(f, src[y * stride + x], bpp,
+                irw_write_bits(f, src[y * stride + x], current_bpp,
                                &dw, &bf, &byte_count, &checksum);
             }
         }
         irw_flush_word(f, &dw, &bf, &byte_count, &checksum);
 
         /* Compute bit size for address advance */
-        unsigned int bit_size = (unsigned int)img->w * (unsigned int)img->h * (unsigned int)bpp;
+        unsigned int bit_size = (unsigned int)img->w * (unsigned int)img->h * (unsigned int)current_bpp;
         addr += bit_size;
 
         /* Pad to 16-bit boundary */
@@ -2208,8 +2197,10 @@ void LoadTga(const char *filepath)
     if (!pal) { free(pal_buf); goto err; }
 
     pal->flags   = 0;
-    pal->bitspix = 8;
     pal->numc    = num_colors;
+    /* Depth follows the color count: a 40-color TGA is 6bpp art, and the
+       TBL/IRW/LOAD2 exports read bitspix to decide packing. */
+    pal->bitspix = (unsigned char)PaletteBppForColorCount((int)num_colors);
     pal->data_p  = pal_buf;
     pal->pad     = 0;
     {
@@ -2309,8 +2300,9 @@ void LoadLbm(const char *filepath)
 
             loaded_pal = (PAL *)AllocPal();
             if (!loaded_pal) { try_close(); return; }
-            loaded_pal->flags = 0; loaded_pal->bitspix = 8;
+            loaded_pal->flags = 0;
             loaded_pal->numc = (unsigned short)num_colors; loaded_pal->pad = 0;
+            loaded_pal->bitspix = (unsigned char)PaletteBppForColorCount((int)num_colors);
 
             unsigned char *pal_buf = (unsigned char *)PoolAlloc(num_colors * 2);
             if (!pal_buf) { try_close(); return; }
@@ -2616,8 +2608,8 @@ static int import_rgba_frames_as_images(const char *path, const unsigned char *r
     PAL *pal = AllocPal();
     if (!pal) return 0;
     pal->flags   = 0;
-    pal->bitspix = 8;
     pal->numc    = (unsigned short)(pal_colors + 1);
+    pal->bitspix = (unsigned char)PaletteBppForColorCount(pal_colors + 1);
     pal->data_p  = PoolAlloc((size_t)(pal_colors + 1) * 2);
     if (!pal->data_p) return 0;
 
@@ -3937,8 +3929,8 @@ void ImportPng(const char *path)
     PAL *pal = AllocPal();
     if (!pal) { stbi_image_free(data); return; }
     pal->flags   = 0;
-    pal->bitspix = 8;
     pal->numc    = (unsigned short)(pal_colors + 1);
+    pal->bitspix = (unsigned char)PaletteBppForColorCount(pal_colors + 1);
     pal->data_p  = PoolAlloc((unsigned int)(pal_colors + 1) * 2);
     if (!pal->data_p) { stbi_image_free(data); return; }
     unsigned char *pal_bytes = (unsigned char *)pal->data_p;
@@ -4711,6 +4703,11 @@ void ImportPalette(const char *path)
         fread(new_pal->data_p, 2, n_colors, f);
     }
     fclose(f);
+
+    /* Neither format carries a depth, and AllocPal zero-fills — leaving
+       bitspix at 0, which reads as an invalid palette downstream. Derive it
+       from the count that actually landed. */
+    new_pal->bitspix = (unsigned char)PaletteBppForColorCount((int)new_pal->numc);
 
     g_doc->plselected = (int)g_doc->palcnt - 1; /* Select the new palette */
 

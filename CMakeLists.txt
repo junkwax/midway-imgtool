@@ -218,6 +218,7 @@ add_executable(sprite_sheet_import_test
     platform/img_io.cpp
     platform/anipoint.cpp
     platform/load2_verify.cpp
+    platform/palette_math.cpp
     platform/document.cpp
     platform/globals.c
 )
@@ -242,6 +243,7 @@ add_executable(world_blit_test
     platform/img_io.cpp
     platform/anipoint.cpp
     platform/load2_verify.cpp
+    platform/palette_math.cpp
     platform/document.cpp
     platform/globals.c
 )

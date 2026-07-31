@@ -239,6 +239,15 @@ int  PastePaletteSlotsAtSameIndices(int target_pal_idx = -1);
 int  PaletteSlotClipboardCount(void);
 int  PaletteSlotClipboardMaxIndex(void);
 const char *PaletteSlotClipboardSource(void);
+
+/* ---- Palette BPP repair ----
+   Recompute a palette's declared bits-per-pixel from how many colors it
+   actually holds. Imports used to stamp every palette 8bpp regardless, which
+   makes the TBL/IRW/LOAD2 exports pack wider than the art needs. Colors are
+   never touched. */
+int PaletteBppMismatchCount(void);
+int RecalculateSelectedPaletteBpp(void);
+int RecalculateAllPaletteBpp(void);
 /* Applies the sampled source swatch RGB to Ctrl-selected locked swatches.
    Returns false when no swatch is locked. */
 bool ApplyEyedropperColorToLockedSwatches(int source_color_idx);

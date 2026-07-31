@@ -6,6 +6,7 @@
  * hands/feet so the detector has to cluster islands into whole sprites.
  *************************************************************/
 #include "img_io.h"
+#include "palette_math.h"
 #include "stb_image.h"
 
 #include <cstdio>
@@ -116,6 +117,64 @@ static bool check_png_export_uses_image_palette(void)
     return ok;
 }
 
+/* An imported palette must declare the depth its color count actually needs.
+   Stamping every import 8bpp made the TBL/IRW/LOAD2 exports pack wider than
+   the art required. */
+static bool check_import_png_sets_palette_bpp(void)
+{
+    document_init();
+
+    /* Five distinct opaque colors plus transparency. Median-cut stops
+       splitting once every bucket holds one color, so the palette lands at
+       5 colors + index 0 = 6 entries, which needs 3 bits. */
+    const int w = 10, h = 2;
+    unsigned char rgba[10 * 2 * 4] = {0};
+    const unsigned char colors[5][3] = {
+        {255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 0}, {255, 0, 255}
+    };
+    for (int x = 0; x < w; x++) {
+        const unsigned char *c = colors[x % 5];
+        for (int y = 0; y < h; y++) {
+            unsigned char *p = rgba + ((size_t)y * w + x) * 4;
+            p[0] = c[0]; p[1] = c[1]; p[2] = c[2]; p[3] = 255;
+        }
+    }
+
+    const char *path = "png_bpp_import_test.png";
+    std::remove(path);
+    if (!WriteRgbaPng(path, w, h, rgba)) {
+        std::fprintf(stderr, "FAIL: could not write the bpp import fixture\n");
+        return false;
+    }
+    ImportPng(path);
+    std::remove(path);
+
+    PAL *pal = get_pal(g_doc->palcnt > 0 ? (int)g_doc->palcnt - 1 : -1);
+    if (!pal) {
+        std::fprintf(stderr, "FAIL: ImportPng created no palette\n");
+        return false;
+    }
+
+    int want = PaletteBppForColorCount((int)pal->numc);
+    bool ok = ((int)pal->bitspix == want);
+    if (!ok) {
+        std::fprintf(stderr,
+                     "FAIL: imported palette has %u colors but BITSPIX %u (expected %d)\n",
+                     pal->numc, pal->bitspix, want);
+    }
+    /* Guard the intent, not just the internal consistency: a handful of
+       colors must not come back as a full 8bpp palette. */
+    if (pal->numc > 16 || pal->bitspix > 4) {
+        std::fprintf(stderr,
+                     "FAIL: 5-color PNG quantized to %u colors at %u bpp\n",
+                     pal->numc, pal->bitspix);
+        ok = false;
+    }
+
+    document_clear_contents(g_doc);
+    return ok;
+}
+
 static void draw_sprite(std::vector<Rgb> &img, int w, int h, int x, int y)
 {
     (void)h;
@@ -193,7 +252,11 @@ int main(void)
     if (!check_png_export_uses_image_palette())
         return 1;
 
+    if (!check_import_png_sets_palette_bpp())
+        return 1;
+
     std::printf("PASS: sprite sheet detection grouped disconnected parts and ignored labels\n");
     std::printf("PASS: PNG export uses the selected image palette\n");
+    std::printf("PASS: PNG import derives palette BPP from its color count\n");
     return 0;
 }

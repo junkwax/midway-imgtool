@@ -33,6 +33,27 @@ included) so the extractor matches.
   dialogs seeded their file list with the current document's `.IMG` name, so a
   Ctrl-click batch carried a bogus first entry that silently failed to import.
 
+### Palette depth (BPP)
+- **Imported palettes now declare the depth their color count needs** — every
+  import stamped `bitspix` 8 regardless, so a quantized 41-color PNG claimed
+  8bpp when it is 6bpp art, and the TBL/IRW/LOAD2 exports (which pack pixels at
+  `bitspix`) padded every pixel accordingly. PNG, GIF, TGA, and LBM imports now
+  derive it as `ceil(log2(numc))`. `.PAL`/`.ACT` palette import never set the
+  field at all and left it 0, which reads as an invalid palette downstream.
+- **Recalculate BPP** — repairs palettes already carrying a wrong value, on the
+  selected palette or all of them, without touching a single color. In
+  `Operations... > Recalculate BPP on All Palettes` (which shows how many are
+  wrong) and on a palette row's right-click menu (which shows the current and
+  correct value). The debug panel's `BITSPIX` line now flags a mismatch inline.
+- **Growth no longer under-declares depth** — growing a palette past what its
+  declared depth can address (merging in colors, the inner-stroke ramp,
+  `ensure_palette_numc`) now widens `bitspix` to fit. Depth is only ever
+  narrowed by the explicit Recalculate command.
+- **Fixed: IRW export ignored its own computed depth** — `WriteIrwFromMarked`
+  resolved a per-record bpp for both auto modes and then packed with the raw
+  parameter instead, writing 0 bits per pixel for *Auto (Image Data)* and
+  `(unsigned)-1` for *Auto (Palette Size)*. Fixed-bpp exports were unaffected.
+
 ### Palette
 - **Copy/paste multiple palette colors at the same indices** — Ctrl/Shift+click
   several swatches, *Copy Selected Colors*, then paste them into another

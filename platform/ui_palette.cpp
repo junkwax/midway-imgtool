@@ -2010,8 +2010,12 @@ void PastePaletteFromClipboard(void)
     if (!pal) return;
 
     pal->flags   = 0;
-    pal->bitspix = g_pal_clipboard.bitspix ? g_pal_clipboard.bitspix : 8;
     pal->numc    = g_pal_clipboard.numc;
+    /* Keep the source's declared depth, but derive one when the clipboard
+       carries none rather than defaulting every paste to 8bpp. */
+    pal->bitspix = g_pal_clipboard.bitspix
+                 ? g_pal_clipboard.bitspix
+                 : (unsigned char)PaletteBppForColorCount((int)g_pal_clipboard.numc);
     pal->pad     = 0;
     memcpy(pal->n_s, g_pal_clipboard.n_s, 10);
 
@@ -2168,6 +2172,10 @@ static void MergeMarkedPalettes(bool force_quality_merge)
                 nd[(base_count + j) * 2 + 1] = (unsigned char)((w >> 8) & 0xFF);
             }
             sel->numc = (unsigned short)new_numc;
+            /* Merging can push the count past what the declared depth can
+               address; widen so the palette still describes itself. */
+            if (PaletteBppTooSmall(sel->bitspix, new_numc))
+                sel->bitspix = (unsigned char)PaletteBppForColorCount(new_numc);
         }
     }
 
@@ -2538,7 +2546,7 @@ bool ensure_palette_numc(PAL *pal, int min_numc)
         pal->data_p = PoolAlloc(512);
         if (!pal->data_p) return false;
         pal->numc = (unsigned short)min_numc;
-        pal->bitspix = 8;
+        pal->bitspix = (unsigned char)PaletteBppForColorCount(min_numc);
         return true;
     }
 
@@ -2553,8 +2561,86 @@ bool ensure_palette_numc(PAL *pal, int min_numc)
     free(old_data);
     pal->data_p = new_data;
     pal->numc = (unsigned short)min_numc;
-    if (pal->bitspix == 0) pal->bitspix = 8;
+    /* Growing past what the declared depth can address would leave the palette
+       describing itself incorrectly, so raise bitspix to fit. Never lower it
+       here — shrinking depth is the explicit Recalculate BPP command's job. */
+    if (PaletteBppTooSmall(pal->bitspix, min_numc))
+        pal->bitspix = (unsigned char)PaletteBppForColorCount(min_numc);
     return true;
+}
+
+/* ---- BPP repair -----------------------------------------------------
+   Palettes imported before the depth was derived from the color count (and
+   any hand-edited ones) can carry a bitspix that doesn't match how many
+   colors they actually hold — usually 8 when the art is 4/5/6bpp, which makes
+   the TBL/IRW/LOAD2 exports pack wider than they need to. These recompute it
+   from numc without touching any color. */
+
+int PaletteBppMismatchCount(void)
+{
+    int n = 0;
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p) {
+        if (p->numc == 0) continue;
+        if ((int)p->bitspix != PaletteBppForColorCount((int)p->numc)) n++;
+    }
+    return n;
+}
+
+int RecalculateSelectedPaletteBpp(void)
+{
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || pal->numc == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select a palette first.");
+        g_restore_msg_timer = 3.0f;
+        return 0;
+    }
+    int want = PaletteBppForColorCount((int)pal->numc);
+    if ((int)pal->bitspix == want) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "%.9s already correct: %d colors, %d bpp.",
+                 pal->n_s, (int)pal->numc, want);
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+    doc_undo_push();
+    int was = (int)pal->bitspix;
+    pal->bitspix = (unsigned char)want;
+    InvalidatePaletteSync();
+    mark_dirty();
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "%.9s: %d bpp -> %d bpp for %d colors.",
+             pal->n_s, was, want, (int)pal->numc);
+    g_restore_msg_timer = 4.0f;
+    return 1;
+}
+
+int RecalculateAllPaletteBpp(void)
+{
+    if (PaletteBppMismatchCount() == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Every palette's BPP already matches its color count.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+    doc_undo_push();
+    int changed = 0, lowered = 0, raised = 0;
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p) {
+        if (p->numc == 0) continue;
+        int want = PaletteBppForColorCount((int)p->numc);
+        if ((int)p->bitspix == want) continue;
+        if (want < (int)p->bitspix) lowered++; else raised++;
+        p->bitspix = (unsigned char)want;
+        changed++;
+    }
+    if (changed > 0) {
+        InvalidatePaletteSync();
+        mark_dirty();
+    }
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Recalculated BPP on %d palette%s (%d narrowed, %d widened).",
+             changed, changed == 1 ? "" : "s", lowered, raised);
+    g_restore_msg_timer = 5.0f;
+    return changed;
 }
 
 void CleanupSelectedPalette(void)
@@ -3919,6 +4005,25 @@ void DrawRightPanelPaletteEditor(float panel_h)
                     if (ImGui::MenuItem("Merge Duplicate Palettes")) MergeDuplicatePalettes();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                         "Remaps sprites using later duplicate palettes to the first matching palette.");
+                    {
+                        /* Reports the current value so it's obvious whether
+                           this row actually needs fixing. */
+                        int want = pal->numc ? PaletteBppForColorCount((int)pal->numc) : 0;
+                        bool wrong = pal->numc && (int)pal->bitspix != want;
+                        char label[72];
+                        if (wrong) snprintf(label, sizeof(label),
+                                            "Recalculate BPP (%u -> %d for %u colors)",
+                                            pal->bitspix, want, pal->numc);
+                        else       snprintf(label, sizeof(label),
+                                            "Recalculate BPP (already %u)", pal->bitspix);
+                        if (ImGui::MenuItem(label, NULL, false, wrong)) {
+                            SelectPalette(i);
+                            RecalculateSelectedPaletteBpp();
+                        }
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Set the declared bits-per-pixel from the color count.\n"
+                                              "Colors are untouched; TBL/IRW/LOAD2 exports pack at this depth.");
+                    }
                     if (ImGui::MenuItem("Downscale Palette...")) OpenPaletteReduceDialog(7);
                     if (ImGui::MenuItem("Copy #0 to Opaque Slot")) CopyPaletteZeroToOpaqueSlot();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -3999,6 +4104,26 @@ void DrawRightPanelPaletteEditor(float panel_h)
                 ImGui::EndMenu();
             }
 
+            ImGui::Separator();
+
+            {
+                int wrong = PaletteBppMismatchCount();
+                char label[80];
+                snprintf(label, sizeof(label), "Recalculate BPP on Selected Palette");
+                if (ImGui::MenuItem(label, NULL, false, g_doc->plselected >= 0))
+                    RecalculateSelectedPaletteBpp();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Derive the declared bits-per-pixel from the color count.\n"
+                                      "Colors are untouched; TBL/IRW/LOAD2 exports pack at this depth.");
+                snprintf(label, sizeof(label),
+                         wrong ? "Recalculate BPP on All Palettes (%d wrong)"
+                               : "Recalculate BPP on All Palettes (all correct)", wrong);
+                if (ImGui::MenuItem(label, NULL, false, wrong > 0))
+                    RecalculateAllPaletteBpp();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Fixes palettes imported before the depth was derived\n"
+                                      "from the color count — typically stamped 8bpp regardless.");
+            }
             ImGui::Separator();
 
             if (ImGui::MenuItem("Merge Marked into Selected")) MergeMarkedPalettes();

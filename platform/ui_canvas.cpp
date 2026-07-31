@@ -14568,6 +14568,10 @@ int ApplySelectedInnerStroke(unsigned char r, unsigned char g, unsigned char b)
     target_pal->bitspix = source_pal->bitspix;
     target_pal->numc = source_pal->numc > highest_slot ? source_pal->numc
                                                         : (unsigned short)(highest_slot + 1);
+    /* The stroke ramp can need slots past the source's last color, so the
+       inherited depth may no longer address the whole palette. */
+    if (PaletteBppTooSmall(target_pal->bitspix, (int)target_pal->numc))
+        target_pal->bitspix = (unsigned char)PaletteBppForColorCount((int)target_pal->numc);
     target_pal->pad = 0;
     snprintf(target_pal->n_s, sizeof(target_pal->n_s), "STRK%03u", g_doc->palcnt - 1);
     unsigned char *palette_data = (unsigned char *)malloc(512);

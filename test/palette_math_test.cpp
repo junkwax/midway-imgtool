@@ -130,6 +130,55 @@ int main(void)
                                     mkword(0,0,31), false) == base_count + 1);
     }
 
+    /* ---- Palette depth from color count ---- */
+    {
+        /* Exact powers of two are satisfied by their own width: 16 colors are
+           indices 0..15, which fit in 4 bits. */
+        CHECK(PaletteBppForColorCount(2) == 1);
+        CHECK(PaletteBppForColorCount(4) == 2);
+        CHECK(PaletteBppForColorCount(8) == 3);
+        CHECK(PaletteBppForColorCount(16) == 4);
+        CHECK(PaletteBppForColorCount(32) == 5);
+        CHECK(PaletteBppForColorCount(64) == 6);
+        CHECK(PaletteBppForColorCount(128) == 7);
+        CHECK(PaletteBppForColorCount(256) == 8);
+
+        /* One past a power of two needs the next bit. */
+        CHECK(PaletteBppForColorCount(17) == 5);
+        CHECK(PaletteBppForColorCount(33) == 6);
+        CHECK(PaletteBppForColorCount(65) == 7);
+        CHECK(PaletteBppForColorCount(129) == 8);
+
+        /* The case that motivated this: a quantized import landing on 41
+           colors is 6bpp art, not 8. */
+        CHECK(PaletteBppForColorCount(41) == 6);
+
+        /* Degenerate and out-of-range counts stay in [1, 8]. */
+        CHECK(PaletteBppForColorCount(0) == 1);
+        CHECK(PaletteBppForColorCount(1) == 1);
+        CHECK(PaletteBppForColorCount(-5) == 1);
+        CHECK(PaletteBppForColorCount(300) == 8);
+
+        CHECK(PaletteColorCountForBpp(1) == 2);
+        CHECK(PaletteColorCountForBpp(4) == 16);
+        CHECK(PaletteColorCountForBpp(8) == 256);
+        CHECK(PaletteColorCountForBpp(0) == 2);     /* clamped up */
+        CHECK(PaletteColorCountForBpp(99) == 256);  /* clamped down */
+
+        /* Round-tripping any count gives a depth that can address it. */
+        for (int n = 1; n <= 256; n++)
+            CHECK(PaletteColorCountForBpp(PaletteBppForColorCount(n)) >= n);
+
+        /* Too-small detection drives the growth guard. */
+        CHECK(PaletteBppTooSmall(4, 200));      /* 4bpp addresses 16 */
+        CHECK(!PaletteBppTooSmall(8, 200));
+        CHECK(!PaletteBppTooSmall(4, 16));      /* exactly fits */
+        CHECK(PaletteBppTooSmall(4, 17));
+        CHECK(!PaletteBppTooSmall(8, 0));       /* no colors, nothing to fit */
+        CHECK(PaletteBppTooSmall(0, 4));        /* nonsense depth is too small */
+        CHECK(PaletteBppTooSmall(9, 4));
+    }
+
     if (g_fails == 0) {
         std::printf("PASS: palette_math helpers behave as specified\n");
         return 0;

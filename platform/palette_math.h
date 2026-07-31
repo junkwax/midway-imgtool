@@ -10,6 +10,19 @@
 #pragma once
 #include "img_format.h"   /* PAL, rgb8_to_pal_word */
 
+/* Bits per pixel needed to index `numc` palette entries: ceil(log2(numc)),
+   clamped to [1, 8]. This is the value a PAL's `bitspix` should carry — an
+   imported 41-color palette is 6bpp art, not 8bpp, and packing it as 8 wastes
+   ROM in the TBL/IRW/LOAD2 exports that read bitspix. */
+int PaletteBppForColorCount(int numc);
+
+/* Entries addressable at `bpp` bits: 1 << bpp, clamped to [2, 256]. */
+int PaletteColorCountForBpp(int bpp);
+
+/* True when `bitspix` cannot address all `numc` entries — i.e. the palette's
+   declared depth is too small for its own color count. */
+bool PaletteBppTooSmall(int bitspix, int numc);
+
 /* Read the packed 15-bit color word at palette index `idx` from a raw
    2-bytes-per-entry palette buffer. No bounds checking. */
 unsigned short palette_word_at(const unsigned char *data, int idx);

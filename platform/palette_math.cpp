@@ -5,6 +5,32 @@
  *************************************************************/
 #include "palette_math.h"
 
+int PaletteBppForColorCount(int numc)
+{
+    /* Highest index that must be representable is numc - 1, so this is the
+       smallest b with (1 << b) >= numc. Anything at or below 2 colors still
+       needs a whole bit per pixel. */
+    if (numc <= 2) return 1;
+    if (numc > 256) numc = 256;
+    int bpp = 1;
+    while ((1 << bpp) < numc) bpp++;
+    return bpp;
+}
+
+int PaletteColorCountForBpp(int bpp)
+{
+    if (bpp < 1) bpp = 1;
+    if (bpp > 8) bpp = 8;
+    return 1 << bpp;
+}
+
+bool PaletteBppTooSmall(int bitspix, int numc)
+{
+    if (numc <= 0) return false;
+    if (bitspix < 1 || bitspix > 8) return true;
+    return PaletteColorCountForBpp(bitspix) < numc;
+}
+
 unsigned short palette_word_at(const unsigned char *data, int idx)
 {
     return (unsigned short)(data[idx * 2] | (data[idx * 2 + 1] << 8));
