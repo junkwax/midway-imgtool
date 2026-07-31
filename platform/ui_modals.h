@@ -7,7 +7,7 @@ enum class FileDialogMode {
     SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch,
     ImportSpriteSheetMatch, ImportGif, ExportPng, ExportGif, ExportPalette,
     ImportPalette, WriteAniLst, WriteTbl, WriteIrw, LoadAsmAnim, SaveAsmAnim,
-    LoadWorldProject, SaveWorldProject
+    LoadWorldProject, SaveWorldProject, ExportWorldPng, ExportWorldPngSeq
 };
 
 struct FileEntry {

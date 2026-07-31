@@ -26,3 +26,19 @@ SDL_Texture *BuildWorldSpriteTexture(Document *doc, IMG *img, unsigned char alph
 /* Destroy every texture handed out by BuildWorldSpriteTexture since the last
    call. Invoke once per frame after the world/composite draw is done. */
 void ClearWorldTempTextures(void);
+
+/* CPU twin of BuildWorldSpriteTexture: composite `img` (in `doc`'s palette)
+   straight into a row-major RGBA8 buffer instead of an SDL texture, so the
+   World View can be written to a file without a renderer round-trip.
+
+   `dst_x`/`dst_y` place the sprite's top-left corner in buffer space and may be
+   negative; anything outside the buffer is clipped. Index 0 is transparent and
+   never written. `alpha` scales the source over the destination the same way
+   the on-screen draw blends its lane alpha. Mirror flags flip the source read
+   the way the draw list's flipped UVs do.
+
+   Returns the number of pixels actually written. */
+int WorldBlitSpriteRgba(Document *doc, IMG *img, unsigned char alpha,
+                        bool mirror_x, bool mirror_y,
+                        int dst_x, int dst_y,
+                        unsigned char *rgba, int rgba_w, int rgba_h);

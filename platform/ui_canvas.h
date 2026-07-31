@@ -25,6 +25,10 @@ enum {
     kWorldMarkedMaxTabs                           /* source rows + dummy + ASM + embedded lanes */
 };
 
+/* Ceiling on a "every tick" World View PNG export, so a lane with a huge
+   visible-until value can't spray tens of thousands of files. */
+enum { kWorldPngSequenceMaxFrames = 600 };
+
 struct WorldViewState {
     bool enabled = false;
     int w = 400;        /* arcade playfield width */
@@ -522,6 +526,8 @@ struct WorldMarkedPanelAction {
     bool request_load_asm = false;
     bool request_save_project = false;
     bool request_load_project = false;
+    bool request_save_png = false;
+    bool request_save_png_seq = false;
     bool dummy_assigned = false;
     bool dummy_assign_failed = false;
 };
@@ -611,6 +617,22 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes,
                                 const WorldCanvasLayout &layout,
                                 WorldMarkedLaneRenderInfo &render_info);
+/* Same scene as WorldDrawMarkedLaneSprites, composited 1:1 into a world-pixel
+   RGBA buffer (no borders/overlays) for file export. `use_lane_alpha` keeps the
+   per-lane translucency used on screen; false composites every lane opaque.
+   Returns how many sprite instances landed inside the world rect. */
+int WorldComposeMarkedSceneRgba(WorldMarkedSequenceState &state,
+                                const std::vector<WorldMarkedLane> &lanes,
+                                int world_w, int world_h,
+                                int origin_x, int origin_y,
+                                bool use_lane_alpha,
+                                std::vector<unsigned char> &out);
+/* Write the World View composite at the current tick to `path`. */
+bool ExportWorldViewPng(const char *path, bool crop_to_content, bool use_lane_alpha);
+/* Write one PNG per tick as <base>_0000.PNG ... Returns frames written and,
+   via out_total_ticks, how many ticks the sequence spans. */
+int ExportWorldViewPngSequence(const char *path_base, bool crop_to_content,
+                               bool use_lane_alpha, int *out_total_ticks);
 WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
                                             const WorldViewState &world,
                                             const std::vector<WorldMarkedLane> &lanes,

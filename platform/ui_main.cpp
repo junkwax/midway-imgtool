@@ -31,6 +31,7 @@
 #include "lod_parser.h"
 #include "mk2_hitbox.h"
 #include "mk2_fatality.h"
+#include "ui_bodysplit.h"
 #include "compat.h"
 
 extern "C" { extern struct SDL_Color g_palette[256]; }
@@ -510,6 +511,19 @@ void DrawMainLayout(void)
                 if (ImGui::MenuItem("PNG File..."))                    OpenFileDialog(FileDialogMode::ExportPng);
                 if (ImGui::MenuItem("Animated GIF (Timeline)...", NULL, false,
                                     !g_timeline_frames.empty()))        OpenFileDialog(FileDialogMode::ExportGif);
+                {
+                    /* World View exports need a live composited scene, so they
+                       stay disabled until the marked sequence is running. */
+                    bool world_live = g_world_state.enabled && g_world_marked_state.marked_play;
+                    if (ImGui::MenuItem("World View PNG (Current Tick)...", NULL, false, world_live))
+                        OpenFileDialog(FileDialogMode::ExportWorldPng);
+                    if (ImGui::IsItemHovered() && !world_live)
+                        ImGui::SetTooltip("Enable World View and start the marked frame sequence first.");
+                    if (ImGui::MenuItem("World View PNG Sequence...", NULL, false, world_live))
+                        OpenFileDialog(FileDialogMode::ExportWorldPngSeq);
+                    if (ImGui::IsItemHovered() && !world_live)
+                        ImGui::SetTooltip("Enable World View and start the marked frame sequence first.");
+                }
                 if (ImGui::MenuItem("Palette..."))                     OpenFileDialog(FileDialogMode::ExportPalette);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Save LBM", "Alt+S"))        OpenFileDialog(FileDialogMode::SaveLbm);
@@ -559,7 +573,8 @@ void DrawMainLayout(void)
                 PlaceCookieCutter();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Overlays the captured silhouette on this frame. Drag it into place,\n"
-                "then press Enter or click outside it to cut those pixels to transparent.");
+                "then press Enter or click outside it to cut those pixels to transparent.\n"
+                "The removed target pixels replace the clipboard and retain this frame's palette.");
             ImGui::Separator();
             /* Selection ops — disabled when nothing's available. */
             if (ImGui::MenuItem("Select All",       "Ctrl+A",       false, g_doc->ilselected >= 0))      select_all();
@@ -628,6 +643,12 @@ void DrawMainLayout(void)
         if (ImGui::BeginMenu("Operations")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             if (ImGui::MenuItem("Break into Subframes...")) OpenAutoChopDialog();
+            if (ImGui::MenuItem("Split Body Parts...", NULL, false, SelectedImageCanBodySplit()))
+                OpenBodySplitDialog();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Detect head, arms, torso, and legs from the sprite's silhouette,\n"
+                "adjust the proposed boxes, then cut each into its own sprite\n"
+                "with the anipoint rebased so the pieces still line up.");
             if (ImGui::MenuItem("Resize Sprite...", NULL, false, g_doc->ilselected >= 0)) OpenResizeSpriteDialog();
             if (ImGui::MenuItem("Bulk Resize Marked...", NULL, false, CountMarkedImages() > 0)) OpenBulkResizeDialog();
             if (ImGui::MenuItem("Opacity Gradient...", NULL, false, g_doc->ilselected >= 0)) OpenOpacityGradientDialog();
@@ -1615,6 +1636,8 @@ void DrawMainLayout(void)
                 if (!can_break_subframes) ImGui::BeginDisabled();
                 if (ImGui::MenuItem("Break Subframes (Auto-Chop)...")) OpenAutoChopDialog();
                 if (!can_break_subframes) ImGui::EndDisabled();
+                if (ImGui::MenuItem("Split Body Parts...", NULL, false, SelectedImageCanBodySplit()))
+                    OpenBodySplitDialog();
 
                 ImGui::EndPopup();
             }
@@ -2387,6 +2410,8 @@ void DrawMainLayout(void)
     if (g_request_save_world_asm) { g_request_save_world_asm = false; OpenFileDialog(FileDialogMode::SaveAsmAnim); }
     if (g_request_save_world_project) { g_request_save_world_project = false; OpenFileDialog(FileDialogMode::SaveWorldProject); }
     if (g_request_load_world_project) { g_request_load_world_project = false; OpenFileDialog(FileDialogMode::LoadWorldProject); }
+    if (g_request_save_world_png) { g_request_save_world_png = false; OpenFileDialog(FileDialogMode::ExportWorldPng); }
+    if (g_request_save_world_png_seq) { g_request_save_world_png_seq = false; OpenFileDialog(FileDialogMode::ExportWorldPngSeq); }
     if (g_request_load_asm)       { g_request_load_asm = false; g_asm_dialog_opponent = false; OpenFileDialog(FileDialogMode::LoadAsmAnim); }
     if (g_request_load_opp_asm)   { g_request_load_opp_asm = false; g_asm_dialog_opponent = true; OpenFileDialog(FileDialogMode::LoadAsmAnim); }
     if (g_request_asm_autoload)     { g_request_asm_autoload = false; AsmProcessAutoload(); }
@@ -2409,6 +2434,8 @@ void DrawMainLayout(void)
     DrawMk2FatalityWindow();
 
     DrawAutoChopDialog();
+
+    DrawBodySplitDialog();
 
     DrawResizeSpriteDialog();
     DrawOpacityGradientDialog();

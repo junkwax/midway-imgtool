@@ -63,7 +63,17 @@ void SaveLbm(const char *filepath);
 void LoadTga(const char *filepath);
 void LoadLbm(const char *filepath);
 void ImportPng(const char *path);
-void ImportPngMatch(const char *path);
+/* Index a PNG against an existing palette instead of building a new one.
+   `palnum` selects the palette; pass -1 to resolve it from the current
+   selection. Resolve it once and pass it explicitly when importing several
+   files in a row, so every file lands in the same palette regardless of what
+   the earlier imports did to the selection. Returns true if an image was
+   added. */
+bool ImportPngMatch(const char *path, int palnum = -1);
+/* The palette ImportPngMatch(-1) would use: the selected image's palette, then
+   the selected palette, then palette 0. Returns -1 when the document has no
+   usable palette at all. */
+int  ResolveImportMatchPalette(void);
 
 enum SpriteSheetDetectMode {
     SpriteSheetDetect_Auto = 0,
@@ -125,6 +135,9 @@ const char *GifBlendModeName(int mode);
 void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames,
                bool trim_transparent_border);
 void ExportPng(const char *path);
+/* Write a row-major RGBA8 buffer straight to a PNG. Used by callers that build
+   their own composite (World View export) rather than exporting one IMG. */
+bool WriteRgbaPng(const char *path, int w, int h, const unsigned char *rgba);
 bool ExportAnimatedGif(const char *path, const std::vector<int> &frames,
                        const std::vector<int> &holds, float fps,
                        bool loop, bool pingpong, bool align_anipoints);

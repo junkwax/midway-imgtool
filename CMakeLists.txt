@@ -102,6 +102,8 @@ set(IMGTOOL_SOURCES
     platform/ui_modals.cpp
     platform/ui_undo.cpp
     platform/ui_autochop.cpp
+    platform/ui_bodysplit.cpp
+    platform/body_split.cpp
     platform/world_render.cpp
     platform/anipoint.cpp
     platform/anipoint_edit.cpp
@@ -230,12 +232,35 @@ endif()
 add_test(NAME sprite_sheet_import
          COMMAND sprite_sheet_import_test)
 
+# world_blit_test: the CPU sprite compositor behind the World View PNG export,
+# plus the RGBA->PNG writer it feeds. Needs the imgui include dir because
+# world_render.cpp pulls ui_internal.h for g_imgui_renderer, but links no imgui
+# sources — it only ever touches SDL and the document lists.
+add_executable(world_blit_test
+    test/world_blit_test.cpp
+    platform/world_render.cpp
+    platform/img_io.cpp
+    platform/anipoint.cpp
+    platform/load2_verify.cpp
+    platform/document.cpp
+    platform/globals.c
+)
+target_include_directories(world_blit_test PRIVATE platform imgui)
+target_link_libraries(world_blit_test PRIVATE SDL2::SDL2)
+if(MSVC)
+    target_compile_options(world_blit_test PRIVATE /W3)
+    target_compile_definitions(world_blit_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+else()
+    target_compile_definitions(world_blit_test PRIVATE SDL_MAIN_HANDLED)
+endif()
+add_test(NAME world_blit COMMAND world_blit_test)
+
 # Pure-module unit tests. Each links only the extracted module under test (no
 # app/UI sources), so they're small and fast. They still pull SDL2 for headers
 # only: img_format.h includes document.h which includes SDL.h. SDL_MAIN_HANDLED
 # keeps SDL from redefining main(). Add new pure-logic modules here as the
 # overlay split proceeds.
-foreach(pure_test palette_math color_ops sprite_resize_ops anipoint img_util)
+foreach(pure_test palette_math color_ops sprite_resize_ops anipoint img_util body_split)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp

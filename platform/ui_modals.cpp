@@ -154,7 +154,9 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::ImportPng:
         case FileDialogMode::ImportPngMatch:
         case FileDialogMode::ImportSpriteSheetMatch:
-        case FileDialogMode::ExportPng:       return "png";
+        case FileDialogMode::ExportPng:
+        case FileDialogMode::ExportWorldPng:
+        case FileDialogMode::ExportWorldPngSeq: return "png";
         case FileDialogMode::ImportGif:
         case FileDialogMode::ExportGif:       return "gif";
         case FileDialogMode::ExportPalette:
@@ -954,7 +956,9 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::ExportTga: return "TGA";
         case FileDialogMode::ImportPng:
         case FileDialogMode::ImportPngMatch:
-        case FileDialogMode::ExportPng: return "PNG";
+        case FileDialogMode::ExportPng:
+        case FileDialogMode::ExportWorldPng:
+        case FileDialogMode::ExportWorldPngSeq: return "PNG";
         case FileDialogMode::ImportSpriteSheetMatch: return "";
         case FileDialogMode::ImportGif:
         case FileDialogMode::ExportGif: return "GIF";
@@ -1022,6 +1026,22 @@ void OpenFileDialog(FileDialogMode mode) {
                 strcat(g_file_dialog_file, ext);
             }
         }
+    } else if (mode == FileDialogMode::ExportWorldPng ||
+               mode == FileDialogMode::ExportWorldPngSeq) {
+        /* The World View composite spans every marked tab, so the selected
+           sprite's name would be misleading. Seed from the active document
+           instead, which is at least the scene the user is looking at. */
+        char stem[32] = "WORLD";
+        if (g_doc->fname_s[0] != '\0') {
+            size_t n = 0;
+            while (n < 8 && g_doc->fname_s[n] != '\0' && g_doc->fname_s[n] != '.') {
+                stem[n] = g_doc->fname_s[n];
+                n++;
+            }
+            stem[n] = '\0';
+            if (stem[0] == '\0') snprintf(stem, sizeof(stem), "WORLD");
+        }
+        snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s.PNG", stem);
     } else if (mode == FileDialogMode::SaveAsmAnim) {
         /* World View ASM is generated from the marked sprites across all open
            tabs, not from the current IMG document. Seeding g_doc->fname_s here
@@ -1069,9 +1089,23 @@ void OpenFileDialog(FileDialogMode mode) {
     FileDialogClearMultiSelection();
     file_preview_clear();
     export_preview_clear();
-    if (FileDialogSupportsMultiSelect(mode) && g_file_dialog_file[0]) {
-        g_file_dialog_multi_files.push_back(g_file_dialog_file);
-        g_file_dialog_anchor_file = g_file_dialog_file;
+    if (FileDialogSupportsMultiSelect(mode)) {
+        /* Import dialogs inherit their default name from the open IMG
+           document, which is never one of the files they can import. Seeding
+           the multi-selection with it meant a Ctrl-click batch carried a bogus
+           first entry that silently failed to import. Only keep a seed that
+           matches what this dialog actually lists. */
+        const char *want_ext = GetDialogExtension(mode);
+        bool seed_ok = false;
+        if (g_file_dialog_file[0] && want_ext && want_ext[0]) {
+            const char *dot = strrchr(g_file_dialog_file, '.');
+            seed_ok = dot && _stricmp(dot + 1, want_ext) == 0;
+        }
+        if (!seed_ok) g_file_dialog_file[0] = '\0';
+        if (g_file_dialog_file[0]) {
+            g_file_dialog_multi_files.push_back(g_file_dialog_file);
+            g_file_dialog_anchor_file = g_file_dialog_file;
+        }
     }
     g_show_file_dialog = true;
 }
@@ -1136,7 +1170,21 @@ extern "C" void imgui_overlay_open_path(const char *path)
         g_img_tex_idx = -2;
     } else if (ext == "png") {
         ensure_new_doc_if_empty();
-        ImportPng(p.c_str());
+        /* Dropping PNGs used to always build a fresh palette per file, with no
+           way to ask for a match. Honor the Import PNG dialog's setting here
+           so both routes behave the same. */
+        int match_pal = g_png_import_match_palette ? ResolveImportMatchPalette() : -1;
+        if (match_pal >= 0) {
+            PAL *target = get_pal(match_pal);
+            if (ImportPngMatch(p.c_str(), match_pal)) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Imported dropped PNG matched to palette %.9s.",
+                         target ? target->n_s : "");
+                g_restore_msg_timer = 4.0f;
+            }
+        } else {
+            ImportPng(p.c_str());
+        }
         mark_dirty();
         g_img_tex_idx = -2;
     } else if (ext == "gif") {
@@ -1178,6 +1226,8 @@ void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::SaveAsmAnim) title = "Save World View ASM";
     else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) title = "Load World View Project";
     else if (g_file_dialog_mode == FileDialogMode::SaveWorldProject) title = "Save World View Project";
+    else if (g_file_dialog_mode == FileDialogMode::ExportWorldPng) title = "Export World View PNG";
+    else if (g_file_dialog_mode == FileDialogMode::ExportWorldPngSeq) title = "Export World View PNG Sequence";
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
     
@@ -1372,6 +1422,48 @@ void DrawFileDialog() {
             ImGui::TextDisabled("Exports Animation Timeline order and Hold timing. Index #0 is transparent.");
         }
 
+        if (g_file_dialog_mode == FileDialogMode::ImportPng) {
+            ImGui::Checkbox("Match to Active Palette", &g_png_import_match_palette);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("On indexes every selected PNG into the palette already in use.\n"
+                                  "Off builds a new palette per file.\n"
+                                  "This setting also applies to PNGs dragged onto the window.");
+            if (g_png_import_match_palette) {
+                PAL *target = get_pal(ResolveImportMatchPalette());
+                if (target) ImGui::TextDisabled("Matching into palette %.9s (%u colors).",
+                                                target->n_s, target->numc);
+                else        ImGui::TextDisabled("No palette available — files will import with a new palette.");
+            }
+        }
+
+        if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) {
+            PAL *target = get_pal(ResolveImportMatchPalette());
+            if (target) ImGui::TextDisabled("Matching into palette %.9s (%u colors). Every selected file uses this one.",
+                                            target->n_s, target->numc);
+            else        ImGui::TextDisabled("No palette to match against — select an image or palette first.");
+        }
+
+        if (g_file_dialog_mode == FileDialogMode::ExportWorldPng ||
+            g_file_dialog_mode == FileDialogMode::ExportWorldPngSeq) {
+            ImGui::Checkbox("Keep Lane Transparency", &g_world_png_lane_alpha);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Off composites every lane fully opaque, like the hardware would draw it.\n"
+                                  "On keeps the faded lane colors the World View uses to keep\n"
+                                  "overlapping rows readable while editing.");
+            ImGui::Checkbox("Crop to Visible Content", &g_world_png_crop);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", g_file_dialog_mode == FileDialogMode::ExportWorldPngSeq
+                    ? "Off writes the full world rect.\nOn crops to one shared rect covering every tick, so frames stay aligned."
+                    : "Off writes the full world rect. On trims to the sprites actually drawn.");
+            if (g_file_dialog_mode == FileDialogMode::ExportWorldPngSeq) {
+                ImGui::TextDisabled("Writes <name>_0000.PNG onward, one file per tick (max %d).",
+                                    (int)kWorldPngSequenceMaxFrames);
+            } else {
+                ImGui::TextDisabled("Composites every visible lane at tick %d. Index #0 stays transparent.",
+                                    g_world_marked_state.frame);
+            }
+        }
+
         if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) {
             ImGui::InputText("Name Prefix", g_sheet_prefix, sizeof(g_sheet_prefix));
             ImGui::SliderInt("Background", &g_sheet_bg_threshold, 180, 255);
@@ -1424,6 +1516,16 @@ void DrawFileDialog() {
                 if (dot != std::string::npos) full_path = full_path.substr(0, dot);
                 full_path += ".PNG";
                 ExportPng(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::ExportWorldPng) {
+                size_t dot = full_path.find_last_of('.');
+                if (dot != std::string::npos) full_path = full_path.substr(0, dot);
+                full_path += ".PNG";
+                ExportWorldViewPng(full_path.c_str(), g_world_png_crop,
+                                   g_world_png_lane_alpha);
+            } else if (g_file_dialog_mode == FileDialogMode::ExportWorldPngSeq) {
+                int total_ticks = 0;
+                ExportWorldViewPngSequence(full_path.c_str(), g_world_png_crop,
+                                           g_world_png_lane_alpha, &total_ticks);
             } else if (g_file_dialog_mode == FileDialogMode::ExportGif) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot != std::string::npos) full_path = full_path.substr(0, dot);
@@ -1441,32 +1543,59 @@ void DrawFileDialog() {
                 ImportPalette(full_path.c_str());
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportPng) {
+                /* Same palette pinning as the Match dialog when the option is
+                   on; falls back to per-file palettes when nothing matchable
+                   exists so the import still succeeds. */
+                int match_pal = g_png_import_match_palette ? ResolveImportMatchPalette() : -1;
+                PAL *match_pal_p = get_pal(match_pal);
                 unsigned int before_count = g_doc->imgcnt;
                 for (const std::string &file : selected_files) {
                     std::string path = PathCombine(g_file_dialog_dir, file);
-                    ImportPng(path.c_str());
+                    if (match_pal >= 0) ImportPngMatch(path.c_str(), match_pal);
+                    else                ImportPng(path.c_str());
                 }
-                if (selected_files.size() > 1) {
-                    unsigned int added = g_doc->imgcnt - before_count;
-                    snprintf(g_restore_msg, sizeof(g_restore_msg),
-                             added ? "Imported %u image(s) from %d PNG file(s)." : "No PNG images imported.",
-                             added, (int)selected_files.size());
+                unsigned int added = g_doc->imgcnt - before_count;
+                if (selected_files.size() > 1 || match_pal >= 0) {
+                    if (!added) {
+                        snprintf(g_restore_msg, sizeof(g_restore_msg), "No PNG images imported.");
+                    } else if (match_pal >= 0) {
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 "Imported %u image(s) matched to palette %.9s.",
+                                 added, match_pal_p ? match_pal_p->n_s : "");
+                    } else {
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 "Imported %u image(s) from %d PNG file(s).",
+                                 added, (int)selected_files.size());
+                    }
                     g_restore_msg_timer = 4.0f;
                 }
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) {
+                /* Pin the palette before the first file: importing selects the
+                   image it just created, so re-reading the selection per file
+                   would let the target drift mid-batch. */
+                int match_pal = ResolveImportMatchPalette();
+                PAL *match_pal_p = get_pal(match_pal);
                 unsigned int before_count = g_doc->imgcnt;
+                int failed = 0;
                 for (const std::string &file : selected_files) {
                     std::string path = PathCombine(g_file_dialog_dir, file);
-                    ImportPngMatch(path.c_str());
+                    if (!ImportPngMatch(path.c_str(), match_pal)) failed++;
                 }
-                if (selected_files.size() > 1) {
-                    unsigned int added = g_doc->imgcnt - before_count;
+                unsigned int added = g_doc->imgcnt - before_count;
+                if (match_pal < 0) {
                     snprintf(g_restore_msg, sizeof(g_restore_msg),
-                             added ? "Imported %u image(s) from %d PNG file(s)." : "No PNG images imported.",
-                             added, (int)selected_files.size());
-                    g_restore_msg_timer = 4.0f;
+                             "No palette to match against — load or select a palette first.");
+                } else if (added == 0) {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "No PNG images imported (%d file(s) failed to decode).", failed);
+                } else {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             failed ? "Imported %u image(s) matched to palette %.9s; %d file(s) failed."
+                                    : "Imported %u image(s) matched to palette %.9s.",
+                             added, match_pal_p ? match_pal_p->n_s : "", failed);
                 }
+                g_restore_msg_timer = 4.0f;
                 mark_dirty();
             } else if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) {
                 unsigned int before_count = g_doc->imgcnt;

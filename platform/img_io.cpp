@@ -4008,17 +4008,46 @@ void ImportPng(const char *path)
                 w, h, pal_colors, (int)buckets.size());
 }
 
-void ImportPngMatch(const char *path)
+int ResolveImportMatchPalette(void)
 {
-    verbose_log("ImportPngMatch: %s", path);
     IMG *active_img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
-    if (!active_img) { verbose_log("  -> no active image to copy palette from"); return; }
-    PAL *pal = get_pal(active_img->palnum);
-    if (!pal || !pal->data_p) return;
+    if (active_img) {
+        PAL *pal = get_pal(active_img->palnum);
+        if (pal && pal->data_p && pal->numc > 1) return (int)active_img->palnum;
+    }
+    if (g_doc->plselected >= 0) {
+        PAL *pal = get_pal(g_doc->plselected);
+        if (pal && pal->data_p && pal->numc > 1) return g_doc->plselected;
+    }
+    PAL *first = get_pal(0);
+    if (first && first->data_p && first->numc > 1) return 0;
+    return -1;
+}
+
+bool ImportPngMatch(const char *path, int palnum)
+{
+    verbose_log("ImportPngMatch: %s (palnum %d)", path, palnum);
+    /* Resolve the target palette up front and never re-read the selection
+       afterwards: each import selects the image it just created, so a loop
+       over several files would otherwise be matching against a moving
+       target. Callers importing a batch resolve once and pass it in. */
+    if (palnum < 0) palnum = ResolveImportMatchPalette();
+    if (palnum < 0) {
+        verbose_log("  -> no usable palette to match against");
+        return false;
+    }
+    PAL *pal = get_pal(palnum);
+    if (!pal || !pal->data_p) {
+        verbose_log("  -> palette %d has no data", palnum);
+        return false;
+    }
 
     int w, h, channels;
     unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
-    if (!data || w == 0 || h == 0) return;
+    if (!data || w == 0 || h == 0) {
+        verbose_log("  -> could not decode PNG");
+        return false;
+    }
 
     /* Build a fast lookup cache for palette matching */
     const unsigned char *pal_data = (const unsigned char *)pal->data_p;
@@ -4032,14 +4061,14 @@ void ImportPngMatch(const char *path)
     }
 
     IMG *img = AllocImg();
-    if (!img) { stbi_image_free(data); return; }
+    if (!img) { stbi_image_free(data); return false; }
     img->w = (unsigned short)w; img->h = (unsigned short)h;
-    img->palnum = active_img->palnum; img->flags = 0;
+    img->palnum = (unsigned short)palnum; img->flags = 0;
     img->anix = 0; img->aniy = 0; clear_secondary_anipoint(img);
     img->pttbl_p = NULL; img->opals = (unsigned short)-1;
     unsigned short stride = (unsigned short)((w + 3) & ~3);
     img->data_p = PoolAlloc((size_t)stride * h);
-    if (!img->data_p) { stbi_image_free(data); return; }
+    if (!img->data_p) { stbi_image_free(data); return false; }
     memset(img->data_p, 0, (size_t)stride * h);
 
     const char *name = strrchr(path, '/'); if (!name) name = strrchr(path, '\\'); if (!name) name = path; else name++;
@@ -4069,7 +4098,9 @@ void ImportPngMatch(const char *path)
     stbi_image_free(data);
     if (g_doc->imgcnt > 0) g_doc->ilselected = (int)g_doc->imgcnt - 1;
     g_img_tex_idx = -2;
-    verbose_log("  -> %dx%d px, matched to palette %u", w, h, pal->numc);
+    verbose_log("  -> %dx%d px, matched to palette %d (%.9s, %u colors)",
+                w, h, palnum, pal->n_s, pal->numc);
+    return true;
 }
 
 int ImportSpriteSheetMatch(const char *path, const SpriteSheetImportOptions *options)
@@ -4422,6 +4453,13 @@ void ExportPng(const char *path)
         snprintf(g_restore_msg, sizeof(g_restore_msg), "PNG export failed.");
     }
     g_restore_msg_timer = 4.0f;
+}
+
+bool WriteRgbaPng(const char *path, int w, int h, const unsigned char *rgba)
+{
+    if (!path || !rgba || w <= 0 || h <= 0) return false;
+    verbose_log("WriteRgbaPng: %s (%dx%d)", path, w, h);
+    return stbi_write_png(path, w, h, 4, rgba, w * 4) != 0;
 }
 
 /* ---- Animated GIF Export ---- */

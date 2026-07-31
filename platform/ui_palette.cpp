@@ -775,6 +775,177 @@ bool PastePaletteColorAt(int color_idx)
     return true;
 }
 
+/* ---- Multi-slot palette clipboard ----------------------------------
+   Carries a set of swatches *with their index positions* so they can be
+   dropped into a different palette at exactly the same indices — the point
+   being that sprites keep rendering correctly, since their pixels reference
+   indices, not colors.
+
+   Distinct from the two clipboards that already exist: g_palette_color_clipboard
+   holds one loose color pasteable at any index, and g_pal_clipboard holds a
+   whole palette pasted as a new one. */
+struct PaletteSlotClipboard {
+    bool valid = false;
+    int  count = 0;
+    int  max_index = -1;
+    bool has[256] = {};
+    SDL_Color color[256] = {};
+    char source_name[16] = {0};
+};
+static PaletteSlotClipboard g_palette_slot_clipboard;
+
+int PaletteSlotClipboardCount(void)
+{
+    return g_palette_slot_clipboard.valid ? g_palette_slot_clipboard.count : 0;
+}
+
+int PaletteSlotClipboardMaxIndex(void)
+{
+    return g_palette_slot_clipboard.valid ? g_palette_slot_clipboard.max_index : -1;
+}
+
+const char *PaletteSlotClipboardSource(void)
+{
+    return g_palette_slot_clipboard.source_name;
+}
+
+/* How many swatches a copy would take right now: the Ctrl/Shift multi-select
+   if there is one, otherwise the single highlighted swatch. */
+int CountSelectedPaletteSlots(void)
+{
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || !pal->data_p) return 0;
+    int limit = (int)pal->numc < 256 ? (int)pal->numc : 256;
+    int n = 0;
+    for (int i = 0; i < limit; i++)
+        if (g_palette_selection[i]) n++;
+    if (n == 0 && g_sel_color >= 0 && g_sel_color < limit) n = 1;
+    return n;
+}
+
+int CopySelectedPaletteSlots(void)
+{
+    commit_palette_adjustments();
+    PAL *pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
+    if (!pal || !pal->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select a palette first.");
+        g_restore_msg_timer = 3.0f;
+        return 0;
+    }
+
+    int limit = (int)pal->numc < 256 ? (int)pal->numc : 256;
+    PaletteSlotClipboard clip;
+    for (int i = 0; i < limit; i++) {
+        if (!g_palette_selection[i]) continue;
+        clip.has[i] = true;
+        clip.color[i] = g_palette[i];
+        clip.max_index = i;
+        clip.count++;
+    }
+    /* Nothing multi-selected: fall back to the highlighted swatch so the
+       command is never a silent no-op. */
+    if (clip.count == 0 && g_sel_color >= 0 && g_sel_color < limit) {
+        clip.has[g_sel_color] = true;
+        clip.color[g_sel_color] = g_palette[g_sel_color];
+        clip.max_index = g_sel_color;
+        clip.count = 1;
+    }
+    if (clip.count == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Ctrl+click palette swatches to select colors first.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    clip.valid = true;
+    snprintf(clip.source_name, sizeof(clip.source_name), "%.9s", pal->n_s);
+    g_palette_slot_clipboard = clip;
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Copied %d color%s from %.9s (indices up to #%d).",
+             clip.count, clip.count == 1 ? "" : "s", pal->n_s, clip.max_index);
+    g_restore_msg_timer = 4.0f;
+    return clip.count;
+}
+
+int PastePaletteSlotsAtSameIndices(int target_pal_idx)
+{
+    const PaletteSlotClipboard &clip = g_palette_slot_clipboard;
+    if (!clip.valid || clip.count == 0) return 0;
+
+    /* Flush any pending HSL slider edits into the selected palette before
+       touching palette data, whichever palette we are about to write. */
+    commit_palette_adjustments();
+    int target_idx = (target_pal_idx >= 0) ? target_pal_idx : g_doc->plselected;
+    PAL *pal = (target_idx >= 0) ? get_pal(target_idx) : NULL;
+    if (!pal) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select a target palette first.");
+        g_restore_msg_timer = 3.0f;
+        return 0;
+    }
+    /* Targeting a palette other than the selected one must not drag the live
+       working table (or the current sprite's palette assignment) with it. */
+    bool target_is_selected = (target_idx == g_doc->plselected);
+
+    doc_undo_push();
+
+    /* Pasting "at the same index" is only meaningful if the index exists, so
+       grow a short target rather than dropping the tail colors. Undo covers
+       the size change if that wasn't wanted. */
+    int old_numc = (int)pal->numc;
+    int need = clip.max_index + 1;
+    bool grew = false;
+    if (need > old_numc || !pal->data_p) {
+        if (ensure_palette_numc(pal, need > old_numc ? need : old_numc))
+            grew = (int)pal->numc > old_numc;
+    }
+    if (!pal->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Could not grow the target palette.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    int limit = (int)pal->numc < 256 ? (int)pal->numc : 256;
+    unsigned char *pd = (unsigned char *)pal->data_p;
+    int pasted = 0, skipped = 0;
+    for (int i = 0; i < 256; i++) {
+        if (!clip.has[i]) continue;
+        if (i >= limit) { skipped++; continue; }
+        rgb8_to_pal_word(clip.color[i].r, clip.color[i].g, clip.color[i].b,
+                         pd + i * 2);
+        pasted++;
+    }
+
+    /* Reload the live table from the PAL so any slots created by the grow are
+       consistent with what was actually written. Only meaningful when the
+       target is the palette the live table currently mirrors. */
+    if (target_is_selected) {
+        ApplyPalette(target_idx);
+        save_palette_baseline();
+        reset_palette_adjust_sliders();
+    }
+    InvalidatePaletteUsage();
+    InvalidatePaletteSync();
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    if (skipped > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Pasted %d color%s into %.9s at the same indices; %d skipped.",
+                 pasted, pasted == 1 ? "" : "s", pal->n_s, skipped);
+    } else if (grew) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Pasted %d color%s into %.9s at the same indices (grew %d -> %d colors).",
+                 pasted, pasted == 1 ? "" : "s", pal->n_s, old_numc, (int)pal->numc);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Pasted %d color%s into %.9s at the same indices.",
+                 pasted, pasted == 1 ? "" : "s", pal->n_s);
+    }
+    g_restore_msg_timer = 5.0f;
+    return pasted;
+}
+
 bool ApplyEyedropperColorToLockedSwatches(int source_color_idx)
 {
     if (source_color_idx < 0 || source_color_idx >= 256) return false;
@@ -2786,6 +2957,34 @@ void DrawBottomPaletteBar(ImVec2 avail)
                 PastePaletteColorAt(i);
             if (!g_palette_color_clipboard.valid) ImGui::EndDisabled();
             ImGui::Separator();
+            {
+                /* Multi-slot copy/paste: keeps index positions, so the same
+                   colors can be dropped into another palette without
+                   recoloring any sprite that references those indices. */
+                int sel_slots = CountSelectedPaletteSlots();
+                char copy_label[64];
+                snprintf(copy_label, sizeof(copy_label),
+                         "Copy Selected Colors (%d)", sel_slots);
+                if (ImGui::MenuItem(copy_label, NULL, false, sel_slots > 0))
+                    CopySelectedPaletteSlots();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Copies every Ctrl/Shift-selected swatch along with its\n"
+                                      "index, or just this one if nothing is multi-selected.");
+
+                int clip_slots = PaletteSlotClipboardCount();
+                char paste_label[64];
+                snprintf(paste_label, sizeof(paste_label),
+                         "Paste Colors at Same Indices (%d)", clip_slots);
+                if (ImGui::MenuItem(paste_label, NULL, false, clip_slots > 0))
+                    PastePaletteSlotsAtSameIndices();
+                if (clip_slots > 0 && ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Writes the %d copied color%s from %.9s into this palette\n"
+                                      "at their original indices (up to #%d), growing it if needed.",
+                                      clip_slots, clip_slots == 1 ? "" : "s",
+                                      PaletteSlotClipboardSource(),
+                                      PaletteSlotClipboardMaxIndex());
+            }
+            ImGui::Separator();
             if (i == 0) {
                 if (ImGui::MenuItem("Copy #0 to Free Opaque Slot")) {
                     CopyPaletteZeroAndRemap(PaletteZeroRemapMode::None, -1);
@@ -3677,6 +3876,23 @@ void DrawRightPanelPaletteEditor(float panel_h)
 
                 if (ImGui::BeginPopupContextItem("##palctx")) {
                     if (ImGui::MenuItem("Mark / Unmark"))             pal->flags ^= 1;
+                    {
+                        /* Right-clicking a row targets that row, which is not
+                           necessarily the selected palette — paste into it in
+                           place rather than selecting it, since SelectPalette
+                           would also reassign the current sprite to it. */
+                        int clip_slots = PaletteSlotClipboardCount();
+                        char paste_label[72];
+                        snprintf(paste_label, sizeof(paste_label),
+                                 "Paste %d Copied Color%s at Same Indices",
+                                 clip_slots, clip_slots == 1 ? "" : "s");
+                        if (ImGui::MenuItem(paste_label, NULL, false, clip_slots > 0))
+                            PastePaletteSlotsAtSameIndices(i);
+                        if (clip_slots > 0 && ImGui::IsItemHovered())
+                            ImGui::SetTooltip("From %.9s, into this palette at the original indices.\n"
+                                              "Leaves the palette selection and sprite assignment alone.",
+                                              PaletteSlotClipboardSource());
+                    }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Add New"))                   AddNewPalette();
                     if (ImGui::MenuItem("Duplicate"))                 DuplicatePalette();
@@ -3750,6 +3966,27 @@ void DrawRightPanelPaletteEditor(float panel_h)
             }
 
             if (ImGui::BeginMenu("Clipboard & Files")) {
+                {
+                    int sel_slots = CountSelectedPaletteSlots();
+                    int clip_slots = PaletteSlotClipboardCount();
+                    char label[72];
+                    snprintf(label, sizeof(label), "Copy Selected Colors (%d)", sel_slots);
+                    if (ImGui::MenuItem(label, NULL, false, sel_slots > 0))
+                        CopySelectedPaletteSlots();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Ctrl/Shift+click swatches to select several, then copy them\n"
+                                          "with their index positions.");
+                    snprintf(label, sizeof(label),
+                             "Paste Colors at Same Indices (%d)", clip_slots);
+                    if (ImGui::MenuItem(label, NULL, false, clip_slots > 0))
+                        PastePaletteSlotsAtSameIndices();
+                    if (clip_slots > 0 && ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Into the selected palette, from %.9s, keeping index #s\n"
+                                          "(up to #%d). Grows the palette if it is too short.",
+                                          PaletteSlotClipboardSource(),
+                                          PaletteSlotClipboardMaxIndex());
+                    ImGui::Separator();
+                }
                 if (ImGui::MenuItem("Copy Palette to Clipboard")) CopyPaletteToClipboard();
                 if (!g_pal_clipboard.valid) ImGui::BeginDisabled();
                 if (ImGui::MenuItem("Paste Palette from Clipboard")) PastePaletteFromClipboard();

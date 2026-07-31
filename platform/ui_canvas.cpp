@@ -2824,6 +2824,97 @@ static void WorldMarkedEffectiveLocalDelta(WorldMarkedSequenceState &state,
     if (out_dy) *out_dy = dy;
 }
 
+/* One sprite instance to paint: a lane frame, optionally its dual copy.
+   Collected first, then sorted, so both the on-screen draw and the PNG export
+   composite the scene in exactly the same order. */
+struct WorldLaneDrawJob {
+    int slot;
+    int frame_idx;
+    int z;
+    int order;
+    bool dual;
+    bool mirror_x;
+    bool mirror_y;
+};
+
+/* Walk every visible lane and gather its paint jobs back-to-front by per-entry
+   Z. Equal Z keeps the legacy order: slot N-1 painted first (back), slot 0 last
+   (top); a dual copy paints right after its primary. When `render_info` is
+   given, the current frame's resolved mirror flags are recorded into it. */
+static void WorldCollectMarkedDrawJobs(WorldMarkedSequenceState &state,
+                                       const std::vector<WorldMarkedLane> &lanes,
+                                       std::vector<WorldLaneDrawJob> &jobs,
+                                       WorldMarkedLaneRenderInfo *render_info)
+{
+    int n = (int)lanes.size();
+    jobs.clear();
+    jobs.reserve((size_t)n * 2);
+
+    auto add_frame_jobs = [&](int slot, int frame_idx, int order,
+                              bool mirror_x, bool mirror_y) {
+        const WorldMarkedLane &lane = lanes[slot];
+        int state_slot = lane.delay_slot;
+        jobs.push_back({slot, frame_idx,
+                        state.frame_z[state_slot][frame_idx],
+                        order, false, mirror_x, mirror_y});
+        if (state.dual_on[state_slot][frame_idx])
+            jobs.push_back({slot, frame_idx,
+                            state.dual_z[state_slot][frame_idx],
+                            order, true, mirror_x, mirror_y});
+    };
+
+    for (int slot = 0; slot < n; slot++) {
+        const WorldMarkedLane &lane = lanes[slot];
+        int state_slot = lane.delay_slot;
+        EnsureWorldMarkedFrameDelays(state, state_slot, (int)lane.frames.size());
+        if (!state.lane_visible[state_slot])
+            continue;
+        if (lane.frame_pos < 0 ||
+            lane.frame_pos >= (int)lane.frames.size())
+            continue;
+
+        bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
+        int order = (slot == 0) ? n - 1 : n - 1 - slot;
+        bool base_mirror_x = mirror_flag ? *mirror_flag : false;
+
+        for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+            if (fi == lane.frame_pos)
+                continue;
+            if (!WorldMarkedEntryHasTimedHold(state, state_slot, fi) ||
+                !WorldMarkedEntryVisibleAtTick(state, state_slot, fi, lane.tick))
+                continue;
+            int mirror_bits = fi < (int)state.frame_mirror[state_slot].size()
+                            ? state.frame_mirror[state_slot][fi] : 0;
+            bool mirror_x =
+                base_mirror_x ^ ((mirror_bits & kWorldFrameMirrorX) != 0);
+            bool mirror_y = (mirror_bits & kWorldFrameMirrorY) != 0;
+            add_frame_jobs(slot, fi, order, mirror_x, mirror_y);
+        }
+
+        int current_mirror_bits =
+            lane.frame_pos < (int)state.frame_mirror[state_slot].size()
+          ? state.frame_mirror[state_slot][lane.frame_pos] : 0;
+        bool current_mirror_x =
+            base_mirror_x ^ ((current_mirror_bits & kWorldFrameMirrorX) != 0);
+        bool current_mirror_y =
+            (current_mirror_bits & kWorldFrameMirrorY) != 0;
+        if (render_info) {
+            render_info->lane_mirror_x[slot] = current_mirror_x;
+            render_info->lane_mirror_y[slot] = current_mirror_y;
+        }
+        if (WorldMarkedEntryVisibleAtTick(state, state_slot, lane.frame_pos,
+                                          lane.tick))
+            add_frame_jobs(slot, lane.frame_pos, order,
+                           current_mirror_x, current_mirror_y);
+    }
+
+    std::stable_sort(jobs.begin(), jobs.end(),
+                     [](const WorldLaneDrawJob &a, const WorldLaneDrawJob &b) {
+                         if (a.z != b.z) return a.z < b.z;
+                         return a.order < b.order;
+                     });
+}
+
 void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes,
                                 const WorldCanvasLayout &layout,
@@ -2920,85 +3011,90 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
         }
     };
 
-    /* Collect one draw job per visible instance (lane sprite + optional dual
-       copy), then paint back-to-front by per-entry Z. Equal Z keeps the legacy
-       order: slot N-1 painted first (back), slot 0 last (top); a dual copy
-       paints right after its primary. */
-    struct WorldLaneDrawJob {
-        int slot;
-        int frame_idx;
-        int z;
-        int order;
-        bool dual;
-        bool mirror_x;
-        bool mirror_y;
-    };
-    int n = (int)lanes.size();
     std::vector<WorldLaneDrawJob> jobs;
-    jobs.reserve((size_t)n * 2);
-    auto add_frame_jobs = [&](int slot, int frame_idx, int order,
-                              bool mirror_x, bool mirror_y) {
-        const WorldMarkedLane &lane = lanes[slot];
-        int state_slot = lane.delay_slot;
-        jobs.push_back({slot, frame_idx,
-                        state.frame_z[state_slot][frame_idx],
-                        order, false, mirror_x, mirror_y});
-        if (state.dual_on[state_slot][frame_idx])
-            jobs.push_back({slot, frame_idx,
-                            state.dual_z[state_slot][frame_idx],
-                            order, true, mirror_x, mirror_y});
-    };
-
-    for (int slot = 0; slot < n; slot++) {
-        const WorldMarkedLane &lane = lanes[slot];
-        int state_slot = lane.delay_slot;
-        EnsureWorldMarkedFrameDelays(state, state_slot, (int)lane.frames.size());
-        if (!state.lane_visible[state_slot])
-            continue;
-        if (lane.frame_pos < 0 ||
-            lane.frame_pos >= (int)lane.frames.size())
-            continue;
-
-        bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
-        int order = (slot == 0) ? n - 1 : n - 1 - slot;
-        bool base_mirror_x = mirror_flag ? *mirror_flag : false;
-
-        for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
-            if (fi == lane.frame_pos)
-                continue;
-            if (!WorldMarkedEntryHasTimedHold(state, state_slot, fi) ||
-                !WorldMarkedEntryVisibleAtTick(state, state_slot, fi, lane.tick))
-                continue;
-            int mirror_bits = fi < (int)state.frame_mirror[state_slot].size()
-                            ? state.frame_mirror[state_slot][fi] : 0;
-            bool mirror_x =
-                base_mirror_x ^ ((mirror_bits & kWorldFrameMirrorX) != 0);
-            bool mirror_y = (mirror_bits & kWorldFrameMirrorY) != 0;
-            add_frame_jobs(slot, fi, order, mirror_x, mirror_y);
-        }
-
-        int current_mirror_bits =
-            lane.frame_pos < (int)state.frame_mirror[state_slot].size()
-          ? state.frame_mirror[state_slot][lane.frame_pos] : 0;
-        bool current_mirror_x =
-            base_mirror_x ^ ((current_mirror_bits & kWorldFrameMirrorX) != 0);
-        bool current_mirror_y =
-            (current_mirror_bits & kWorldFrameMirrorY) != 0;
-        render_info.lane_mirror_x[slot] = current_mirror_x;
-        render_info.lane_mirror_y[slot] = current_mirror_y;
-        if (WorldMarkedEntryVisibleAtTick(state, state_slot, lane.frame_pos,
-                                          lane.tick))
-            add_frame_jobs(slot, lane.frame_pos, order,
-                           current_mirror_x, current_mirror_y);
-    }
-    std::stable_sort(jobs.begin(), jobs.end(),
-                     [](const WorldLaneDrawJob &a, const WorldLaneDrawJob &b) {
-                         if (a.z != b.z) return a.z < b.z;
-                         return a.order < b.order;
-                     });
+    WorldCollectMarkedDrawJobs(state, lanes, jobs, &render_info);
     for (const WorldLaneDrawJob &job : jobs)
         draw_instance(job.slot, job.frame_idx, job.dual,
                       job.mirror_x, job.mirror_y);
+}
+
+/* Composite the same scene WorldDrawMarkedLaneSprites paints, but into a
+   world-pixel RGBA buffer instead of a draw list: 1:1 scale, no borders, no
+   overlays, index 0 transparent. `out` is resized to world_w * world_h * 4 and
+   fully cleared first. Returns the number of sprite instances that landed at
+   least one pixel inside the world rect. */
+int WorldComposeMarkedSceneRgba(WorldMarkedSequenceState &state,
+                                const std::vector<WorldMarkedLane> &lanes,
+                                int world_w, int world_h,
+                                int origin_x, int origin_y,
+                                bool use_lane_alpha,
+                                std::vector<unsigned char> &out)
+{
+    out.clear();
+    if (world_w <= 0 || world_h <= 0) return 0;
+    out.assign((size_t)world_w * (size_t)world_h * 4u, 0);
+
+    std::vector<WorldLaneDrawJob> jobs;
+    WorldCollectMarkedDrawJobs(state, lanes, jobs, NULL);
+
+    int drawn = 0;
+    for (const WorldLaneDrawJob &job : jobs) {
+        const WorldMarkedLane &lane = lanes[job.slot];
+        int state_slot = lane.delay_slot;
+        int frame_idx = job.frame_idx;
+        if (frame_idx < 0 || frame_idx >= (int)lane.frames.size())
+            continue;
+
+        const std::vector<int> *pieces = NULL;
+        const std::vector<Document*> *piece_docs = NULL;
+        if (frame_idx < (int)lane.frame_pieces.size())
+            pieces = &lane.frame_pieces[frame_idx];
+        if (frame_idx < (int)lane.frame_piece_docs.size())
+            piece_docs = &lane.frame_piece_docs[frame_idx];
+
+        std::vector<int> fallback_piece;
+        if (!pieces || pieces->empty()) {
+            if (!lane.img) continue;
+            fallback_piece.push_back(lane.frames[frame_idx]);
+            pieces = &fallback_piece;
+            piece_docs = NULL;
+        }
+
+        int local_dx = 0;
+        int local_dy = 0;
+        WorldMarkedEffectiveLocalDelta(state, state_slot,
+                                       (int)lane.frames.size(), frame_idx,
+                                       job.dual, lane.tick,
+                                       &local_dx, &local_dy);
+
+        Document *frame_doc = (frame_idx < (int)lane.frame_docs.size() &&
+                              lane.frame_docs[frame_idx])
+                            ? lane.frame_docs[frame_idx] : lane.doc;
+        for (size_t pi = 0; pi < pieces->size(); pi++) {
+            int piece_idx = (*pieces)[pi];
+            Document *pdoc = (piece_docs && pi < piece_docs->size() && (*piece_docs)[pi])
+                           ? (*piece_docs)[pi] : frame_doc;
+            IMG *img = doc_get_img(pdoc, piece_idx);
+            if (!img) continue;
+
+            /* Same anchor math as the screen draw at scale 1. */
+            int ax = (int)(short)img->anix + local_dx;
+            int ay = (int)(short)img->aniy + local_dy;
+            int left = job.mirror_x ? (origin_x - ((int)img->w - ax))
+                                    : (origin_x - ax);
+            int top  = job.mirror_y ? (origin_y - ((int)img->h - ay))
+                                    : (origin_y - ay);
+            /* Lane alpha exists to keep overlapping lanes readable while
+               editing. An export defaults to opaque so the PNG matches what
+               the hardware would actually draw. */
+            unsigned char alpha = use_lane_alpha ? WorldMarkedLaneAlpha(job.slot) : 255;
+            if (WorldBlitSpriteRgba(pdoc, img, alpha,
+                                    job.mirror_x, job.mirror_y, left, top,
+                                    out.data(), world_w, world_h) > 0)
+                drawn++;
+        }
+    }
+    return drawn;
 }
 
 enum WorldBoundaryClass {
@@ -3530,6 +3626,18 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
                           "The sprite IMGs it references are opened automatically.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Save PNG##world_marked_save_png"))
+        action.request_save_png = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Write the composited scene at this tick — every visible lane,\n"
+                          "in draw order — to a PNG.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Save PNG Seq##world_marked_save_png_seq"))
+        action.request_save_png_seq = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Write one PNG per tick across the whole sequence,\n"
+                          "numbered <name>_0000.PNG onward.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Save Project##world_marked_save_project"))
         action.request_save_project = true;
@@ -12849,6 +12957,10 @@ void apply_pasted_region(void)
     unsigned char pal_map[256];
     PAL *target_pal = get_pal(img->palnum);
     bool remap_palette = BuildClipboardPaletteMap(target_pal, pal_map);
+    std::vector<unsigned char> cookie_cut_pixels;
+    bool cookie_has_opaque = false;
+    if (g_cookie_cut_mode)
+        cookie_cut_pixels.assign((size_t)clip_stride * ph, 0);
 
     /* Adobe-like clipping: allow pasting partially off-canvas */
     int start_x = (px < 0) ? -px : 0;
@@ -12868,15 +12980,71 @@ void apply_pasted_region(void)
                blend/opacity modes composite in RGB and quantize back to the
                target indexed palette. */
             if (src[x] != 0) {
-                if (g_cookie_cut_mode)
+                if (g_cookie_cut_mode) {
+                    unsigned char removed = dst[x - start_x];
+                    cookie_cut_pixels[(size_t)y * clip_stride + x] = removed;
+                    if (removed != 0) cookie_has_opaque = true;
                     dst[x - start_x] = 0;
-                else
+                } else
                     dst[x - start_x] = paste_composite_index(src[x], dst[x - start_x],
                                                              target_pal, pal_map,
                                                              remap_palette,
                                                              px + x, py + y);
             }
         }
+    }
+
+    if (g_cookie_cut_mode) {
+        /* The captured source supplied only the stencil. Once applied, the
+           clipboard becomes the pixels actually removed from the target and
+           carries the target's palette snapshot for correct later remapping. */
+        void *cut_data = malloc(cookie_cut_pixels.size());
+        if (cut_data) {
+            memcpy(cut_data, cookie_cut_pixels.data(), cookie_cut_pixels.size());
+            free(g_clipboard.data_p);
+            g_clipboard.data_p = cut_data;
+            g_clipboard.w = (unsigned short)pw;
+            g_clipboard.h = (unsigned short)ph;
+            g_clipboard.stride = clip_stride;
+            g_clipboard.valid = true;
+            g_clipboard.has_meta = true;
+            g_clipboard.has_opaque = cookie_has_opaque;
+            g_clipboard.from_cut = true;
+            g_clipboard.origin_x = px;
+            g_clipboard.origin_y = py;
+            g_clipboard.palnum = img->palnum;
+            g_clipboard.anix = img->anix;
+            g_clipboard.aniy = img->aniy;
+            g_clipboard.anix2 = img->anix2;
+            g_clipboard.aniy2 = img->aniy2;
+            g_clipboard.aniz2 = img->aniz2;
+            g_clipboard.opals = img->opals;
+            g_clipboard.has_opaltbl = img->opaltbl_p != NULL;
+            memset(g_clipboard.opaltbl, 0, sizeof(g_clipboard.opaltbl));
+            if (img->opaltbl_p) memcpy(g_clipboard.opaltbl, img->opaltbl_p, 16);
+            g_clipboard.has_palette = false;
+            g_clipboard.palette_numc = 0;
+            memset(g_clipboard.palette_data, 0, sizeof(g_clipboard.palette_data));
+            if (target_pal && target_pal->data_p && target_pal->numc > 0) {
+                int n = target_pal->numc;
+                if (n > 256) n = 256;
+                memcpy(g_clipboard.palette_data, target_pal->data_p, (size_t)n * 2u);
+                g_clipboard.palette_numc = (unsigned short)n;
+                g_clipboard.has_palette = true;
+            }
+            strncpy(g_clipboard.source_name, img->n_s, 15);
+            g_clipboard.source_name[15] = '\0';
+            strncpy(g_clipboard.src_filename, img->src_filename,
+                    sizeof(g_clipboard.src_filename) - 1);
+            g_clipboard.src_filename[sizeof(g_clipboard.src_filename) - 1] = '\0';
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     cookie_has_opaque
+                         ? "Cookie cut captured %dx%d target pixels with palette %.9s."
+                         : "Cookie cut completed, but the target area was transparent.",
+                     pw, ph, target_pal ? target_pal->n_s : "");
+            g_restore_msg_timer = 4.0f;
+        }
+        g_cookie_cut_mode = false;
     }
     if (paste_captured) push_pixel_history_entry(&paste_snap);
     g_img_tex_idx = -2;
@@ -14637,6 +14805,10 @@ static void WorldHandleMarkedPanelResult(const WorldMarkedPanelResult &panel_res
         g_request_save_world_asm = true;   /* dialog opened in main loop */
     if (panel_action.request_save_project)
         g_request_save_world_project = true;
+    if (panel_action.request_save_png)
+        g_request_save_world_png = true;
+    if (panel_action.request_save_png_seq)
+        g_request_save_world_png_seq = true;
     if (panel_action.request_load_project)
         g_request_load_world_project = true;
     if (panel_action.request_load_asm) {
@@ -14683,6 +14855,291 @@ bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     if (!g_world_marked_panel_docked)
         WorldHandleMarkedPanelResult(tabs_result.panel);
     return true;
+}
+
+/* ---- World View PNG export ----------------------------------------
+   Rebuilds the same lane set the World View draws, composites it in world
+   pixels, and writes it out. Kept separate from the draw path so an export
+   never depends on the panel being on screen or on a particular zoom. */
+
+static bool WorldBuildExportLanes(std::vector<WorldMarkedLane> &lanes)
+{
+    WorldMarkedSequenceState &state = g_world_marked_state;
+    lanes.clear();
+    lanes.reserve(kWorldMarkedMaxTabs);
+
+    bool dummy_decap_missing = false;
+    bool embedded_focus_only = state.embedded_active &&
+                               !state.embedded_show_companions;
+    if (!embedded_focus_only) {
+        WorldAppendMarkedDocumentLanes(state, document_active_index(), lanes,
+                                       &dummy_decap_missing);
+    }
+    WorldAppendEmbeddedSeqScrLane(state, lanes);
+
+    if (!embedded_focus_only) {
+        std::vector<WorldMarkedAsmLaneInput> asm_lanes;
+        WorldCollectActiveAsmLanes(asm_lanes);
+        for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
+            if (!input.enabled) continue;
+            WorldAppendAsmLane(state, input.name, input.frames, input.doc,
+                               input.doc_idx, input.slot_id, lanes);
+        }
+    }
+    return !lanes.empty();
+}
+
+/* Tightest rect containing any non-transparent pixel. Returns false when the
+   buffer is entirely empty. */
+static bool WorldRgbaContentBounds(const std::vector<unsigned char> &rgba,
+                                   int w, int h,
+                                   int *out_x, int *out_y,
+                                   int *out_w, int *out_h)
+{
+    int min_x = w, min_y = h, max_x = -1, max_y = -1;
+    for (int y = 0; y < h; y++) {
+        const unsigned char *row = rgba.data() + (size_t)y * w * 4;
+        for (int x = 0; x < w; x++) {
+            if (row[x * 4 + 3] == 0) continue;
+            if (x < min_x) min_x = x;
+            if (x > max_x) max_x = x;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
+    }
+    if (max_x < min_x) return false;
+    *out_x = min_x;
+    *out_y = min_y;
+    *out_w = max_x - min_x + 1;
+    *out_h = max_y - min_y + 1;
+    return true;
+}
+
+static void WorldCropRgba(const std::vector<unsigned char> &src, int src_w,
+                          int x, int y, int w, int h,
+                          std::vector<unsigned char> &dst)
+{
+    dst.assign((size_t)w * (size_t)h * 4u, 0);
+    for (int row = 0; row < h; row++) {
+        memcpy(dst.data() + (size_t)row * w * 4,
+               src.data() + ((size_t)(y + row) * src_w + x) * 4,
+               (size_t)w * 4u);
+    }
+}
+
+/* Longest lane, in ticks — how many frames a full sequence export covers. */
+static int WorldExportTotalTicks(const std::vector<WorldMarkedLane> &lanes)
+{
+    WorldMarkedSequenceState &state = g_world_marked_state;
+    int total = 0;
+    for (const WorldMarkedLane &lane : lanes) {
+        int n = (int)lane.frames.size();
+        if (n <= 0) continue;
+        int ticks = WorldMarkedSequenceTicks(state, lane.delay_slot, n);
+        if (ticks > total) total = ticks;
+        /* An entry can be scheduled to stay visible past its own lane's
+           cycle; make sure those tail ticks are exported too. */
+        for (int fi = 0; fi < n && fi < (int)state.visible_until[lane.delay_slot].size(); fi++) {
+            int until = state.visible_until[lane.delay_slot][fi];
+            if (until > total) total = until;
+        }
+    }
+    return total;
+}
+
+/* Build the composite for the current tick. Returns false when nothing at all
+   landed inside the world rect. */
+static bool WorldComposeCurrentTick(std::vector<WorldMarkedLane> &lanes,
+                                    bool crop, bool use_lane_alpha,
+                                    std::vector<unsigned char> &out,
+                                    int *out_w, int *out_h)
+{
+    WorldMarkedSequenceState &state = g_world_marked_state;
+    int world_w = g_world_state.w > 0 ? g_world_state.w : 400;
+    int world_h = g_world_state.h > 0 ? g_world_state.h : 254;
+
+    if (!WorldUpdateMarkedLanePlayback(state, lanes, 0.0f)) return false;
+    std::vector<unsigned char> full;
+    if (WorldComposeMarkedSceneRgba(state, lanes, world_w, world_h,
+                                    g_world_state.origin_x,
+                                    g_world_state.origin_y,
+                                    use_lane_alpha, full) <= 0)
+        return false;
+
+    if (crop) {
+        int cx, cy, cw, ch;
+        if (!WorldRgbaContentBounds(full, world_w, world_h, &cx, &cy, &cw, &ch))
+            return false;
+        WorldCropRgba(full, world_w, cx, cy, cw, ch, out);
+        *out_w = cw;
+        *out_h = ch;
+        return true;
+    }
+
+    out.swap(full);
+    *out_w = world_w;
+    *out_h = world_h;
+    return true;
+}
+
+bool ExportWorldViewPng(const char *path, bool crop_to_content, bool use_lane_alpha)
+{
+    if (!path || !*path) return false;
+
+    std::vector<WorldMarkedLane> lanes;
+    if (!WorldBuildExportLanes(lanes)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "World View PNG export needs at least one marked/ASM lane.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+
+    /* Freeze playback for the duration so the exported frame is exactly the
+       tick on screen, then restore whatever the user had running. */
+    WorldMarkedSequenceState &state = g_world_marked_state;
+    bool was_paused = state.paused;
+    float was_timer = state.timer;
+    state.paused = true;
+    state.timer = 0.0f;
+
+    std::vector<unsigned char> rgba;
+    int w = 0, h = 0;
+    bool composed = WorldComposeCurrentTick(lanes, crop_to_content, use_lane_alpha,
+                                            rgba, &w, &h);
+
+    state.paused = was_paused;
+    state.timer = was_timer;
+
+    if (!composed) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Nothing visible at tick %d — no PNG written.", state.frame);
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+    if (!WriteRgbaPng(path, w, h, rgba.data())) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "World View PNG export failed.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Exported World View PNG (%dx%d) at tick %d.", w, h, state.frame);
+    g_restore_msg_timer = 4.0f;
+    return true;
+}
+
+/* Write one PNG per tick, named <base>_0000.png ... Frames share a single crop
+   rect (the union of every tick's content) so the sequence stays registered. */
+int ExportWorldViewPngSequence(const char *path_base, bool crop_to_content,
+                               bool use_lane_alpha, int *out_total_ticks)
+{
+    if (out_total_ticks) *out_total_ticks = 0;
+    if (!path_base || !*path_base) return 0;
+
+    std::vector<WorldMarkedLane> lanes;
+    if (!WorldBuildExportLanes(lanes)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "World View PNG export needs at least one marked/ASM lane.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    WorldMarkedSequenceState &state = g_world_marked_state;
+    int total_ticks = WorldExportTotalTicks(lanes);
+    if (total_ticks <= 0) total_ticks = 1;
+    if (total_ticks > kWorldPngSequenceMaxFrames)
+        total_ticks = kWorldPngSequenceMaxFrames;
+    if (out_total_ticks) *out_total_ticks = total_ticks;
+
+    int world_w = g_world_state.w > 0 ? g_world_state.w : 400;
+    int world_h = g_world_state.h > 0 ? g_world_state.h : 254;
+
+    bool was_paused = state.paused;
+    float was_timer = state.timer;
+    int was_frame = state.frame;
+    state.paused = true;
+    state.timer = 0.0f;
+
+    /* Pass 1 (crop only): union of content across every tick. */
+    int crop_x = 0, crop_y = 0, crop_w = world_w, crop_h = world_h;
+    if (crop_to_content) {
+        int min_x = world_w, min_y = world_h, max_x = -1, max_y = -1;
+        for (int tick = 0; tick < total_ticks; tick++) {
+            state.frame = tick;
+            std::vector<WorldMarkedLane> tick_lanes;
+            if (!WorldBuildExportLanes(tick_lanes)) continue;
+            if (!WorldUpdateMarkedLanePlayback(state, tick_lanes, 0.0f)) continue;
+            std::vector<unsigned char> full;
+            if (WorldComposeMarkedSceneRgba(state, tick_lanes, world_w, world_h,
+                                            g_world_state.origin_x,
+                                            g_world_state.origin_y,
+                                            use_lane_alpha, full) <= 0)
+                continue;
+            int bx, by, bw, bh;
+            if (!WorldRgbaContentBounds(full, world_w, world_h, &bx, &by, &bw, &bh))
+                continue;
+            if (bx < min_x) min_x = bx;
+            if (by < min_y) min_y = by;
+            if (bx + bw - 1 > max_x) max_x = bx + bw - 1;
+            if (by + bh - 1 > max_y) max_y = by + bh - 1;
+        }
+        if (max_x >= min_x) {
+            crop_x = min_x;
+            crop_y = min_y;
+            crop_w = max_x - min_x + 1;
+            crop_h = max_y - min_y + 1;
+        }
+    }
+
+    /* Strip any extension off the base so we can suffix the tick number. */
+    std::string base = path_base;
+    size_t dot = base.find_last_of('.');
+    size_t sep = base.find_last_of("\\/");
+    if (dot != std::string::npos && (sep == std::string::npos || dot > sep))
+        base = base.substr(0, dot);
+
+    int written = 0;
+    std::vector<unsigned char> cropped;
+    for (int tick = 0; tick < total_ticks; tick++) {
+        state.frame = tick;
+        std::vector<WorldMarkedLane> tick_lanes;
+        if (!WorldBuildExportLanes(tick_lanes)) continue;
+        if (!WorldUpdateMarkedLanePlayback(state, tick_lanes, 0.0f)) continue;
+
+        std::vector<unsigned char> full;
+        if (WorldComposeMarkedSceneRgba(state, tick_lanes, world_w, world_h,
+                                        g_world_state.origin_x,
+                                        g_world_state.origin_y,
+                                        use_lane_alpha, full) <= 0)
+            continue;
+
+        const unsigned char *pixels = full.data();
+        if (crop_w != world_w || crop_h != world_h) {
+            WorldCropRgba(full, world_w, crop_x, crop_y, crop_w, crop_h, cropped);
+            pixels = cropped.data();
+        }
+
+        char out_path[1200];
+        snprintf(out_path, sizeof(out_path), "%s_%04d.PNG", base.c_str(), tick);
+        if (WriteRgbaPng(out_path, crop_w, crop_h, pixels))
+            written++;
+    }
+
+    state.frame = was_frame;
+    state.paused = was_paused;
+    state.timer = was_timer;
+
+    if (written > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Exported %d World View PNG frame%s (%dx%d) over %d tick%s.",
+                 written, written == 1 ? "" : "s", crop_w, crop_h,
+                 total_ticks, total_ticks == 1 ? "" : "s");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "World View PNG sequence export wrote no frames.");
+    }
+    g_restore_msg_timer = 5.0f;
+    return written;
 }
 
 void DrawWorldMarkedTimelinePanel(void)

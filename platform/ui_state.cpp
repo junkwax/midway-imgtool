@@ -76,6 +76,9 @@ int g_sat_last = 0;
 int g_light_last = 0;
 
 bool g_palette_export_act = false;
+bool g_world_png_crop = false;
+bool g_world_png_lane_alpha = false;
+bool g_png_import_match_palette = false;
 
 /* ---- Tools & State ---- */
 ActiveTool g_active_tool = ActiveTool::None;
@@ -156,6 +159,8 @@ bool g_show_load2_verify = false;
 bool g_show_mk2_fatality = false;
 bool g_request_save_world_asm = false;
 bool g_request_save_world_project = false;
+bool g_request_save_world_png = false;
+bool g_request_save_world_png_seq = false;
 bool g_request_load_world_project = false;
 bool g_request_load_asm = false;
 bool g_request_load_opp_asm = false;

@@ -224,6 +224,21 @@ void InvalidatePaletteSync(void);
 void ApplyPalette(int pal_idx);
 void CopySelectedPaletteColor(void);
 bool PastePaletteColorAt(int color_idx);
+
+/* ---- Multi-slot palette clipboard ----
+   Copies the Ctrl/Shift-selected swatches together with their index positions
+   (falling back to the single highlighted swatch), so they can be pasted into
+   a different palette at the same indices — sprite pixels reference indices,
+   so landing colors anywhere else would recolor the art. Pasting grows a
+   too-short target palette rather than dropping the tail colors. */
+int  CountSelectedPaletteSlots(void);
+int  CopySelectedPaletteSlots(void);
+/* Pass -1 to target the selected palette; pass an index to write another
+   palette in place, leaving the selection and the live color table alone. */
+int  PastePaletteSlotsAtSameIndices(int target_pal_idx = -1);
+int  PaletteSlotClipboardCount(void);
+int  PaletteSlotClipboardMaxIndex(void);
+const char *PaletteSlotClipboardSource(void);
 /* Applies the sampled source swatch RGB to Ctrl-selected locked swatches.
    Returns false when no swatch is locked. */
 bool ApplyEyedropperColorToLockedSwatches(int source_color_idx);
@@ -242,6 +257,14 @@ extern int g_light_last;
 /* ---- File Dialog ---- */
 #include "ui_modals.h"
 extern bool g_palette_export_act;
+/* World View PNG export: trim the composite to the pixels actually drawn. */
+extern bool g_world_png_crop;
+/* World View PNG export: keep the on-screen per-lane translucency instead of
+   compositing every lane opaque. */
+extern bool g_world_png_lane_alpha;
+/* Plain PNG import (menu + drag-and-drop): index into the active palette
+   instead of generating a new one per file. */
+extern bool g_png_import_match_palette;
 
 /* ---- Right Panel Palette Editor ---- */
 void DrawRightPanelPaletteEditor(float panel_h);
@@ -603,6 +626,8 @@ extern bool g_show_load2_verify;
 extern bool g_show_mk2_fatality;
 extern bool g_request_save_world_asm;
 extern bool g_request_save_world_project;
+extern bool g_request_save_world_png;
+extern bool g_request_save_world_png_seq;
 extern bool g_request_load_world_project;
 extern bool g_request_load_asm;
 extern bool g_request_load_opp_asm;

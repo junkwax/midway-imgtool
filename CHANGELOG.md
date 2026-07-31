@@ -8,6 +8,53 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [Unreleased]
+
+### World View
+- **World View PNG export** — write the composited scene, with every visible
+  lane in its normal draw order, straight to a PNG. Two entry points: the
+  current tick, or one numbered file per tick across the whole sequence
+  (`<name>_0000.PNG` onward, capped at 600 frames). Available from
+  `File > Export` and from `Save PNG` / `Save PNG Seq` in the World View panel.
+  Options: crop to visible content (a sequence shares one crop rect so frames
+  stay registered) and, off by default, keep the on-screen per-lane
+  translucency instead of compositing every lane opaque.
+
+### Import
+- **PNG palette matching is no longer order-dependent** — a multi-file
+  palette-match import resolves the target palette once, before the first file,
+  instead of re-reading the selection between files (each import selects the
+  image it just created, so the target could drift mid-batch). The toast now
+  names the palette that was matched and reports files that failed to decode.
+- **Dragging PNGs onto the window can match the palette** — drops previously
+  always built a new palette per file with no way to ask otherwise. They now
+  follow the new *Match to Active Palette* checkbox in the Import PNG dialog.
+- **Import dialogs no longer pre-select the open IMG** — multi-select import
+  dialogs seeded their file list with the current document's `.IMG` name, so a
+  Ctrl-click batch carried a bogus first entry that silently failed to import.
+
+### Palette
+- **Copy/paste multiple palette colors at the same indices** — Ctrl/Shift+click
+  several swatches, *Copy Selected Colors*, then paste them into another
+  palette at their original index positions. Because sprite pixels reference
+  indices rather than colors, keeping the positions is what makes the pasted
+  colors land where the art expects them. A too-short target palette is grown
+  rather than dropping the tail colors, and pasting from a palette row's
+  right-click menu writes that palette in place without changing the palette
+  selection or the current sprite's palette assignment. With nothing
+  multi-selected, the copy falls back to the single highlighted swatch.
+  Available from a swatch's right-click menu, a palette row's right-click menu,
+  and `Operations... > Clipboard & Files`.
+
+### Sprite editing
+- **Split Body Parts** — detects head, arms, torso, and legs from a sprite's
+  silhouette (narrowest rows for the neck and waist, the dense central column
+  run for the torso core), then shows them as draggable, resizable boxes over
+  the sprite so a bad guess can be corrected before it commits. Splitting
+  creates one child IMG per part with the parent's anipoint rebased into each,
+  optionally trimming each part to its own pixels and erasing the cut regions
+  from the original. Under `Operations > Split Body Parts...`.
+
 ## [v3.16.5] — Animation authoring, GIF export, and sprite editing tools
 
 Feature release focused on animation setup and frame-to-frame sprite editing.
