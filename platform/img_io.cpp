@@ -9,6 +9,7 @@
 #include "img_util.h"       /* img_name_string, signed_to_img_word */
 #include "load2_verify.h"
 #include "palette_math.h"   /* PaletteBppForColorCount */
+#include "gif_trim.h"       /* GifFramesContentBBox */
 #include "compat.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -4448,32 +4449,8 @@ static bool read_entire_file(const char *path, std::vector<unsigned char> &bytes
     return ok;
 }
 
-/* Union (not per-frame) bounding box of non-transparent pixels across every
-   frame, so a shared crop keeps all frames aligned to each other. */
-static bool gif_frames_alpha_bbox(const unsigned char *rgba, int w, int h, int frame_count,
-                                  int *out_x0, int *out_y0, int *out_x1, int *out_y1)
-{
-    int x0 = w, y0 = h, x1 = -1, y1 = -1;
-    const size_t pixels_per_frame = (size_t)w * (size_t)h;
-    for (int f = 0; f < frame_count; f++) {
-        const unsigned char *frame = rgba + (size_t)f * pixels_per_frame * 4;
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                if (frame[((size_t)y * w + x) * 4 + 3] < 128) continue;
-                if (x < x0) x0 = x;
-                if (x > x1) x1 = x;
-                if (y < y0) y0 = y;
-                if (y > y1) y1 = y;
-            }
-        }
-    }
-    if (x1 < x0 || y1 < y0) return false;
-    *out_x0 = x0; *out_y0 = y0; *out_x1 = x1; *out_y1 = y1;
-    return true;
-}
-
 void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames,
-              bool trim_transparent_border)
+              bool trim_transparent_border, int trim_tolerance)
 {
     verbose_log("ImportGif: %s", path);
     if (blend_mode < 0 || blend_mode >= GifBlend_Count) blend_mode = GifBlend_Normal;
@@ -4524,9 +4501,15 @@ void ImportGif(const char *path, int blend_mode, int opacity_percent, bool impor
     }
 
     bool trimmed = false;
+    int src_w = w, src_h = h;
+    GifTrimBasis trim_basis = GifTrim_None;
+    unsigned char trim_bg[3] = {0, 0, 0};
     if (trim_transparent_border) {
-        int x0, y0, x1, y1;
-        if (gif_frames_alpha_bbox(frames_rgba.data(), w, h, import_count, &x0, &y0, &x1, &y1)) {
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        trim_basis = GifFramesContentBBox(frames_rgba.data(), w, h, import_count,
+                                          trim_tolerance, trim_bg,
+                                          &x0, &y0, &x1, &y1);
+        if (trim_basis != GifTrim_None) {
             int crop_w = x1 - x0 + 1;
             int crop_h = y1 - y0 + 1;
             if (crop_w != w || crop_h != h) {
@@ -4556,12 +4539,44 @@ void ImportGif(const char *path, int blend_mode, int opacity_percent, bool impor
     if (delays) stbi_image_free(delays);
 
     if (imported > 0) {
+        /* Say what the trim actually did. Silence is what made a no-op trim
+           read as a broken checkbox: there was no way to tell "nothing to
+           remove" from "the option did nothing". */
+        char trim_note[160] = {0};
+        if (!trim_transparent_border) {
+            /* no note — the user didn't ask for a trim */
+        } else if (trimmed && trim_basis == GifTrim_Background) {
+            snprintf(trim_note, sizeof(trim_note),
+                     " Trimmed %dx%d -> %dx%d against background rgb(%d,%d,%d).",
+                     src_w, src_h, w, h, trim_bg[0], trim_bg[1], trim_bg[2]);
+        } else if (trimmed) {
+            snprintf(trim_note, sizeof(trim_note),
+                     " Trimmed %dx%d -> %dx%d against transparency.",
+                     src_w, src_h, w, h);
+        } else if (trim_basis == GifTrim_Background) {
+            snprintf(trim_note, sizeof(trim_note),
+                     " Nothing to trim: content reaches every edge (background"
+                     " rgb(%d,%d,%d), tolerance %d).",
+                     trim_bg[0], trim_bg[1], trim_bg[2], trim_tolerance);
+        } else if (trim_basis == GifTrim_Alpha) {
+            snprintf(trim_note, sizeof(trim_note),
+                     " Nothing to trim: opaque pixels reach every edge.");
+        } else {
+            snprintf(trim_note, sizeof(trim_note),
+                     " Could not trim: no transparency and no single border"
+                     " color to trim against.");
+        }
         snprintf(g_restore_msg, sizeof(g_restore_msg),
-                 "Imported %d GIF frame(s), %d palette color(s)%s.", imported, pal_colors + 1,
-                 trimmed ? ", trimmed" : "");
-        verbose_log("  -> %dx%d px, %d/%d frame(s), %d colors from %d unique source colors, blend=%s opacity=%d%% trim=%s",
+                 "Imported %d GIF frame(s), %d palette color(s).%s",
+                 imported, pal_colors + 1, trim_note);
+        verbose_log("  -> %dx%d px, %d/%d frame(s), %d colors from %d unique source colors, "
+                    "blend=%s opacity=%d%% trim=%s basis=%s tol=%d bg=%d,%d,%d",
                     w, h, imported, frames, pal_colors + 1, unique_colors,
-                    GifBlendModeName(blend_mode), opacity_percent, trimmed ? "yes" : "no");
+                    GifBlendModeName(blend_mode), opacity_percent,
+                    trimmed ? "yes" : "no",
+                    trim_basis == GifTrim_Background ? "background"
+                        : (trim_basis == GifTrim_Alpha ? "alpha" : "none"),
+                    trim_tolerance, trim_bg[0], trim_bg[1], trim_bg[2]);
     } else {
         snprintf(g_restore_msg, sizeof(g_restore_msg), "GIF import failed: no frames imported.");
     }

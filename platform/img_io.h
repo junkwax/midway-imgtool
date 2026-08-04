@@ -134,8 +134,14 @@ enum GifBlendMode {
     GifBlend_Count
 };
 const char *GifBlendModeName(int mode);
+/* `trim_transparent_border` crops the border shared by every imported frame.
+   It prefers real transparency, and falls back to the frames' common border
+   color when the GIF declares no transparent index — which most do not, and
+   which used to make the option a silent no-op. `trim_tolerance` is the
+   per-channel 0..255 slack for that fallback, needed because GIF quantization
+   dithers even a flat background. */
 void ImportGif(const char *path, int blend_mode, int opacity_percent, bool import_all_frames,
-               bool trim_transparent_border);
+               bool trim_transparent_border, int trim_tolerance);
 void ExportPng(const char *path);
 /* Write a row-major RGBA8 buffer straight to a PNG. Used by callers that build
    their own composite (World View export) rather than exporting one IMG. */

@@ -149,7 +149,7 @@ The build copies `SDL2.dll` (Windows) and the Material Symbols icon font next to
 | `Shift+M` / `M` | Set all marks (type "M") / Clear all marks (type "m") |
 | `Shift+Del` | Delete image |
 | `Ctrl+R` / `Ctrl+P` | Rename image / Toggle point table |
-| `Alt+PgUp` / `Alt+PgDn` | Move image up / down in list |
+| `Alt+PgUp` / `Alt+PgDn` | Move image up / down in list (or drag a row onto another) |
 | `Tab` | Swap between image lists 1 and 2 |
 | `K` | Toggle timeline play |
 | `Ctrl+Left` / `Ctrl+Right` | Step prev / next frame |

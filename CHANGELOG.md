@@ -8,14 +8,19 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
-## [Unreleased] — mirror-aware anipoint tooling
+## [v3.18.0] — mirror-aware anipoints, canvas size, and cross-palette paste
 
-Makes a whole class of anipoint error visible at authoring time. The MK1
-"toasty" flame in MK2 shipped landing on the victim when Scorpion stood on the
-left and ~286 px away when he stood on the right; the art's anipoints sat
-outside their own sprites, and nothing in imgtool could show it because the
-canvas only ever drew sprites unflipped. See
+Headline feature: a whole class of anipoint error is now visible at authoring
+time. The MK1 "toasty" flame in MK2 shipped landing on the victim when Scorpion
+stood on the left and ~286 px away when he stood on the right; the art's
+anipoints sat outside their own sprites, and nothing in imgtool could show it
+because the canvas only ever drew sprites unflipped. See
 [doc/ANIPOINT_MIRROR_TODO.md](doc/ANIPOINT_MIRROR_TODO.md).
+
+Alongside it, a round of editing work: a canvas can be resized without
+resampling the art, `Del` clears a selection instead of deleting the sprite,
+pasting between palettes keeps its real colors, sprites reorder by drag, and
+the GIF importer's border trim actually trims.
 
 ### Anipoints
 - **Mirror preview on the canvas** — a toolbar toggle (and `View > Mirror
@@ -88,6 +93,44 @@ canvas only ever drew sprites unflipped. See
 - **Paste as New Sprite drops the source marquee** — the selection that
   produced the clipboard is in the *source* sprite's coordinate space, so it was
   drawing a meaningless highlight over the brand-new frame.
+- **Drag sprites in the image list to reorder them** — grab a row and drop it
+  on another to move it there, instead of walking it with Alt+PgUp/PgDn one
+  step at a time. Dropping a parent row carries its subframes, since they are
+  grouped by name rather than by position. Disabled under a Name or Size sort,
+  where the visible order isn't the file order and the row would jump elsewhere
+  the moment the list re-sorted.
+- **Reordering no longer re-points the animation timeline** — the timeline (and
+  the composite-preview pair, and the thumbnail cache) address sprites by index,
+  so moving a sprite silently made every timeline slot refer to whatever sprite
+  slid into its place. Drag-and-drop and Alt+PgUp/PgDn now share one reorder
+  primitive that remaps those indices, verified exhaustively against
+  erase-then-insert semantics for every list size and move pair.
+- **Bulk trim is reachable from where you'd look for it** — cropping every
+  marked sprite to its opaque bounds already existed, but only as `Crop Marked
+  to Content` in the Image menu, while the single-sprite version appeared in
+  three places under three different names. It is now `Trim Marked Bounds` on
+  the Image menu, the image-list right-click menu, and `Operations...`, each
+  showing the marked count, sharing one implementation, and reporting how many
+  of the marked set actually changed instead of a bare number.
+
+### Import
+- **GIF "Trim Border" actually trims now** — it tested alpha alone, and
+  `stb_image` only reports a pixel transparent when the GIF declares a
+  transparent index. Animations exported from video or a screen capture declare
+  none, so every pixel came back opaque, the content box was the whole frame,
+  and the checkbox was a silent no-op on most real files (verified: three
+  sample GIFs here have exactly zero transparent pixels between them).
+  Transparency is still preferred when the file has it; otherwise the trim now
+  works against the color the frames' own border is made of, found by sampling
+  the outer ring rather than the whole image so a sprite can't nominate its own
+  body as background. A **Border Tolerance** slider (default 12) covers GIF
+  quantization dithering a "flat" background — at 0 the dither itself reads as
+  content. The box is still the union across every imported frame, so trimming
+  can never break the frames' registration with each other.
+- **The import toast says what the trim did** — the old message just omitted
+  the word "trimmed", so "there was nothing to remove" and "the option did
+  nothing" looked identical. It now reports the before/after size and the
+  background color it trimmed against, or why it couldn't.
 
 ### Palette
 - **Pasting across palettes can keep its real colors** — a paste from a

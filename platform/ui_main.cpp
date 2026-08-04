@@ -37,6 +37,35 @@
 extern "C" { extern struct SDL_Color g_palette[256]; }
 extern int g_img_tex_idx;
 
+/* Bulk trim over the marked set, shared by the three menus that offer it so
+   they can't drift apart on undo handling or on what the toast reports.
+   CropMarkedImagesToContent leaves the snapshot to its caller, since the crop
+   rewrites w/h and data_p that the metadata-only undo_push cannot restore. */
+static void BulkTrimMarkedToContent(void)
+{
+    int marked = CountMarkedImages();
+    if (marked <= 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Nothing to trim: no sprites are marked (Space marks one, M marks all).");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    doc_undo_push();
+    int n = CropMarkedImagesToContent();
+    if (n > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Trimmed %d of %d marked sprite%s to their opaque bounds.",
+                 n, marked, marked == 1 ? "" : "s");
+        g_zoom_reset = true;
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No change: all %d marked sprite%s already fit their opaque "
+                 "bounds (or are fully transparent).",
+                 marked, marked == 1 ? " does" : "s do");
+    }
+    g_restore_msg_timer = 4.0f;
+}
+
 static bool g_open_set_group_anipoints = false;
 static int g_group_anipoint_x = 0;
 static int g_group_anipoint_y = 0;
@@ -1134,16 +1163,16 @@ void DrawMainLayout(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Trim the selected image to its nearest non-transparent pixels.\n"
                 "Anipoints are adjusted so the on-screen position is unchanged.");
-            if (ImGui::MenuItem("Crop Marked to Content")) {
-                doc_undo_push();
-                int n = CropMarkedImagesToContent();
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Cropped %d image(s) to non-transparent bbox.", n);
-                g_restore_msg_timer = 4.0f;
+            {
+                int marked = CountMarkedImages();
+                char label[64];
+                snprintf(label, sizeof(label), "Trim Marked Bounds (Crop) (%d)", marked);
+                if (ImGui::MenuItem(label, NULL, false, marked > 0)) BulkTrimMarkedToContent();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Trim each marked image to its non-transparent bounding box,\n"
+                    "as one undo step. Anipoints are adjusted so the on-screen\n"
+                    "position is unchanged.");
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-                "Trim each marked image to its non-transparent bounding box.\n"
-                "Anipoints are adjusted so the on-screen position is unchanged.");
             if (ImGui::MenuItem("Defringe Marked Edges")) {
                 int n = DefringeMarkedImages(1);
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
@@ -1677,7 +1706,12 @@ void DrawMainLayout(void)
         if (ImGui::BeginTabItem("Assets")) {
         /* --- Image List --- */
         int n_imgs = count_imgs();
-        if (ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool images_open = ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+            "Drag a row onto another to reorder the sprites in the file.\n"
+            "Alt+PgUp / Alt+PgDn nudge the selected one instead.\n"
+            "Reordering is one undo step and carries the animation timeline with it.");
+        if (images_open) {
             float list_h = panel_h * 0.30f;
             if (ImGui::BeginListBox("##imglist", ImVec2(-1, list_h))) {
                 if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
@@ -1771,6 +1805,39 @@ void DrawMainLayout(void)
                     return g_image_list_sort_desc ? (ra.idx > rb.idx) : (ra.idx < rb.idx);
                 };
 
+                /* ---- Drag-to-reorder ----
+                   Only in Original ascending order. Under a Name or Size sort
+                   the visible order is not the document order, so a drop would
+                   move the sprite to a position the list cannot show it in —
+                   the row would jump somewhere else the moment it re-sorted.
+                   The move is deferred to after the list is submitted: applying
+                   it mid-loop would leave every row below it holding a stale
+                   index for the rest of the frame. */
+                const char *kImageRowPayload = "IMGLIST_ROW";
+                bool reorder_enabled = (g_image_list_sort == ImageListSort::Original &&
+                                        !g_image_list_sort_desc);
+                int pending_move_from = -1;
+                int pending_move_to = -1;
+
+                auto image_row_drag_drop = [&](int img_idx) {
+                    if (!reorder_enabled) return;
+                    if (ImGui::BeginDragDropSource()) {
+                        ImGui::SetDragDropPayload(kImageRowPayload, &img_idx, sizeof(int));
+                        IMG *drag_img = get_img(img_idx);
+                        ImGui::Text("Move #%d  %s", img_idx,
+                                    drag_img ? drag_img->n_s : "");
+                        ImGui::EndDragDropSource();
+                    }
+                    if (ImGui::BeginDragDropTarget()) {
+                        const ImGuiPayload *p = ImGui::AcceptDragDropPayload(kImageRowPayload);
+                        if (p && p->DataSize == (int)sizeof(int)) {
+                            pending_move_from = *(const int *)p->Data;
+                            pending_move_to = img_idx;
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                };
+
                 auto draw_image_context = [&](int img_idx) {
                     if (ImGui::BeginPopupContextItem("##imgctx")) {
                         g_doc->ilselected = img_idx;
@@ -1794,6 +1861,13 @@ void DrawMainLayout(void)
                                            : "Selected sprite already fits, or has no opaque pixels.");
                             g_restore_msg_timer = 4.0f;
                             if (n > 0) g_zoom_reset = true;
+                        }
+                        {
+                            int marked = CountMarkedImages();
+                            char label[48];
+                            snprintf(label, sizeof(label), "Trim Marked Bounds (%d)", marked);
+                            if (ImGui::MenuItem(label, NULL, false, marked > 0))
+                                BulkTrimMarkedToContent();
                         }
                         if (ImGui::MenuItem("Delete"))        RequestDeleteImage(g_doc->ilselected);
                         if (ImGui::MenuItem("Delete Marked", NULL, false, CountMarkedImages() > 0))
@@ -1854,6 +1928,7 @@ void DrawMainLayout(void)
                     if (selected && need_scroll && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
                     if (selected && need_scroll) last_scrolled_to = g_doc->ilselected;
                     if (selected) ImGui::PopStyleColor(2);
+                    image_row_drag_drop(row.idx);
                     DrawAnipointBoundsBadge(img, 6.0f);
                     draw_image_context(row.idx);
                     if (subframe) ImGui::Unindent(18.0f);
@@ -1894,6 +1969,7 @@ void DrawMainLayout(void)
                     if (selected && need_scroll && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
                     if (selected && need_scroll) last_scrolled_to = g_doc->ilselected;
                     if (selected) ImGui::PopStyleColor(2);
+                    image_row_drag_drop(row.idx);
                     /* Clear the expand triangle, which owns item_max.x-18..-2. */
                     DrawAnipointBoundsBadge(img, 24.0f);
                     draw_image_context(row.idx);
@@ -2048,6 +2124,21 @@ void DrawMainLayout(void)
                     ImGui::TreePop();
                 }
                 ImGui::EndListBox();
+
+                if (pending_move_from >= 0 && pending_move_to >= 0) {
+                    IMG *moved = get_img(pending_move_from);
+                    char moved_name[16] = {0};
+                    if (moved) {
+                        strncpy(moved_name, moved->n_s, sizeof(moved_name) - 1);
+                        moved_name[sizeof(moved_name) - 1] = '\0';
+                    }
+                    if (MoveImageToIndex(pending_move_from, pending_move_to)) {
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 "Moved %s from #%d to #%d.",
+                                 moved_name, pending_move_from, pending_move_to);
+                        g_restore_msg_timer = 3.0f;
+                    }
+                }
             }
 #if 0
             /* Clean, space-saving Sort dropdown that fits inline */
@@ -2120,6 +2211,16 @@ void DrawMainLayout(void)
                 if (ImGui::MenuItem("Canvas Size...")) { OpenCanvasSizeDialog(); }
                 if (ImGui::MenuItem("Opacity Gradient...")) { OpenOpacityGradientDialog(); }
                 if (g_doc->ilselected < 0) ImGui::EndDisabled();
+                {
+                    int marked = CountMarkedImages();
+                    char label[64];
+                    snprintf(label, sizeof(label), "Trim Marked Sprites (Crop) (%d)", marked);
+                    if (ImGui::MenuItem(label, NULL, false, marked > 0))
+                        BulkTrimMarkedToContent();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                        "Crop every marked sprite to its opaque bounds as one undo\n"
+                        "step. Anipoints move with the art so nothing shifts on screen.");
+                }
 
                 ImGui::Separator();
 
@@ -3333,33 +3434,85 @@ void RequestDeleteMarkedImages(void)
 }
 
 
-// Extracted from imgui_overlay.cpp: swap_adjacent_img
-static void swap_adjacent_img(IMG *before_a, IMG *a, IMG *b)
+/* Where an index that pointed into the pre-move list points afterwards.
+   Erase-then-insert semantics, matching TimelineMoveFrame. */
+static int RemapIndexForImageMove(int idx, int from, int to)
 {
-    a->nxt_p = b->nxt_p;
-    b->nxt_p = a;
-    if (before_a) before_a->nxt_p = b;
-    else g_doc->img_p = b;
+    if (idx < 0) return idx;
+    if (idx == from) return to;
+    if (from < idx && to >= idx) return idx - 1;
+    if (from > idx && to <= idx) return idx + 1;
+    return idx;
 }
 
+/* Move one sprite to another position in the document's image list.
+ *
+ * The single reorder primitive: drag-and-drop in the image list and the
+ * Alt+PgUp/PgDn nudges all land here, so they cannot drift apart on what they
+ * fix up afterwards. That fix-up is the whole reason this is not a two-line
+ * pointer swap — plenty of state stores *image indices*, and every one of them
+ * silently points at a different sprite once the list shifts underneath it. */
+bool MoveImageToIndex(int from, int to)
+{
+    int n = (int)g_doc->imgcnt;
+    if (from < 0 || from >= n || to < 0 || to >= n || from == to) return false;
+
+    doc_undo_push();   /* reorders the image list — structural */
+
+    /* Unlink. */
+    IMG *before_from = NULL;
+    IMG *node = (IMG *)g_doc->img_p;
+    for (int i = 0; node && i < from; i++) {
+        before_from = node;
+        node = (IMG *)node->nxt_p;
+    }
+    if (!node) return false;
+    if (before_from) before_from->nxt_p = node->nxt_p;
+    else             g_doc->img_p = node->nxt_p;
+    node->nxt_p = NULL;
+
+    /* Relink so the sprite ends up at `to` in the resulting list. The chain is
+       one shorter here, which is exactly what makes `to` mean the same thing
+       as a vector erase-then-insert. */
+    if (to == 0) {
+        node->nxt_p = g_doc->img_p;
+        g_doc->img_p = node;
+    } else {
+        IMG *prev = (IMG *)g_doc->img_p;
+        for (int i = 0; prev && prev->nxt_p && i < to - 1; i++)
+            prev = (IMG *)prev->nxt_p;
+        if (!prev) {           /* only reachable if the list was empty */
+            node->nxt_p = g_doc->img_p;
+            g_doc->img_p = node;
+        } else {
+            node->nxt_p = prev->nxt_p;
+            prev->nxt_p = node;
+        }
+    }
+
+    g_doc->ilselected = RemapIndexForImageMove(g_doc->ilselected, from, to);
+
+    /* The animation timeline stores image indices, not sprites, so without
+       this a reorder re-points every frame in a built timeline at whatever
+       sprite now occupies its slot. */
+    for (int &frame : g_timeline_frames)
+        frame = RemapIndexForImageMove(frame, from, to);
+    for (int i = 0; i < 2; i++)
+        g_timeline_composite[i] = RemapIndexForImageMove(g_timeline_composite[i], from, to);
+
+    /* Thumbnails are cached by image index, so every entry from min(from,to)
+       onward now shows the wrong sprite. */
+    ClearTimelineThumbCache();
+    g_img_tex_idx = -2;
+    return true;
+}
 
 // Extracted from imgui_overlay.cpp: MoveImageUp
 void MoveImageUp(void)
 
 {
     if (g_doc->ilselected <= 0) return;
-    doc_undo_push();   /* reorders the image list — structural */
-
-    IMG *before_prev = NULL;
-    IMG *prev = (IMG *)g_doc->img_p;
-    for (int i = 0; prev && i < g_doc->ilselected - 1; i++) {
-        before_prev = prev;
-        prev = (IMG *)prev->nxt_p;
-    }
-    if (!prev || !prev->nxt_p) return;
-    swap_adjacent_img(before_prev, prev, (IMG *)prev->nxt_p);
-    g_doc->ilselected--;
-    g_img_tex_idx = -2;
+    MoveImageToIndex(g_doc->ilselected, g_doc->ilselected - 1);
 }
 
 
@@ -3368,18 +3521,7 @@ void MoveImageDown(void)
 
 {
     if (g_doc->ilselected < 0) return;
-    doc_undo_push();   /* reorders the image list — structural */
-
-    IMG *before_curr = NULL;
-    IMG *curr = (IMG *)g_doc->img_p;
-    for (int i = 0; curr && i < g_doc->ilselected; i++) {
-        before_curr = curr;
-        curr = (IMG *)curr->nxt_p;
-    }
-    if (!curr || !curr->nxt_p) return;
-    swap_adjacent_img(before_curr, curr, (IMG *)curr->nxt_p);
-    g_doc->ilselected++;
-    g_img_tex_idx = -2;
+    MoveImageToIndex(g_doc->ilselected, g_doc->ilselected + 1);
 }
 
 

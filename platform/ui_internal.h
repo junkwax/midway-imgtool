@@ -746,6 +746,11 @@ void invert_selection(void);
 void TogglePointTable(void);
 void MoveImageUp(void);
 void MoveImageDown(void);
+/* Move one sprite to another position in the document's image list, with
+   erase-then-insert semantics (the sprite ends up *at* `to`). Fixes up the
+   selection, the animation timeline, and the thumbnail cache, all of which
+   address sprites by index. Returns false when the move is a no-op. */
+bool MoveImageToIndex(int from, int to);
 void flip_clipboard_horizontal(void);
 void flip_clipboard_vertical(void);
 void drop_paste_to_layer(void);

@@ -85,6 +85,7 @@ static int  g_gif_blend_mode      = GifBlend_Normal;
 static int  g_gif_opacity_percent = 100;
 static bool g_gif_import_all      = true;
 static bool g_gif_trim_transparent = true;
+static int  g_gif_trim_tolerance   = 12;
 static bool g_gif_export_loop = true;
 static bool g_gif_export_pingpong = false;
 static bool g_gif_export_align_anipoints = true;
@@ -1191,7 +1192,8 @@ extern "C" void imgui_overlay_open_path(const char *path)
         g_img_tex_idx = -2;
     } else if (ext == "gif") {
         ensure_new_doc_if_empty();
-        ImportGif(p.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all, g_gif_trim_transparent);
+        ImportGif(p.c_str(), g_gif_blend_mode, g_gif_opacity_percent,
+                  g_gif_import_all, g_gif_trim_transparent, g_gif_trim_tolerance);
         mark_dirty();
         g_img_tex_idx = -2;
     } else {
@@ -1413,9 +1415,23 @@ void DrawFileDialog() {
             }
             ImGui::SliderInt("Opacity", &g_gif_opacity_percent, 0, 100, "%d%%");
             ImGui::Checkbox("Import All Frames", &g_gif_import_all);
-            ImGui::Checkbox("Trim Transparent Border", &g_gif_trim_transparent);
+            ImGui::Checkbox("Trim Border", &g_gif_trim_transparent);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Crop away any border that's transparent across every imported frame.\nFrames stay aligned to each other.");
+                ImGui::SetTooltip("Crop away the border that is empty across every imported frame,\n"
+                                  "so the frames stay aligned to each other.\n\n"
+                                  "Uses real transparency when the GIF declares a transparent\n"
+                                  "index. Most GIFs don't, so it otherwise trims against the\n"
+                                  "color the frames' own border is made of.");
+            if (g_gif_trim_transparent) {
+                ImGui::SetNextItemWidth(160);
+                ImGui::SliderInt("Border Tolerance", &g_gif_trim_tolerance, 0, 64);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How far a pixel may differ from the border color and still\n"
+                                      "count as background, per channel. GIF quantization dithers\n"
+                                      "even a flat background, so 0 usually trims nothing.\n"
+                                      "Raise it if the crop is too loose, lower it if art is lost.\n"
+                                      "Ignored when the GIF has real transparency.");
+            }
         }
         if (g_file_dialog_mode == FileDialogMode::ExportGif) {
             ImGui::SliderFloat("Frames Per Second", &g_gif_export_fps, 1.0f, 60.0f, "%.1f");
@@ -1626,7 +1642,9 @@ void DrawFileDialog() {
                 unsigned int before_count = g_doc->imgcnt;
                 for (const std::string &file : selected_files) {
                     std::string path = PathCombine(g_file_dialog_dir, file);
-                    ImportGif(path.c_str(), g_gif_blend_mode, g_gif_opacity_percent, g_gif_import_all, g_gif_trim_transparent);
+                    ImportGif(path.c_str(), g_gif_blend_mode, g_gif_opacity_percent,
+                              g_gif_import_all, g_gif_trim_transparent,
+                              g_gif_trim_tolerance);
                 }
                 if (selected_files.size() > 1) {
                     unsigned int added = g_doc->imgcnt - before_count;
@@ -7708,6 +7726,7 @@ Image list:
   Ctrl+R               Rename current image
   Ctrl+P               Add / Remove point table on current image
   Alt+PgUp / PgDn      Move current image up / down in the list
+                       (or drag a row onto another to move it there)
   Tab                  Swap image lists (lists 1 and 2)
   ;                    Least-squares size reduce on marked
 

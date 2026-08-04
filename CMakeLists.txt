@@ -113,6 +113,7 @@ set(IMGTOOL_SOURCES
     platform/color_ops.cpp
     platform/image_ops.cpp
     platform/canvas_ops.cpp
+    platform/gif_trim.cpp
     platform/palette_math.cpp
     platform/sprite_resize_ops.cpp
     platform/img_io.cpp
@@ -225,6 +226,7 @@ add_executable(sprite_sheet_import_test
     platform/tbl_diff.cpp
     platform/load2_verify.cpp
     platform/palette_math.cpp
+    platform/gif_trim.cpp
     platform/document.cpp
     platform/globals.c
 )
@@ -253,6 +255,7 @@ add_executable(world_blit_test
     platform/tbl_diff.cpp
     platform/load2_verify.cpp
     platform/palette_math.cpp
+    platform/gif_trim.cpp
     platform/document.cpp
     platform/globals.c
 )
@@ -272,7 +275,7 @@ add_test(NAME world_blit COMMAND world_blit_test)
 # keeps SDL from redefining main(). Add new pure-logic modules here as the
 # overlay split proceeds.
 foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_mirror
-                  tbl_diff img_util body_split)
+                  tbl_diff img_util body_split gif_trim)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp
