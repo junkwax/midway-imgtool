@@ -150,6 +150,7 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::OpenLod:
         case FileDialogMode::WriteAniLst:
         case FileDialogMode::WriteTbl:
+        case FileDialogMode::CompareTbl:
         case FileDialogMode::WriteIrw:        return "img";
         case FileDialogMode::ImportPng:
         case FileDialogMode::ImportPngMatch:
@@ -965,7 +966,8 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::ExportPalette: return g_palette_export_act ? "ACT" : "PAL";
         case FileDialogMode::ImportPalette: return "PAL";
         case FileDialogMode::WriteAniLst: return "ASM";
-        case FileDialogMode::WriteTbl:  return "TBL";
+        case FileDialogMode::WriteTbl:
+        case FileDialogMode::CompareTbl: return "TBL";
         case FileDialogMode::WriteIrw:  return "IRW";
         case FileDialogMode::LoadAsmAnim:
         case FileDialogMode::SaveAsmAnim: return "ASM";
@@ -1221,6 +1223,7 @@ void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::ImportPalette) title = "Import Palette";
     else if (g_file_dialog_mode == FileDialogMode::WriteAniLst) title = "Write ANILST";
     else if (g_file_dialog_mode == FileDialogMode::WriteTbl) title = "Write TBL";
+    else if (g_file_dialog_mode == FileDialogMode::CompareTbl) title = "Compare Against TBL";
     else if (g_file_dialog_mode == FileDialogMode::WriteIrw) title = "Write IRW";
     else if (g_file_dialog_mode == FileDialogMode::LoadAsmAnim) title = "Load Character ASM";
     else if (g_file_dialog_mode == FileDialogMode::SaveAsmAnim) title = "Save World View ASM";
@@ -1501,6 +1504,7 @@ void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::LoadTga ||
                                 g_file_dialog_mode == FileDialogMode::LoadWorldProject ||
                                 g_file_dialog_mode == FileDialogMode::LoadAsmAnim ||
+                                g_file_dialog_mode == FileDialogMode::CompareTbl ||
                                 g_file_dialog_mode == FileDialogMode::ImportPalette) ? "Open" : "Save";
         if (ImGui::Button(btn_text, ImVec2(100, 0)) || dbl_click_commit) {
             std::vector<std::string> selected_files = FileDialogSelectedFiles();
@@ -1662,6 +1666,8 @@ void DrawFileDialog() {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".TBL";
                 WriteTblFromMarked(full_path.c_str(), g_tbl_base_address, g_tbl_export_mk3_format, g_tbl_export_palette, g_tbl_export_pad_4bit, g_tbl_export_align_16bit, g_tbl_export_dual_bank, g_tbl_export_bank);
+            } else if (g_file_dialog_mode == FileDialogMode::CompareTbl) {
+                RunTblCompare(full_path.c_str());
             } else if (g_file_dialog_mode == FileDialogMode::WriteIrw) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".IRW";
@@ -7683,6 +7689,9 @@ Edit:
   Ctrl+A               Select all
   Ctrl+D               Deselect
   Ctrl+Shift+I         Invert selection
+  Del / Backspace      Clear the pixels inside an active selection
+  Arrows               After Paste as New Sprite or a canvas resize, nudge the
+                       art inside its canvas (Shift = 10px; Esc to stop)
   Ctrl+J               Duplicate image (or duplicate floating paste)
   Ctrl+E               Merge Down: commit floating paste in place
   Ctrl+T               Free Transform floating paste (scale / rotate)
@@ -7693,7 +7702,8 @@ Image list:
   Space                Mark / Unmark current image
   Shift+M              Set all marks (typed as "M")
   M                    Clear all marks (typed as "m")
-  Del                  Delete image when image list is active
+  Del                  Delete image when image list is active and no
+                       selection is up (a selection gets cleared instead)
   Shift+Del            Delete image from anywhere
   Ctrl+R               Rename current image
   Ctrl+P               Add / Remove point table on current image
@@ -8210,6 +8220,148 @@ void DrawResizeSpriteDialog(void)
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(100, 0))) {
         g_show_resize_sprite = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void OpenCanvasSizeDialog(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+    g_canvas_size_src_idx = g_doc->ilselected;
+    g_canvas_size_src_w = img->w;
+    g_canvas_size_src_h = img->h;
+    g_canvas_size_w = img->w;
+    g_canvas_size_h = img->h;
+    g_show_canvas_size = true;
+}
+
+/* 3x3 anchor picker. The pressed cell is where the existing art ends up, so
+   the arrows on the surrounding cells point at the edges that gain (or lose)
+   space — the same read as Photoshop's Canvas Size grid. */
+static void DrawCanvasAnchorGrid(int *anchor)
+{
+    /* Plain compass letters rather than arrow glyphs: the bundled fonts cover
+       Latin-1 plus the Material Symbols range, and U+2190.. is in neither. */
+    const char *label[CanvasAnchor_Count] = {
+        "NW", "N", "NE",
+        "W",  "C", "E",
+        "SW", "S", "SE"
+    };
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 3; col++) {
+            int idx = row * 3 + col;
+            if (col) ImGui::SameLine();
+            ImGui::PushID(idx);
+            bool on = (*anchor == idx);
+            if (on) ImGui::PushStyleColor(ImGuiCol_Button,
+                                          ImVec4(0.20f, 0.50f, 0.25f, 1.0f));
+            if (ImGui::Button(label[idx], ImVec2(30, 26)))
+                *anchor = idx;
+            if (on) ImGui::PopStyleColor();
+            ImGui::PopID();
+        }
+    }
+}
+
+void DrawCanvasSizeDialog(void)
+{
+    if (g_show_canvas_size) ImGui::OpenPopup("Canvas Size");
+    if (!ImGui::BeginPopupModal("Canvas Size", &g_show_canvas_size,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    IMG *img = (g_canvas_size_src_idx >= 0) ? get_img(g_canvas_size_src_idx) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) {
+        ImGui::TextDisabled("No sprite selected");
+        if (ImGui::Button("Close", ImVec2(100, 0))) {
+            g_show_canvas_size = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    if (g_canvas_size_src_w <= 0 || g_canvas_size_src_h <= 0 ||
+        g_canvas_size_src_idx != g_doc->ilselected) {
+        g_canvas_size_src_idx = g_doc->ilselected;
+        g_canvas_size_src_w = img->w;
+        g_canvas_size_src_h = img->h;
+        g_canvas_size_w = img->w;
+        g_canvas_size_h = img->h;
+    }
+
+    ImGui::Text("%s  %dx%d", img->n_s, g_canvas_size_src_w, g_canvas_size_src_h);
+    ImGui::TextDisabled("The art keeps its pixel size; only the frame changes.");
+    ImGui::Separator();
+
+    ImGui::Checkbox("Relative", &g_canvas_size_relative);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Enter how many pixels to add (or remove, if negative)\n"
+                          "instead of the finished dimensions.");
+
+    int want_w = g_canvas_size_w;
+    int want_h = g_canvas_size_h;
+    if (g_canvas_size_relative) {
+        int dw = want_w - g_canvas_size_src_w;
+        int dh = want_h - g_canvas_size_src_h;
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::InputInt("Width +/-", &dw, 1, 8))
+            g_canvas_size_w = clamp_int(g_canvas_size_src_w + dw, 1, 4096);
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::InputInt("Height +/-", &dh, 1, 8))
+            g_canvas_size_h = clamp_int(g_canvas_size_src_h + dh, 1, 4096);
+    } else {
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::InputInt("Width", &want_w, 1, 16))
+            g_canvas_size_w = clamp_int(want_w, 1, 4096);
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::InputInt("Height", &want_h, 1, 16))
+            g_canvas_size_h = clamp_int(want_h, 1, 4096);
+    }
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Anchor");
+    DrawCanvasAnchorGrid(&g_canvas_size_anchor);
+
+    ImGui::Spacing();
+    int dx = 0, dy = 0;
+    CanvasAnchorOffset(g_canvas_size_src_w, g_canvas_size_src_h,
+                       g_canvas_size_w, g_canvas_size_h,
+                       g_canvas_size_anchor, &dx, &dy);
+    ImGui::TextDisabled("Art moves to %+d,%+d in the new frame.", dx, dy);
+
+    /* A shrink that would cut into the art is the one destructive outcome
+       here, so name it before the button rather than after the undo. */
+    unsigned int stride = (unsigned int)(((unsigned int)img->w + 3u) & ~3u);
+    int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+    bool has_art = CanvasIndexedContentBounds((const unsigned char *)img->data_p,
+                                              img->w, img->h, (int)stride,
+                                              &min_x, &min_y, &max_x, &max_y);
+    if (has_art && (min_x + dx < 0 || min_y + dy < 0 ||
+                    max_x + dx >= g_canvas_size_w || max_y + dy >= g_canvas_size_h)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
+                           "Art is clipped at this size/anchor.");
+    }
+    int old_bytes = ((g_canvas_size_src_w + 3) & ~3) * g_canvas_size_src_h;
+    int new_bytes = ((g_canvas_size_w + 3) & ~3) * g_canvas_size_h;
+    ImGui::TextDisabled("IMG data: %d B -> %d B", old_bytes, new_bytes);
+
+    ImGui::Spacing();
+    bool same_size = (g_canvas_size_w == g_canvas_size_src_w &&
+                      g_canvas_size_h == g_canvas_size_src_h);
+    ImGui::BeginDisabled(same_size);
+    if (ImGui::Button("Resize Canvas", ImVec2(120, 0))) {
+        if (ResizeSelectedSpriteCanvas(g_canvas_size_w, g_canvas_size_h,
+                                       g_canvas_size_anchor)) {
+            g_show_canvas_size = false;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        g_show_canvas_size = false;
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

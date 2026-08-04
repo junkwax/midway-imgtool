@@ -103,6 +103,8 @@ bool g_eraser_defringe = true;
 std::vector<std::pair<int,int>> g_lasso_points;
 bool g_show_points = true;
 bool g_show_hitbox = false;
+FlipPreviewMode g_flip_preview = FlipPreviewMode::Off;
+bool g_show_anipoint_warnings = true;
 
 /* ---- Clipboard, transform and hitbox shared state ---- */
 CopiedImage g_clipboard = {false};
@@ -328,6 +330,21 @@ int  g_bulk_resize_scale_y = 100;
 bool g_bulk_resize_lock_aspect = true;
 int  g_bulk_resize_mode = 0;
 bool g_bulk_resize_trim_bounds = false;
+
+/* Canvas Size — grows/crops the frame around art that keeps its pixel size. */
+bool g_show_canvas_size = false;
+int  g_canvas_size_src_idx = -1;
+int  g_canvas_size_src_w = 0;
+int  g_canvas_size_src_h = 0;
+int  g_canvas_size_w = 32;
+int  g_canvas_size_h = 32;
+int  g_canvas_size_anchor = CanvasAnchor_Center;
+bool g_canvas_size_relative = false;
+
+/* Sprite whose art the arrow keys currently nudge (see ui_internal.h). */
+int  g_content_nudge_img = -1;
+
+bool g_paste_import_colors = true;
 
 
 

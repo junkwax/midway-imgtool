@@ -138,6 +138,8 @@ The build copies `SDL2.dll` (Windows) and the Material Symbols icon font next to
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste |
 | `Ctrl+Shift+X` / `Ctrl+Shift+V` | Cut selection to new sprite / Paste as new sprite |
 | `Ctrl+A` / `Ctrl+D` / `Ctrl+Shift+I` | Select All / Deselect / Invert |
+| `Del` / `Backspace` (with a selection) | Clear the pixels inside the selection |
+| `Arrows` (after Paste as New Sprite / canvas resize) | Nudge the art inside its canvas (`Shift` = 10px) |
 | `Ctrl+J` / `Ctrl+E` / `Ctrl+T` | Duplicate / Merge Down / Free Transform |
 | `P` / `R` / `W` / `L` / `I` | Pencil / Marquee / Magic Wand / Lasso / Eyedropper |
 | `[` / `]` (Pencil mode) | Shrink / grow brush radius |

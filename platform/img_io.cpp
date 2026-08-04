@@ -5,6 +5,8 @@
  *************************************************************/
 #include "img_io.h"
 #include "anipoint.h"
+#include "anipoint_mirror.h"
+#include "img_util.h"       /* img_name_string, signed_to_img_word */
 #include "load2_verify.h"
 #include "palette_math.h"   /* PaletteBppForColorCount */
 #include "compat.h"
@@ -1570,7 +1572,9 @@ int AlignAnipointsToMarked(int reference_idx)
     }
     if (!ref) return 0;
 
-    undo_push();
+    /* Full-document snapshot: this rewrites every marked frame's anchor, and
+       undo_push() would only capture the selected one. */
+    doc_undo_push();
     int count = 0;
     for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (!(p->flags & 1)) continue;
@@ -1582,18 +1586,32 @@ int AlignAnipointsToMarked(int reference_idx)
     return count;
 }
 
-static unsigned short mirror_anipoint_x(unsigned short x, unsigned short w)
+/* The active mirror convention for the commit-to-file mirror and every
+   mirror-aware preview. Defaults to Ani2 (`w - x`), which is what this tool
+   and its World View have always used and what MAME instrumentation confirmed
+   the multipart path applies; ganiof's single-part path is one pixel tighter.
+   See anipoint_mirror.h for the two ASM listings. */
+MirrorConvention g_mirror_convention = MirrorConvention_Ani2;
+
+static unsigned short mirror_anipoint_x(unsigned short x, unsigned short w,
+                                        MirrorConvention conv)
 {
-    return (unsigned short)(short)((int)w - (int)(short)x);
+    return signed_to_img_word(mirror_anipoint_axis((int)(short)x, (int)w, conv));
 }
 
 /* ---- Mirror marked anipoints for reverse-facing sprites ----
- * This commits the same X-anchor transform used by World View's view-only
- * mirror: if a normal sprite anchors at X, the reverse-facing/mirrored
- * version anchors at width - X. Secondary X is mirrored only when the
- * secondary point appears to be in use, matching the local extra-data
- * convention used by crop/paste. */
-int MirrorMarkedAnipointsToReverse(void)
+ * Commits the same X-anchor transform the engine performs when it draws a
+ * sprite h-flipped: the art mirrors exactly about the anipoint, so a
+ * reverse-facing copy anchors at mirror_anipoint_axis(X, width, conv).
+ *
+ * `conv` picks which engine routine to match — MKUTIL.ASM ani2 (`w - x`, the
+ * multipart path and this tool's historical behavior) or MKDISP.ASM ganiof
+ * (`w - 1 - x`, the single-part path). The two differ by one pixel, and this
+ * function *commits* the value, so repeated use with the wrong one drifts.
+ *
+ * Secondary X is mirrored only when the secondary point appears to be in use,
+ * matching the local extra-data convention used by crop/paste. */
+int MirrorMarkedAnipointsToReverse(MirrorConvention conv)
 {
     if (!g_doc || !g_doc->img_p) return 0;
 
@@ -1601,9 +1619,10 @@ int MirrorMarkedAnipointsToReverse(void)
     for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (!(p->flags & 1)) continue;
 
-        unsigned short mx1 = mirror_anipoint_x(p->anix, p->w);
+        unsigned short mx1 = mirror_anipoint_x(p->anix, p->w, conv);
         bool has_second = secondary_anipoint_in_use(p);
-        unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w) : p->anix2;
+        unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w, conv)
+                                        : p->anix2;
         if (p->anix != mx1 || p->anix2 != mx2) {
             any_change = true;
             break;
@@ -1611,14 +1630,17 @@ int MirrorMarkedAnipointsToReverse(void)
     }
     if (!any_change) return 0;
 
-    undo_push();
+    /* Full-document snapshot: undo_push() only captures the selected image's
+       anipoints, which would leave every other mirrored frame un-undoable. */
+    doc_undo_push();
     int count = 0;
     for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (!(p->flags & 1)) continue;
 
-        unsigned short mx1 = mirror_anipoint_x(p->anix, p->w);
+        unsigned short mx1 = mirror_anipoint_x(p->anix, p->w, conv);
         bool has_second = secondary_anipoint_in_use(p);
-        unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w) : p->anix2;
+        unsigned short mx2 = has_second ? mirror_anipoint_x(p->anix2, p->w, conv)
+                                        : p->anix2;
         if (p->anix == mx1 && p->anix2 == mx2) continue;
 
         p->anix = mx1;
@@ -1626,6 +1648,122 @@ int MirrorMarkedAnipointsToReverse(void)
         count++;
     }
     return count;
+}
+
+int MirrorMarkedAnipointsToReverse(void)
+{
+    return MirrorMarkedAnipointsToReverse(g_mirror_convention);
+}
+
+/* ---- Bulk numeric anipoint shift ----
+ * Dragging crosshairs is right for authoring one frame and useless for "shift
+ * these 22 records by +143". Selects by marked set, name glob, or the current
+ * selection, then applies dx/dy to every hit as a single undo step.
+ *
+ * With apply=false nothing is written and the return value is a preview count,
+ * so the dialog can show "22 frames" before the user commits. */
+int ShiftAnipointsInScope(const AnipointShiftRequest &req, bool apply,
+                          int *matched_out)
+{
+    if (matched_out) *matched_out = 0;
+    if (!g_doc || !g_doc->img_p) return 0;
+    if (!req.affect_primary && !req.affect_secondary) return 0;
+
+    int selected_idx = g_doc->ilselected;
+    int matched = 0;
+    int changed = 0;
+    bool pushed = false;
+
+    int idx = 0;
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p, idx++) {
+        bool in_scope = false;
+        switch (req.scope) {
+            case AnipointShiftScope_Marked:   in_scope = (p->flags & 1) != 0; break;
+            case AnipointShiftScope_Selected: in_scope = (idx == selected_idx); break;
+            case AnipointShiftScope_All:      in_scope = true; break;
+            case AnipointShiftScope_Pattern: {
+                char name[17];
+                memcpy(name, p->n_s, 16);
+                name[16] = '\0';
+                in_scope = sprite_name_matches_glob(name, req.pattern);
+                break;
+            }
+        }
+        if (!in_scope) continue;
+        matched++;
+
+        bool touches_primary = req.affect_primary && (req.dx || req.dy);
+        bool touches_secondary = req.affect_secondary && (req.dx || req.dy) &&
+                                 secondary_anipoint_in_use(p);
+        if (!touches_primary && !touches_secondary) continue;
+
+        /* doc_undo_push, not undo_push: undo_push() only snapshots the
+           selected image's anipoints, so undoing a shift that touched 22
+           frames would restore exactly one of them. */
+        if (apply && !pushed) {
+            doc_undo_push();
+            pushed = true;
+        }
+        if (apply) {
+            if (touches_primary) {
+                p->anix = signed_to_img_word((int)(short)p->anix + req.dx);
+                p->aniy = signed_to_img_word((int)(short)p->aniy + req.dy);
+            }
+            if (touches_secondary) {
+                p->anix2 = signed_to_img_word((int)(short)p->anix2 + req.dx);
+                p->aniy2 = signed_to_img_word((int)(short)p->aniy2 + req.dy);
+            }
+        }
+        changed++;
+    }
+
+    if (matched_out) *matched_out = matched;
+    return changed;
+}
+
+/* ---- IMG side of the TBL compare ----
+ * Builds the records the diff can honestly compare: name, size, and both
+ * anipoints. Two fields are deliberately left unset.
+ *
+ * has_sag: a sprite's ROM bit address is assigned by LOAD2 when it builds the
+ * IRW, not by the .IMG, so imgtool has nothing authoritative to compare.
+ *
+ * has_flags: the flags word in a hand-maintained table is the runtime DMA
+ * control word (palette bits and so on), while IMG.flags is the editor's
+ * mark/loaded/changed/delete bitfield. They share a name and nothing else —
+ * comparing them reported drift on all 42 rows of MK1SKULL and buried the
+ * real result, which was that every size and anipoint matched exactly.
+ * (WriteTblFromMarked does emit IMG.flags there; that is the exporter's
+ * long-standing behavior and a separate question from this diff.) */
+void BuildTblEntriesFromDoc(bool marked_only, std::vector<TblEntry> &out)
+{
+    out.clear();
+    if (!g_doc) return;
+
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
+        if (marked_only && !(p->flags & 1)) continue;
+
+        TblEntry e;
+        e.name = img_name_string(p);
+        e.w = (int)p->w;
+        e.h = (int)p->h;
+        e.anix = (int)(short)p->anix;
+        e.aniy = (int)(short)p->aniy;
+        e.anix2 = (int)(short)p->anix2;
+        e.aniy2 = (int)(short)p->aniy2;
+        e.aniz2 = (int)(short)p->aniz2;
+        e.has_secondary = secondary_anipoint_in_use(p);
+        e.has_sag = false;
+        e.sag = 0;
+        e.has_flags = false;
+        e.flags = (unsigned int)p->flags;
+        PAL *pal = get_pal(p->palnum);
+        e.pal_label = (pal && pal->n_s[0]) ? std::string(pal->n_s, strnlen(pal->n_s, sizeof(pal->n_s)))
+                                           : std::string();
+        e.pal_explicit = !e.pal_label.empty();
+        e.line = 0;
+        out.push_back(e);
+    }
 }
 
 /* ---- Write ANILST (Export Marked Images to Assembly) ---- */

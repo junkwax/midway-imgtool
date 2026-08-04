@@ -8,6 +8,116 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [Unreleased] — mirror-aware anipoint tooling
+
+Makes a whole class of anipoint error visible at authoring time. The MK1
+"toasty" flame in MK2 shipped landing on the victim when Scorpion stood on the
+left and ~286 px away when he stood on the right; the art's anipoints sat
+outside their own sprites, and nothing in imgtool could show it because the
+canvas only ever drew sprites unflipped. See
+[doc/ANIPOINT_MIRROR_TODO.md](doc/ANIPOINT_MIRROR_TODO.md).
+
+### Anipoints
+- **Mirror preview on the canvas** — a toolbar toggle (and `View > Mirror
+  Preview`) draws where the sprite lands when the engine h-flips it, mirrored
+  about the anipoint exactly as the hardware does. *Ghost* overlays the flipped
+  placement on the normal one with the anipoint as the visible pivot; *Flipped
+  only* fades the unflipped sprite instead. An anchor that looks fine unflipped
+  and lands 224 px away flipped is now impossible to miss.
+- **Mirror convention is explicit** — the engine has two, differing by one
+  pixel: `MKUTIL.ASM` `ani2` (`w - x`, multipart) and `MKDISP.ASM` `ganiof`
+  (`w - 1 - x`, single-part). Both listings are quoted in
+  `platform/anipoint_mirror.h` and selectable under `View > Mirror Preview`.
+  ani2 stays the default — that is what this tool has always committed — but it
+  is no longer an unexplained literal, and every mirror site in the app now
+  routes through one helper.
+- **Signed centre-offset readout** — `Ctr off` in Sprite > Properties and
+  Anipts Tools shows `c = anix - (sizex-1)/2`, the one number that answers "is
+  this anchored on the art or beside it". It negates exactly under h-flip,
+  which is why an offset hand-tuned for one facing can never be right for the
+  other.
+- **Anipoint-outside-box badge** — an amber `!` on image-list rows whose
+  anipoint falls outside the sprite's own bounds, with the overshoot in the
+  tooltip. A place to look, not a verdict: off-box does not mean wrong, and it
+  cannot separate a good library from a bad one. `MKDEATH.ASM`'s spine-rip
+  props sit 88 px off their own art and are *correct* — they ride
+  `match_ani_points` and carry their whole offset in the anipoint by design,
+  so `SPINERIP.IMG` badges all 18 of its frames. Toggle it off for libraries
+  built that way under `View > Anipoint Warnings`. The mirror preview is what
+  actually tells you whether an anchor is wrong.
+- **Bulk numeric anipoint shift** — `Operations > Shift Anipoints by dX/dY...`
+  applies an offset to the marked set, a name glob (`MK1FIRE*`), the selection,
+  or everything, as one undo step, with a live preview of the count and the
+  first frame's before/after. This is the edit that previously had to be
+  scripted outside the tool.
+- **Undo now covers the whole marked set** — *Mirror Marked Anipoints to
+  Reverse* and *Align Marked Anipoints to Selected* took a snapshot that
+  captured only the selected image, so undoing a 22-frame edit restored one
+  frame. Both now take a full-document snapshot.
+
+### World View
+- **Reference figure** — an optional standing-fighter outline at the shared
+  anchor, so "will this effect land on the victim?" is a look instead of a
+  calculation. Toggle on the World View toolbar (right-click to size, place,
+  and mirror it) or under `View`. It is a proportioned silhouette, not art.
+
+### Editing
+- **Del clears a selection instead of deleting the sprite** — with a marquee,
+  wand, or lasso selection up, `Del` blanks the pixels inside it (mask
+  selections erase their real shape, not their bounding box), matching every
+  paint program. `Backspace` does the same. Deleting the whole frame out from
+  under a live selection was never what that keystroke meant. It only applies
+  while the selection is actually drawn, so a stale one can't swallow the key;
+  `Shift+Del` remains the unconditional delete-sprite escape hatch, and `Del`
+  still deletes the sprite or palette with nothing selected. Also in
+  `Edit > Clear Selection Contents`.
+- **Canvas Size** — `Image > Canvas Size...` (also on the image-list and
+  Operations menus) grows or crops the frame *without touching the art*: the
+  sprite keeps its exact pixels and dimensions, unlike `Resize Sprite...` which
+  resamples. A 3x3 anchor picker places the existing art, relative mode takes
+  "+8 px" instead of a finished dimension, and the dialog warns before a
+  shrink that would clip the art. Anipoints and the hitbox travel with the art
+  so the sprite's registration doesn't silently shift.
+- **Arrow keys nudge a fresh paste instead of changing sprites** — after
+  `Paste as New Sprite` (or a canvas resize) the art is already committed, so
+  there was no floating rect for the arrows to move and they walked the image
+  list off the sprite that had just been created. They now slide the art inside
+  its own canvas (Shift = 10 px), clamped so nothing is pushed off an edge, and
+  each nudge is one undo step. Esc or selecting another sprite hands the arrows
+  back to list navigation.
+- **Paste as New Sprite drops the source marquee** — the selection that
+  produced the clipboard is in the *source* sprite's coordinate space, so it was
+  drawing a meaningless highlight over the brand-new frame.
+
+### Palette
+- **Pasting across palettes can keep its real colors** — a paste from a
+  different palette remapped every pixel to the nearest color the target
+  already had, which is only necessary when the target is full. It usually is
+  not: a 6bpp palette addresses 64 indices, and one holding 42 colors has 22
+  going spare. The paste now copies the colors it needs into those free
+  indices first, so the art lands in its own colors and the nearest-match
+  remap only handles what genuinely didn't fit. It only fills slots the
+  palette's declared depth already covers and that no sprite in the document is
+  drawing with, so nothing already on screen is recolored. Toggle under
+  `Edit > Add Pasted Colors to Palette`.
+- **Paste copied colors at the end of a palette** — the existing paste lands
+  swatches on their original indices, which is right when the two palettes are
+  variants of each other and wrong when the colors are just extra shades being
+  collected. `Paste Colors at End` appends them after the target's last color
+  in source-index order (so a ramp keeps its dark-to-light run), leaving every
+  existing index untouched. On the swatch menu, a palette row's menu, and
+  `Operations... > Clipboard & Files`.
+
+### Export
+- **Compare against an existing .TBL** — `File > Export > Compare Against
+  TBL...` diffs a checked-in table against the open library field by field
+  (size, anipoints, palette) instead of overwriting it, since MK2's `.TBL`
+  files are hand-maintained with no build step to regenerate them. Also
+  headless: `imgtool-cli --compare-tbl <input.img> <existing.tbl>` prints a
+  report and exits 1 on drift, so a build can gate on it. SAG and flags are
+  not compared — LOAD2 owns ROM addresses, and a table's flags word is a DMA
+  control word rather than the editor's mark/loaded/changed bitfield.
+
 ## [v3.17.0] — World View PNG export, body-part splitting, and palette depth fixes
 
 Feature release: the World View can be exported as PNG stills or a numbered

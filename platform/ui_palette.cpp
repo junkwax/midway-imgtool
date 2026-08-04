@@ -946,6 +946,77 @@ int PastePaletteSlotsAtSameIndices(int target_pal_idx)
     return pasted;
 }
 
+int PastePaletteSlotsAppendToEnd(int target_pal_idx)
+{
+    const PaletteSlotClipboard &clip = g_palette_slot_clipboard;
+    if (!clip.valid || clip.count == 0) return 0;
+
+    commit_palette_adjustments();
+    int target_idx = (target_pal_idx >= 0) ? target_pal_idx : g_doc->plselected;
+    PAL *pal = (target_idx >= 0) ? get_pal(target_idx) : NULL;
+    if (!pal) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select a target palette first.");
+        g_restore_msg_timer = 3.0f;
+        return 0;
+    }
+    bool target_is_selected = (target_idx == g_doc->plselected);
+
+    int old_numc = (int)pal->numc;
+    if (old_numc < 0) old_numc = 0;
+    int room = 256 - old_numc;
+    if (room <= 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "%.9s already holds 256 colors — nothing to append to.", pal->n_s);
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    doc_undo_push();
+
+    int want = clip.count < room ? clip.count : room;
+    if (!ensure_palette_numc(pal, old_numc + want) || !pal->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Could not grow the target palette.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    /* Ascending source index, so a copied ramp keeps its dark-to-light order
+       when it lands at the tail. */
+    unsigned char *pd = (unsigned char *)pal->data_p;
+    int appended = 0;
+    for (int i = 0; i < 256 && appended < want; i++) {
+        if (!clip.has[i]) continue;
+        rgb8_to_pal_word(clip.color[i].r, clip.color[i].g, clip.color[i].b,
+                         pd + (old_numc + appended) * 2);
+        appended++;
+    }
+
+    if (target_is_selected) {
+        ApplyPalette(target_idx);
+        save_palette_baseline();
+        reset_palette_adjust_sliders();
+    }
+    InvalidatePaletteUsage();
+    InvalidatePaletteSync();
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    int dropped = clip.count - appended;
+    if (dropped > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Appended %d color%s to %.9s (#%d..#%d); %d did not fit in 256.",
+                 appended, appended == 1 ? "" : "s", pal->n_s,
+                 old_numc, old_numc + appended - 1, dropped);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Appended %d color%s to %.9s at #%d..#%d (%d -> %d colors).",
+                 appended, appended == 1 ? "" : "s", pal->n_s,
+                 old_numc, old_numc + appended - 1, old_numc, (int)pal->numc);
+    }
+    g_restore_msg_timer = 5.0f;
+    return appended;
+}
+
 bool ApplyEyedropperColorToLockedSwatches(int source_color_idx)
 {
     if (source_color_idx < 0 || source_color_idx >= 256) return false;
@@ -3069,6 +3140,15 @@ void DrawBottomPaletteBar(ImVec2 avail)
                                       clip_slots, clip_slots == 1 ? "" : "s",
                                       PaletteSlotClipboardSource(),
                                       PaletteSlotClipboardMaxIndex());
+
+                char append_label[64];
+                snprintf(append_label, sizeof(append_label),
+                         "Paste Colors at End (%d)", clip_slots);
+                if (ImGui::MenuItem(append_label, NULL, false, clip_slots > 0))
+                    PastePaletteSlotsAppendToEnd();
+                if (clip_slots > 0 && ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Appends them after this palette's last color instead,\n"
+                                      "so nothing already using those indices is recolored.");
             }
             ImGui::Separator();
             if (i == 0) {
@@ -3978,6 +4058,15 @@ void DrawRightPanelPaletteEditor(float panel_h)
                             ImGui::SetTooltip("From %.9s, into this palette at the original indices.\n"
                                               "Leaves the palette selection and sprite assignment alone.",
                                               PaletteSlotClipboardSource());
+
+                        snprintf(paste_label, sizeof(paste_label),
+                                 "Paste %d Copied Color%s at End",
+                                 clip_slots, clip_slots == 1 ? "" : "s");
+                        if (ImGui::MenuItem(paste_label, NULL, false, clip_slots > 0))
+                            PastePaletteSlotsAppendToEnd(i);
+                        if (clip_slots > 0 && ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Appended after this palette's last color, so the\n"
+                                              "indices it already uses keep their colors.");
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Add New"))                   AddNewPalette();
@@ -4090,6 +4179,13 @@ void DrawRightPanelPaletteEditor(float panel_h)
                                           "(up to #%d). Grows the palette if it is too short.",
                                           PaletteSlotClipboardSource(),
                                           PaletteSlotClipboardMaxIndex());
+                    snprintf(label, sizeof(label),
+                             "Paste Colors at End (%d)", clip_slots);
+                    if (ImGui::MenuItem(label, NULL, false, clip_slots > 0))
+                        PastePaletteSlotsAppendToEnd();
+                    if (clip_slots > 0 && ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Appends them after the selected palette's last color,\n"
+                                          "leaving every existing index untouched.");
                     ImGui::Separator();
                 }
                 if (ImGui::MenuItem("Copy Palette to Clipboard")) CopyPaletteToClipboard();

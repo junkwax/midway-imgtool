@@ -1346,6 +1346,103 @@ void DrawCanvasAnipointOverlay(ImDrawList *dl, const IMG *img,
     }
 }
 
+void WorldDrawReferenceFigure(ImDrawList *dl, const WorldCanvasLayout &layout,
+                              const WorldViewState &state)
+{
+    if (!dl || !state.show_reference) return;
+    int rw = state.ref_w < 4 ? 4 : state.ref_w;
+    int rh = state.ref_h < 8 ? 8 : state.ref_h;
+    float s = layout.scale;
+
+    /* Feet centre sits at the anchor plus the user's offset; the body grows
+       upward from there. */
+    float feet_x = layout.origin_x + state.ref_dx * s;
+    float feet_y = layout.origin_y + state.ref_dy * s;
+    float top_y  = feet_y - rh * s;
+    float left_x = feet_x - (rw * 0.5f) * s;
+
+    /* Normalized-to-screen, honoring the mirror toggle so both facings are
+       checkable without moving anything. */
+    auto P = [&](float nx, float ny) {
+        float fx = state.ref_mirror ? (1.0f - nx) : nx;
+        return ImVec2(left_x + fx * rw * s, top_y + ny * rh * s);
+    };
+
+    const ImU32 fill = IM_COL32(120, 180, 255, 46);
+    const ImU32 line = IM_COL32(140, 200, 255, 170);
+
+    /* Head */
+    ImVec2 head = P(0.50f, 0.10f);
+    float head_r = 0.085f * rh * s;
+    dl->AddCircleFilled(head, head_r, fill, 20);
+    dl->AddCircle(head, head_r, line, 20, 1.0f);
+
+    /* Torso */
+    dl->AddRectFilled(P(0.34f, 0.19f), P(0.66f, 0.56f), fill);
+    dl->AddRect(P(0.34f, 0.19f), P(0.66f, 0.56f), line, 0.0f, 0, 1.0f);
+
+    /* Arms + legs as thick strokes; a fighting-stance outline reads better
+       than a plain box when an effect overlaps it. */
+    float limb = 0.055f * rh * s;
+    if (limb < 1.5f) limb = 1.5f;
+    dl->AddLine(P(0.36f, 0.22f), P(0.10f, 0.48f), line, limb);
+    dl->AddLine(P(0.64f, 0.22f), P(0.90f, 0.48f), line, limb);
+    dl->AddLine(P(0.42f, 0.56f), P(0.30f, 1.00f), line, limb);
+    dl->AddLine(P(0.58f, 0.56f), P(0.72f, 1.00f), line, limb);
+
+    /* Footprint + centre line: the two things you actually measure against. */
+    dl->AddLine(ImVec2(left_x, feet_y), ImVec2(left_x + rw * s, feet_y),
+                IM_COL32(140, 200, 255, 200), 1.0f);
+    dl->AddRect(ImVec2(left_x, top_y), ImVec2(left_x + rw * s, feet_y),
+                IM_COL32(140, 200, 255, 70), 0.0f, 0, 1.0f);
+}
+
+int CanvasFlipPreviewOffsetPx(const IMG *img)
+{
+    if (!img || img->w == 0) return 0;
+    int ax = (int)(short)img->anix;
+    int eff = anipoint_effective(ax, (int)img->w, true, g_mirror_convention);
+    /* Both placements put the anchor at the same screen X, so the mirrored
+       sprite's left edge shifts by (anix - anix_eff). */
+    return ax - eff;
+}
+
+void DrawCanvasFlipPreview(ImDrawList *dl, const IMG *img,
+                           SDL_Texture *img_texture,
+                           ImVec2 img_pos, ImVec2 img_sz,
+                           float sx, float sy, bool ghost)
+{
+    if (!dl || !img || img->w == 0 || !img_texture) return;
+    (void)sy;
+
+    int off_px = CanvasFlipPreviewOffsetPx(img);
+    ImVec2 fpos(img_pos.x + off_px * sx, img_pos.y);
+    ImVec2 fmax(fpos.x + img_sz.x, fpos.y + img_sz.y);
+
+    /* Mirrored UVs draw the art itself flipped; the offset above places it. */
+    ImU32 tint = ghost ? IM_COL32(255, 190, 120, 110)
+                       : IM_COL32(255, 255, 255, 255);
+    dl->AddImage((ImTextureID)(intptr_t)img_texture, fpos, fmax,
+                 ImVec2(1, 0), ImVec2(0, 1), tint);
+    dl->AddRect(fpos, fmax, IM_COL32(255, 170, 60, 200), 0.0f, 0, 1.0f);
+
+    /* The anipoint is the one point both placements share — draw it as the
+       fixed pivot so the two rects visibly hinge about it. */
+    float anchor_x = img_pos.x + (int)(short)img->anix * sx;
+    dl->AddLine(ImVec2(anchor_x, ImMin(img_pos.y, fpos.y) - 6.0f),
+                ImVec2(anchor_x, ImMax(img_pos.y + img_sz.y, fmax.y) + 6.0f),
+                IM_COL32(255, 170, 60, 150), 1.0f);
+
+    char tag[64];
+    snprintf(tag, sizeof(tag), "flip %+d px", off_px);
+    ImVec2 tag_sz = ImGui::CalcTextSize(tag);
+    ImVec2 tag_pos(fpos.x, fpos.y - tag_sz.y - 2.0f);
+    dl->AddRectFilled(ImVec2(tag_pos.x - 2.0f, tag_pos.y - 1.0f),
+                      ImVec2(tag_pos.x + tag_sz.x + 2.0f, tag_pos.y + tag_sz.y + 1.0f),
+                      IM_COL32(0, 0, 0, 180));
+    dl->AddText(tag_pos, IM_COL32(255, 200, 120, 255), tag);
+}
+
 void DrawCanvasHitboxOverlay(ImDrawList *dl, ImVec2 img_pos,
                              float sx, float sy,
                              int x, int y, int w, int h,
@@ -2980,12 +3077,12 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
                 *bad_y_anchor = true;
             float spw = img->w * layout.scale;
             float sph = img->h * layout.scale;
-            float left = mirror_x
-                ? (layout.origin_x - ((int)img->w - ax) * layout.scale)
-                : (layout.origin_x - ax * layout.scale);
-            float top = mirror_y
-                ? (layout.origin_y - ((int)img->h - ay) * layout.scale)
-                : (layout.origin_y - ay * layout.scale);
+            float left = layout.origin_x -
+                anipoint_effective(ax, (int)img->w, mirror_x,
+                                   g_mirror_convention) * layout.scale;
+            float top = layout.origin_y -
+                anipoint_effective(ay, (int)img->h, mirror_y,
+                                   g_mirror_convention) * layout.scale;
             ImVec2 spos(left, top);
             ImVec2 uv0(mirror_x ? 1.0f : 0.0f,
                        mirror_y ? 1.0f : 0.0f);
@@ -3080,10 +3177,12 @@ int WorldComposeMarkedSceneRgba(WorldMarkedSequenceState &state,
             /* Same anchor math as the screen draw at scale 1. */
             int ax = (int)(short)img->anix + local_dx;
             int ay = (int)(short)img->aniy + local_dy;
-            int left = job.mirror_x ? (origin_x - ((int)img->w - ax))
-                                    : (origin_x - ax);
-            int top  = job.mirror_y ? (origin_y - ((int)img->h - ay))
-                                    : (origin_y - ay);
+            int left = origin_x - anipoint_effective(ax, (int)img->w,
+                                                    job.mirror_x,
+                                                    g_mirror_convention);
+            int top  = origin_y - anipoint_effective(ay, (int)img->h,
+                                                    job.mirror_y,
+                                                    g_mirror_convention);
             /* Lane alpha exists to keep overlapping lanes readable while
                editing. An export defaults to opaque so the PNG matches what
                the hardware would actually draw. */
@@ -3454,6 +3553,10 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
                 ImVec2(origin_x, origin_y + 8),
                 IM_COL32(120, 120, 120, 255));
 
+    /* Behind the lanes so an effect that lands on the figure reads as landing
+       on it, not behind it. */
+    WorldDrawReferenceFigure(dl, result.layout, world);
+
     WorldDrawMarkedLaneSprites(dl, state, lanes, result.layout,
                                result.render_info);
     dl->AddCircle(ImVec2(origin_x, origin_y), 4.0f,
@@ -3584,6 +3687,42 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
         ImGui::SetTooltip("Draw TV-safe World View guides: green is 0..399 x 0..253,\n"
                           "yellow extends to DMA X 511 while vertically safe,\n"
                           "red is outside those limits.");
+    ImGui::SameLine();
+    ImGui::Checkbox("Reference##world_reference", &g_world_state.show_reference);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Draw a standing-fighter reference figure at the shared\n"
+                          "anchor, so \"will this effect land on the victim?\" is a\n"
+                          "look instead of a calculation. Right-click to size and\n"
+                          "place it.");
+    if (ImGui::BeginPopupContextItem("##world_reference_cfg")) {
+        ImGui::TextDisabled("Reference figure (proportioned outline, not art)");
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputInt("Width##ref_w", &g_world_state.ref_w);
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputInt("Height##ref_h", &g_world_state.ref_h);
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputInt("Feet dX##ref_dx", &g_world_state.ref_dx);
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputInt("Feet dY##ref_dy", &g_world_state.ref_dy);
+        ImGui::Checkbox("Mirror##ref_mirror", &g_world_state.ref_mirror);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Flip the figure so both facings are checkable\n"
+                              "against the same effect placement.");
+        if (ImGui::Button("Feet to Floor##ref_floor")) {
+            g_world_state.ref_dx = 0;
+            g_world_state.ref_dy = g_world_state.h - g_world_state.origin_y;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Stand the figure on the bottom of the playfield.\n"
+                              "Use after moving the World origin.");
+        if (g_world_state.ref_w < 4) g_world_state.ref_w = 4;
+        if (g_world_state.ref_h < 8) g_world_state.ref_h = 8;
+        if (g_world_state.ref_w > 400) g_world_state.ref_w = 400;
+        if (g_world_state.ref_h > 254) g_world_state.ref_h = 254;
+        ImGui::TextDisabled("Feet dX/dY place the figure's feet centre relative\n"
+                            "to the shared anchor, in world pixels.");
+        ImGui::EndPopup();
+    }
     ImGui::SameLine();
     if (ImGui::Checkbox("Link Anchors##world_anchor_link", &state.anchor_link_mode))
         state.anchor_link_active = false;
@@ -4516,8 +4655,8 @@ static bool WorldMarkedImageWorldYBounds(Document *doc, int img_idx, int local_d
     if (!img) return false;
 
     int ay = (int)(short)img->aniy + local_dy;
-    int top = mirror_y ? g_world_state.origin_y - ((int)img->h - ay)
-                       : g_world_state.origin_y - ay;
+    int top = g_world_state.origin_y -
+              anipoint_effective(ay, (int)img->h, mirror_y, g_mirror_convention);
     int bottom = top + (int)img->h;
     if (out_top) *out_top = top;
     if (out_bottom) *out_bottom = bottom;
@@ -7844,6 +7983,8 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
                     IM_COL32(120, 120, 120, 255));
     }
 
+    WorldDrawReferenceFigure(dl, layout, g_world_state);
+
     /* Onion-skin: faintly draw the previous sprite. */
     if (onion_enabled && image_count > 1) {
         int prev_idx = (image_idx <= 0) ? image_count - 1 : image_idx - 1;
@@ -7857,9 +7998,9 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
                 float pw = prev_img->w * wscale;
                 float ph = prev_img->h * wscale;
                 int pax = (int)(short)prev_img->anix;
-                float pleft = mirror_active
-                    ? (ox - ((int)prev_img->w - pax) * wscale)
-                    : (ox - pax * wscale);
+                float pleft = ox - anipoint_effective(pax, (int)prev_img->w,
+                                                      mirror_active,
+                                                      g_mirror_convention) * wscale;
                 ImVec2 ppos(pleft, oy - (int)(short)prev_img->aniy * wscale);
                 ImVec2 puv0 = mirror_active ? ImVec2(1, 0) : ImVec2(0, 0);
                 ImVec2 puv1 = mirror_active ? ImVec2(0, 1) : ImVec2(1, 1);
@@ -7874,9 +8015,8 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
     int ay = (int)(short)img->aniy;
     float spw = img->w * wscale;
     float sph = img->h * wscale;
-    float sleft = mirror_active
-        ? (ox - ((int)img->w - ax) * wscale)
-        : (ox - ax * wscale);
+    float sleft = ox - anipoint_effective(ax, (int)img->w, mirror_active,
+                                          g_mirror_convention) * wscale;
     ImVec2 spos(sleft, oy - ay * wscale);
     ImVec2 suv0 = mirror_active ? ImVec2(1, 0) : ImVec2(0, 0);
     ImVec2 suv1 = mirror_active ? ImVec2(0, 1) : ImVec2(1, 1);
@@ -8444,7 +8584,28 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 }
             }
 
-            ImGui::Image((ImTextureID)(intptr_t)g_img_texture, img_sz);
+            /* Mirror preview. The flipped placement is drawn from the same
+               texture with mirrored UVs, offset so both placements share the
+               anipoint — see DrawCanvasFlipPreview. In Only mode the unflipped
+               sprite fades to a hint so the flipped art reads as the subject;
+               the ImGui::Image call itself always happens because it is what
+               defines the canvas item rect every tool hit-tests against. */
+            IMG *flip_img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+            bool flip_preview_on = g_flip_preview != FlipPreviewMode::Off &&
+                                   flip_img && flip_img->w > 0 &&
+                                   !g_world_state.enabled &&
+                                   !timeline_composite_preview_active;
+            bool flip_only = flip_preview_on && g_flip_preview == FlipPreviewMode::Only;
+
+            ImGui::Image((ImTextureID)(intptr_t)g_img_texture, img_sz,
+                         ImVec2(0, 0), ImVec2(1, 1),
+                         flip_only ? ImVec4(1, 1, 1, 0.22f) : ImVec4(1, 1, 1, 1));
+
+            if (flip_preview_on) {
+                DrawCanvasFlipPreview(dl, flip_img, g_img_texture,
+                                      img_pos, img_sz, sx, sy,
+                                      g_flip_preview == FlipPreviewMode::Ghost);
+            }
 
             /* Color isolation: dim everything that isn't in the "kept" set.
                The set is either (a) the single Alt-clicked isolate index, or
@@ -12521,10 +12682,18 @@ void PasteClipboardAsNewImage(void)
     g_img_tex_idx = -2;
     g_zoom_reset = true;
     g_palette_nav = false;
+    /* The marquee that produced the clipboard is in the *source* sprite's
+       coordinate space; leaving it up paints a meaningless highlight over the
+       brand-new frame. */
+    deselect_all();
+    /* Nothing floats after this paste, so hand the arrow keys to the content
+       nudge instead of letting them walk the image list off the new sprite. */
+    g_content_nudge_img = g_doc->ilselected;
     mark_dirty();
     snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "Pasted clipboard as new sprite: %dx%d.", w, h);
-    g_restore_msg_timer = 4.0f;
+             "Pasted clipboard as new sprite: %dx%d. Arrow keys nudge the art "
+             "(Shift = 10px); Esc or another sprite stops.", w, h);
+    g_restore_msg_timer = 5.0f;
 }
 
 
@@ -13490,6 +13659,27 @@ void paste_image(void)
 
     g_cookie_cut_mode = false;
 
+    /* Before anything is composited: give the target palette the clipboard's
+       missing colors if it has indices to spare. Both the live preview and the
+       commit remap through BuildClipboardPaletteMap, so widening the palette
+       here is what turns "nearest existing color" into an exact match for the
+       rest of the paste. Done first so its document snapshot sits below the
+       paste's own undo entry. */
+    if (g_paste_import_colors) {
+        int unmatched = 0;
+        int added = ImportClipboardColorsIntoImagePalette(img, &unmatched);
+        if (added > 0) {
+            PAL *pal = get_pal(img->palnum);
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     unmatched > 0
+                         ? "Added %d pasted color%s to %.9s; %d had no free slot."
+                         : "Added %d pasted color%s to %.9s.",
+                     added, added == 1 ? "" : "s",
+                     pal ? pal->n_s : "", unmatched);
+            g_restore_msg_timer = 4.0f;
+        }
+    }
+
     undo_push();
 
     /* If the clipboard is larger than the target sprite, nearest-neighbor
@@ -14317,6 +14507,215 @@ bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool trim_bound
     return true;
 }
 
+/* Shared tail of the two "move the art, keep the pixels" operations. Takes the
+   already-captured undo snapshot so the caller decides whether the change was
+   worth recording at all. */
+static bool ReframeSelectedSprite(IMG *img, int nw, int nh, int dx, int dy,
+                                  PixelHist *snap)
+{
+    unsigned int old_stride = (unsigned int)(((unsigned int)img->w + 3u) & ~3u);
+    unsigned int new_stride = (unsigned int)(((unsigned int)nw + 3u) & ~3u);
+    unsigned char *dst = (unsigned char *)PoolAlloc((size_t)new_stride * nh);
+    if (!dst) {
+        pixel_hist_free(snap);
+        return false;
+    }
+    memset(dst, 0, (size_t)new_stride * nh);
+    CanvasBlitIndexedOffset((const unsigned char *)img->data_p,
+                            img->w, img->h, (int)old_stride,
+                            dst, nw, nh, (int)new_stride, dx, dy);
+
+    free(img->data_p);
+    img->data_p = dst;
+    img->w = (unsigned short)nw;
+    img->h = (unsigned short)nh;
+
+    /* The art moved by (dx, dy) inside the frame, so every coordinate that
+       points at the art has to move with it or the sprite's registration
+       silently shifts by that much in game. */
+    img->anix = signed_to_img_word((int)(short)snap->anix + dx);
+    img->aniy = signed_to_img_word((int)(short)snap->aniy + dy);
+    if (secondary_anipoint_words_in_use(snap->anix2, snap->aniy2, snap->aniz2)) {
+        img->anix2 = signed_to_img_word((int)(short)snap->anix2 + dx);
+        img->aniy2 = signed_to_img_word((int)(short)snap->aniy2 + dy);
+        img->aniz2 = snap->aniz2;
+    }
+    if (g_hitbox_w > 0 && g_hitbox_h > 0) {
+        g_hitbox_x += dx;
+        g_hitbox_y += dy;
+    }
+
+    push_pixel_history_entry(snap);
+    mark_dirty();
+    g_img_tex_idx = -2;
+    InvalidateThumb(g_doc->ilselected);
+    return true;
+}
+
+bool ResizeSelectedSpriteCanvas(int nw, int nh, int anchor)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+    nw = clamp_int(nw, 1, 4096);
+    nh = clamp_int(nh, 1, 4096);
+
+    int old_w = img->w, old_h = img->h;
+    if (nw == old_w && nh == old_h) return false;
+
+    int dx = 0, dy = 0;
+    CanvasAnchorOffset(old_w, old_h, nw, nh, anchor, &dx, &dy);
+
+    /* full_state: w/h and the anipoints both change, and only a full-state
+       entry restores those. */
+    PixelHist snap = {};
+    if (!pixel_hist_capture(&snap, true)) return false;
+    if (!ReframeSelectedSprite(img, nw, nh, dx, dy, &snap)) return false;
+
+    g_zoom_reset = true;
+    g_pasted.active = false;
+    g_pasted.dragging = false;
+    g_xform.active = false;
+    deselect_all();
+    /* Growing a canvas is nearly always followed by "now put the art where I
+       want it", so hand the arrow keys straight to the nudge. */
+    g_content_nudge_img = g_doc->ilselected;
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Canvas %s: %dx%d -> %dx%d, art unchanged at %+d,%+d. "
+             "Arrow keys nudge it (Shift = 10px).",
+             img->n_s, old_w, old_h, nw, nh, dx, dy);
+    g_restore_msg_timer = 5.0f;
+    return true;
+}
+
+bool NudgeSelectedSpriteContent(int dx, int dy)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return false;
+    if (dx == 0 && dy == 0) return false;
+
+    unsigned int stride = (unsigned int)(((unsigned int)img->w + 3u) & ~3u);
+    int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+    if (!CanvasIndexedContentBounds((const unsigned char *)img->data_p,
+                                    img->w, img->h, (int)stride,
+                                    &min_x, &min_y, &max_x, &max_y))
+        return false; /* nothing opaque to move */
+
+    CanvasClampContentNudge(min_x, min_y, max_x, max_y, img->w, img->h,
+                            &dx, &dy);
+    if (dx == 0 && dy == 0) return false;
+
+    PixelHist snap = {};
+    if (!pixel_hist_capture(&snap, true)) return false;
+    return ReframeSelectedSprite(img, img->w, img->h, dx, dy, &snap);
+}
+
+int ClearSelectionPixels(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || !g_grid_sel.active) return 0;
+
+    unsigned int stride = (unsigned int)(((unsigned int)img->w + 3u) & ~3u);
+    /* g_grid_sel.pixel_mask is a std::vector<bool> bitfield with no contiguous
+       storage, so flatten it before handing it to the pure helper. */
+    std::vector<unsigned char> mask_bytes;
+    const unsigned char *mask = NULL;
+    if (g_grid_sel.is_mask && !g_grid_sel.pixel_mask.empty()) {
+        mask_bytes.assign(g_grid_sel.pixel_mask.size(), 0);
+        for (size_t i = 0; i < g_grid_sel.pixel_mask.size(); i++)
+            mask_bytes[i] = g_grid_sel.pixel_mask[i] ? 1 : 0;
+        mask = mask_bytes.data();
+    }
+
+    PixelHist snap = {};
+    bool captured = pixel_hist_capture(&snap, false);
+    int cleared = CanvasClearIndexedRect((unsigned char *)img->data_p,
+                                         img->w, img->h, (int)stride,
+                                         g_grid_sel.x1, g_grid_sel.y1,
+                                         g_grid_sel.x2, g_grid_sel.y2,
+                                         mask,
+                                         g_grid_sel.mask_w, g_grid_sel.mask_h);
+    if (cleared <= 0) {
+        if (captured) pixel_hist_free(&snap);
+        return 0;
+    }
+
+    if (captured) push_pixel_history_entry(&snap);
+    mark_dirty();
+    g_img_tex_idx = -2;
+    InvalidateThumb(g_doc->ilselected);
+    return cleared;
+}
+
+int ImportClipboardColorsIntoImagePalette(IMG *img, int *out_unmatched)
+{
+    if (out_unmatched) *out_unmatched = 0;
+    if (!img || !g_clipboard.valid || !g_clipboard.data_p) return 0;
+    if (!g_clipboard.has_palette || g_clipboard.palette_numc <= 1) return 0;
+
+    PAL *pal = get_pal(img->palnum);
+    if (!pal || !pal->data_p || pal->numc <= 0) return 0;
+
+    /* Same colors in the same order means the paste needs no remap at all. */
+    int src_n = g_clipboard.palette_numc;
+    if (src_n > 256) src_n = 256;
+    int dst_n = pal->numc;
+    if (dst_n > 256) dst_n = 256;
+    if (src_n == dst_n &&
+        memcmp(g_clipboard.palette_data, pal->data_p, (size_t)src_n * 2u) == 0)
+        return 0;
+
+    bool used[256] = {false};
+    CanvasCollectUsedIndices((const unsigned char *)g_clipboard.data_p,
+                             g_clipboard.w, g_clipboard.h,
+                             g_clipboard.stride, used);
+
+    /* Indices below numc are only reusable when nothing in the document draws
+       with them — overwriting a color another sprite references would recolor
+       that sprite instead. */
+    bool free_slot[256] = {false};
+    for (int i = 1; i < dst_n; i++) free_slot[i] = true;
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
+        if (p->palnum != img->palnum || !p->data_p || !p->w || !p->h) continue;
+        bool seen[256] = {false};
+        CanvasCollectUsedIndices((const unsigned char *)p->data_p, p->w, p->h,
+                                 (int)(((unsigned int)p->w + 3u) & ~3u), seen);
+        for (int i = 1; i < 256; i++)
+            if (seen[i]) free_slot[i] = false;
+    }
+
+    int capacity = PaletteColorCountForBpp(pal->bitspix);
+    if (capacity < dst_n) capacity = dst_n;
+
+    PaletteImportPlan plan =
+        PlanPaletteColorImport(g_clipboard.palette_data, src_n, used,
+                               (const unsigned char *)pal->data_p, dst_n,
+                               capacity, free_slot);
+    if (out_unmatched) *out_unmatched = plan.unmatched;
+    if (plan.added.empty()) return 0;
+
+    doc_undo_push();
+    if (plan.new_numc > (int)pal->numc && !ensure_palette_numc(pal, plan.new_numc))
+        return 0;
+
+    unsigned char *pd = (unsigned char *)pal->data_p;
+    for (const PaletteImportSlot &slot : plan.added) {
+        pd[slot.dst_index * 2]     = (unsigned char)(slot.word & 0xFF);
+        pd[slot.dst_index * 2 + 1] = (unsigned char)((slot.word >> 8) & 0xFF);
+    }
+
+    if ((int)img->palnum == g_doc->plselected) {
+        ApplyPalette(g_doc->plselected);
+        save_palette_baseline();
+        reset_palette_adjust_sliders();
+    }
+    InvalidatePaletteUsage();
+    InvalidatePaletteSync();
+    g_img_tex_idx = -2;
+    mark_dirty();
+    return (int)plan.added.size();
+}
+
 void BuildResizeFallbackRgb(ResizeRgb fallback_rgb[256])
 {
     for (int i = 0; i < 256; i++) {
@@ -14438,9 +14837,14 @@ void MirrorMarkedAnipointsToReverseWithToast(void)
     int marked = CountMarkedImages();
     int changed = MirrorMarkedAnipointsToReverse();
     if (changed > 0) {
+        /* Thumbnails and the canvas texture draw the anipoint crosshair, so
+           they go stale the moment an anchor moves. */
+        ClearTimelineThumbCache();
+        g_img_tex_idx = -2;
         snprintf(g_restore_msg, sizeof(g_restore_msg),
-                 "Mirrored anipoints on %d marked sprite%s.",
-                 changed, changed == 1 ? "" : "s");
+                 "Mirrored anipoints on %d marked sprite%s (%s).",
+                 changed, changed == 1 ? "" : "s",
+                 mirror_convention_label(g_mirror_convention));
     } else if (marked > 0) {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "No marked anipoints moved; X values are centered.");

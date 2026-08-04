@@ -38,6 +38,30 @@ struct WorldViewState {
     bool onion = false; /* faintly draw prev frame underneath */
     bool show_borders = true;
     bool show_anipoint = true;
+
+    /* ---- Reference figure ----
+       An optional standing-fighter outline drawn at the same anchor, so
+       "will this effect land on the victim?" is a look instead of a
+       calculation. It is a proportioned silhouette rather than real art —
+       imgtool ships no fighter sprite — which is why its footprint and
+       placement are adjustable: line it up once against a known-good stance
+       frame and it stays put.
+
+       ref_dx/ref_dy place the figure's feet centre relative to the anchor,
+       in world pixels. ref_mirror flips it so both facings are checkable at
+       once alongside the canvas mirror preview.
+
+       ref_dy defaults to h - origin_y so the figure stands on the playfield
+       floor rather than hanging off the top: the anchor is near the world's
+       top edge (origin_y = 20), so feet-at-anchor would put all but the shins
+       above y=0. "Feet to Floor" in the config popup restores this after the
+       origin moves. */
+    bool show_reference = false;
+    bool ref_mirror = false;
+    int ref_w = 62;     /* MK2 standing fighter footprint, roughly */
+    int ref_h = 110;
+    int ref_dx = 0;
+    int ref_dy = 234;   /* = h(254) - origin_y(20) */
 };
 
 /* Two-sprite anipoint staging workspace.  The selected target is adjusted
@@ -64,6 +88,11 @@ struct WorldCanvasLayout {
     float origin_x = 0.0f;
     float origin_y = 0.0f;
 };
+
+/* Draw the reference figure into a World View canvas laid out by
+   ComputeWorldCanvasLayout(). No-op when state.show_reference is false. */
+void WorldDrawReferenceFigure(ImDrawList *dl, const WorldCanvasLayout &layout,
+                              const WorldViewState &state);
 
 struct WorldMarkedPanelLayout {
     ImVec2 pos = ImVec2(0, 0);
@@ -341,6 +370,25 @@ void DrawCanvasAnipointOverlay(ImDrawList *dl, const IMG *img,
                                ImVec2 mouse,
                                bool *primary_hover,
                                bool *secondary_hover);
+/* ---- Mirror (h-flip) preview ----
+ * The canvas has only ever drawn the unflipped sprite, so an anipoint that
+ * sits well outside its own art looked plausible here and landed hundreds of
+ * pixels away in game the moment the sprite faced the other way. These draw
+ * the placement the engine would produce h-flipped, mirrored about the
+ * anipoint exactly the way ganiof/ani2 do.
+ *
+ * `flip_left_offset_px` is where the mirrored sprite's left edge sits relative
+ * to the unflipped one, in sprite pixels: anix - anix_eff(flipped). */
+int CanvasFlipPreviewOffsetPx(const IMG *img);
+
+/* Draw the mirrored placement of `img_texture` as a tinted ghost, plus the
+   fixed anipoint line between the two placements. `img_pos`/`img_sz` are the
+   unflipped sprite's screen rect. */
+void DrawCanvasFlipPreview(ImDrawList *dl, const IMG *img,
+                           SDL_Texture *img_texture,
+                           ImVec2 img_pos, ImVec2 img_sz,
+                           float sx, float sy, bool ghost);
+
 void DrawCanvasHitboxOverlay(ImDrawList *dl, ImVec2 img_pos,
                              float sx, float sy,
                              int x, int y, int w, int h,

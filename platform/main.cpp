@@ -50,6 +50,7 @@ static bool is_headless_command(const char *arg)
     return arg &&
         (std::strcmp(arg, "--export-anilst") == 0 ||
          std::strcmp(arg, "--export-tbl") == 0 ||
+         std::strcmp(arg, "--compare-tbl") == 0 ||
          std::strcmp(arg, "--export-irw") == 0 ||
          std::strcmp(arg, "--export-png") == 0 ||
          std::strcmp(arg, "--build-tga") == 0 ||
@@ -76,11 +77,16 @@ static void print_cli_help(FILE *out, const char *exe)
         "  %s --verify-load2 <input.img> [--ppp=N] [--limit-scales-to-3]\n"
         "  %s --export-anilst <input.img> <output.asm>\n"
         "  %s --export-tbl <input.img> <output.tbl> [options]\n"
+        "  %s --compare-tbl <input.img> <existing.tbl>\n"
         "  %s --export-irw <input.img> <output.irw> [options]\n"
         "  %s --export-png <input.img> <output_dir>\n"
         "  %s --build-tga <input.img> <output.tga>\n"
         "  %s --debug-spritesheet <sheet.png|jpg|tga> <output_dir> [options]\n"
         "  %s --build-lod <manifest.lod> <output.img> [--override-dir=DIR]\n"
+        "\n"
+        "Compare exits 1 when the table and the IMG disagree, so a build can\n"
+        "gate on it. SAG is never compared: LOAD2 assigns ROM addresses, the\n"
+        ".IMG does not carry them.\n"
         "\n"
         "TBL options:\n"
         "  --mk3              write MK3 7-value headers\n"
@@ -108,9 +114,9 @@ static void print_cli_help(FILE *out, const char *exe)
         "Exit status: 0 on success; non-zero on invalid args, failed loads,\n"
         "or LOAD2 breaking issues.\n",
 #ifdef IMGTOOL_CLI_ONLY
-        exe, exe, exe, exe, exe, exe, exe, exe);
-#else
         exe, exe, exe, exe, exe, exe, exe, exe, exe);
+#else
+        exe, exe, exe, exe, exe, exe, exe, exe, exe, exe);
 #endif
 }
 
@@ -537,6 +543,63 @@ static int run_headless_cli(int argc, char *argv[]) {
         WriteTblFromMarked(output_file, base_address, mk3, include_pal, pad_4bit, align_16bit, dual_bank, bank);
         std::printf("Exported TBL to %s\n", output_file);
         return 0;
+    }
+
+    /* Diff a checked-in .TBL against the IMG instead of overwriting it.
+       MK2's src/*.TBL files are hand-maintained — nothing regenerates them —
+       so a re-export that moved an anipoint would desync art from table
+       silently. Exits 1 on drift so a build step can gate on it. */
+    if (std::strcmp(cmd, "--compare-tbl") == 0) {
+        if (argc < 4) {
+            std::fprintf(stderr,
+                "Error: --compare-tbl requires <input.img> <existing.tbl>\n");
+            return 2;
+        }
+        const char *input_img = argv[2];
+        const char *tbl_path = argv[3];
+        for (int i = 4; i < argc; i++) {
+            std::fprintf(stderr, "Error: unknown --compare-tbl option: %s\n", argv[i]);
+            return 2;
+        }
+
+        FILE *tf = std::fopen(tbl_path, "rb");
+        if (!tf) {
+            std::fprintf(stderr, "Error: could not open TBL: %s\n", tbl_path);
+            return 1;
+        }
+        std::string text;
+        char rbuf[4096];
+        size_t rn;
+        while ((rn = std::fread(rbuf, 1, sizeof(rbuf), tf)) > 0)
+            text.append(rbuf, rn);
+        std::fclose(tf);
+
+        std::vector<TblEntry> table;
+        std::vector<std::string> warnings;
+        std::string err;
+        if (!ParseTblText(text, table, &warnings, &err)) {
+            std::fprintf(stderr, "Error: %s (%s)\n", err.c_str(), tbl_path);
+            return 1;
+        }
+        for (size_t w = 0; w < warnings.size(); w++)
+            std::fprintf(stderr, "Warning: %s\n", warnings[w].c_str());
+
+        if (!headless_load_img(input_img)) return 1;
+        headless_mark_all();
+
+        std::vector<TblEntry> img_entries;
+        BuildTblEntriesFromDoc(true, img_entries);
+
+        std::vector<TblDiffRow> rows;
+        TblDiffSummary summary;
+        DiffTblEntries(table, img_entries, rows, &summary);
+
+        std::string report = FormatTblDiffReport(tbl_path, rows, summary);
+        std::fputs(report.c_str(), stdout);
+
+        bool drift = summary.differing > 0 || summary.only_in_tbl > 0 ||
+                     summary.only_in_img > 0;
+        return drift ? 1 : 0;
     }
 
     if (std::strcmp(cmd, "--export-irw") == 0) {

@@ -107,9 +107,12 @@ set(IMGTOOL_SOURCES
     platform/world_render.cpp
     platform/anipoint.cpp
     platform/anipoint_edit.cpp
+    platform/anipoint_mirror.cpp
+    platform/tbl_diff.cpp
     platform/img_util.cpp
     platform/color_ops.cpp
     platform/image_ops.cpp
+    platform/canvas_ops.cpp
     platform/palette_math.cpp
     platform/sprite_resize_ops.cpp
     platform/img_io.cpp
@@ -217,6 +220,9 @@ add_executable(sprite_sheet_import_test
     test/sprite_sheet_import_test.cpp
     platform/img_io.cpp
     platform/anipoint.cpp
+    platform/anipoint_mirror.cpp
+    platform/img_util.cpp
+    platform/tbl_diff.cpp
     platform/load2_verify.cpp
     platform/palette_math.cpp
     platform/document.cpp
@@ -242,6 +248,9 @@ add_executable(world_blit_test
     platform/world_render.cpp
     platform/img_io.cpp
     platform/anipoint.cpp
+    platform/anipoint_mirror.cpp
+    platform/img_util.cpp
+    platform/tbl_diff.cpp
     platform/load2_verify.cpp
     platform/palette_math.cpp
     platform/document.cpp
@@ -262,7 +271,8 @@ add_test(NAME world_blit COMMAND world_blit_test)
 # only: img_format.h includes document.h which includes SDL.h. SDL_MAIN_HANDLED
 # keeps SDL from redefining main(). Add new pure-logic modules here as the
 # overlay split proceeds.
-foreach(pure_test palette_math color_ops sprite_resize_ops anipoint img_util body_split)
+foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_mirror
+                  tbl_diff img_util body_split)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp
@@ -293,6 +303,23 @@ else()
     target_compile_definitions(image_ops_test PRIVATE SDL_MAIN_HANDLED)
 endif()
 add_test(NAME image_ops COMMAND image_ops_test)
+
+# canvas_ops reads palette words when planning a cross-palette paste, so it
+# links palette_math alongside.
+add_executable(canvas_ops_test
+    test/canvas_ops_test.cpp
+    platform/canvas_ops.cpp
+    platform/palette_math.cpp
+)
+target_include_directories(canvas_ops_test PRIVATE platform)
+target_link_libraries(canvas_ops_test PRIVATE SDL2::SDL2)
+if(MSVC)
+    target_compile_options(canvas_ops_test PRIVATE /W3)
+    target_compile_definitions(canvas_ops_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+else()
+    target_compile_definitions(canvas_ops_test PRIVATE SDL_MAIN_HANDLED)
+endif()
+add_test(NAME canvas_ops COMMAND canvas_ops_test)
 
 # mk2_roundtrip_test: load + idempotent round-trip check on a real MKSTK.ASM.
 # Only built when MK2_MKSTK_PATH is set (so a fresh checkout without the mk2

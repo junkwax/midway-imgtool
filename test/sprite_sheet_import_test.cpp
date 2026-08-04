@@ -16,6 +16,7 @@
 #include <vector>
 
 void undo_push(void) {}
+bool doc_undo_push(void) { return true; }
 
 struct Rgb {
     unsigned char r, g, b;

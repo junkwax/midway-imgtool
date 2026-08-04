@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <vector>
 #include "document.h"   /* g_doc, Document::dirty */
+#include "canvas_ops.h" /* CanvasAnchor */
 
 static const float PALETTE_H   = 112.0f;
 static const float TIMELINE_H  = 108.0f;
@@ -136,6 +137,7 @@ extern int           g_img_tex_h;
 #define ICON_LOCK     "\xEE\xA2\x97"     /* U+E897 lock */
 #define ICON_UNLOCK   "\xEE\xA2\x98"     /* U+E898 lock_open */
 #define ICON_SUBFRAME "\xEE\x97\x9A"     /* U+E5DA subdirectory_arrow_right */
+#define ICON_FLIP_PREVIEW "\xEE\x8F\xA8"  /* U+E3E8 flip — h-mirror preview */
 
 #define ICON_OPEN_TXT     "Op"
 #define ICON_FOLDER_TXT   "D "
@@ -156,6 +158,7 @@ extern int           g_img_tex_h;
 #define ICON_LOCK_TXT     "Lk"
 #define ICON_UNLOCK_TXT   "Un"
 #define ICON_SUBFRAME_TXT "|-"
+#define ICON_FLIP_PREVIEW_TXT "<>"
 
 /* ---- Zoom / Pan ---- */
 extern float g_zoom;
@@ -236,6 +239,12 @@ int  CopySelectedPaletteSlots(void);
 /* Pass -1 to target the selected palette; pass an index to write another
    palette in place, leaving the selection and the live color table alone. */
 int  PastePaletteSlotsAtSameIndices(int target_pal_idx = -1);
+/* Append the copied swatches after the target's last color instead of landing
+   them on their original indices. Same-index paste is the right default when
+   the two palettes are variants of one another; it is the wrong one when the
+   colors are simply extra shades being collected into a palette that is
+   already using those indices for something else. Returns colors appended. */
+int  PastePaletteSlotsAppendToEnd(int target_pal_idx = -1);
 int  PaletteSlotClipboardCount(void);
 int  PaletteSlotClipboardMaxIndex(void);
 const char *PaletteSlotClipboardSource(void);
@@ -307,6 +316,23 @@ extern std::vector<std::pair<int,int>> g_lasso_points;
 extern bool g_show_points;
 extern bool g_show_hitbox;
 
+/* Mirror preview on the main canvas. Off draws only the unflipped sprite (how
+   the canvas has always behaved); Ghost adds the h-flipped placement as a
+   translucent overlay; Only fades the unflipped sprite and shows the flipped
+   one solid. An anipoint that is fine unflipped and 224 px away flipped is
+   invisible in Off and impossible to miss in either of the others. */
+enum class FlipPreviewMode { Off = 0, Ghost, Only };
+extern FlipPreviewMode g_flip_preview;
+
+/* Amber "!" on image-list rows whose anipoint sits outside the sprite's own
+   box. Toggleable because being outside the box does not by itself mean
+   wrong: a prop positioned through match_ani_points carries its whole offset
+   in the anipoint on purpose (MKDEATH.ASM's spine-rip props are 88 px off
+   their own art and correct). Libraries like that badge every row, where the
+   mark is pure noise. Left on by default — it costs one glyph, and it is the
+   cheap first look when an effect lands wrong. */
+extern bool g_show_anipoint_warnings;
+
 bool CanUndo(void);
 bool CanRedo(void);
 void DoUndo(void);
@@ -333,6 +359,36 @@ extern int  g_bulk_resize_scale_y;
 extern bool g_bulk_resize_lock_aspect;
 extern int  g_bulk_resize_mode;
 extern bool g_bulk_resize_trim_bounds;
+
+/* ---- Canvas Size ----
+   Resize Sprite resamples the art to the new dimensions; this changes only the
+   frame around it. The pixels are copied through untouched and parked against
+   the chosen anchor, so a 40x60 sprite can sit inside a 64x80 canvas at its
+   original size. Anipoints and the hitbox move with the art. */
+extern bool g_show_canvas_size;
+extern int  g_canvas_size_src_idx;
+extern int  g_canvas_size_src_w;
+extern int  g_canvas_size_src_h;
+extern int  g_canvas_size_w;
+extern int  g_canvas_size_h;
+extern int  g_canvas_size_anchor;
+extern bool g_canvas_size_relative;
+void OpenCanvasSizeDialog(void);
+void DrawCanvasSizeDialog(void);
+
+/* ---- Post-paste content nudge ----
+   Ctrl+Shift+V commits straight into a brand-new sprite, so there is no
+   floating paste left for the arrow keys to move — and walking the image list
+   instead is the last thing anyone wants right after a paste. While this holds
+   an image index, the arrows slide that sprite's art inside its own canvas
+   (Shift = 10px) rather than changing the selection. Clears when the selection
+   moves elsewhere, on Esc, or on any document reset. -1 = inactive. */
+extern int g_content_nudge_img;
+
+/* Paste across palettes: park the clipboard's missing colors in the target
+   palette's free indices instead of remapping them to the nearest existing
+   color. Off falls back to the old nearest-match-only behaviour. */
+extern bool g_paste_import_colors;
 
 
 
@@ -485,6 +541,20 @@ bool BuildAutoChopPreviewForImage(const IMG *img, AutoChopPreview *out);
 void DrawAutoChopPreviewRects(ImDrawList *dl, const AutoChopPreview &out, ImVec2 img_pos, float sx, float sy, bool fill);
 bool TransformSelectedSprite(SpriteTransformOp op);
 bool ResizeSelectedSprite(int nw, int nh, SpriteResizeMode mode, bool trim_bounds);
+/* Re-frame the selected sprite: new canvas dimensions, same art at the same
+   pixel size, parked against `anchor`. Art that falls outside a shrinking
+   canvas is cropped. */
+bool ResizeSelectedSpriteCanvas(int nw, int nh, int anchor);
+/* Slide the selected sprite's art inside its canvas, clamped so nothing is
+   pushed off an edge. Anipoints and hitbox travel with it. */
+bool NudgeSelectedSpriteContent(int dx, int dy);
+/* Blank the pixels inside the active marquee/mask. Returns pixels cleared. */
+int ClearSelectionPixels(void);
+/* Copy the colors the clipboard needs but `img`'s palette lacks into that
+   palette's free indices, so a cross-palette paste keeps its real colors.
+   Returns how many were added; *out_unmatched receives the count that found no
+   room and will still be nearest-matched. */
+int ImportClipboardColorsIntoImagePalette(IMG *img, int *out_unmatched);
 int AutoCalculateTimelineAnipointsFromLock(void);
 void DrawResizeSpriteDialog(void);
 void DrawBulkResizeDialog(void);
@@ -586,6 +656,15 @@ std::string sprite_family_regex_pattern(const std::string &name);
 int PushAnipointsToMatchingOpenTabs(const IMG *src, int *matched_count, int *doc_count, std::string *pattern_out);
 void MirrorMarkedAnipointsToReverseWithToast(void);
 int AutoCalculateTimelineAnipointsFromLock(void);
+
+/* Bulk numeric anipoint shift over a frame range (marked set / name glob /
+   selection / all), applied as one undo step. */
+void OpenAnipointShiftDialog(void);
+
+/* Parse a checked-in .TBL and diff it field-by-field against the open
+   document, then show the report. Opens the modal even on parse failure so
+   the error is visible. */
+void RunTblCompare(const char *path);
 
 extern float g_play_speed;
 extern float g_play_timer;

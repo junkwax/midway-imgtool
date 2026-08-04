@@ -22,6 +22,7 @@
 SDL_Renderer *g_imgui_renderer = NULL;
 extern "C" { SDL_Color g_palette[256]; }
 void undo_push(void) {}
+bool doc_undo_push(void) { return true; }
 
 static int g_fails = 0;
 #define CHECK(cond) do { if (!(cond)) { \

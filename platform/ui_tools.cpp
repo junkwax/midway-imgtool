@@ -119,6 +119,16 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
         action_button(ICON_HITBOX, ICON_HITBOX_TXT, "Toggle Hitbox", false, g_show_hitbox, [&]() {
             g_show_hitbox = !g_show_hitbox;
         });
+        action_button(ICON_FLIP_PREVIEW, ICON_FLIP_PREVIEW_TXT,
+                      "Mirror Preview (cycles Off / Ghost / Flipped Only)\n"
+                      "Draws where the sprite lands when the engine h-flips it.\n"
+                      "The art mirrors about the anipoint, so an anchor beside\n"
+                      "the art throws the flipped placement twice that far off.",
+                      false, g_flip_preview != FlipPreviewMode::Off, [&]() {
+            g_flip_preview = (g_flip_preview == FlipPreviewMode::Off)   ? FlipPreviewMode::Ghost
+                           : (g_flip_preview == FlipPreviewMode::Ghost) ? FlipPreviewMode::Only
+                                                                        : FlipPreviewMode::Off;
+        });
         action_button(ICON_RESIZE, ICON_RESIZE_TXT, "Resize Sprite", g_doc->ilselected < 0, false, [&]() {
             OpenResizeSpriteDialog();
         });

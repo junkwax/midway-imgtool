@@ -6,6 +6,8 @@
 #define IMG_IO_H
 
 #include "img_format.h"
+#include "anipoint_mirror.h"  /* MirrorConvention */
+#include "tbl_diff.h"         /* TblEntry */
 #include <vector>
 #include <string>
 
@@ -177,10 +179,47 @@ int  CropSelectedImageToContent(void);
  * Returns count of edited images. */
 int  AlignAnipointsToMarked(int reference_idx);
 
-/* Mirror marked images' anipoint X coordinates for reverse-facing sprites.
- * Uses the same horizontal anchor convention as World View mirroring:
- * mirrored_x = image_width - x. Y/Z values are left unchanged. */
+/* The mirror convention every commit and preview in the app uses. Defaults to
+ * MirrorConvention_Ani2 (`w - x`), matching MKUTIL.ASM's multipart path and
+ * this tool's historical behavior. See anipoint_mirror.h for why the
+ * single-part path (MKDISP.ASM ganiof) is one pixel different. */
+extern MirrorConvention g_mirror_convention;
+
+/* Mirror marked images' anipoint X coordinates for reverse-facing sprites,
+ * matching the engine routine named by `conv`. Y/Z values are left unchanged.
+ * The no-argument form uses g_mirror_convention. Returns count of edited
+ * images. */
+int  MirrorMarkedAnipointsToReverse(MirrorConvention conv);
 int  MirrorMarkedAnipointsToReverse(void);
+
+/* ---- Bulk numeric anipoint shift ---- */
+enum AnipointShiftScope {
+    AnipointShiftScope_Marked = 0,
+    AnipointShiftScope_Pattern,   /* name glob, '*' and '?' */
+    AnipointShiftScope_Selected,
+    AnipointShiftScope_All
+};
+
+struct AnipointShiftRequest {
+    AnipointShiftScope scope;
+    char               pattern[32];
+    int                dx, dy;
+    bool               affect_primary;
+    bool               affect_secondary;
+};
+
+/* Add dx/dy to the anipoints of every frame in scope, as one undo step.
+ * With apply=false nothing is written and the return value is a preview count.
+ * `matched_out` receives how many frames the scope selected regardless of
+ * whether they'd change. Returns the number of frames edited. */
+int  ShiftAnipointsInScope(const AnipointShiftRequest &req, bool apply,
+                           int *matched_out);
+
+/* Build TBL-comparable records from the open document: name, size, and both
+ * anipoints. has_sag and has_flags are always false — LOAD2 owns ROM
+ * addresses, and a table's flags word is a DMA control word rather than the
+ * editor's mark/loaded/changed bitfield. */
+void BuildTblEntriesFromDoc(bool marked_only, std::vector<TblEntry> &out);
 
 /* Recolor every sprite except source_idx so its opaque pixels use only
  * palette indices that are present in the source sprite. Each target pixel is

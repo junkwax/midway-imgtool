@@ -53,6 +53,107 @@ static IMG *FirstMarkedImage(void)
     return NULL;
 }
 
+/* ---- Anipoint-outside-bounding-box badge ----
+ * Flags a frame whose anipoint falls outside its own 0..w-1 / 0..h-1 box.
+ *
+ * Deliberately soft, and worth being honest about what it can and cannot do:
+ * being outside the box does NOT by itself mean wrong, and it cannot separate
+ * a good library from a bad one. MK1SKULL's pre-fix anipoints were off-box,
+ * but so are MKDEATH.ASM's spine-rip props, which are correct — they ride
+ * match_ani_points and carry their whole offset in the art anipoint on
+ * purpose, exactly as that file's PLACEMENT comment prescribes. SPINERIP.IMG
+ * badges all 18 of its frames for that reason.
+ *
+ * So this is a "look here first" mark, not a verdict. The flip preview is
+ * what actually answers whether the anchor is wrong. Users working in a
+ * library that is legitimately off-box everywhere can silence it from View.
+ *
+ * Call immediately after the row's Selectable so GetItemRect* describes it.
+ * `right_inset` clears any widget already occupying the row's right edge
+ * (the subframe expand triangle needs ~22 px). */
+static void DrawAnipointBoundsBadge(const IMG *img, float right_inset)
+{
+    if (!g_show_anipoint_warnings) return;
+    if (!img || img->w == 0 || img->h == 0) return;
+    AnipointBoundsReport b = anipoint_bounds_report((int)(short)img->anix,
+                                                    (int)(short)img->aniy,
+                                                    (int)img->w, (int)img->h);
+    if (!b.x_outside && !b.y_outside) return;
+
+    ImVec2 mn = ImGui::GetItemRectMin();
+    ImVec2 mx = ImGui::GetItemRectMax();
+    const char *mark = "!";
+    ImVec2 sz = ImGui::CalcTextSize(mark);
+    ImVec2 pos(mx.x - right_inset - sz.x, (mn.y + mx.y) * 0.5f - sz.y * 0.5f);
+    if (pos.x < mn.x) return;
+    ImGui::GetWindowDrawList()->AddText(pos, IM_COL32(255, 183, 77, 255), mark);
+
+    if (ImGui::IsMouseHoveringRect(ImVec2(pos.x - 5.0f, mn.y),
+                                   ImVec2(pos.x + sz.x + 3.0f, mx.y))) {
+        ImGui::SetTooltip("Anipoint (%d,%d) is outside this sprite's own\n"
+                          "0..%d / 0..%d box by %d / %d px, so the art mirrors\n"
+                          "far from where it draws unflipped.\n\n"
+                          "This is a place to look, not a verdict. A prop\n"
+                          "positioned through match_ani_points carries its\n"
+                          "whole offset in the anipoint on purpose and is\n"
+                          "correct off-box. Turn on Mirror Preview to see\n"
+                          "whether the flipped placement actually lands wrong.\n"
+                          "Silence this mark under View > Anipoint Warnings.",
+                          (int)(short)img->anix, (int)(short)img->aniy,
+                          (int)img->w - 1, (int)img->h - 1,
+                          b.x_slack, b.y_slack);
+    }
+}
+
+/* ---- Signed centre-offset readout ----
+ * c = anix - (sizex - 1)/2 is the single number that answers "is this
+ * anchored on the art, or beside it". For an effect meant to sit *on* its
+ * anchor, c is near 0. MK1FIRE1 (w=89, anix=-68) read -112, i.e. the anchor
+ * sat 68 px outside its own left edge; the game papered over that with a
+ * hand-tuned constant in the fatality sequence, which can never be right
+ * because the value negates under h-flip.
+ *
+ * The out-of-box badge below is deliberately soft: plenty of legitimate art
+ * anchors off the sprite. It was still the tell here — every MK1FIRE/MK1SKEL
+ * frame tripped it. */
+static void DrawAnipointCenterOffsetReadout(const IMG *img)
+{
+    if (!img) return;
+    int ax = (int)(short)img->anix;
+    int ay = (int)(short)img->aniy;
+    float cx = anipoint_center_offset(ax, (int)img->w);
+    float cy = anipoint_center_offset(ay, (int)img->h);
+
+    AnipointBoundsReport bounds =
+        anipoint_bounds_report(ax, ay, (int)img->w, (int)img->h);
+    bool outside = bounds.x_outside || bounds.y_outside;
+
+    if (outside) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.30f, 1.0f));
+    LabeledValue("Ctr off:", "%+.1f, %+.1f", cx, cy);
+    if (outside) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Anipoint offset from the art's own centre: c = a - (size-1)/2.\n"
+            "Near 0 means the anchor sits on the art. This value negates\n"
+            "exactly under h-flip, so an offset tuned for one facing is\n"
+            "wrong by 2*c for the other.\n\n"
+            "Flipped anix = %d (%s)",
+            anipoint_effective(ax, (int)img->w, true, g_mirror_convention),
+            mirror_convention_label(g_mirror_convention));
+    }
+    if (outside) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.30f, 1.0f));
+        ImGui::TextWrapped("Anipoint outside 0..%d / 0..%d by %d / %d px",
+                           (int)img->w - 1, (int)img->h - 1,
+                           bounds.x_slack, bounds.y_slack);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Not always wrong — plenty of art anchors off the\n"
+                              "sprite on purpose. Worth a look when the frame is\n"
+                              "an effect meant to land on its anchor.");
+    }
+}
+
 static void OpenSetGroupAnipointsDialog(void)
 {
     /* Image-list order defines the group reference, not whichever marked frame
@@ -167,6 +268,287 @@ static void DrawSetGroupAnipointsDialog(void)
 }
 
 
+/* ---- Bulk numeric anipoint shift ----
+ * Dragging crosshairs is right for authoring one frame and useless for "shift
+ * these 22 records by +143" — which is exactly the edit the MK1SKULL fix
+ * needed, and why it got scripted outside the tool. */
+static bool g_open_anipoint_shift = false;
+static AnipointShiftRequest g_anipoint_shift = {
+    AnipointShiftScope_Marked, "", 0, 0, true, false
+};
+
+void OpenAnipointShiftDialog(void)
+{
+    /* Seed the pattern from the selected sprite's stem so "MK1FIRE*" is one
+       keystroke away rather than something to retype. */
+    IMG *img = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (img && g_anipoint_shift.pattern[0] == '\0') {
+        std::string name = trim_sprite_name(img_name_string(img));
+        std::string stem;
+        if (!strip_trailing_sequence_digits(name, &stem) || stem.empty())
+            stem = name;
+        snprintf(g_anipoint_shift.pattern, sizeof(g_anipoint_shift.pattern),
+                 "%.30s*", stem.c_str());
+    }
+    g_open_anipoint_shift = true;
+}
+
+static void DrawAnipointShiftDialog(void)
+{
+    if (g_open_anipoint_shift) {
+        ImGui::OpenPopup("Shift Anipoints");
+        g_open_anipoint_shift = false;
+    }
+    if (!ImGui::BeginPopupModal("Shift Anipoints", NULL,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    const char *scopes[] = { "Marked frames", "Name pattern", "Selected frame", "All frames" };
+    int scope_idx = (int)g_anipoint_shift.scope;
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::Combo("Scope", &scope_idx, scopes, 4))
+        g_anipoint_shift.scope = (AnipointShiftScope)scope_idx;
+
+    ImGui::BeginDisabled(g_anipoint_shift.scope != AnipointShiftScope_Pattern);
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::InputText("Pattern", g_anipoint_shift.pattern,
+                     sizeof(g_anipoint_shift.pattern));
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("'*' matches any run, '?' one character. Case-insensitive.");
+
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("dX", &g_anipoint_shift.dx);
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("dY", &g_anipoint_shift.dy);
+    g_anipoint_shift.dx = clamp_int(g_anipoint_shift.dx, -4096, 4096);
+    g_anipoint_shift.dy = clamp_int(g_anipoint_shift.dy, -4096, 4096);
+
+    ImGui::Checkbox("Primary (X1/Y1)", &g_anipoint_shift.affect_primary);
+    ImGui::SameLine(180.0f);
+    ImGui::Checkbox("Secondary (X2/Y2)", &g_anipoint_shift.affect_secondary);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Only frames whose secondary point is actually in use\n"
+                          "are touched; the -1 'unused' sentinel is left alone.");
+
+    int matched = 0;
+    int would_change = ShiftAnipointsInScope(g_anipoint_shift, false, &matched);
+    ImGui::Spacing();
+    ImGui::Text("%d frame%s in scope, %d would change.",
+                matched, matched == 1 ? "" : "s", would_change);
+
+    /* Show the shift's effect on the first frame in scope, since the whole
+       point of the numeric path is that you can't see it on the canvas. */
+    {
+        int idx = 0;
+        for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p, idx++) {
+            bool in_scope = false;
+            switch (g_anipoint_shift.scope) {
+                case AnipointShiftScope_Marked:   in_scope = (p->flags & 1) != 0; break;
+                case AnipointShiftScope_Selected: in_scope = (idx == g_doc->ilselected); break;
+                case AnipointShiftScope_All:      in_scope = true; break;
+                case AnipointShiftScope_Pattern: {
+                    char nm[17];
+                    memcpy(nm, p->n_s, 16);
+                    nm[16] = '\0';
+                    in_scope = sprite_name_matches_glob(nm, g_anipoint_shift.pattern);
+                    break;
+                }
+            }
+            if (!in_scope) continue;
+            int ax = (int)(short)p->anix;
+            int ay = (int)(short)p->aniy;
+            ImGui::TextDisabled("First: %.15s  %d,%d -> %d,%d   ctr off %+.1f -> %+.1f",
+                                p->n_s, ax, ay,
+                                ax + g_anipoint_shift.dx, ay + g_anipoint_shift.dy,
+                                anipoint_center_offset(ax, (int)p->w),
+                                anipoint_center_offset(ax + g_anipoint_shift.dx, (int)p->w));
+            break;
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(would_change <= 0);
+    if (ImGui::Button("Shift", ImVec2(120, 0))) {
+        int applied = ShiftAnipointsInScope(g_anipoint_shift, true, &matched);
+        if (applied > 0) {
+            mark_dirty();
+            g_img_tex_idx = -2;
+            ClearTimelineThumbCache();
+        }
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Shifted %d anipoint%s by %+d,%+d.",
+                 applied, applied == 1 ? "" : "s",
+                 g_anipoint_shift.dx, g_anipoint_shift.dy);
+        g_restore_msg_timer = 4.0f;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(90, 0)))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+/* ---- Compare against an existing .TBL ----
+ * MK2's src/*.TBL files are hand-maintained — no build step regenerates them
+ * — so an imgtool re-export that changed anipoints would silently desync art
+ * from table. mk2-main guards this in build.py Phase D; the check belongs on
+ * this end too. */
+static bool g_show_tbl_compare = false;
+static bool g_tbl_compare_marked_only = true;
+static std::string g_tbl_compare_path;
+static std::string g_tbl_compare_error;
+static std::vector<std::string> g_tbl_compare_warnings;
+static std::vector<TblEntry> g_tbl_compare_table;
+static std::vector<TblDiffRow> g_tbl_compare_rows;
+static TblDiffSummary g_tbl_compare_summary = {0, 0, 0, 0};
+static bool g_tbl_compare_hide_matches = true;
+
+static void RecomputeTblCompare(void)
+{
+    std::vector<TblEntry> img_entries;
+    BuildTblEntriesFromDoc(g_tbl_compare_marked_only, img_entries);
+    DiffTblEntries(g_tbl_compare_table, img_entries,
+                   g_tbl_compare_rows, &g_tbl_compare_summary);
+}
+
+void RunTblCompare(const char *path)
+{
+    g_tbl_compare_path = path ? path : "";
+    g_tbl_compare_error.clear();
+    g_tbl_compare_warnings.clear();
+    g_tbl_compare_table.clear();
+    g_tbl_compare_rows.clear();
+    g_tbl_compare_summary = TblDiffSummary{0, 0, 0, 0};
+
+    FILE *f = fopen(g_tbl_compare_path.c_str(), "rb");
+    if (!f) {
+        g_tbl_compare_error = "Could not open the file.";
+        g_show_tbl_compare = true;
+        return;
+    }
+    std::string text;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        text.append(buf, n);
+    fclose(f);
+
+    if (!ParseTblText(text, g_tbl_compare_table,
+                      &g_tbl_compare_warnings, &g_tbl_compare_error)) {
+        g_show_tbl_compare = true;
+        return;
+    }
+    RecomputeTblCompare();
+    g_show_tbl_compare = true;
+}
+
+static void DrawTblCompareDialog(void)
+{
+    if (g_show_tbl_compare) ImGui::OpenPopup("TBL Compare");
+    ImGui::SetNextWindowSize(ImVec2(720, 520), ImGuiCond_Once);
+    if (!ImGui::BeginPopupModal("TBL Compare", &g_show_tbl_compare, 0)) return;
+
+    ImGui::TextWrapped("%s", g_tbl_compare_path.c_str());
+    ImGui::Separator();
+
+    if (!g_tbl_compare_error.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s",
+                           g_tbl_compare_error.c_str());
+        if (ImGui::Button("Close", ImVec2(100, 0))) {
+            g_show_tbl_compare = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    if (ImGui::Checkbox("Marked sprites only", &g_tbl_compare_marked_only))
+        RecomputeTblCompare();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Match what Write TBL exports, which only emits marked\n"
+                          "sprites. Uncheck to compare the whole library.");
+    ImGui::SameLine();
+    ImGui::Checkbox("Hide matching rows", &g_tbl_compare_hide_matches);
+
+    ImGui::Text("%d parsed from TBL   |   %d match, %d differ, %d only in TBL, %d only in IMG",
+                (int)g_tbl_compare_table.size(),
+                g_tbl_compare_summary.matched,
+                g_tbl_compare_summary.differing,
+                g_tbl_compare_summary.only_in_tbl,
+                g_tbl_compare_summary.only_in_img);
+
+    for (size_t w = 0; w < g_tbl_compare_warnings.size(); w++)
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "%s",
+                           g_tbl_compare_warnings[w].c_str());
+
+    ImGui::Separator();
+    ImGui::BeginChild("##tbl_diff_rows", ImVec2(0, -34), true);
+    if (ImGui::BeginTable("##tbl_diff", 4,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Sprite", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+        ImGui::TableSetupColumn("Field", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+        ImGui::TableSetupColumn("TBL");
+        ImGui::TableSetupColumn("IMG");
+        ImGui::TableHeadersRow();
+
+        for (size_t r = 0; r < g_tbl_compare_rows.size(); r++) {
+            const TblDiffRow &row = g_tbl_compare_rows[r];
+            if (g_tbl_compare_hide_matches && row.kind == TblDiff_Match) continue;
+
+            if (row.kind == TblDiff_OnlyInTbl || row.kind == TblDiff_OnlyInImg ||
+                row.kind == TblDiff_Match) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(row.name.c_str());
+                ImGui::TableNextColumn();
+                if (row.kind == TblDiff_Match) {
+                    ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "ok");
+                } else {
+                    ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
+                                       row.kind == TblDiff_OnlyInTbl ? "TBL only"
+                                                                     : "IMG only");
+                }
+                ImGui::TableNextColumn();
+                ImGui::TableNextColumn();
+                continue;
+            }
+
+            for (size_t f = 0; f < row.fields.size(); f++) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                if (f == 0) ImGui::TextUnformatted(row.name.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.45f, 1.0f), "%s",
+                                   row.fields[f].field.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(row.fields[f].tbl_value.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(row.fields[f].img_value.c_str());
+            }
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+
+    if (ImGui::Button("Copy Report", ImVec2(120, 0))) {
+        std::string report = FormatTblDiffReport(g_tbl_compare_path,
+                                                 g_tbl_compare_rows,
+                                                 g_tbl_compare_summary);
+        ImGui::SetClipboardText(report.c_str());
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied TBL diff report.");
+        g_restore_msg_timer = 3.0f;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(100, 0))) {
+        g_show_tbl_compare = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 void DrawMainLayout(void)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -179,6 +561,7 @@ void DrawMainLayout(void)
     static int g_prev_ilselected = -2;
     static Document *g_prev_render_doc = NULL;
     if (g_doc != g_prev_render_doc || g_doc->ilselected != g_prev_ilselected) {
+        bool doc_changed = (g_doc != g_prev_render_doc);
         g_prev_render_doc = g_doc;
         g_clone_source_set = false;
         g_clone_offset_set = false;
@@ -200,6 +583,11 @@ void DrawMainLayout(void)
         memset(g_palette_selection, 0, sizeof(g_palette_selection));
         if (TimelineCompositeReady() && TimelineCompositeSlot(g_doc->ilselected) < 0)
             ClearTimelineCompositeSelection();
+        /* The arrow-key nudge belongs to one sprite in one document. Landing on
+           that sprite is how it gets armed (paste / canvas resize set the index
+           just before this runs), so only a move *away* from it disarms. */
+        if (doc_changed || g_content_nudge_img != g_doc->ilselected)
+            g_content_nudge_img = -1;
         g_prev_ilselected = g_doc->ilselected;
     }
 
@@ -344,10 +732,32 @@ void DrawMainLayout(void)
         }
     }
     if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_R, route)) OpenRenamePalette(g_doc->plselected);
+    /* Del with a live selection erases what is inside it, the way every paint
+       program behaves — deleting the whole sprite out from under a marquee is
+       never what that keystroke means. Gated on the selection actually being
+       drawn (same condition the canvas uses) so an invisible leftover
+       g_grid_sel can't swallow the sprite-delete key. Shift+Del above stays
+       the unconditional delete-sprite escape hatch. */
+    bool selection_visible =
+        g_grid_sel.active && !g_palette_nav &&
+        (g_active_tool == ActiveTool::Marquee ||
+         g_active_tool == ActiveTool::MagicWand ||
+         g_active_tool == ActiveTool::Lasso);
     if (!popup_using_keyboard && !io.WantTextInput && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt &&
-        ImGui::Shortcut(ImGuiKey_Delete, route)) {
-        if (g_palette_nav) DeletePalette();
-        else RequestDeleteImage(g_doc->ilselected);
+        (ImGui::Shortcut(ImGuiKey_Delete, route) ||
+         (selection_visible && ImGui::Shortcut(ImGuiKey_Backspace, route)))) {
+        if (selection_visible) {
+            int cleared = ClearSelectionPixels();
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     cleared > 0 ? "Cleared %d pixel%s inside the selection."
+                                 : "Selection was already empty.",
+                     cleared, cleared == 1 ? "" : "s");
+            g_restore_msg_timer = 3.0f;
+        } else if (g_palette_nav) {
+            DeletePalette();
+        } else {
+            RequestDeleteImage(g_doc->ilselected);
+        }
     }
 
     /* Tool Intercepts. Esc/Enter have a three-level priority: transform
@@ -356,6 +766,7 @@ void DrawMainLayout(void)
         if (g_xform.active)         { xform_cancel(); }
         else if (g_pasted.active)   { g_pasted.active = false; g_pasted.dragging = false; }
         else if (g_grid_sel.active) { g_grid_sel.active = false; }
+        else if (g_content_nudge_img >= 0) { g_content_nudge_img = -1; }
     }
     if (ImGui::Shortcut(ImGuiKey_Enter, route)) {
         if (g_xform.active)                                    xform_commit();
@@ -386,6 +797,24 @@ void DrawMainLayout(void)
         if (g_xform.active) { g_xform.rx += dx; g_xform.ry += dy; }
         else { g_pasted.paste_x += dx; g_pasted.paste_y += dy; }
     }
+    /* Same deal one step later: after Paste as New Sprite (or a canvas resize)
+       the art is already committed, so there is no floating rect — but the
+       arrows still belong to positioning it, not to walking the image list off
+       the sprite that was just created. */
+    bool content_nudge_armed = !g_pasted.active && !popup_using_keyboard &&
+                               !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt &&
+                               g_content_nudge_img >= 0 &&
+                               g_content_nudge_img == g_doc->ilselected;
+    if (content_nudge_armed) {
+        int step = io.KeyShift ? 10 : 1;
+        ImGuiKeyChord mod = io.KeyShift ? ImGuiMod_Shift : 0;
+        int dx = 0, dy = 0;
+        if (ImGui::Shortcut(mod | ImGuiKey_LeftArrow, route))  dx -= step;
+        if (ImGui::Shortcut(mod | ImGuiKey_RightArrow, route)) dx += step;
+        if (ImGui::Shortcut(mod | ImGuiKey_UpArrow, route))    dy -= step;
+        if (ImGui::Shortcut(mod | ImGuiKey_DownArrow, route))  dy += step;
+        if (dx || dy) NudgeSelectedSpriteContent(dx, dy);
+    }
 
     /* Image Operations */
     if (ImGui::Shortcut(ImGuiKey_Space, route)) {
@@ -400,7 +829,8 @@ void DrawMainLayout(void)
     bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() ||
                                  (!g_world_state.enabled && ImGui::IsAnyItemFocused()) ||
                                  io.WantTextInput;
-    if (!g_pasted.active && !widget_using_keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
+    if (!g_pasted.active && !content_nudge_armed && !widget_using_keyboard &&
+        !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
         if (ImGui::Shortcut(ImGuiKey_LeftArrow, route)) {
             if (g_world_state.enabled && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, -1);
             else StepTimelinePlayhead(-1);
@@ -435,8 +865,8 @@ void DrawMainLayout(void)
     /* Sprite / palette list navigation: cursor up/down flicks
      * between images (default) or palettes (when palette panel
      * was last clicked), matching DOS imgtool muscle memory. */
-    if (!g_pasted.active && !popup_using_keyboard && !widget_using_keyboard &&
-        g_world_state.enabled &&
+    if (!g_pasted.active && !content_nudge_armed && !popup_using_keyboard &&
+        !widget_using_keyboard && g_world_state.enabled &&
         WorldEmbeddedSeqScrActive(g_world_marked_state)) {
         /* When a World View script/sequence table is loaded, Up/Down step
            through its entries (loading each target sprite) instead of walking
@@ -445,7 +875,8 @@ void DrawMainLayout(void)
             StepWorldEmbeddedSeqScrEntry(g_world_marked_state, 1);
         if (ImGui::Shortcut(ImGuiKey_UpArrow, route))
             StepWorldEmbeddedSeqScrEntry(g_world_marked_state, -1);
-    } else if (!g_pasted.active && !popup_using_keyboard && g_palette_nav && g_doc->palcnt > 0) {
+    } else if (!g_pasted.active && !content_nudge_armed && !popup_using_keyboard &&
+               g_palette_nav && g_doc->palcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
             SelectPalette((g_doc->plselected + 1) % (int)g_doc->palcnt);
             g_zoom_reset = true;
@@ -454,7 +885,8 @@ void DrawMainLayout(void)
             SelectPalette((g_doc->plselected <= 0) ? (int)g_doc->palcnt - 1 : g_doc->plselected - 1);
             g_zoom_reset = true;
         }
-    } else if (!g_pasted.active && !popup_using_keyboard && g_doc->imgcnt > 0) {
+    } else if (!g_pasted.active && !content_nudge_armed && !popup_using_keyboard &&
+               g_doc->imgcnt > 0) {
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
             g_doc->ilselected = (g_doc->ilselected + 1) % (int)g_doc->imgcnt;
             g_zoom_reset = true;
@@ -533,7 +965,13 @@ void DrawMainLayout(void)
                 if (ImGui::MenuItem("Build TGA from Marked", "Ctrl+B")) OpenFileDialog(FileDialogMode::ExportTga);
                 if (ImGui::MenuItem("Write ANILST..."))                OpenFileDialog(FileDialogMode::WriteAniLst);
                 if (ImGui::MenuItem("Write TBL..."))                   OpenFileDialog(FileDialogMode::WriteTbl);
-    if (ImGui::MenuItem("Write IRW..."))                   OpenFileDialog(FileDialogMode::WriteIrw);
+                if (ImGui::MenuItem("Compare Against TBL..."))         OpenFileDialog(FileDialogMode::CompareTbl);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Diff a checked-in .TBL against this library instead of\n"
+                    "overwriting it. Hand-maintained tables have no build step\n"
+                    "to regenerate them, so a re-export that moved an anipoint\n"
+                    "would desync art from table silently.");
+                if (ImGui::MenuItem("Write IRW..."))                   OpenFileDialog(FileDialogMode::WriteIrw);
                 ImGui::EndMenu();
             }
             ImGui::Separator();
@@ -562,6 +1000,21 @@ void DrawMainLayout(void)
                 paste_image();
             if (ImGui::MenuItem("Paste as New Sprite", "Ctrl+Shift+V", false, g_clipboard.valid))
                 PasteClipboardAsNewImage();
+            ImGui::MenuItem("Add Pasted Colors to Palette", NULL, &g_paste_import_colors);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "When the clipboard came from another palette, copy the colors it\n"
+                "needs into the target palette's unused indices instead of remapping\n"
+                "them to the nearest existing color. Only fills slots the declared\n"
+                "bit depth already covers and no sprite is drawing with.");
+            if (ImGui::MenuItem("Clear Selection Contents", "Del", false,
+                                g_grid_sel.active && g_doc->ilselected >= 0)) {
+                int cleared = ClearSelectionPixels();
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         cleared > 0 ? "Cleared %d pixel%s inside the selection."
+                                     : "Selection was already empty.",
+                         cleared, cleared == 1 ? "" : "s");
+                g_restore_msg_timer = 3.0f;
+            }
             ImGui::Separator();
             if (ImGui::MenuItem("Capture Sprite Cookie Cutter", NULL, false, g_doc->ilselected >= 0))
                 CaptureCookieCutter();
@@ -650,6 +1103,11 @@ void DrawMainLayout(void)
                 "adjust the proposed boxes, then cut each into its own sprite\n"
                 "with the anipoint rebased so the pieces still line up.");
             if (ImGui::MenuItem("Resize Sprite...", NULL, false, g_doc->ilselected >= 0)) OpenResizeSpriteDialog();
+            if (ImGui::MenuItem("Canvas Size...", NULL, false, g_doc->ilselected >= 0)) OpenCanvasSizeDialog();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Change the frame without touching the art: the sprite keeps its\n"
+                "exact pixels and size, the canvas grows or crops around it.\n"
+                "Anipoints and the hitbox move with the art.");
             if (ImGui::MenuItem("Bulk Resize Marked...", NULL, false, CountMarkedImages() > 0)) OpenBulkResizeDialog();
             if (ImGui::MenuItem("Opacity Gradient...", NULL, false, g_doc->ilselected >= 0)) OpenOpacityGradientDialog();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -736,12 +1194,20 @@ void DrawMainLayout(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Sets every marked frame's primary animation point to the\n"
                 "exact signed X and Y coordinates entered in the dialog.");
+            if (ImGui::MenuItem("Shift Anipoints by dX/dY...")) {
+                OpenAnipointShiftDialog();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Adds a numeric offset to a whole run of frames — marked set,\n"
+                "name pattern (MK1FIRE*), selection, or all — as one undo step.");
             if (ImGui::MenuItem("Mirror Marked Anipoints to Reverse")) {
                 MirrorMarkedAnipointsToReverseWithToast();
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-                "Mirrors X anipoints on marked sprites as width - X.\n"
-                "Y/Z values stay unchanged.");
+                "Mirrors X anipoints on marked sprites about the sprite width.\n"
+                "Y/Z values stay unchanged. Convention: %s.\n"
+                "Change it under View > Mirror Preview.",
+                mirror_convention_label(g_mirror_convention));
             ImGui::Separator();
             if (ImGui::MenuItem("Least-Squares Reduce", ";"))               LeastSquaresReduceMarked();
             ImGui::Separator();
@@ -895,10 +1361,50 @@ void DrawMainLayout(void)
             ImGui::Separator();
             ImGui::MenuItem("Anim Points",     NULL, &g_show_points);
             ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
+            ImGui::MenuItem("Anipoint Warnings", NULL, &g_show_anipoint_warnings);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Amber ! on image-list rows whose anipoint sits outside the\n"
+                "sprite's own box. Off-box is not wrong by itself — props\n"
+                "placed through match_ani_points are off-box on purpose — so\n"
+                "libraries built that way badge every row. Turn this off there.");
+            if (ImGui::BeginMenu("Mirror Preview")) {
+                if (ImGui::MenuItem("Off", NULL, g_flip_preview == FlipPreviewMode::Off))
+                    g_flip_preview = FlipPreviewMode::Off;
+                if (ImGui::MenuItem("Ghost (both placements)", NULL,
+                                    g_flip_preview == FlipPreviewMode::Ghost))
+                    g_flip_preview = FlipPreviewMode::Ghost;
+                if (ImGui::MenuItem("Flipped only", NULL,
+                                    g_flip_preview == FlipPreviewMode::Only))
+                    g_flip_preview = FlipPreviewMode::Only;
+                ImGui::Separator();
+                ImGui::TextDisabled("Mirror math: %s",
+                                    mirror_convention_label(g_mirror_convention));
+                if (ImGui::MenuItem("ani2 — multipart (w - x)", NULL,
+                                    g_mirror_convention == MirrorConvention_Ani2))
+                    g_mirror_convention = MirrorConvention_Ani2;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("MKUTIL.ASM ani2. What multipart records and\n"
+                                      "flip_multi/match_ani_points apply, and what\n"
+                                      "imgtool has always used.");
+                if (ImGui::MenuItem("ganiof — single-part (w - 1 - x)", NULL,
+                                    g_mirror_convention == MirrorConvention_Ganiof))
+                    g_mirror_convention = MirrorConvention_Ganiof;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("MKDISP.ASM ganiof. One pixel tighter than ani2.\n"
+                                      "Invisible on a flame column, very visible on a\n"
+                                      "13 px bone strip.");
+                ImGui::EndMenu();
+            }
             ImGui::MenuItem("DMA Compression", NULL, &g_show_dma_comp);
             ImGui::MenuItem("Anim Scripts / Seqs", NULL, &g_show_seqscr_editor);
             ImGui::Separator();
             ImGui::MenuItem("World View",      NULL,   &g_world_state.enabled);
+            ImGui::MenuItem("World Reference Figure", NULL,
+                            &g_world_state.show_reference);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Standing-fighter outline at the shared World View anchor.\n"
+                "Size and placement live on the World View toolbar's\n"
+                "Reference checkbox (right-click it).");
             if (ImGui::MenuItem("Anipoint Link Workspace", NULL,
                                 &AnipointLink().enabled)) {
                 if (AnipointLink().enabled)
@@ -1273,6 +1779,7 @@ void DrawMainLayout(void)
                         if (ImGui::MenuItem("Rename"))        OpenRenameImage();
                         if (ImGui::MenuItem("Duplicate"))     DuplicateImage();
                         if (ImGui::MenuItem("Resize..."))     OpenResizeSpriteDialog();
+                        if (ImGui::MenuItem("Canvas Size...")) OpenCanvasSizeDialog();
                         if (ImGui::MenuItem("Break into Subframes (Auto-Chop)..."))
                             OpenAutoChopDialog();
                         if (ImGui::BeginMenu("Transform")) {
@@ -1347,6 +1854,7 @@ void DrawMainLayout(void)
                     if (selected && need_scroll && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
                     if (selected && need_scroll) last_scrolled_to = g_doc->ilselected;
                     if (selected) ImGui::PopStyleColor(2);
+                    DrawAnipointBoundsBadge(img, 6.0f);
                     draw_image_context(row.idx);
                     if (subframe) ImGui::Unindent(18.0f);
                     ImGui::PopID();
@@ -1386,6 +1894,8 @@ void DrawMainLayout(void)
                     if (selected && need_scroll && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
                     if (selected && need_scroll) last_scrolled_to = g_doc->ilselected;
                     if (selected) ImGui::PopStyleColor(2);
+                    /* Clear the expand triangle, which owns item_max.x-18..-2. */
+                    DrawAnipointBoundsBadge(img, 24.0f);
                     draw_image_context(row.idx);
 
                     if (open) {
@@ -1607,6 +2117,7 @@ void DrawMainLayout(void)
                     if (n > 0) g_zoom_reset = true;
                 }
                 if (ImGui::MenuItem("Resize Selected Sprite...")) { OpenResizeSpriteDialog(); }
+                if (ImGui::MenuItem("Canvas Size...")) { OpenCanvasSizeDialog(); }
                 if (ImGui::MenuItem("Opacity Gradient...")) { OpenOpacityGradientDialog(); }
                 if (g_doc->ilselected < 0) ImGui::EndDisabled();
 
@@ -1689,6 +2200,7 @@ void DrawMainLayout(void)
                 LabeledValue("AX/AY:",   "%d, %d", (int)(short)img->anix,  (int)(short)img->aniy);
                 LabeledValue("AX2/AY2:", "%d, %d", (int)(short)img->anix2, (int)(short)img->aniy2);
                 LabeledValue("AZ2:",     "%d",     (int)(short)img->aniz2);
+                DrawAnipointCenterOffsetReadout(img);
 
                 char flagbuf[48] = {};
                 if (img->flags & 1)  strncat(flagbuf, "Marked ", 47);
@@ -1728,6 +2240,9 @@ void DrawMainLayout(void)
                 }
                 if (AnimPointSliderInt("AZ2##ptz2", &az2, -1024, 1024))
                     set_secondary_anipoint_z_local(img, az2);
+
+                ImGui::Spacing();
+                DrawAnipointCenterOffsetReadout(img);
 
                 ImGui::Spacing();
                 if (ImGui::Button("Default Center", ImVec2(-1, 0))) {
@@ -1785,8 +2300,20 @@ void DrawMainLayout(void)
                     MirrorMarkedAnipointsToReverseWithToast();
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("For every marked sprite, mirrors X1 and active X2 as width - X. Y/Z stay unchanged.");
+                    ImGui::SetTooltip("For every marked sprite, mirrors X1 and active X2 about the\n"
+                                      "sprite's own width. Y/Z stay unchanged.\n"
+                                      "Convention: %s — %s\n"
+                                      "Change it under View > Mirror Preview.",
+                                      mirror_convention_label(g_mirror_convention),
+                                      mirror_convention_source(g_mirror_convention));
                 }
+
+                if (ImGui::Button("Shift Anipoints...", ImVec2(-1, 0)))
+                    OpenAnipointShiftDialog();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Add a numeric dX/dY to a whole run of frames at once\n"
+                                      "(marked set, name pattern like MK1FIRE*, or all).\n"
+                                      "Applies as a single undo step.");
             } else {
                 ImGui::TextDisabled("No image selected");
             }
@@ -2438,6 +2965,7 @@ void DrawMainLayout(void)
     DrawBodySplitDialog();
 
     DrawResizeSpriteDialog();
+    DrawCanvasSizeDialog();
     DrawOpacityGradientDialog();
     DrawInnerStrokeDialog();
     DrawSpriteCleanupDialog();
@@ -2445,6 +2973,10 @@ void DrawMainLayout(void)
     DrawBulkResizeDialog();
 
     DrawSetGroupAnipointsDialog();
+
+    DrawAnipointShiftDialog();
+
+    DrawTblCompareDialog();
 
     DrawBulkRestoreRegexDialog();
 

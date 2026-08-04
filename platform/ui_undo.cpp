@@ -314,6 +314,7 @@ void ResetPerDocumentUiState(bool clear_pixel_clipboard)
     g_pasted.dragging = false;
     g_xform.active = false;
     g_xform.handle = TransformHandle::None;
+    g_content_nudge_img = -1;
     g_palette_nav = false;
     g_clone_source_set = false;
     g_clone_offset_set = false;
