@@ -99,6 +99,7 @@ set(IMGTOOL_SOURCES
     platform/ui_timeline.cpp
     platform/ui_palette.cpp
     platform/ui_tools.cpp
+    platform/paint_tools.cpp
     platform/ui_modals.cpp
     platform/ui_undo.cpp
     platform/ui_autochop.cpp

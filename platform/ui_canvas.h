@@ -29,6 +29,13 @@ enum {
    visible-until value can't spray tens of thousands of files. */
 enum { kWorldPngSequenceMaxFrames = 600 };
 
+/* MK2 runs its game logic once per video field on the TMS34010 hardware, about
+   54.7 times a second. A SEQSCR "tick" is exactly one of those, so a hold of 2
+   is 2/54.7s on the real machine. Previewing at anything else makes timing
+   decisions that will not hold up in game, which is why every tick-driven
+   preview defaults to this rate rather than a round number. */
+constexpr float kMk2TickHz = 54.7f;
+
 struct WorldViewState {
     bool enabled = false;
     int w = 400;        /* arcade playfield width */
@@ -56,6 +63,22 @@ struct WorldViewState {
        top edge (origin_y = 20), so feet-at-anchor would put all but the shins
        above y=0. "Feet to Floor" in the config popup restores this after the
        origin moves. */
+    /* ---- Game placement ----
+       The stock anchor (200, 20) sits near the top of the playfield, so a
+       loaded animation hangs from the ceiling instead of standing where the
+       game would draw it. With game_placement on, the anchor's Y is derived
+       from the first frame so that frame's feet land on floor_y; every later
+       frame then offsets from there by its own dX/dY, which is exactly how a
+       sequence reads on the real screen. Turn it off to go back to the raw
+       anchor for anipoint alignment work. */
+    /* Mark BGBIGFIST1A/1B/1C/1D and get one reassembled frame, not four
+       separate ones: pieces of a chopped drawing collapse into a single
+       multi-piece lane entry, each drawn at its own anipoint. */
+    bool group_subframes = true;
+
+    bool game_placement = true;
+    int floor_y = 254;  /* playfield bottom; where a standing fighter's feet sit */
+
     bool show_reference = false;
     bool ref_mirror = false;
     int ref_w = 62;     /* MK2 standing fighter footprint, roughly */
@@ -433,7 +456,7 @@ struct WorldMarkedSequenceState {
     }
 
     bool marked_play = false;
-    float fps = 12.0f;
+    float fps = kMk2TickHz;   /* ticks per second, i.e. real game speed */
     float timer = 0.0f;
     int frame = 0;
     bool paused = false;
@@ -635,6 +658,10 @@ bool WorldAssignSelectedDummyDecap(WorldMarkedSequenceState &state,
                                    IMG *selected_img,
                                    int active_doc_idx);
 void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out);
+/* Marked sprites grouped by chopped-piece family: out_frames gets one entry per
+   group (its first piece), out_pieces gets every piece in that group. */
+void WorldCollectMarkedFrameGroups(Document *doc, std::vector<int> &out_frames,
+                                   std::vector<std::vector<int>> &out_pieces);
 WorldMarkedLane WorldBuildDummyDecapLane(WorldMarkedSequenceState &state,
                                          int active_doc_idx);
 bool WorldAppendMarkedDocumentLanes(WorldMarkedSequenceState &state,
@@ -796,6 +823,66 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
                                bool onion_enabled, bool mirror_active,
                                bool show_borders, bool show_anipoint);
 bool DrawAnipointLinkCanvas(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io);
+
+/* ---- Sequence/Script frame library --------------------------------------
+   MK2 splits one character's sprites across numbered sibling IMGs (CAGE1.IMG
+   .. CAGE10.IMG). The Anim workspace browses that whole set as one library so
+   a sequence can be built without hunting through tabs. Subframe pieces are
+   left out: they are parts of a frame, not frames. */
+struct SeqScrFrameRef {
+    int doc_idx = -1;
+    int img_idx = -1;
+    int file_slot = -1;    /* index into SeqScrFrameLibrary::files */
+    int subframes = 0;     /* child pieces this parent owns */
+    std::string name;
+};
+
+struct SeqScrFrameLibrary {
+    std::string stem;                    /* "CAGE" */
+    std::vector<std::string> files;      /* "CAGE1.IMG" .. in numeric order */
+    std::vector<int> file_docs;          /* doc tab index per file, -1 = closed */
+    std::vector<SeqScrFrameRef> frames;  /* parents only, file then list order */
+    int open_files = 0;
+};
+
+const SeqScrFrameLibrary &SeqScrFrameLib(void);
+/* Rebuild the library for the active document's numbered sibling set. When
+   `open_missing` is set, siblings that are not open yet are loaded as document
+   tabs (the active tab is restored afterwards). */
+void SeqScrRebuildFrameLibrary(bool open_missing);
+/* Draw the frame browser (file dropdown, frame list, mark/add buttons) into
+   the current ImGui window, using `avail_h` for the list height budget. */
+void DrawSeqScrFrameBrowser(float avail_h);
+/* Frame the Anim workspace's corner box should show instead of the entry under
+   the playhead. False when the browser has no selection. */
+bool SeqScrBrowserPreviewFrame(int *doc_idx, int *img_idx);
+/* True while the frame browser owns Up/Down/Space, i.e. it was the last list
+   the user clicked in and it has rows to walk. Mirrors g_palette_nav. */
+bool SeqScrFrameNavActive(void);
+/* Move the browser highlight by `delta` rows within the current file/filter
+   view, previewing whatever it lands on. */
+void SeqScrStepFrameSelection(int delta);
+/* Toggle the highlighted frame's mark bit. */
+void SeqScrToggleSelectedMark(void);
+/* How many entries in the loaded record point at a sprite outside the IMG that
+   owns it. Those live in the preview/ASM export only — a SEQSCR entry is an
+   index into its own file's image list and cannot name a foreign sprite. */
+int SeqScrForeignEntryCount(const WorldMarkedSequenceState &state);
+
+/* World-view anchor Y that stands `img` on WorldView().floor_y, given that a
+   sprite's top edge is drawn at anchor_y - anipoint_effective(aniy, h).
+   Returns the current origin_y unchanged when the sprite is unusable. */
+int WorldGamePlacementOriginY(const IMG *img);
+/* Re-derive the shared anchor from the loaded record's first drawable frame,
+   so the animation plays where the game would draw it. No-op when
+   game_placement is off or nothing is loaded. */
+void WorldApplyGamePlacement(const WorldMarkedSequenceState &state);
+
+/* Draw the Sequence/Script ("Anim") workspace into the current ImGui window:
+   the loaded SEQSCR record animating in a world-sized viewport, a corner
+   sprite inspector for the entry under the playhead, and the record list plus
+   its entry table underneath. Returns true when it consumed the canvas area. */
+bool DrawSeqScrWorkspace(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io);
 
 /* Destroy module-owned transient/cached canvas textures. */
 void ClearCanvasUiTextures(void);

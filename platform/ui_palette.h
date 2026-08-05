@@ -127,3 +127,19 @@ void ClearPaletteReducePreviewTextures(void);
 void MoveSelectedPaletteColorsToEnd(void);
 void ResetPaletteUiState(void);
 
+/* Flip the selected swatches (or the whole palette, minus transparent index 0,
+   when nothing is selected) to their RGB555 complement. Self-inverse. */
+void InvertSelectedPaletteColors(void);
+/* Reverse the order of colors across the selected indices (low-to-high becomes
+   high-to-low). Distinct from the RGB complement invert: the colors are the
+   same, their positions are not. Pixel data is untouched. */
+void ReverseSelectedPaletteOrder(void);
+
+/* Hue-wheel picker for the active swatch, `width` px wide. Drawn inside the
+   pop-out anchored to the left toolbar's color square. */
+void DrawActiveSwatchPickerBody(float width);
+
+/* Palette-wide H/S/L offsets as a single `width`-px column: hue dial, exact
+   hue field, saturation and lightness sliders, reset. */
+void DrawActiveSwatchHslControls(float width);
+

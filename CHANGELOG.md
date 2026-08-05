@@ -8,6 +8,116 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.19.0] — the Anim workspace, a character-wide frame library, and real game timing
+
+Headline: sequence and script editing has its own workspace instead of riding
+along inside World View, and it edits the IMG for real. The entry table now
+offers exactly the four values a SEQSCR ENTRY can hold — target index, tick
+hold, dX, dY — and writes them back into the record. Everything World View
+layered on top (show/hide ticks, motion vectors, Z order, dual instances, the
+auto-chain generators) was preview state with nowhere to live in the file, and
+offering it in a SEQSCR editor invited edits that quietly evaporated on save.
+
+Alongside it: a frame browser that spans a character's whole numbered IMG set,
+previews at the machine's real 54.7 Hz, three new paint tools, and two fixes
+for bugs that could lose work.
+
+### Sequence / Script workspace
+- **New "Anim" canvas mode**, beside Image / World / Link. The loaded record
+  animates in a world-sized viewport, the entry under the playhead shows 1:1 in
+  a corner inspector with its anipoint crosshair, and the record list plus its
+  entry table sit underneath. It takes the whole canvas rect — no palette strip
+  or sprite timeline competing for the space.
+- **Removed from World View.** The embedded SEQSCR lane, its tables, and its
+  header controls are gone; World View is marked rows and ASM lanes again.
+- **Edits persist.** `SeqScrReplaceEntries` rewrites a record's ENTRY array,
+  carrying the three spare words across by position so Midway metadata on
+  entries that stayed put survives. Typed values, row reorders, duplicates,
+  deletes, and viewport drags all reconcile into the blob.
+- **Sequence ENTRY arrays are stored back to front** — blob entry 0 is the last
+  displayed frame; scripts store forward. The decoder and the ASM exporter both
+  already knew this; the new write path mirrors it. Getting this wrong would
+  have silently reversed every sequence it touched.
+- **Untouched records are never rewritten.** The decoder normalises as it reads
+  (a 0-tick entry becomes a 1-tick hold, deltas get clamped), so the sync
+  compares against a baseline captured at load rather than against the blob.
+  Opening a sequence no longer dirties the document.
+- **Game placement.** The stock (200, 20) anchor hangs an animation off the top
+  of the playfield. The anchor Y is now derived from the first drawable frame so
+  its feet land on the floor, and each entry offsets from there by its own
+  dX/dY — how the sequence actually reads on screen. Right-click the toggle for
+  Floor Y / Stand X.
+- The entry table sizes itself to its row count, so a short sequence is fully
+  visible without scrolling.
+
+### Frame library
+- **The Animation panel now browses a character's whole IMG set.** Opening
+  `CAGE3.IMG` discovers `CAGE1`–`CAGE10` in the same folder, opens the ones that
+  are not loaded, and restores your active tab so browsing does not move your
+  editing focus. 468 frames for Cage, 406 for Kang.
+- Parents only — chopped pieces are folded away and their parent carries a `*`.
+- Up/Down walk the list, each highlight previews in the corner box, Space marks.
+  Marking uses the IMG's own mark bit, so a selection made here is the same one
+  World View rows and TBL export already act on.
+- **Add Marked to Sequence** / **New Sequence from Marked**. Frames from a
+  sibling IMG go into the preview and the ASM export but not the blob — a
+  SEQSCR index cannot name a sprite outside its own file — and both the table
+  and the panel say so rather than writing an index that resolves elsewhere.
+- Marked pieces of one chopped drawing (`BGBIGFIST1A/1B/1C/1D`) now reassemble
+  into a single multi-piece lane entry instead of four separate frames.
+- Subframe groups start collapsed. A group with no record of its own in the IMG
+  gets the folder icon, a piece count, and a right-click menu, instead of
+  rendering as an unlabelled gap.
+
+### Timing
+- **Previews run at 54.7 Hz**, the rate MK2 drives its game logic on the
+  TMS34010. A SEQSCR tick is one of those, so a hold of N ticks now previews at
+  the duration it will have in game. World View, the Anim workspace, the sprite
+  timeline, GIF export, and the ASM viewer all default to it, each with a
+  "Game" button to snap back. The ASM viewer's 30 fps ceiling was raised so it
+  can reach game speed at all.
+
+### Paint tools
+- **Blur**, **Smudge**, and a **content-aware eraser**. All three read indices,
+  resolve them to the palette's 15-bit colors, do the arithmetic in RGB, and map
+  back to the nearest index — averaging index *numbers* lands on whatever color
+  happens to sit between two slots, which in a hand-authored MK2 palette is
+  usually an unrelated hue.
+- Blur and smudge neither read transparency as a color nor write over it, so a
+  stroke near an edge softens the art without bleeding the silhouette outward.
+- The content-aware eraser clears its brush and then diffuses color inward from
+  the ring outside it, so a patch of texture closes over instead of leaving a
+  hole. Where the neighbourhood is entirely transparent it stays transparent —
+  erasing at a sprite's edge still trims the silhouette.
+- **Reverse Color Order** joins the RGB complement invert: same colors, reversed
+  across their indices, so a ramp runs the other way.
+- **Clear Region in All Marked Frames** — right-click inside a marquee. The rect
+  applies in each sprite's own pixel space, clipped to its bounds, honouring
+  lasso and wand masks, as one undo step.
+
+### Fixes
+- **Closing a tab could close the wrong file.** The pending close stored an
+  index captured when the prompt opened, then closed that index after you
+  answered — but anything that opens or reorders tabs in between shifts them,
+  and the new sibling-IMG auto-open opens ten at once. It now resolves the
+  target by document pointer, and the prompt names the file.
+- **A modal could lock the app.** ImGui persists window positions in
+  `imgui.ini`, so a dialog once dragged off-screen — or last shown on a larger
+  display — reopens outside the viewport: invisible, but still capturing input.
+  Confirm dialogs now re-centre on appearing, and a watchdog recovers if one
+  fails to draw, cancelling the queued action rather than running it unseen.
+  `imgui.ini` is no longer tracked.
+
+### Smaller things
+- Document tabs and canvas view-mode tabs are tinted apart; stacked in the same
+  corner they read as one strip otherwise.
+- Canvas backdrop cycles Checker / Pink / Green / Blue from the Image tab — a
+  flat key makes stray fringe pixels obvious.
+- The zoom percentage is gone from the menu bar corner.
+- Saving auto-completes the mode's extension when the typed name has none, and
+  respects one you supplied.
+- The active-swatch pop-out gains a hue dial and palette-wide H/S/L controls.
+
 ## [v3.18.0] — mirror-aware anipoints, canvas size, and cross-palette paste
 
 Headline feature: a whole class of anipoint error is now visible at authoring

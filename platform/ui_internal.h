@@ -54,6 +54,25 @@ bool SeqScrAppendEntry(int record_index, int target_index);
 bool SeqScrAppendEntries(int record_index, const std::vector<int> &target_indices);
 bool SeqScrDeleteEntry(int record_index, int entry_index);
 bool SeqScrMoveEntry(int record_index, int entry_index, int delta);
+
+/* The only per-ENTRY values a SEQSCR record can actually hold, beyond the
+   three opaque spare words. Anything else an animation editor offers is a
+   preview concept and cannot be saved into the IMG. */
+struct SeqScrEntryValues {
+    int index;
+    int ticks;
+    int dx;
+    int dy;
+};
+/* Read one entry's editable values. */
+bool SeqScrReadEntries(int record_index, std::vector<SeqScrEntryValues> &out);
+/* Rewrite a record's whole ENTRY array from `entries`, growing or shrinking it
+   as needed. Spare words are carried across by position so Midway metadata on
+   entries that stayed put is preserved. No-ops (returning true) when the blob
+   already matches, so callers can reconcile every frame without dirtying the
+   document. */
+bool SeqScrReplaceEntries(int record_index,
+                          const std::vector<SeqScrEntryValues> &entries);
 const char *SeqScrEntryTargetName(const SeqScrRecordView &rec,
                                   int entry_index,
                                   const std::vector<SeqScrRecordView> &records);
@@ -292,7 +311,7 @@ void SplitSelectionToOverlayFrame(bool clear_source);
 void OpenRenamePalette(int idx);
 
 /* ---- Tools & State ---- */
-enum class ActiveTool { None, Pencil, PaintBucket, VariantPaint, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper };
+enum class ActiveTool { None, Pencil, PaintBucket, VariantPaint, Marquee, MagicWand, BackgroundEraser, CloneStamp, SmartRemap, Lasso, Eyedropper, Blur, Smudge, ContentErase };
 extern ActiveTool g_active_tool;
 extern int g_pencil_brush;
 extern int g_variant_brush;
@@ -309,6 +328,16 @@ extern int g_clone_dx;
 extern int g_clone_dy;
 extern int g_remap_target_color;
 extern int g_remap_tolerance;
+extern int g_blur_brush;
+extern int g_blur_strength;
+extern int g_smudge_brush;
+extern int g_smudge_strength;
+extern int g_content_erase_brush;
+extern int g_content_erase_passes;
+/* Last brush position, so smudge knows which way the stroke is travelling. */
+extern int g_smudge_last_x;
+extern int g_smudge_last_y;
+extern bool g_smudge_have_last;
 extern int g_eraser_tolerance;
 extern bool g_eraser_contiguous;
 extern bool g_eraser_defringe;
@@ -622,6 +651,28 @@ void FloodFill(IMG *img, int sx, int sy, unsigned char new_color);
 struct WorldMarkedSequenceState;
 extern WorldMarkedSequenceState &g_world_marked_state;
 extern bool g_world_marked_panel_docked;
+/* Sequence/Script workspace is its own canvas mode ("Anim"), not a World View
+   overlay: SEQSCR records animate, get inspected, and get edited there so
+   World View stays the marked-row alignment surface it was. */
+extern bool g_seqscr_workspace;
+/* Set while the Anim frame browser is the list Up/Down/Space act on, cleared
+   when another list takes the keyboard. Same contract as g_palette_nav. */
+extern bool g_seqscr_frame_nav;
+
+/* Canvas backdrop behind a sprite's transparent pixels. Checker is the default;
+   the flat colours exist because sprite art with grey/dark edges disappears
+   against a checker, and MK2 art is routinely judged against a solid key. */
+enum CanvasBackdrop {
+    CanvasBackdrop_Checker = 0,
+    CanvasBackdrop_Pink,
+    CanvasBackdrop_Green,
+    CanvasBackdrop_Blue,
+    CanvasBackdrop_Count
+};
+extern int g_canvas_backdrop;
+const char *CanvasBackdropName(int mode);
+/* Fill for a flat backdrop; undefined for Checker (draw the checkerboard). */
+ImU32 CanvasBackdropColor(int mode);
 extern bool g_show_dma_comp;
 void pixel_hist_push_stroke(void);
 int PaintBucketFill(IMG *img, int sx, int sy, unsigned char new_color, int tolerance, bool contiguous);
@@ -725,6 +776,14 @@ extern bool g_request_locate_img;
 extern bool g_request_locate_opp_img;
 
 void DrawUnsavedChangesConfirm(void);
+/* Position the next modal at the viewport centre on appearing, so a stale
+   off-screen position in imgui.ini can never hide it. */
+void CenterNextModal(void);
+/* Recover from a modal that is flagged open but never draws (invisible yet
+   input-blocking). Call in the BeginPopupModal-returned-false branch; call
+   ModalWatchdogClear() once it does draw. */
+void ModalWatchdog(bool &flag, const char *name);
+void ModalWatchdogClear(void);
 void DrawMk2UnsavedChangesConfirm(void);
 void DrawMk2FatalityUnsavedChangesConfirm(void);
 void StripMarkedImages(int max_transparent_neighbors, int specific_color = -1);
@@ -772,6 +831,12 @@ extern bool          g_show_unsaved_confirm;
 extern PendingAction g_pending_action;
 extern std::string   g_pending_action_path;
 extern int           g_pending_tab_index;
+/* The document the pending close targets, held as a pointer so an index shift
+   (a tab opened or reordered while the prompt is up) cannot retarget it. */
+extern Document     *g_pending_tab_doc;
+/* The document the pending close targets, held as a pointer so an index shift
+   (a tab opened or reordered while the prompt is up) cannot retarget it. */
+extern Document     *g_pending_tab_doc;
 extern bool          g_show_delete_images_confirm;
 extern char          g_pending_delete_parent_name[16];
 extern std::vector<int> g_pending_delete_base_indices;

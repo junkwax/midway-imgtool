@@ -7,6 +7,7 @@
 #include "ui_tools.h"
 #include "ui_internal.h"
 #include "ui_canvas.h"
+#include "ui_palette.h"
 #include "ui_timeline.h"
 #include "img_format.h"
 #include "document.h"
@@ -59,6 +60,8 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
                 (tool == ActiveTool::Marquee || tool == ActiveTool::MagicWand ||
                  tool == ActiveTool::Lasso || tool == ActiveTool::BackgroundEraser ||
                  tool == ActiveTool::CloneStamp || tool == ActiveTool::SmartRemap ||
+                 tool == ActiveTool::Blur || tool == ActiveTool::Smudge ||
+                 tool == ActiveTool::ContentErase ||
                  tool == ActiveTool::Eyedropper))
                 g_grid_sel.active = false;
         };
@@ -99,6 +102,15 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
                     TOOL_ACTIVE_COL(0.2f,0.6f,0.3f), "Clone Stamp");
         tool_button(ActiveTool::SmartRemap, "\xEE\x90\x8A", "Rm",
                     TOOL_ACTIVE_COL(0.8f,0.4f,0.1f), "Smart Palette Remapper");
+        tool_button(ActiveTool::Blur, "\xEE\x8F\xA0", "Bl",
+                    TOOL_ACTIVE_COL(0.35f,0.55f,0.75f),
+                    "Blur\nSoftens under the brush by averaging in RGB,\nthen remapping to the nearest palette index.");
+        tool_button(ActiveTool::Smudge, "\xEE\x90\xA1", "Sm",
+                    TOOL_ACTIVE_COL(0.6f,0.45f,0.75f),
+                    "Smudge\nDrags colour along the stroke, like pulling wet paint.");
+        tool_button(ActiveTool::ContentErase, "\xEE\xA1\xB2", "Ce",
+                    TOOL_ACTIVE_COL(0.75f,0.35f,0.45f),
+                    "Content-Aware Eraser\nRemoves the brushed area and heals it from the\nsurrounding pixels instead of punching a hole.");
         tool_button(ActiveTool::Lasso, "\xEE\xAC\x83", "Ls",
                     TOOL_ACTIVE_COL(0.3f,0.5f,0.8f), "Lasso Selection Tool (L)");
         tool_button(ActiveTool::Eyedropper, "\xEF\x8D\x91", "Ey",
@@ -186,19 +198,73 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
         } else if (g_active_tool == ActiveTool::SmartRemap) {
             ImGui::SliderInt("##remap_tol", &g_remap_tolerance, 0, 16);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart remap tolerance");
+        } else if (g_active_tool == ActiveTool::Blur) {
+            ImGui::SliderInt("##blur_brush", &g_blur_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blur brush radius");
+            ImGui::SetCursorPosX(left_x);
+            ImGui::SliderInt("##blur_str", &g_blur_strength, 1, 100);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Blur strength. Lower values build up over\nrepeated passes instead of flattening at once.");
+        } else if (g_active_tool == ActiveTool::Smudge) {
+            ImGui::SliderInt("##smudge_brush", &g_smudge_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smudge brush radius");
+            ImGui::SetCursorPosX(left_x);
+            ImGui::SliderInt("##smudge_str", &g_smudge_strength, 1, 100);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("How much colour the stroke carries along with it.");
+        } else if (g_active_tool == ActiveTool::ContentErase) {
+            ImGui::SliderInt("##ce_brush", &g_content_erase_brush, 1, 16);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Content-aware eraser radius");
+            ImGui::SetCursorPosX(left_x);
+            ImGui::SliderInt("##ce_passes", &g_content_erase_passes, 1, 32);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("How far colour is carried inward from the rim.\nMore passes fill bigger holes; 1 only heals the edge.");
         }
 
         ImGui::Spacing();
+        const float sw_sz = 60.0f; // Flush with the double columns of buttons (28 + 4 + 28)
+        float picker_anchor_y = 0.0f;
+        static bool s_picker_was_open = false;
         {
             SDL_Color &c = g_palette[g_sel_color];
             ImU32 col = IM_COL32(c.r, c.g, c.b, 255);
             ImGui::SetCursorPosX(left_x);
             ImVec2 cp = ImGui::GetCursorScreenPos();
-            float sw_sz = 60.0f; // Flush with the double columns of buttons (28 + 4 + 28)
+            picker_anchor_y = cp.y;
+            /* The square is the handle for the color wheel: clicking it pops the
+               picker out to the right of the toolbar. */
+            ImGui::InvisibleButton("##active_color_square", ImVec2(sw_sz, 24));
+            bool hovered = ImGui::IsItemHovered();
+            /* ImGui dismisses the popup during NewFrame when the click lands
+               outside it, so by now a "close" click looks identical to an
+               "open" one. Remembering last frame's state makes the square a
+               real toggle instead of an unconditional reopen. */
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !s_picker_was_open)
+                ImGui::OpenPopup("##swatch_picker");
             ImDrawList *dl = ImGui::GetWindowDrawList();
             dl->AddRectFilled(cp, ImVec2(cp.x + sw_sz, cp.y + 24), col);
-            dl->AddRect(cp, ImVec2(cp.x + sw_sz, cp.y + 24), IM_COL32(255,255,255,80));
-            ImGui::Dummy(ImVec2(sw_sz, 24));
+            dl->AddRect(cp, ImVec2(cp.x + sw_sz, cp.y + 24),
+                        hovered ? IM_COL32(255, 255, 255, 220) : IM_COL32(255, 255, 255, 80),
+                        0.0f, 0, hovered ? 2.0f : 1.0f);
+            if (hovered) ImGui::SetTooltip(
+                "Color #%d - click for the color wheel.\n"
+                "Right-click a sprite pixel to pick its color instead.", g_sel_color);
+        }
+        {
+            /* Anchor the pop-out beside the square, nudged up if it would run
+               off the bottom of the display. */
+            const float picker_w = 210.0f;
+            const float popup_h_est = 400.0f;
+            float py = picker_anchor_y;
+            float disp_h = ImGui::GetIO().DisplaySize.y;
+            if (py + popup_h_est > disp_h - 8.0f) py = disp_h - popup_h_est - 8.0f;
+            if (py < 8.0f) py = 8.0f;
+            ImGui::SetNextWindowPos(ImVec2(76.0f + 6.0f, py));
+            if (ImGui::BeginPopup("##swatch_picker")) {
+                DrawActiveSwatchPickerBody(picker_w);
+                ImGui::EndPopup();
+            }
+            s_picker_was_open = ImGui::IsPopupOpen("##swatch_picker");
         }
         char col_label[8];
         snprintf(col_label, sizeof(col_label), "#%d", g_sel_color);
@@ -208,7 +274,17 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
             if (g_sel_color == 0) g_sel_color = last_col;
             else { last_col = g_sel_color; g_sel_color = 0; }
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Active color index (right-click sprite to pick)");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+            "Active color index - click to toggle to/from transparent #0");
+
+        /* Palette-wide hue/saturation/lightness, directly under the square. */
+        ImGui::SetCursorPosX(left_x);
+        ImVec2 hsl_line = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(hsl_line, ImVec2(hsl_line.x + sw_sz, hsl_line.y),
+                                            ImGui::GetColorU32(ImGuiCol_Separator));
+        ImGui::Dummy(ImVec2(sw_sz, 4.0f));
+        ImGui::SetCursorPosX(left_x);
+        DrawActiveSwatchHslControls(sw_sz);
 
         #undef TB_LABEL
         #undef TOOL_ACTIVE_COL

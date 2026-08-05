@@ -14,6 +14,7 @@
 #include "ui_palette.h"
 
 #include "anipoint.h"       /* secondary_anipoint_in_use */
+#include "paint_tools.h"     /* blur / smudge / content-aware erase */
 #include "anipoint_edit.h"  /* set_primary_anipoint_with_sequence */
 #include "img_format.h"     /* get_img */
 #include "img_util.h"       /* img_name_string */
@@ -1769,6 +1770,65 @@ void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out)
     }
 }
 
+/* Marked sprites, grouped so that pieces of one chopped frame become one lane
+   entry instead of N.
+
+   A name like BGBIGFIST1A/1B/1C/1D describes four slices of a single drawing;
+   marking them all and getting four separate animation frames is never what
+   was meant. Each piece carries its own anipoint, so drawing them together at
+   the same tick reassembles the original picture — which is exactly what a
+   multi-piece lane entry already does.
+
+   `out_frames` holds the first piece of each group (the entry's nominal
+   sprite); `out_pieces` holds every piece in it. A sprite with no siblings
+   yields a one-piece group, i.e. the previous behaviour. */
+void WorldCollectMarkedFrameGroups(Document *doc, std::vector<int> &out_frames,
+                                   std::vector<std::vector<int>> &out_pieces)
+{
+    out_frames.clear();
+    out_pieces.clear();
+    if (!doc) return;
+
+    std::vector<int> marked;
+    WorldCollectMarkedFrames(doc, marked);
+    if (marked.empty()) return;
+
+    /* Group key: the inferred parent name, or the sprite's own name when it is
+       not a piece of anything. Groups keep the order of their first member so
+       the lane still plays in image-list order. */
+    std::vector<std::string> keys;
+    for (int idx : marked) {
+        IMG *img = doc_get_img(doc, idx);
+        std::string nm = img ? img_name_string(img) : std::string();
+        std::string parent = InferSubframeParentName(nm.c_str());
+        keys.push_back(parent.empty() ? nm : parent);
+    }
+
+    for (size_t i = 0; i < marked.size(); i++) {
+        if (keys[i].empty()) {           /* unnamed: never group */
+            out_frames.push_back(marked[i]);
+            out_pieces.push_back(std::vector<int>(1, marked[i]));
+            continue;
+        }
+        bool merged = false;
+        for (size_t g = 0; g < out_frames.size(); g++) {
+            IMG *head = doc_get_img(doc, out_frames[g]);
+            std::string head_nm = head ? img_name_string(head) : std::string();
+            std::string head_parent = InferSubframeParentName(head_nm.c_str());
+            std::string head_key = head_parent.empty() ? head_nm : head_parent;
+            if (head_key == keys[i]) {
+                out_pieces[g].push_back(marked[i]);
+                merged = true;
+                break;
+            }
+        }
+        if (!merged) {
+            out_frames.push_back(marked[i]);
+            out_pieces.push_back(std::vector<int>(1, marked[i]));
+        }
+    }
+}
+
 struct WorldDecapCandidate {
     Document *doc;
     int doc_idx;
@@ -2027,7 +2087,11 @@ bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
     if (!doc) return false;
 
     std::vector<int> marked_frames;
-    WorldCollectMarkedFrames(doc, marked_frames);
+    std::vector<std::vector<int>> marked_groups;
+    if (g_world_state.group_subframes)
+        WorldCollectMarkedFrameGroups(doc, marked_frames, marked_groups);
+    else
+        WorldCollectMarkedFrames(doc, marked_frames);
     if (marked_frames.empty()) return false;
 
     int source_slot = WorldMarkedFindBaseSourceSlot(state, doc, doc_idx,
@@ -2043,9 +2107,14 @@ bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
     lane.dummy_decap = false;
     lane.frames = marked_frames;
 
+    /* A per-slot piece override the user built by hand wins over the automatic
+       grouping; otherwise the chopped-piece groups become the frame pieces. */
+    const std::vector<std::vector<int>> *pieces =
+        !state.entry_pieces[source_slot].empty() ? &state.entry_pieces[source_slot]
+        : (!marked_groups.empty() ? &marked_groups : NULL);
     WorldMarkedBuildSingleFrameLane(doc, lane.frames,
                                     lane.frame_pieces, lane.frame_labels,
-                                    &state.entry_pieces[source_slot]);
+                                    pieces);
     WorldMarkedSyncSequenceOverride(state, source_slot, doc, doc_idx,
                                     lane.frames, lane.frame_pieces,
                                     lane.frame_labels);
@@ -2562,6 +2631,39 @@ std::string WorldBuildSeqScrAsmExport(int record_index)
     return out;
 }
 
+int WorldGamePlacementOriginY(const IMG *img)
+{
+    if (!img || img->h <= 0) return g_world_state.origin_y;
+    /* Renderer: top = origin_y - anipoint_effective(aniy, h), bottom = top + h.
+       Solve bottom == floor_y. Mirroring only affects X, so the unflipped
+       effective value is the right one to use here. */
+    int eff = anipoint_effective((int)(short)img->aniy, (int)img->h, false,
+                                 g_mirror_convention);
+    return g_world_state.floor_y + eff - (int)img->h;
+}
+
+void WorldApplyGamePlacement(const WorldMarkedSequenceState &state)
+{
+    if (!g_world_state.game_placement) return;
+    if (!state.embedded_active) return;
+    const int slot = kWorldEmbeddedSeqScrSlot;
+    Document *doc = document_get(state.embedded_doc_idx);
+    if (!doc) return;
+
+    /* First frame that actually has pixels: a sequence can open on an empty
+       or missing entry, and anchoring to that would put the whole animation
+       in the wrong place. */
+    for (int i = 0; i < (int)state.sequence_frames[slot].size(); i++) {
+        int doc_idx = i < (int)state.frame_doc[slot].size()
+                    ? state.frame_doc[slot][(size_t)i] : -1;
+        Document *fdoc = WorldMarkedResolveEntryDoc(doc, doc_idx);
+        IMG *img = doc_get_img(fdoc, state.sequence_frames[slot][(size_t)i]);
+        if (!img || img->h <= 0 || !img->data_p) continue;
+        g_world_state.origin_y = WorldGamePlacementOriginY(img);
+        return;
+    }
+}
+
 bool WorldLoadSeqScrRecord(int record_index)
 {
     std::vector<int> frames;
@@ -2585,21 +2687,10 @@ bool WorldLoadSeqScrRecord(int record_index)
     state.sequence_doc_idx[slot] = document_active_index();
     state.embedded_active = true;
     state.embedded_is_script = is_script;
-    /* A SEQSCR row is the attacker/source side of the presentation.  Bring
-       in the default Liu Kang reaction companion when its sibling character
-       ASM can be located; its frames then share this world's anipoint/tick
-       playback automatically. */
-    state.embedded_show_companions = AutoLoadDefaultLiuKangOpponent();
-    if (state.embedded_show_companions) {
-        /* MK2 fighters begin apart, not on one another's anchor.  The
-           renderer subtracts local anipoint X, so a negative delta places
-           the default victim to the right of the active SEQSCR actor. */
-        state.lane_base_dx[kWorldAsmOpponentSlot] = -96;
-        state.lane_base_dy[kWorldAsmOpponentSlot] = 0;
-        bool *victim_mirror = WorldMarkedMirrorFlag(state,
-                                                     kWorldAsmOpponentSlot);
-        if (victim_mirror) *victim_mirror = true;
-    }
+    /* The Anim workspace shows this record and nothing else. Marked rows, ASM
+       lanes, the dummy body, and the reaction companion are World View
+       staging concepts and stay there. */
+    state.embedded_show_companions = false;
     state.embedded_record_index = record_index;
     state.embedded_doc_idx = document_active_index();
     state.embedded_name = name;
@@ -2627,7 +2718,14 @@ bool WorldLoadSeqScrRecord(int record_index)
         state.dual_z[slot][i] = 0;
     }
 
-    g_world_state.enabled = true;
+    /* Loading a record opens the Sequence/Script workspace rather than World
+       View: the two modes are mutually exclusive canvas tabs. */
+    g_seqscr_workspace = true;
+    g_world_state.enabled = false;
+    AnipointLink().enabled = false;
+    /* Stand the animation on the floor rather than hanging it off the stock
+       (200, 20) anchor, so what you see is where the game draws it. */
+    WorldApplyGamePlacement(state);
     state.marked_play = true;
     WorldMarkedRestart(state);
     state.paused = true;
@@ -2719,27 +2817,23 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
     std::vector<WorldMarkedLane> lanes;
     lanes.reserve(kWorldMarkedMaxTabs);
 
+    /* SEQSCR records deliberately do not appear here any more: they animate in
+       the Sequence/Script workspace ("Anim" canvas mode), which owns its own
+       lane, inspector, and entry table. World View is marked rows + ASM lanes. */
     bool dummy_decap_missing = false;
-    bool embedded_focus_only = state.embedded_active &&
-                               !state.embedded_show_companions;
-    if (!embedded_focus_only) {
-        WorldAppendMarkedDocumentLanes(state, active_doc_idx, lanes,
-                                       &dummy_decap_missing);
-    }
-    bool embedded_present = WorldAppendEmbeddedSeqScrLane(state, lanes);
+    WorldAppendMarkedDocumentLanes(state, active_doc_idx, lanes,
+                                   &dummy_decap_missing);
 
     bool asm_present = false;
-    if (!embedded_focus_only) {
-        for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
-            if (!input.enabled) continue;
-            if (WorldAppendAsmLane(state, input.name, input.frames, input.doc,
-                                   input.doc_idx, input.slot_id, lanes))
-                asm_present = true;
-        }
+    for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
+        if (!input.enabled) continue;
+        if (WorldAppendAsmLane(state, input.name, input.frames, input.doc,
+                               input.doc_idx, input.slot_id, lanes))
+            asm_present = true;
     }
 
     if (lanes.empty()) return result;
-    if (lanes.size() < 2 && !asm_present && !embedded_present) return result;
+    if (lanes.size() < 2 && !asm_present) return result;
     if (!WorldUpdateMarkedLanePlayback(state, lanes, delta_time))
         return result;
 
@@ -3590,69 +3684,13 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
                                                   int active_doc_idx)
 {
     WorldMarkedPanelAction action = {};
-    bool script_table_mode = state.embedded_active && state.embedded_is_script;
-    if (script_table_mode) {
-        state.paused = true;
-        state.timer = 0.0f;
-    }
 
-    if (state.embedded_active) {
-        const char *kind = state.embedded_is_script ? "Script" : "Sequence";
-        const char *name = state.embedded_name.empty()
-                         ? "(unnamed)" : state.embedded_name.c_str();
-        int slot = kWorldEmbeddedSeqScrSlot;
-        int n = (int)state.sequence_frames[slot].size();
-        int entry = WorldMarkedFrameForTick(state, slot, n, state.frame,
-                                            state.hold_end[slot]);
-        int total_ticks = WorldMarkedSequenceTicks(state, slot, n);
-        ImGui::Text("%s: %s   Entry %d/%d   Tick %d/%d",
-                    kind, name, n > 0 ? entry + 1 : 0, n,
-                    state.frame, total_ticks);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Exit Seq/Script##world_embedded_exit")) {
-            WorldExitEmbeddedSeqScr(state);
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Returned to normal mixed World View.");
-            g_restore_msg_timer = 4.0f;
-            return action;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Leave this loaded table and show the normal marked World View rows.");
-
-        /* A sequence entry can be a multi-sprite frame.  Capture the sprite
-           selected in the editor as another piece; its own anipoint anchors
-           it to the same world frame as the primary sprite. */
-        if (!state.embedded_is_script && active_doc_idx == state.embedded_doc_idx &&
-            selected_img && g_doc && g_doc->ilselected >= 0 && n > 0) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Add Selected to Frame##world_embedded_add_piece")) {
-                if (WorldMarkedAttachSpriteToFrame(state, slot, entry, g_doc,
-                                                    active_doc_idx,
-                                                    g_doc->ilselected)) {
-                    snprintf(g_restore_msg, sizeof(g_restore_msg),
-                             "Added selected sprite to sequence frame %d (each piece uses its own anipoint).",
-                             entry + 1);
-                } else {
-                    snprintf(g_restore_msg, sizeof(g_restore_msg),
-                             "Sprite is already in this frame, or belongs to another IMG tab.");
-                }
-                g_restore_msg_timer = 4.0f;
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Make the currently selected sprite a second piece of this frame. Its anipoint is preserved, and the composite exports with the frame.");
-        }
-    } else {
-        ImGui::Text("Frame Sequence");
-    }
+    ImGui::Text("Frame Sequence");
     ImGui::SameLine();
-    if (script_table_mode) ImGui::BeginDisabled();
     if (ImGui::SmallButton(state.paused ? "Play##world_marked_pause"
                                         : "Pause##world_marked_pause")) {
         state.paused = !state.paused;
     }
-    if (script_table_mode) ImGui::EndDisabled();
-    if (script_table_mode && ImGui::IsItemHovered())
-        ImGui::SetTooltip("Scripts load as paused tables. Select rows to inspect/edit them.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Refresh##world_marked_restart"))
         WorldMarkedRestart(state);
@@ -3661,6 +3699,13 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     ImGui::SameLine();
     ImGui::SetNextItemWidth(105.0f);
     ImGui::SliderFloat("FPS##world_marked_panel_fps", &state.fps, 1.0f, 60.0f, "%.1f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Ticks per second. MK2 runs at %.1f, so that is\n"
+                          "what a hold of N ticks looks like in game.", kMk2TickHz);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Game##world_marked_game_fps")) state.fps = kMk2TickHz;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Reset to the real MK2 tick rate (%.1f Hz).", kMk2TickHz);
     ImGui::SameLine();
     ImGui::TextDisabled("Tick");
     ImGui::SameLine();
@@ -3670,13 +3715,6 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
         WorldMarkedSetTick(state, goto_tick);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Jump straight to this exact tick (pauses playback).");
-    if (state.embedded_active) {
-        ImGui::SameLine();
-        ImGui::Checkbox("Companions##world_marked_companions",
-                        &state.embedded_show_companions);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Show marked rows, ASM lanes, dummy body, and other helper lanes alongside the loaded sequence/script.");
-    }
     ImGui::SameLine();
     ImGui::Checkbox("Borders##world_marked_borders", &state.draw_sprite_borders);
     if (ImGui::IsItemHovered())
@@ -3730,31 +3768,23 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
         ImGui::SetTooltip("Drag from a feature on one World View sprite to its matching feature on another. On release, the target sprite's anipoint is moved so the two points meet.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Copy ASM##world_marked_copy_asm")) {
-        state.generated_asm = state.embedded_active
-                            ? WorldBuildSeqScrAsmExport(state.embedded_record_index)
-                            : WorldBuildMarkedAsm(state, lanes);
+        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
         ImGui::SetClipboardText(state.generated_asm.c_str());
         action.copied_asm = true;
         action.copied_lane_count = (int)lanes.size();
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(state.embedded_active
-            ? "Copies ASM for the loaded sequence/script record."
-            : "Copies one animation table per marked tab, plus aligned local-anipoint tables.");
+        ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned local-anipoint tables.");
     ImGui::SameLine();
     if (ImGui::SmallButton("View ASM##world_marked_view_asm")) {
-        state.generated_asm = state.embedded_active
-                            ? WorldBuildSeqScrAsmExport(state.embedded_record_index)
-                            : WorldBuildMarkedAsm(state, lanes);
+        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
         state.show_asm = true;
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Preview the generated animation-table source.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Save ASM##world_marked_save_asm")) {
-        state.generated_asm = state.embedded_active
-                            ? WorldBuildSeqScrAsmExport(state.embedded_record_index)
-                            : WorldBuildMarkedAsm(state, lanes);
+        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
         action.request_save_asm = true;
     }
     if (ImGui::IsItemHovered())
@@ -4020,6 +4050,10 @@ static void WorldSyncEditorSelectionToSprite(Document *doc, int doc_idx,
     g_zoom_reset = true;
 }
 
+/* Defined with the frame browser below; picking a sequence entry hands the
+   corner box back to the playhead. */
+static void SeqScrClearBrowseSelection(void);
+
 static void WorldEmbeddedSequenceSelectEntry(WorldMarkedSequenceState &state,
                                              WorldMarkedLane &lane,
                                              int frame_idx)
@@ -4028,6 +4062,7 @@ static void WorldEmbeddedSequenceSelectEntry(WorldMarkedSequenceState &state,
     int n = (int)lane.frames.size();
     if (slot < 0 || slot >= kWorldMarkedMaxTabs || n <= 0)
         return;
+    SeqScrClearBrowseSelection();
     if (frame_idx < 0) frame_idx = 0;
     if (frame_idx >= n) frame_idx = n - 1;
     state.paused = true;
@@ -4198,267 +4233,189 @@ static void WorldMarkedClampAutoChainSettings(WorldMarkedSequenceState &state,
         ClampWorldMarkedVisibleFrom(state.subframe_swap_tick[slot]);
 }
 
-static void WorldDrawEmbeddedSequenceAutoTools(WorldMarkedSequenceState &state,
-                                               WorldMarkedLane &lane,
-                                               int edit_fi)
+/* ---- SEQSCR entry tables -------------------------------------------
+ * A SEQSCR ENTRY holds four editable values: the target index, the tick hold,
+ * and dX/dY. That is the whole vocabulary, so that is all these tables offer.
+ * World View's per-entry show/hide ticks, motion vectors, Z order, dual
+ * instances, flip bits, and its auto-chain / waterline generators are preview
+ * state with nowhere to live in the IMG; offering them here would invite
+ * edits that silently evaporate on save. The three spare words per entry stay
+ * with the raw-data editor, which is explicit about being raw.
+ *
+ * Edits go into the lane, and SeqScrSyncLaneToBlob() reconciles the lane into
+ * the record once per frame — so dragging a sprite in the viewport persists
+ * exactly like typing a dX does. */
+
+/* Entries the blob can represent: everything sourced from the record's own
+   IMG. Frames pulled in from a sibling IMG are skipped — a SEQSCR index cannot
+   name a sprite outside its own file.
+
+   Returned in STORAGE order, which for a sequence is the reverse of what the
+   table shows: Midway's sequence ENTRY arrays run back to front, which is why
+   WorldDecodeSeqScrRecord and the ASM exporter both walk them as
+   `num - 1 - i`. Script arrays run forward. Writing display order straight
+   back would silently flip every sequence in the file. */
+static std::vector<SeqScrEntryValues> SeqScrLaneOwnEntries(
+    const WorldMarkedSequenceState &state)
 {
-    int slot = lane.delay_slot;
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs)
-        return;
-    if (state.chain_gap[slot] <= 0)
-        state.chain_gap[slot] = WorldMarkedSpriteHeightForChain(lane, edit_fi);
-    WorldMarkedClampAutoChainSettings(state, slot);
-    int &auto_step = state.auto_step[slot];
-    int &auto_life = state.auto_life[slot];
-    int &auto_vx = state.auto_vx[slot];
-    int &auto_vy = state.auto_vy[slot];
-    int &auto_y = state.auto_y[slot];
-    int &chain_count = state.chain_count[slot];
-    int &chain_gap = state.chain_gap[slot];
-    int &chain_delay = state.chain_delay[slot];
-    int &chain_vy = state.chain_vy[slot];
-    bool &chain_pingpong = state.chain_pingpong[slot];
-    int &pingpong_delay = state.pingpong_delay[slot];
-
-    ImGui::TextDisabled("Auto Y");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Apply Show@, Hide@, and vX/vY from the selected entry onward.");
-    ImGui::SameLine();
-    ImGui::TextDisabled("Step");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(42.0f);
-    if (ImGui::InputInt("##world_embed_auto_step", &auto_step, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    ImGui::SameLine();
-    ImGui::TextDisabled("Life");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(46.0f);
-    if (ImGui::InputInt("##world_embed_auto_life", &auto_life, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    ImGui::SameLine();
-    ImGui::TextDisabled("vX");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(46.0f);
-    if (ImGui::InputInt("##world_embed_auto_vx", &auto_vx, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    ImGui::SameLine();
-    ImGui::TextDisabled("vY");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(46.0f);
-    if (ImGui::InputInt("##world_embed_auto_vy", &auto_vy, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    ImGui::SameLine();
-    ImGui::TextDisabled("Y");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(50.0f);
-    if (ImGui::InputInt("##world_embed_auto_y", &auto_y, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Apply From Entry##world_embed_auto_apply")) {
-        WorldMarkedApplyAutoYChain(state, lane, edit_fi,
-                                   auto_step, auto_life,
-                                   auto_vx, auto_vy, auto_y);
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    std::vector<SeqScrEntryValues> out;
+    const int slot = kWorldEmbeddedSeqScrSlot;
+    const std::vector<int> &frames = state.sequence_frames[slot];
+    const std::vector<int> &fdoc = state.frame_doc[slot];
+    for (int i = 0; i < (int)frames.size(); i++) {
+        int doc_idx = i < (int)fdoc.size() ? fdoc[(size_t)i] : -1;
+        if (doc_idx >= 0 && doc_idx != state.embedded_doc_idx) continue;
+        SeqScrEntryValues v;
+        v.index = frames[(size_t)i];
+        v.ticks = i < (int)state.frame_delays[slot].size()
+                ? state.frame_delays[slot][(size_t)i] : 1;
+        if (v.ticks < 0) v.ticks = 0;
+        if (v.ticks > 255) v.ticks = 255;
+        v.dx = i < (int)state.local_dx[slot].size()
+             ? state.local_dx[slot][(size_t)i] : 0;
+        v.dy = i < (int)state.local_dy[slot].size()
+             ? state.local_dy[slot][(size_t)i] : 0;
+        out.push_back(v);
     }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Clear v##world_embed_auto_clear")) {
-        WorldMarkedClearMotionFrom(state, lane.delay_slot, edit_fi);
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
-    }
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("Chain");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Stack the selected sprite into a falling chain. New copies spawn above and feed down; it holds once Count copies exist (or ping-pongs back if enabled).");
-    ImGui::SameLine();
-    ImGui::TextDisabled("Count");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(42.0f);
-    if (ImGui::InputInt("##world_embed_chain_count", &chain_count, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    ImGui::SameLine();
-    ImGui::TextDisabled("Gap");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(46.0f);
-    if (ImGui::InputInt("##world_embed_chain_gap", &chain_gap, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    ImGui::SameLine();
-    ImGui::TextDisabled("Delay");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(46.0f);
-    if (ImGui::InputInt("##world_embed_chain_delay", &chain_delay, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Ticks between linked copies. 0 uses Gap/vY.");
-    ImGui::SameLine();
-    ImGui::TextDisabled("vY");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(46.0f);
-    if (ImGui::InputInt("##world_embed_chain_vy", &chain_vy, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    ImGui::SameLine();
-    ImGui::Checkbox("Ping Pong##world_embed_chain_pingpong",
-                    &chain_pingpong);
-    ImGui::SameLine();
-    ImGui::TextDisabled("PongDelay");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(56.0f);
-    if (ImGui::InputInt("##world_embed_pingpong_delay", &pingpong_delay, 0, 0))
-        WorldMarkedClampAutoChainSettings(state, slot);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Extra ticks to hold the fully extended chain before the reverse pass starts.");
-    if (chain_pingpong) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("reverses @ tick %d",
-            WorldMarkedChainReverseStartTick(state, lane, edit_fi, chain_count,
-                                             chain_gap, chain_delay, chain_vy,
-                                             pingpong_delay));
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Build Chain##world_embed_chain_apply")) {
-        WorldMarkedApplyYLinkChain(state, lane, edit_fi,
-                                   chain_count, chain_gap, chain_delay,
-                                   chain_vy, chain_pingpong,
-                                   pingpong_delay);
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
-    }
-
-    if (WorldDrawSubframeSwapTool(state, lane, edit_fi, true))
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    if (!state.embedded_is_script)
+        std::reverse(out.begin(), out.end());
+    return out;
 }
 
-static void WorldDrawEmbeddedSequenceTable(WorldMarkedSequenceState &state,
-                                           WorldMarkedLane &lane)
+/* What the lane held right after it was loaded. The decoder normalises as it
+   reads (a 0-tick entry becomes a 1-tick hold, deltas get clamped), so
+   comparing the lane against the blob would rewrite untouched records and
+   dirty documents nobody edited. Comparing against this baseline instead means
+   only a real edit writes. */
+static std::vector<SeqScrEntryValues> s_seqscr_sync_baseline;
+static int s_seqscr_sync_record = -1;
+static int s_seqscr_sync_doc = -1;
+
+static bool SeqScrEntriesEqual(const std::vector<SeqScrEntryValues> &a,
+                               const std::vector<SeqScrEntryValues> &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        if (a[i].index != b[i].index || a[i].ticks != b[i].ticks ||
+            a[i].dx != b[i].dx || a[i].dy != b[i].dy)
+            return false;
+    }
+    return true;
+}
+
+/* Write the lane back into the record, if and only if it differs from what was
+   loaded. */
+static void SeqScrSyncLaneToBlob(WorldMarkedSequenceState &state)
+{
+    if (!state.embedded_active || state.embedded_record_index < 0) return;
+    if (!document_get(state.embedded_doc_idx)) return;
+    /* A viewport drag moves dX/dY every frame. Writing mid-drag would push one
+       undo step per frame; wait for the release and record the whole drag as
+       a single edit. */
+    if (state.drag_slot >= 0) return;
+
+    std::vector<SeqScrEntryValues> now = SeqScrLaneOwnEntries(state);
+    if (s_seqscr_sync_record != state.embedded_record_index ||
+        s_seqscr_sync_doc != state.embedded_doc_idx) {
+        /* First sight of this record: adopt it as the baseline, write nothing. */
+        s_seqscr_sync_record = state.embedded_record_index;
+        s_seqscr_sync_doc = state.embedded_doc_idx;
+        s_seqscr_sync_baseline = now;
+        return;
+    }
+    if (SeqScrEntriesEqual(now, s_seqscr_sync_baseline)) return;
+
+    /* The blob helpers work through g_doc, so the record's own document has to
+       be active while it is rewritten. */
+    int restore = document_active_index();
+    bool switched = state.embedded_doc_idx != restore;
+    if (switched) document_set_active(state.embedded_doc_idx);
+    bool ok = SeqScrReplaceEntries(state.embedded_record_index, now);
+    if (switched) document_set_active(restore);
+    if (ok) s_seqscr_sync_baseline = now;
+}
+
+/* Sequence entries: one IMG sprite per row. */
+static void SeqScrDrawEntryTable(WorldMarkedSequenceState &state,
+                                 WorldMarkedLane &lane, float table_h)
 {
     int slot = lane.delay_slot;
-    int n = (int)lane.frames.size();
-    if (slot < 0 || slot >= kWorldMarkedMaxTabs || n <= 0)
-        return;
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
 
-    EnsureWorldMarkedFrameDelays(state, slot, n);
+    EnsureWorldMarkedFrameDelays(state, slot, (int)lane.frames.size());
     WorldEmbeddedSequenceRefreshMetadata(state, lane);
-    n = (int)lane.frames.size();
+    int n = (int)lane.frames.size();
+    if (n <= 0) {
+        ImGui::TextDisabled("This sequence has no entries yet. Mark frames in the Animation panel and use \"Add Marked to Sequence\".");
+        return;
+    }
     int edit_fi = lane.frame_pos;
     if (edit_fi < 0) edit_fi = 0;
     if (edit_fi >= n) edit_fi = n - 1;
 
-    ImGui::Separator();
-    ImGui::Text("Sequence Table  %s  entries=%d",
-                state.embedded_name.empty() ? "(unnamed)" : state.embedded_name.c_str(),
-                n);
+    ImGui::Text("Sequence  %s  entries=%d",
+                state.embedded_name.empty() ? "(unnamed)"
+                                            : state.embedded_name.c_str(), n);
     ImGui::SameLine();
     ImGui::TextDisabled("Entry %d/%d", edit_fi + 1, n);
     ImGui::SameLine();
-    int stop_tick = state.stop_tick[slot];
-    ImGui::TextDisabled("Stop@");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(56.0f);
-    if (ImGui::InputInt("##world_embed_stop_tick", &stop_tick, 0, 0))
-        state.stop_tick[slot] = ClampWorldMarkedVisibleFrom(stop_tick);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Freeze this sequence lane at the given global preview tick. 0 disables the tick stop.");
-    ImGui::SameLine();
-    ImGui::TextDisabled("Order");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(edit_fi <= 0);
-    if (ImGui::SmallButton("<##world_embed_seq_left")) {
-        WorldMarkedMoveSequenceEntry(state, slot, edit_fi, -1);
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
-        edit_fi = lane.frame_pos;
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(edit_fi >= n - 1);
-    if (ImGui::SmallButton(">##world_embed_seq_right")) {
-        WorldMarkedMoveSequenceEntry(state, slot, edit_fi, +1);
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
-        edit_fi = lane.frame_pos;
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::SmallButton("+##world_embed_seq_dup")) {
-        WorldMarkedDuplicateSequenceEntry(state, slot, edit_fi);
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
-        edit_fi = lane.frame_pos;
-        n = (int)lane.frames.size();
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(n <= 1);
-    if (ImGui::SmallButton("-##world_embed_seq_del")) {
-        WorldMarkedDeleteSequenceEntry(state, slot, edit_fi);
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
-        edit_fi = lane.frame_pos;
-        n = (int)lane.frames.size();
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Reset Seq##world_embed_seq_reset")) {
-        WorldMarkedResetSequenceToDefaults(state, slot);
-        WorldEmbeddedSequenceRefreshMetadata(state, lane);
-        edit_fi = lane.frame_pos;
-        n = (int)lane.frames.size();
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Restore the loaded embedded sequence order and clear local preview edits.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Reverse##world_embed_seq_reverse")) {
-        if (WorldMarkedReverseSlot(state, lane)) {
-            WorldEmbeddedSequenceRefreshMetadata(state, lane);
-            edit_fi = lane.frame_pos;
-            n = (int)lane.frames.size();
-        }
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Play this row backward: plain entries reverse order, "
-                          "while chain/composite/waterline entries mirror their "
-                          "show/hide ticks and motion so they retrace in reverse.");
+    ImGui::TextDisabled("| index, ticks, dX and dY are the record's own fields and save with the IMG.");
 
-    WorldDrawEmbeddedSequenceAutoTools(state, lane, edit_fi);
+    ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_ScrollY |
+                            ImGuiTableFlags_SizingFixedFit;
+    int pending_move_fi = -1, pending_move_dir = 0;
+    int pending_delete_fi = -1, pending_dup_fi = -1;
 
-    ImGuiTableFlags flags =
-        ImGuiTableFlags_Borders |
-        ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_Resizable |
-        ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_ScrollX |
-        ImGuiTableFlags_SizingFixedFit;
-    float table_h = ImGui::GetContentRegionAvail().y - 48.0f;
-    if (table_h < 128.0f) table_h = 128.0f;
-    if (ImGui::BeginTable("##world_embedded_sequence_table", 15, flags,
+    if (ImGui::BeginTable("##seqscr_entry_table", 7, flags,
                           ImVec2(0.0f, table_h))) {
-        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 36.0f);
-        ImGui::TableSetupColumn("Sprite", ImGuiTableColumnFlags_WidthFixed, 190.0f);
-        ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed, 64.0f);
-        ImGui::TableSetupColumn("Ticks", ImGuiTableColumnFlags_WidthFixed, 58.0f);
-        ImGui::TableSetupColumn("dX", ImGuiTableColumnFlags_WidthFixed, 58.0f);
-        ImGui::TableSetupColumn("dY", ImGuiTableColumnFlags_WidthFixed, 58.0f);
-        ImGui::TableSetupColumn("FlipX", ImGuiTableColumnFlags_WidthFixed, 48.0f);
-        ImGui::TableSetupColumn("FlipY", ImGuiTableColumnFlags_WidthFixed, 48.0f);
-        ImGui::TableSetupColumn("Show", ImGuiTableColumnFlags_WidthFixed, 62.0f);
-        ImGui::TableSetupColumn("Hide", ImGuiTableColumnFlags_WidthFixed, 62.0f);
-        ImGui::TableSetupColumn("vX", ImGuiTableColumnFlags_WidthFixed, 52.0f);
-        ImGui::TableSetupColumn("vY", ImGuiTableColumnFlags_WidthFixed, 52.0f);
-        ImGui::TableSetupColumn("StopY", ImGuiTableColumnFlags_WidthFixed, 62.0f);
-        ImGui::TableSetupColumn("Z", ImGuiTableColumnFlags_WidthFixed, 44.0f);
-        ImGui::TableSetupColumn("Dual", ImGuiTableColumnFlags_WidthFixed, 52.0f);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 34.0f);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 96.0f);
+        ImGui::TableSetupColumn("Sprite", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed, 68.0f);
+        ImGui::TableSetupColumn("Ticks", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("dX", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("dY", ImGuiTableColumnFlags_WidthFixed, 62.0f);
         ImGui::TableHeadersRow();
 
         for (int fi = 0; fi < n; fi++) {
             bool current = fi == lane.frame_pos;
+            int entry_doc = fi < (int)state.frame_doc[slot].size()
+                          ? state.frame_doc[slot][(size_t)fi] : -1;
+            bool foreign = entry_doc >= 0 && entry_doc != state.embedded_doc_idx;
+
             ImGui::PushID(fi);
             ImGui::TableNextRow();
-            if (current) {
+            if (current)
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
                                        IM_COL32(38, 86, 135, 180));
-            }
 
             ImGui::TableNextColumn();
             char row_label[16];
             snprintf(row_label, sizeof(row_label), "%d", fi);
-            if (ImGui::Selectable(row_label, current,
-                                  ImGuiSelectableFlags_SpanAllColumns)) {
+            /* Deliberately not SpanAllColumns: a spanning Selectable sits over
+               the row-op buttons and value fields to its right and eats their
+               clicks. The row number alone selects the entry. */
+            if (ImGui::Selectable(row_label, current))
                 WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
+
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(fi <= 0);
+            if (ImGui::SmallButton("^")) { pending_move_fi = fi; pending_move_dir = -1; }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(fi + 1 >= n);
+            if (ImGui::SmallButton("v")) { pending_move_fi = fi; pending_move_dir = 1; }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("+")) pending_dup_fi = fi;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate this entry.");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(n <= 1);
+            if (ImGui::SmallButton("x")) pending_delete_fi = fi;
+            ImGui::EndDisabled();
 
             ImGui::TableNextColumn();
             const char *sprite_name =
@@ -4466,129 +4423,203 @@ static void WorldDrawEmbeddedSequenceTable(WorldMarkedSequenceState &state,
                  !state.embedded_frame_labels[(size_t)fi].empty())
                     ? state.embedded_frame_labels[(size_t)fi].c_str()
                     : "(missing)";
-            ImGui::TextUnformatted(sprite_name);
+            if (foreign) {
+                Document *fdoc = document_get(entry_doc);
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", sprite_name);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("From %s. Preview and ASM export only:\na SEQSCR entry cannot name a sprite outside its own file.",
+                                      (fdoc && fdoc->fname_s[0]) ? fdoc->fname_s
+                                                                 : "another IMG");
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%s)",
+                    (fdoc && fdoc->fname_s[0]) ? fdoc->fname_s : "other IMG");
+            } else {
+                ImGui::TextUnformatted(sprite_name);
+            }
 
             ImGui::TableNextColumn();
             int target = state.sequence_frames[slot][(size_t)fi];
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputInt("##seq_img_index", &target, 0, 0)) {
-                target = ClampWorldMarkedAniptDelta(target);
+            if (ImGui::InputInt("##seq_index", &target, 0, 0)) {
+                Document *edoc = WorldMarkedResolveEntryDoc(lane.doc, entry_doc);
+                int limit = edoc ? (int)edoc->imgcnt : 0;
+                if (target < 0) target = 0;
+                if (limit > 0 && target >= limit) target = limit - 1;
                 state.sequence_frames[slot][(size_t)fi] = target;
-                state.paused = true;
-                state.timer = 0.0f;
-                state.frame = WorldMarkedTickForFrame(state, slot, n, fi);
-                WorldEmbeddedSequenceRefreshMetadata(state, lane);
-                WorldSyncEditorSelectionToSprite(lane.doc, lane.doc_idx, target);
+                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
             }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Sprite index inside %s.",
+                                  foreign ? "the source IMG" : "this IMG");
 
             ImGui::TableNextColumn();
-            int ticks = state.frame_delays[slot][fi];
+            int ticks = state.frame_delays[slot][(size_t)fi];
             ImGui::SetNextItemWidth(-1);
             if (ImGui::InputInt("##seq_ticks", &ticks, 0, 0)) {
-                state.frame_delays[slot][fi] = ClampTimelineHold(ticks);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+                /* ENTRY.ticks is one byte. */
+                if (ticks < 0) ticks = 0;
+                if (ticks > 255) ticks = 255;
+                state.frame_delays[slot][(size_t)fi] = ticks;
+                state.paused = true;
             }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Frame hold, 0-255 (one byte in the ENTRY record).");
 
             ImGui::TableNextColumn();
-            int dx = state.local_dx[slot][fi];
+            int dx = state.local_dx[slot][(size_t)fi];
             ImGui::SetNextItemWidth(-1);
             if (ImGui::InputInt("##seq_dx", &dx, 0, 0)) {
-                state.local_dx[slot][fi] = ClampWorldMarkedAniptDelta(dx);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+                state.local_dx[slot][(size_t)fi] = ClampWorldMarkedAniptDelta(dx);
+                state.paused = true;
             }
 
             ImGui::TableNextColumn();
-            int dy = state.local_dy[slot][fi];
+            int dy = state.local_dy[slot][(size_t)fi];
             ImGui::SetNextItemWidth(-1);
             if (ImGui::InputInt("##seq_dy", &dy, 0, 0)) {
-                state.local_dy[slot][fi] = ClampWorldMarkedAniptDelta(dy);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            int mirror_bits = state.frame_mirror[slot][fi];
-            bool flip_x = (mirror_bits & kWorldFrameMirrorX) != 0;
-            if (ImGui::Checkbox("##seq_flip_x", &flip_x)) {
-                if (flip_x) mirror_bits |= kWorldFrameMirrorX;
-                else mirror_bits &= ~kWorldFrameMirrorX;
-                state.frame_mirror[slot][fi] =
-                    ClampWorldMarkedFrameMirror(mirror_bits);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            bool flip_y = (mirror_bits & kWorldFrameMirrorY) != 0;
-            if (ImGui::Checkbox("##seq_flip_y", &flip_y)) {
-                if (flip_y) mirror_bits |= kWorldFrameMirrorY;
-                else mirror_bits &= ~kWorldFrameMirrorY;
-                state.frame_mirror[slot][fi] =
-                    ClampWorldMarkedFrameMirror(mirror_bits);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            int show_at = state.visible_from[slot][fi];
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputInt("##seq_show", &show_at, 0, 0)) {
-                state.visible_from[slot][fi] =
-                    ClampWorldMarkedVisibleFrom(show_at);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            int hide_at = state.visible_until[slot][fi];
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputInt("##seq_hide", &hide_at, 0, 0)) {
-                state.visible_until[slot][fi] =
-                    ClampWorldMarkedVisibleUntil(hide_at);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            int vx = state.motion_dx[slot][fi];
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputInt("##seq_vx", &vx, 0, 0)) {
-                state.motion_dx[slot][fi] = ClampWorldMarkedMotion(vx);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            int vy = state.motion_dy[slot][fi];
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputInt("##seq_vy", &vy, 0, 0)) {
-                state.motion_dy[slot][fi] = ClampWorldMarkedMotion(vy);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            int stop_y = state.motion_cap_y[slot][fi];
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputInt("##seq_stop_y", &stop_y, 0, 0)) {
-                state.motion_cap_y[slot][fi] =
-                    ClampWorldMarkedMotionCap(stop_y);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            int z = state.frame_z[slot][fi];
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputInt("##seq_z", &z, 0, 0)) {
-                state.frame_z[slot][fi] = ClampWorldMarkedZ(z);
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
-            }
-
-            ImGui::TableNextColumn();
-            bool dual = state.dual_on[slot][fi] != 0;
-            if (ImGui::Checkbox("##seq_dual", &dual)) {
-                state.dual_on[slot][fi] = dual ? 1 : 0;
-                WorldEmbeddedSequenceSelectEntry(state, lane, fi);
+                state.local_dy[slot][(size_t)fi] = ClampWorldMarkedAniptDelta(dy);
+                state.paused = true;
             }
             ImGui::PopID();
         }
-
         ImGui::EndTable();
     }
+
+    if (pending_move_fi >= 0) {
+        WorldMarkedMoveSequenceEntry(state, slot, pending_move_fi, pending_move_dir);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    } else if (pending_dup_fi >= 0) {
+        WorldMarkedDuplicateSequenceEntry(state, slot, pending_dup_fi);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    } else if (pending_delete_fi >= 0) {
+        WorldMarkedDeleteSequenceEntry(state, slot, pending_delete_fi);
+        WorldEmbeddedSequenceRefreshMetadata(state, lane);
+    }
 }
+
+/* Script entries: one sequence call per row. Same four editable fields. */
+static void SeqScrDrawScriptTable(WorldMarkedSequenceState &state,
+                                  WorldMarkedLane &lane, float table_h)
+{
+    int slot = lane.delay_slot;
+    int n = (int)lane.frames.size();
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    if (n <= 0) {
+        ImGui::TextDisabled("This script has no entries yet. Use the raw-data editor to add sequence calls.");
+        return;
+    }
+
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+    ImGui::Text("Script  %s  entries=%d",
+                state.embedded_name.empty() ? "(unnamed)"
+                                            : state.embedded_name.c_str(), n);
+    ImGui::SameLine();
+    ImGui::TextDisabled("| each entry calls a sequence; the viewport shows that sequence's first drawable frame.");
+
+    ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_ScrollY |
+                            ImGuiTableFlags_SizingFixedFit;
+    int load_target = -1;
+    int pending_move_fi = -1, pending_move_dir = 0, pending_delete_fi = -1;
+
+    if (ImGui::BeginTable("##seqscr_script_table", 7, flags,
+                          ImVec2(0.0f, table_h))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 34.0f);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 74.0f);
+        ImGui::TableSetupColumn("Target", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Ticks", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("dX", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("dY", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 78.0f);
+        ImGui::TableHeadersRow();
+
+        for (int fi = 0; fi < n; fi++) {
+            bool current = fi == lane.frame_pos;
+            ImGui::PushID(fi);
+            ImGui::TableNextRow();
+            if (current)
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                                       IM_COL32(38, 86, 135, 180));
+
+            ImGui::TableNextColumn();
+            char row_label[16];
+            snprintf(row_label, sizeof(row_label), "%d", fi);
+            if (ImGui::Selectable(row_label, current)) {
+                state.paused = true;
+                state.timer = 0.0f;
+                state.frame = WorldMarkedTickForFrame(state, slot, n, fi);
+                lane.frame_pos = fi;
+            }
+
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(fi <= 0);
+            if (ImGui::SmallButton("^")) { pending_move_fi = fi; pending_move_dir = -1; }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(fi + 1 >= n);
+            if (ImGui::SmallButton("v")) { pending_move_fi = fi; pending_move_dir = 1; }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(n <= 1);
+            if (ImGui::SmallButton("x")) pending_delete_fi = fi;
+            ImGui::EndDisabled();
+
+            ImGui::TableNextColumn();
+            int target = (fi < (int)state.embedded_targets.size())
+                       ? state.embedded_targets[(size_t)fi] : -1;
+            const char *target_name =
+                (fi < (int)state.embedded_frame_labels.size() &&
+                 !state.embedded_frame_labels[(size_t)fi].empty())
+                    ? state.embedded_frame_labels[(size_t)fi].c_str()
+                    : "sequence";
+            ImGui::Text("%d  %s", target, target_name);
+
+            ImGui::TableNextColumn();
+            int ticks = state.frame_delays[slot][(size_t)fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##script_ticks", &ticks, 0, 0)) {
+                if (ticks < 0) ticks = 0;
+                if (ticks > 255) ticks = 255;
+                state.frame_delays[slot][(size_t)fi] = ticks;
+                state.paused = true;
+            }
+
+            ImGui::TableNextColumn();
+            int dx = state.local_dx[slot][(size_t)fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##script_dx", &dx, 0, 0)) {
+                state.local_dx[slot][(size_t)fi] = ClampWorldMarkedAniptDelta(dx);
+                state.paused = true;
+            }
+
+            ImGui::TableNextColumn();
+            int dy = state.local_dy[slot][(size_t)fi];
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputInt("##script_dy", &dy, 0, 0)) {
+                state.local_dy[slot][(size_t)fi] = ClampWorldMarkedAniptDelta(dy);
+                state.paused = true;
+            }
+
+            ImGui::TableNextColumn();
+            bool can_load = target >= 0 && g_doc && target < (int)g_doc->seqcnt;
+            ImGui::BeginDisabled(!can_load);
+            if (ImGui::SmallButton("Load Seq")) load_target = target;
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+
+    if (pending_move_fi >= 0)
+        WorldMarkedMoveSequenceEntry(state, slot, pending_move_fi, pending_move_dir);
+    else if (pending_delete_fi >= 0)
+        WorldMarkedDeleteSequenceEntry(state, slot, pending_delete_fi);
+    else if (load_target >= 0)
+        WorldLoadSeqScrRecord(load_target);
+}
+
 
 WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
                                             std::vector<WorldMarkedLane> &lanes,
@@ -4613,28 +4644,13 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
         for (int slot = 0; slot < (int)lanes.size(); slot++) {
             WorldMarkedLane &lane = lanes[slot];
             ImGui::PushID(slot);
-            if (state.embedded_active && state.embedded_is_script &&
-                lane.delay_slot == kWorldEmbeddedSeqScrSlot) {
-                WorldDrawEmbeddedScriptTable(state, lane);
-            } else if (state.embedded_active && !state.embedded_is_script &&
-                       lane.delay_slot == kWorldEmbeddedSeqScrSlot) {
-                WorldDrawEmbeddedSequenceTable(state, lane);
+            WorldDrawMarkedLaneControls(state, lane, lanes, slot);
 
-                WorldMarkedLaneThumbClick thumb_click =
-                    WorldDrawMarkedLaneThumbnails(state, lane);
-                if (thumb_click.clicked) {
-                    state.active_slot = lane.delay_slot;
-                    result.thumb_click = thumb_click;
-                }
-            } else {
-                WorldDrawMarkedLaneControls(state, lane, lanes, slot);
-
-                WorldMarkedLaneThumbClick thumb_click =
-                    WorldDrawMarkedLaneThumbnails(state, lane);
-                if (thumb_click.clicked) {
-                    state.active_slot = lane.delay_slot;
-                    result.thumb_click = thumb_click;
-                }
+            WorldMarkedLaneThumbClick thumb_click =
+                WorldDrawMarkedLaneThumbnails(state, lane);
+            if (thumb_click.clicked) {
+                state.active_slot = lane.delay_slot;
+                result.thumb_click = thumb_click;
             }
             ImGui::PopID();
         }
@@ -8347,6 +8363,99 @@ bool DrawAnipointLinkCanvas(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     return true;
 }
 
+/* Clear the marquee's region to transparent across every marked sprite.
+   Sprites differ in size, so the rect is applied in each one's own pixel
+   space and clipped to it — a region that falls entirely outside a smaller
+   frame simply leaves that frame alone. Mask selections (lasso/wand) apply
+   their mask, not the bounding box. One undo step covers the whole batch. */
+static int ClearSelectionRegionInMarkedFrames(void)
+{
+    int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
+    int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
+    if (x1 > x2) std::swap(x1, x2);
+    if (y1 > y2) std::swap(y1, y2);
+
+    int touched = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (!(img->flags & 1) || !img->data_p || img->w <= 0 || img->h <= 0)
+            continue;
+        unsigned short stride = (unsigned short)((img->w + 3) & ~3);
+        unsigned char *data = (unsigned char *)img->data_p;
+        bool changed = false;
+        for (int y = y1; y <= y2; y++) {
+            if (y < 0 || y >= (int)img->h) continue;
+            for (int x = x1; x <= x2; x++) {
+                if (x < 0 || x >= (int)img->w) continue;
+                if (g_grid_sel.is_mask) {
+                    int mx = x - x1, my = y - y1;
+                    if (mx < 0 || my < 0 || mx >= g_grid_sel.mask_w) continue;
+                    size_t mi = (size_t)my * (size_t)g_grid_sel.mask_w + (size_t)mx;
+                    if (mi >= g_grid_sel.pixel_mask.size() || !g_grid_sel.pixel_mask[mi])
+                        continue;
+                }
+                if (data[y * stride + x] != 0) {
+                    data[y * stride + x] = 0;
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            InvalidateThumb(idx);
+            touched++;
+        }
+    }
+    return touched;
+}
+
+/* Right-click inside an active marquee: batch operations that apply the same
+   region to every marked frame. Anchored to the marquee rect so the menu only
+   appears when the cursor is actually inside it. */
+static void DrawSelectionBatchContextMenu(ImVec2 img_pos, float sx, float sy)
+{
+    int x1 = g_grid_sel.x1, y1 = g_grid_sel.y1;
+    int x2 = g_grid_sel.x2, y2 = g_grid_sel.y2;
+    if (x1 > x2) std::swap(x1, x2);
+    if (y1 > y2) std::swap(y1, y2);
+    ImVec2 rmin(img_pos.x + x1 * sx, img_pos.y + y1 * sy);
+    ImVec2 rmax(img_pos.x + (x2 + 1) * sx, img_pos.y + (y2 + 1) * sy);
+
+    if (!ImGui::IsPopupOpen("##sel_batch_ctx")) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+            ImGui::IsWindowHovered() &&
+            ImGui::IsMouseHoveringRect(rmin, rmax))
+            ImGui::OpenPopup("##sel_batch_ctx");
+    }
+    if (!ImGui::BeginPopup("##sel_batch_ctx")) return;
+
+    int marked = CountMarkedImages();
+    ImGui::TextDisabled("Selection %dx%d at %d,%d",
+                        x2 - x1 + 1, y2 - y1 + 1, x1, y1);
+    ImGui::Separator();
+    ImGui::BeginDisabled(marked <= 0);
+    char label[96];
+    snprintf(label, sizeof(label), "Clear Region in All Marked Frames (%d)", marked);
+    if (ImGui::MenuItem(label)) {
+        doc_undo_push();
+        int touched = ClearSelectionRegionInMarkedFrames();
+        g_img_tex_idx = -2;
+        mark_dirty();
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Cleared the selected region in %d of %d marked frame%s.",
+                 touched, marked, marked == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    }
+    ImGui::EndDisabled();
+    if (marked <= 0) {
+        ImGui::TextDisabled("Mark some sprites first (M / double-click a row).");
+    } else if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Set every pixel in this region to transparent index 0\n"
+                          "across all %d marked sprites. The rect is applied in each\n"
+                          "sprite's own pixel space and clipped to its bounds.", marked);
+    }
+    ImGui::EndPopup();
+}
+
 void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canvas_h)
 {
     ImGui::SetNextWindowPos(ImVec2(canvas_x, canvas_y));
@@ -8362,18 +8471,29 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
         ImGuiIO &io = ImGui::GetIO();
         /* Main-view modes deliberately live above the canvas rather than in
            the sidebar: Image is the normal pixel editor, World is the
-           animation staging view, and Link is the focused two-sprite anchor
-           matcher. */
-        int requested_canvas_mode = AnipointLink().enabled ? 2
-                                  : g_world_state.enabled ? 1 : 0;
+           animation staging view, Anim is the SEQSCR sequence/script
+           workspace, and Link is the focused two-sprite anchor matcher. */
+        auto current_canvas_mode = []() {
+            return AnipointLink().enabled ? 3
+                 : g_seqscr_workspace ? 2
+                 : g_world_state.enabled ? 1 : 0;
+        };
+        int requested_canvas_mode = current_canvas_mode();
         static int last_canvas_mode = -1;
         bool sync_canvas_tab = requested_canvas_mode != last_canvas_mode;
+        /* View-mode tabs are tinted away from the document tabs above them:
+           two tab bars stacked in the same corner otherwise read as one strip,
+           and picking a view looks like picking a file. */
+        ImGui::PushStyleColor(ImGuiCol_Tab,         ImVec4(0.16f, 0.13f, 0.20f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_TabHovered,  ImVec4(0.42f, 0.30f, 0.58f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_TabSelected, ImVec4(0.34f, 0.24f, 0.48f, 1.00f));
         if (ImGui::BeginTabBar("##canvas_mode_tabs",
                                ImGuiTabBarFlags_FittingPolicyResizeDown)) {
             if (ImGui::BeginTabItem("Image", NULL,
                                     sync_canvas_tab && requested_canvas_mode == 0
                                         ? ImGuiTabItemFlags_SetSelected : 0)) {
                 g_world_state.enabled = false;
+                g_seqscr_workspace = false;
                 AnipointLink().enabled = false;
                 ImGui::EndTabItem();
             }
@@ -8381,22 +8501,49 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                     sync_canvas_tab && requested_canvas_mode == 1
                                         ? ImGuiTabItemFlags_SetSelected : 0)) {
                 g_world_state.enabled = true;
+                g_seqscr_workspace = false;
                 AnipointLink().enabled = false;
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Link", NULL,
+            if (ImGui::BeginTabItem("Anim", NULL,
                                     sync_canvas_tab && requested_canvas_mode == 2
+                                        ? ImGuiTabItemFlags_SetSelected : 0)) {
+                g_seqscr_workspace = true;
+                g_world_state.enabled = false;
+                AnipointLink().enabled = false;
+                ImGui::EndTabItem();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Build and preview this IMG's embedded sequences and scripts.");
+            if (ImGui::BeginTabItem("Link", NULL,
+                                    sync_canvas_tab && requested_canvas_mode == 3
                                         ? ImGuiTabItemFlags_SetSelected : 0)) {
                 if (ImGui::IsItemActivated())
                     g_request_animation_sidebar = true;
                 AnipointLink().enabled = true;
                 g_world_state.enabled = false;
+                g_seqscr_workspace = false;
                 ImGui::EndTabItem();
+            }
+            /* Backdrop lives here rather than in a menu: it is a per-look
+               decision you make while staring at the sprite, and it only
+               applies to the Image canvas. */
+            if (requested_canvas_mode == 0) {
+                char bg_label[32];
+                snprintf(bg_label, sizeof(bg_label), "BG: %s",
+                         CanvasBackdropName(g_canvas_backdrop));
+                if (ImGui::TabItemButton(bg_label, ImGuiTabItemFlags_Trailing |
+                                                   ImGuiTabItemFlags_NoTooltip))
+                    g_canvas_backdrop = (g_canvas_backdrop + 1) % CanvasBackdrop_Count;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Backdrop behind transparent pixels.\n"
+                                      "Click to cycle: Checker, Pink, Green, Blue.\n"
+                                      "A flat key makes stray fringe pixels obvious.");
             }
             ImGui::EndTabBar();
         }
-        last_canvas_mode = AnipointLink().enabled ? 2
-                         : g_world_state.enabled ? 1 : 0;
+        ImGui::PopStyleColor(3);
+        last_canvas_mode = current_canvas_mode();
         ImVec2 avail   = ImGui::GetContentRegionAvail();
         ImVec2 img_pos = ImGui::GetCursorScreenPos();
         ImVec2 canvas_origin = img_pos;
@@ -8418,6 +8565,9 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
          * grid-selection) is skipped. */
         if (AnipointLink().enabled) {
             DrawAnipointLinkCanvas(avail, img_pos, io);
+        }
+        else if (g_seqscr_workspace) {
+            DrawSeqScrWorkspace(avail, img_pos, io);
         }
         else if (g_world_state.enabled) {
             bool drew_dual_marked = DrawWorldMarkedTabs(avail, img_pos, io);
@@ -8511,7 +8661,13 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                     rotate_button_min, rotate_button_max);
 
             ImDrawList *dl = ImGui::GetWindowDrawList();
-            DrawCanvasCheckerboard(dl, img_pos, img_sz, scale);
+            if (g_canvas_backdrop == CanvasBackdrop_Checker) {
+                DrawCanvasCheckerboard(dl, img_pos, img_sz, scale);
+            } else {
+                dl->AddRectFilled(img_pos,
+                                  ImVec2(img_pos.x + img_sz.x, img_pos.y + img_sz.y),
+                                  CanvasBackdropColor(g_canvas_backdrop));
+            }
             /* Timeline onion-skin: draw prev/next frames of the current
                timeline order behind the live sprite, anipoint-aligned and
                faint, so the user can scrub or play and see motion arcs. */
@@ -8760,7 +8916,9 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                         g_active_tool = ActiveTool::Marquee;
                     }
                     if (!blank_marquee_click && !g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
-                        && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::PaintBucket || g_active_tool == ActiveTool::VariantPaint || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap)) {
+                        && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::PaintBucket || g_active_tool == ActiveTool::VariantPaint || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap
+                            || g_active_tool == ActiveTool::Blur || g_active_tool == ActiveTool::Smudge
+                            || g_active_tool == ActiveTool::ContentErase)) {
                         /* Stroke begin: capture a pre-stroke snapshot of the
                            image's pixel buffer on the first frame of left-mouse
                            down for any paint tool. Skipped for Clone Stamp's
@@ -8773,7 +8931,44 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                             else if (g_active_tool != ActiveTool::VariantPaint)
                                 pixel_hist_push_stroke();
                         }
-                        if (g_active_tool == ActiveTool::CloneStamp) {
+                        if (g_active_tool == ActiveTool::Blur ||
+                            g_active_tool == ActiveTool::Smudge ||
+                            g_active_tool == ActiveTool::ContentErase) {
+                            if (stroke_begin) {
+                                g_smudge_have_last = false;
+                                g_smudge_last_x = px;
+                                g_smudge_last_y = py;
+                            }
+                            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                                PAL *tp = get_pal(g_doc->plselected);
+                                int n = 0;
+                                if (g_active_tool == ActiveTool::Blur) {
+                                    n = PaintBlurStamp(cimg, tp, px, py,
+                                                       g_blur_brush, g_blur_strength);
+                                } else if (g_active_tool == ActiveTool::Smudge) {
+                                    /* Needs a direction, so the first sample of a
+                                       stroke only records where the brush started. */
+                                    if (g_smudge_have_last)
+                                        n = PaintSmudgeStamp(cimg, tp,
+                                                             g_smudge_last_x, g_smudge_last_y,
+                                                             px, py, g_smudge_brush,
+                                                             g_smudge_strength);
+                                } else {
+                                    n = PaintContentAwareErase(cimg, tp, px, py,
+                                                               g_content_erase_brush,
+                                                               g_content_erase_passes);
+                                }
+                                g_smudge_last_x = px;
+                                g_smudge_last_y = py;
+                                g_smudge_have_last = true;
+                                if (n > 0) {
+                                    mark_dirty();
+                                    g_img_tex_idx = -2;
+                                }
+                                widget_consumed_click = true;
+                            }
+                        }
+                        else if (g_active_tool == ActiveTool::CloneStamp) {
                             if (io.KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                                 g_clone_src_x = px;
                                 g_clone_src_y = py;
@@ -9362,6 +9557,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                            g_grid_sel.is_mask,
                                            g_grid_sel.mask_w,
                                            &g_grid_sel.pixel_mask);
+                DrawSelectionBatchContextMenu(img_pos, sx, sy);
             }
 
             /* Defensive: transform mode can't exist without a floating paste.
@@ -15265,6 +15461,1188 @@ bool DrawWorldMarkedTabs(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
     return true;
 }
 
+/* ---- Sequence / Script workspace ("Anim" canvas mode) ----------------
+ * SEQSCR building used to ride along inside World View as an extra lane,
+ * which meant its table competed with the marked rows for the same panel and
+ * its record could only be seen mixed into that scene. It now owns a mode:
+ *
+ *   +-------------------------------------------------+
+ *   | toolbar (record, transport, exports)            |
+ *   |                                   +-----------+ |
+ *   |   world-sized animation viewport  | sprite    | |
+ *   |   for the loaded record           | inspector | |
+ *   |                                   +-----------+ |
+ *   +-------------------------------------------------+
+ *   | record list | entry table for the loaded record |
+ *   +-------------------------------------------------+
+ *
+ * The viewport, lane drag-editing, and ASM/PNG export all reuse the World
+ * View machinery; only the framing and the surrounding chrome are new. */
+
+enum { kSeqScrInspectorMaxSide = 148 };
+
+/* Draw the corner sprite inspector: the single IMG under the playhead, at the
+   largest integer scale that fits, with the numbers you need while timing a
+   sequence (index, size, anipoint). Sits inside the animation viewport's
+   top-right corner so it never steals layout height from the table below. */
+static void SeqScrDrawSpriteInspector(const WorldMarkedLane *lane,
+                                      ImVec2 area_min, ImVec2 area_max)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const float pad = 8.0f;
+    const float header_h = ImGui::GetTextLineHeight() + 4.0f;
+    const float footer_h = ImGui::GetTextLineHeight() * 2.0f + 4.0f;
+
+    float box_w = (float)kSeqScrInspectorMaxSide;
+    float box_h = (float)kSeqScrInspectorMaxSide + header_h + footer_h;
+    if (box_w > (area_max.x - area_min.x) * 0.5f)
+        box_w = (area_max.x - area_min.x) * 0.5f;
+    if (box_h > (area_max.y - area_min.y) * 0.9f)
+        box_h = (area_max.y - area_min.y) * 0.9f;
+    if (box_w < 64.0f || box_h < 64.0f) return;
+
+    ImVec2 p0(area_max.x - box_w - pad, area_min.y + pad);
+    ImVec2 p1(p0.x + box_w, p0.y + box_h);
+    dl->AddRectFilled(p0, p1, IM_COL32(12, 12, 15, 235), 4.0f);
+    dl->AddRect(p0, p1, IM_COL32(90, 90, 105, 255), 4.0f, 0, 1.0f);
+
+    /* A frame picked in the sidebar browser wins over the playhead entry: the
+       box is how you look at a candidate before committing it to a sequence. */
+    int browse_doc = -1;
+    int browse_img = -1;
+    bool browsing = SeqScrBrowserPreviewFrame(&browse_doc, &browse_img);
+
+    int fi = lane ? lane->frame_pos : -1;
+    bool have_frame = lane && fi >= 0 && fi < (int)lane->frames.size();
+    int img_idx = -1;
+    Document *doc = NULL;
+    IMG *img = NULL;
+    char header[64];
+
+    if (browsing) {
+        img_idx = browse_img;
+        doc = document_get(browse_doc);
+        img = doc_get_img(doc, img_idx);
+        snprintf(header, sizeof(header), "Browse");
+    } else if (have_frame) {
+        img_idx = lane->frames[(size_t)fi];
+        doc = (fi < (int)lane->frame_docs.size() && lane->frame_docs[(size_t)fi])
+            ? lane->frame_docs[(size_t)fi] : lane->doc;
+        img = doc_get_img(doc, img_idx);
+        snprintf(header, sizeof(header), "Entry %d/%d",
+                 fi + 1, (int)lane->frames.size());
+    } else {
+        snprintf(header, sizeof(header), "Entry 0/%d",
+                 lane ? (int)lane->frames.size() : 0);
+    }
+    dl->AddText(ImVec2(p0.x + 6.0f, p0.y + 3.0f),
+                IM_COL32(210, 210, 220, 255), header);
+
+    ImVec2 view_min(p0.x + 4.0f, p0.y + header_h);
+    ImVec2 view_max(p1.x - 4.0f, p1.y - footer_h);
+    dl->AddRectFilled(view_min, view_max, IM_COL32(0, 0, 0, 255));
+
+    if (!img || img->w <= 0 || img->h <= 0) {
+        dl->AddText(ImVec2(view_min.x + 6.0f, view_min.y + 6.0f),
+                    IM_COL32(150, 150, 150, 255), "(no sprite)");
+        return;
+    }
+
+    SDL_Texture *tex = BuildWorldSpriteTexture(doc, img, 255);
+    float view_w = view_max.x - view_min.x;
+    float view_h = view_max.y - view_min.y;
+    float fit = (view_w / (float)img->w < view_h / (float)img->h)
+              ? view_w / (float)img->w : view_h / (float)img->h;
+    /* Integer scale above 1:1 keeps arcade pixels square and readable; below
+       1:1 a big sprite still has to shrink to fit, so allow the fraction. */
+    float scale = fit >= 1.0f ? (float)(int)fit : fit;
+    float draw_w = (float)img->w * scale;
+    float draw_h = (float)img->h * scale;
+    ImVec2 d0(view_min.x + (view_w - draw_w) * 0.5f,
+              view_min.y + (view_h - draw_h) * 0.5f);
+    ImVec2 d1(d0.x + draw_w, d0.y + draw_h);
+    if (tex)
+        dl->AddImage((ImTextureID)(intptr_t)tex, d0, d1);
+    else
+        dl->AddRect(d0, d1, IM_COL32(120, 60, 60, 255));
+
+    /* Anipoint crosshair: the anchor every world placement is measured from. */
+    float ax = d0.x + (float)(short)img->anix * scale;
+    float ay = d0.y + (float)(short)img->aniy * scale;
+    if (ax >= view_min.x && ax <= view_max.x &&
+        ay >= view_min.y && ay <= view_max.y) {
+        dl->AddLine(ImVec2(ax - 5.0f, ay), ImVec2(ax + 5.0f, ay),
+                    IM_COL32(255, 200, 0, 220));
+        dl->AddLine(ImVec2(ax, ay - 5.0f), ImVec2(ax, ay + 5.0f),
+                    IM_COL32(255, 200, 0, 220));
+    }
+
+    char line1[96];
+    char line2[96];
+    std::string name;
+    if (!browsing && have_frame && fi < (int)lane->frame_labels.size() &&
+        !lane->frame_labels[(size_t)fi].empty())
+        name = lane->frame_labels[(size_t)fi];
+    else
+        name = img_name_string(img);
+    snprintf(line1, sizeof(line1), "[%d] %s", img_idx, name.c_str());
+    /* Browsing crosses files, so say which one this sprite came from. */
+    const char *src = (doc && doc->fname_s[0]) ? doc->fname_s : "";
+    if (browsing && src[0])
+        snprintf(line2, sizeof(line2), "%dx%d  ani %d,%d  %s",
+                 (int)img->w, (int)img->h,
+                 (int)(short)img->anix, (int)(short)img->aniy, src);
+    else
+        snprintf(line2, sizeof(line2), "%dx%d  ani %d,%d",
+                 (int)img->w, (int)img->h,
+                 (int)(short)img->anix, (int)(short)img->aniy);
+    /* Clip to the panel rather than letting a long sprite name bleed out over
+       the animation behind it. */
+    ImVec4 text_clip(p0.x + 5.0f, view_max.y, p1.x - 4.0f, p1.y);
+    dl->AddText(NULL, 0.0f, ImVec2(p0.x + 6.0f, view_max.y + 2.0f),
+                IM_COL32(200, 205, 215, 255), line1, NULL, 0.0f, &text_clip);
+    dl->AddText(NULL, 0.0f,
+                ImVec2(p0.x + 6.0f, view_max.y + 2.0f + ImGui::GetTextLineHeight()),
+                IM_COL32(150, 155, 165, 255), line2, NULL, 0.0f, &text_clip);
+}
+
+/* Sequences / Scripts picker. Returns the record index to load, or -1.
+   Loading is deferred to the end of the frame because it rewrites the lane
+   slot the entry table alongside this list is still drawing from.
+   "+" appends an empty record so entries can be built up from scratch. */
+static int SeqScrDrawRecordPicker(WorldMarkedSequenceState &state)
+{
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    bool have_records = SeqScrBuildRecords(records, &truncated);
+    int active_doc_idx = document_active_index();
+
+    static int s_kind = 0;   /* 0 = sequences, 1 = scripts */
+    if (ImGui::BeginTabBar("##seqscr_ws_kind")) {
+        if (ImGui::BeginTabItem("Sequences")) { s_kind = 0; ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Scripts"))   { s_kind = 1; ImGui::EndTabItem(); }
+        ImGui::EndTabBar();
+    }
+    bool scripts = (s_kind == 1);
+    int load_request = -1;
+
+    ImGui::BeginDisabled(truncated || !g_doc);
+    if (ImGui::SmallButton(scripts ? "+ Script##seqscr_ws_add"
+                                   : "+ Sequence##seqscr_ws_add")) {
+        if (SeqScrAddRecord(scripts)) {
+            load_request = scripts ? (int)(g_doc->seqcnt + g_doc->scrcnt) - 1
+                                   : (int)g_doc->seqcnt - 1;
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Added an empty %s. Add entries from the table.",
+                     scripts ? "script" : "sequence");
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Could not add %s (anim blob is truncated or out of memory).",
+                     scripts ? "script" : "sequence");
+        }
+        g_restore_msg_timer = 4.0f;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Raw Data...##seqscr_ws_raw"))
+        g_show_seqscr_editor = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Open the raw SEQSCR/ENTRY field editor for this IMG.");
+
+    if (truncated) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
+                           "SEQSCR blob is truncated.");
+    }
+
+    if (!have_records) {
+        ImGui::TextDisabled("This IMG has no sequence/script data yet.");
+        return load_request;
+    }
+
+    if (ImGui::BeginListBox("##seqscr_ws_records", ImVec2(-1, -1))) {
+        bool any = false;
+        for (const SeqScrRecordView &rec : records) {
+            if (rec.script != scripts) continue;
+            any = true;
+            int local_idx = scripts ? rec.index - (int)g_doc->seqcnt : rec.index;
+            char fallback[32];
+            snprintf(fallback, sizeof(fallback), "%s %d",
+                     scripts ? "Script" : "Sequence", local_idx);
+            const char *name = rec.name[0] ? rec.name : fallback;
+            char label[112];
+            snprintf(label, sizeof(label), "%02d  %.40s  (%d)%s",
+                     local_idx, name, rec.num,
+                     rec.truncated ? "  truncated" : "");
+            bool loaded = state.embedded_active &&
+                          state.embedded_doc_idx == active_doc_idx &&
+                          state.embedded_record_index == rec.index;
+
+            ImGui::PushID(rec.index);
+            if (rec.truncated) ImGui::BeginDisabled();
+            if (loaded)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
+            if (ImGui::Selectable(label, loaded))
+                load_request = rec.index;
+            if (loaded) ImGui::PopStyleColor();
+            if (ImGui::BeginPopupContextItem("##seqscr_ws_ctx")) {
+                if (ImGui::MenuItem("Load"))
+                    load_request = rec.index;
+                if (ImGui::MenuItem("Copy Anim ASM")) {
+                    state.generated_asm = WorldBuildSeqScrAsmExport(rec.index);
+                    ImGui::SetClipboardText(state.generated_asm.c_str());
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Copied anim ASM for '%s'.", name);
+                    g_restore_msg_timer = 4.0f;
+                }
+                if (ImGui::MenuItem("Save Anim ASM")) {
+                    state.generated_asm = WorldBuildSeqScrAsmExport(rec.index);
+                    g_request_save_world_asm = true;
+                }
+                ImGui::EndPopup();
+            }
+            if (rec.truncated) ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        if (!any) ImGui::TextDisabled("None");
+        ImGui::EndListBox();
+    }
+
+    return load_request;
+}
+
+/* ---- Frame library across numbered sibling IMGs ----------------------
+ * A character's sprites are split over CAGE1.IMG .. CAGE10.IMG, so building a
+ * sequence means reaching across files. This gathers the whole numbered set
+ * into one browsable list.
+ *
+ * A SEQSCR entry is a bare 16-bit index into its own file's image list, so a
+ * frame from a sibling file can be previewed and exported to ASM but never
+ * written into this IMG's blob. Those entries are marked as such rather than
+ * silently writing an index that resolves to a different sprite. */
+
+static SeqScrFrameLibrary g_seqscr_frame_lib;
+static int s_seqscr_lib_file_filter = -1;     /* -1 = all files */
+static int s_seqscr_lib_selected = -1;        /* index into lib.frames */
+static char s_seqscr_lib_search[48] = {};
+static bool s_seqscr_lib_scroll_to_sel = false;
+
+const SeqScrFrameLibrary &SeqScrFrameLib(void) { return g_seqscr_frame_lib; }
+
+static void SeqScrClearBrowseSelection(void) { s_seqscr_lib_selected = -1; }
+
+/* Rows currently on screen, honouring the file dropdown and the text filter,
+   so keyboard stepping walks exactly what the eye sees. */
+static std::vector<int> SeqScrVisibleFrameRows(void)
+{
+    std::vector<int> rows;
+    const SeqScrFrameLibrary &lib = g_seqscr_frame_lib;
+    std::string filter_low(s_seqscr_lib_search);
+    for (char &c : filter_low) c = (char)tolower((unsigned char)c);
+    for (int i = 0; i < (int)lib.frames.size(); i++) {
+        const SeqScrFrameRef &ref = lib.frames[(size_t)i];
+        if (s_seqscr_lib_file_filter >= 0 &&
+            ref.file_slot != s_seqscr_lib_file_filter) continue;
+        if (!doc_get_img(document_get(ref.doc_idx), ref.img_idx)) continue;
+        if (!filter_low.empty()) {
+            std::string low = ref.name;
+            for (char &c : low) c = (char)tolower((unsigned char)c);
+            if (low.find(filter_low) == std::string::npos) continue;
+        }
+        rows.push_back(i);
+    }
+    return rows;
+}
+
+bool SeqScrFrameNavActive(void)
+{
+    return g_seqscr_frame_nav && !SeqScrVisibleFrameRows().empty();
+}
+
+void SeqScrStepFrameSelection(int delta)
+{
+    std::vector<int> rows = SeqScrVisibleFrameRows();
+    if (rows.empty()) return;
+    int pos = -1;
+    for (int i = 0; i < (int)rows.size(); i++)
+        if (rows[(size_t)i] == s_seqscr_lib_selected) { pos = i; break; }
+    if (pos < 0)
+        pos = delta >= 0 ? 0 : (int)rows.size() - 1;
+    else
+        pos = (pos + delta + (int)rows.size()) % (int)rows.size();
+    s_seqscr_lib_selected = rows[(size_t)pos];
+    s_seqscr_lib_scroll_to_sel = true;
+}
+
+void SeqScrToggleSelectedMark(void)
+{
+    const SeqScrFrameLibrary &lib = g_seqscr_frame_lib;
+    if (s_seqscr_lib_selected < 0 ||
+        s_seqscr_lib_selected >= (int)lib.frames.size())
+        return;
+    const SeqScrFrameRef &ref = lib.frames[(size_t)s_seqscr_lib_selected];
+    Document *owner = document_get(ref.doc_idx);
+    IMG *img = doc_get_img(owner, ref.img_idx);
+    if (!img) return;
+    img->flags ^= 1;
+    if (owner) owner->dirty = true;
+}
+
+static std::string SeqScrDocFullPath(const Document *doc)
+{
+    if (!doc || !doc->fname_s[0]) return std::string();
+    std::string dir(doc->fpath_s);
+    if (dir.empty()) return std::string(doc->fname_s);
+    return PathCombine(dir, doc->fname_s);
+}
+
+static bool SeqScrPathsEqual(const std::string &a, const std::string &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        char ca = (char)tolower((unsigned char)a[i]);
+        char cb = (char)tolower((unsigned char)b[i]);
+        if (ca == '/') ca = '\\';
+        if (cb == '/') cb = '\\';
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+static int SeqScrFindOpenDoc(const std::string &full_path)
+{
+    for (int i = 0; i < document_tab_count(); i++) {
+        if (SeqScrPathsEqual(SeqScrDocFullPath(document_get(i)), full_path))
+            return i;
+    }
+    return -1;
+}
+
+/* "CAGE3.IMG" -> stem "CAGE", number 3. False when the name carries no
+   trailing number, in which case the file stands alone. */
+static bool SeqScrSplitNumberedName(const std::string &file,
+                                    std::string *stem_out, int *num_out)
+{
+    size_t dot = file.find_last_of('.');
+    std::string base = (dot == std::string::npos) ? file : file.substr(0, dot);
+    size_t end = base.size();
+    size_t digits = end;
+    while (digits > 0 && isdigit((unsigned char)base[digits - 1])) digits--;
+    if (digits == end || digits == 0) return false;
+    if (stem_out) *stem_out = base.substr(0, digits);
+    if (num_out) *num_out = atoi(base.c_str() + digits);
+    return true;
+}
+
+/* True when `name` is a chopped piece of another sprite present in the same
+   document — the same parent/child rule the Assets image list folds by. */
+static bool SeqScrIsSubframe(Document *doc, const char *name)
+{
+    std::string parent = InferSubframeParentName(name);
+    if (parent.empty()) return false;
+    int idx = 0;
+    for (IMG *img = doc ? (IMG *)doc->img_p : NULL;
+         img; img = (IMG *)img->nxt_p, idx++) {
+        if (img_name_string(img) == parent) return true;
+    }
+    return false;
+}
+
+static int SeqScrCountSubframes(Document *doc, const std::string &parent_name)
+{
+    int count = 0;
+    for (IMG *img = doc ? (IMG *)doc->img_p : NULL; img; img = (IMG *)img->nxt_p) {
+        std::string nm = img_name_string(img);
+        if (nm != parent_name && InferSubframeParentName(nm.c_str()) == parent_name)
+            count++;
+    }
+    return count;
+}
+
+void SeqScrRebuildFrameLibrary(bool open_missing)
+{
+    SeqScrFrameLibrary lib;
+    Document *active = g_doc;
+    if (!active || !active->fname_s[0]) {
+        g_seqscr_frame_lib = lib;
+        s_seqscr_lib_selected = -1;
+        return;
+    }
+
+    std::string dir(active->fpath_s);
+    std::string active_file(active->fname_s);
+    int active_num = 0;
+    if (!SeqScrSplitNumberedName(active_file, &lib.stem, &active_num) ||
+        dir.empty()) {
+        /* Unnumbered or in-memory document: the set is just this file. */
+        lib.stem = active_file;
+        lib.files.push_back(active_file);
+        lib.file_docs.push_back(document_active_index());
+    } else {
+        std::vector<FileEntry> entries;
+        GetDirectoryFiles(dir, entries, "IMG");
+        std::vector<std::pair<int, std::string>> numbered;
+        for (const FileEntry &e : entries) {
+            if (e.is_dir) continue;
+            std::string stem;
+            int num = 0;
+            if (!SeqScrSplitNumberedName(e.name, &stem, &num)) continue;
+            if (stem.size() != lib.stem.size()) continue;
+            bool same = true;
+            for (size_t i = 0; i < stem.size() && same; i++)
+                same = tolower((unsigned char)stem[i]) ==
+                       tolower((unsigned char)lib.stem[i]);
+            if (!same) continue;
+            numbered.push_back({num, e.name});
+        }
+        std::sort(numbered.begin(), numbered.end(),
+                  [](const std::pair<int, std::string> &a,
+                     const std::pair<int, std::string> &b) {
+                      return a.first < b.first;
+                  });
+        for (auto &nf : numbered) {
+            lib.files.push_back(nf.second);
+            lib.file_docs.push_back(SeqScrFindOpenDoc(PathCombine(dir, nf.second)));
+        }
+    }
+
+    /* Opening a sibling activates its tab, so remember where we were and go
+       back: browsing the library must not move the user's editing focus. */
+    if (open_missing && !dir.empty()) {
+        int restore = document_active_index();
+        std::string restore_path = SeqScrDocFullPath(document_get(restore));
+        bool opened_any = false;
+        for (size_t i = 0; i < lib.files.size(); i++) {
+            if (lib.file_docs[i] >= 0) continue;
+            std::string path = PathCombine(dir, lib.files[i]);
+            OpenImgFile(path);
+            opened_any = true;
+        }
+        if (opened_any) {
+            for (size_t i = 0; i < lib.files.size(); i++)
+                lib.file_docs[i] = SeqScrFindOpenDoc(PathCombine(dir, lib.files[i]));
+            int back = restore_path.empty() ? restore
+                                            : SeqScrFindOpenDoc(restore_path);
+            if (back >= 0) {
+                document_set_active(back);
+                g_doc_tab_select_request = back;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < lib.files.size(); i++) {
+        int doc_idx = lib.file_docs[i];
+        Document *doc = document_get(doc_idx);
+        if (!doc) continue;
+        lib.open_files++;
+        int img_idx = 0;
+        for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, img_idx++) {
+            std::string nm = img_name_string(img);
+            if (SeqScrIsSubframe(doc, nm.c_str())) continue;
+            SeqScrFrameRef ref;
+            ref.doc_idx = doc_idx;
+            ref.img_idx = img_idx;
+            ref.file_slot = (int)i;
+            ref.name = nm;
+            ref.subframes = SeqScrCountSubframes(doc, nm);
+            lib.frames.push_back(ref);
+        }
+    }
+
+    g_seqscr_frame_lib = lib;
+    if (s_seqscr_lib_selected >= (int)lib.frames.size())
+        s_seqscr_lib_selected = -1;
+    if (s_seqscr_lib_file_filter >= (int)lib.files.size())
+        s_seqscr_lib_file_filter = -1;
+}
+
+bool SeqScrBrowserPreviewFrame(int *doc_idx, int *img_idx)
+{
+    const SeqScrFrameLibrary &lib = g_seqscr_frame_lib;
+    if (s_seqscr_lib_selected < 0 ||
+        s_seqscr_lib_selected >= (int)lib.frames.size())
+        return false;
+    const SeqScrFrameRef &ref = lib.frames[(size_t)s_seqscr_lib_selected];
+    if (!doc_get_img(document_get(ref.doc_idx), ref.img_idx)) return false;
+    if (doc_idx) *doc_idx = ref.doc_idx;
+    if (img_idx) *img_idx = ref.img_idx;
+    return true;
+}
+
+int SeqScrForeignEntryCount(const WorldMarkedSequenceState &state)
+{
+    if (!state.embedded_active) return 0;
+    const int slot = kWorldEmbeddedSeqScrSlot;
+    const std::vector<int> &fdoc = state.frame_doc[slot];
+    int n = (int)state.sequence_frames[slot].size();
+    int foreign = 0;
+    for (int i = 0; i < n && i < (int)fdoc.size(); i++) {
+        if (fdoc[(size_t)i] >= 0 && fdoc[(size_t)i] != state.embedded_doc_idx)
+            foreign++;
+    }
+    return foreign;
+}
+
+/* Append one entry to the loaded record's preview lane. `doc_idx` is stored
+   per entry so a frame from a sibling IMG still resolves and still renders. */
+static void SeqScrAppendPreviewEntry(WorldMarkedSequenceState &state,
+                                     int doc_idx, int img_idx)
+{
+    const int slot = kWorldEmbeddedSeqScrSlot;
+    std::vector<int> &frames = state.sequence_frames[slot];
+    EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
+    frames.push_back(img_idx);
+    for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
+        ref.vec->push_back(ref.fresh);
+    state.entry_pieces[slot].push_back(std::vector<int>());
+    state.frame_doc[slot].push_back(doc_idx);
+}
+
+struct SeqScrAddOutcome {
+    int added = 0;
+    int persisted = 0;
+    int preview_only = 0;
+    bool failed = false;
+};
+
+/* Add `refs` to the loaded record, in the order given. Frames from the record's
+   own IMG are written into the SEQSCR blob; frames from a sibling IMG go into
+   the preview lane only. Every frame lands in the lane so the order you built
+   is the order you see. */
+static SeqScrAddOutcome SeqScrAddFramesToLoadedRecord(
+    WorldMarkedSequenceState &state, const std::vector<SeqScrFrameRef> &refs)
+{
+    SeqScrAddOutcome out;
+    if (refs.empty() || !state.embedded_active || state.embedded_is_script ||
+        !document_get(state.embedded_doc_idx)) {
+        out.failed = true;
+        return out;
+    }
+
+    /* Append to the lane only. SeqScrSyncLaneToBlob() writes the own-file
+       entries into the record at the end of the frame, so there is exactly one
+       place that edits the blob and one undo step for the whole add. */
+    for (const SeqScrFrameRef &ref : refs) {
+        SeqScrAppendPreviewEntry(state, ref.doc_idx, ref.img_idx);
+        out.added++;
+        if (ref.doc_idx != state.embedded_doc_idx) out.preview_only++;
+        else out.persisted++;
+    }
+    state.paused = true;
+    state.timer = 0.0f;
+    return out;
+}
+
+/* Every marked frame in the library, in file then list order. Marking reuses
+   the IMG's own mark bit, so a selection made here is the same one World View
+   rows, TBL export, and "Add Marked Frames" already act on. */
+static std::vector<SeqScrFrameRef> SeqScrMarkedLibraryFrames(void)
+{
+    std::vector<SeqScrFrameRef> out;
+    const SeqScrFrameLibrary &lib = g_seqscr_frame_lib;
+    for (const SeqScrFrameRef &ref : lib.frames) {
+        IMG *img = doc_get_img(document_get(ref.doc_idx), ref.img_idx);
+        if (img && (img->flags & 1)) out.push_back(ref);
+    }
+    return out;
+}
+
+void DrawSeqScrFrameBrowser(float avail_h)
+{
+    WorldMarkedSequenceState &state = g_world_marked_state;
+
+    /* Rebuild whenever the numbered set could have changed: a different file
+       opened, a tab closed, or sprites added/removed in the active one. */
+    static int s_lib_doc_idx = -2;
+    static unsigned int s_lib_imgcnt = 0;
+    static int s_lib_tab_count = -1;
+    static std::string s_lib_opened_stem;
+    int active_doc_idx = document_active_index();
+    bool stale = s_lib_doc_idx != active_doc_idx ||
+                 s_lib_imgcnt != (g_doc ? g_doc->imgcnt : 0u) ||
+                 s_lib_tab_count != document_tab_count();
+    if (stale) {
+        /* Auto-open the rest of the set once per stem: the point of the
+           browser is that opening CAGE3 gives you CAGE1-10, but re-opening on
+           every tab switch would thrash the tab bar. */
+        SeqScrRebuildFrameLibrary(false);
+        if (!g_seqscr_frame_lib.stem.empty() &&
+            g_seqscr_frame_lib.stem != s_lib_opened_stem &&
+            g_seqscr_frame_lib.open_files < (int)g_seqscr_frame_lib.files.size()) {
+            s_lib_opened_stem = g_seqscr_frame_lib.stem;
+            SeqScrRebuildFrameLibrary(true);
+        }
+        s_lib_doc_idx = document_active_index();
+        s_lib_imgcnt = g_doc ? g_doc->imgcnt : 0u;
+        s_lib_tab_count = document_tab_count();
+    }
+
+    const SeqScrFrameLibrary &lib = g_seqscr_frame_lib;
+    if (lib.files.empty()) {
+        ImGui::TextDisabled("Save or open an IMG to browse its frames.");
+        return;
+    }
+
+    char combo_label[64];
+    if (s_seqscr_lib_file_filter < 0)
+        snprintf(combo_label, sizeof(combo_label), "%s1-%d  (all)",
+                 lib.stem.c_str(), (int)lib.files.size());
+    else
+        snprintf(combo_label, sizeof(combo_label), "%s",
+                 lib.files[(size_t)s_seqscr_lib_file_filter].c_str());
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##seqscr_lib_file", combo_label)) {
+        char all_label[64];
+        snprintf(all_label, sizeof(all_label), "All %d files",
+                 (int)lib.files.size());
+        if (ImGui::Selectable(all_label, s_seqscr_lib_file_filter < 0))
+            s_seqscr_lib_file_filter = -1;
+        for (int i = 0; i < (int)lib.files.size(); i++) {
+            char label[80];
+            int frames_here = 0;
+            for (const SeqScrFrameRef &ref : lib.frames)
+                if (ref.file_slot == i) frames_here++;
+            snprintf(label, sizeof(label), "%s  (%d)%s",
+                     lib.files[(size_t)i].c_str(), frames_here,
+                     lib.file_docs[(size_t)i] < 0 ? "  closed" : "");
+            if (ImGui::Selectable(label, s_seqscr_lib_file_filter == i))
+                s_seqscr_lib_file_filter = i;
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::SetNextItemWidth(-58.0f);
+    ImGui::InputTextWithHint("##seqscr_lib_search", "filter",
+                             s_seqscr_lib_search, sizeof(s_seqscr_lib_search));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reload##seqscr_lib_reload")) {
+        SeqScrRebuildFrameLibrary(true);
+        s_lib_opened_stem = g_seqscr_frame_lib.stem;
+        s_lib_tab_count = document_tab_count();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Rescan the folder and open any %s file that is not loaded yet.",
+                          lib.stem.c_str());
+
+    std::string filter_low(s_seqscr_lib_search);
+    for (char &c : filter_low) c = (char)tolower((unsigned char)c);
+
+    float list_h = avail_h;
+    if (list_h < 120.0f) list_h = 120.0f;
+    int marked_total = 0;
+    int shown = 0;
+    if (ImGui::BeginListBox("##seqscr_lib_frames", ImVec2(-1, list_h))) {
+        if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            g_palette_nav = false;
+            g_seqscr_frame_nav = true;   /* Up/Down/Space now walk this list */
+        }
+        for (int i = 0; i < (int)lib.frames.size(); i++) {
+            const SeqScrFrameRef &ref = lib.frames[(size_t)i];
+            if (s_seqscr_lib_file_filter >= 0 &&
+                ref.file_slot != s_seqscr_lib_file_filter) continue;
+            IMG *img = doc_get_img(document_get(ref.doc_idx), ref.img_idx);
+            if (!img) continue;
+            bool marked = (img->flags & 1) != 0;
+            if (marked) marked_total++;
+            if (!filter_low.empty()) {
+                std::string low = ref.name;
+                for (char &c : low) c = (char)tolower((unsigned char)c);
+                if (low.find(filter_low) == std::string::npos) continue;
+            }
+            shown++;
+
+            ImGui::PushID(i);
+            if (ImGui::Checkbox("##mark", &marked)) {
+                if (marked) img->flags |= 1; else img->flags &= ~1;
+                Document *owner = document_get(ref.doc_idx);
+                if (owner) owner->dirty = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Mark this frame. Marks are the IMG's own mark bit,\nshared with World View rows and TBL export.");
+            ImGui::SameLine();
+
+            char label[96];
+            if (s_seqscr_lib_file_filter < 0) {
+                snprintf(label, sizeof(label), "%.28s  %.10s%s", ref.name.c_str(),
+                         lib.files[(size_t)ref.file_slot].c_str(),
+                         ref.subframes > 0 ? " *" : "");
+            } else {
+                snprintf(label, sizeof(label), "%.34s%s", ref.name.c_str(),
+                         ref.subframes > 0 ? "  *" : "");
+            }
+            bool selected = s_seqscr_lib_selected == i;
+            /* Toggle, so the corner box can be handed back to the playhead
+               without hunting for a separate control. */
+            if (ImGui::Selectable(label, selected)) {
+                s_seqscr_lib_selected = selected ? -1 : i;
+                g_seqscr_frame_nav = true;
+            }
+            /* Keyboard stepping has to drag the viewport along with it. */
+            if (selected && s_seqscr_lib_scroll_to_sel)
+                ImGui::SetScrollHereY(0.5f);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("[%d] %s in %s\n%dx%d  anipoint %d,%d%s\n%s",
+                                  ref.img_idx, ref.name.c_str(),
+                                  lib.files[(size_t)ref.file_slot].c_str(),
+                                  (int)img->w, (int)img->h,
+                                  (int)(short)img->anix, (int)(short)img->aniy,
+                                  ref.subframes > 0 ? "\n* has subframe pieces" : "",
+                                  selected
+                                    ? "Click again to return the corner box to the playhead."
+                                    : "Click to preview it in the Anim workspace corner box.");
+            }
+            ImGui::PopID();
+        }
+        if (shown == 0) ImGui::TextDisabled("No frames match.");
+        ImGui::EndListBox();
+    }
+    s_seqscr_lib_scroll_to_sel = false;
+    if (g_seqscr_frame_nav)
+        ImGui::TextDisabled("Up/Down walk frames, Space marks.");
+
+    ImGui::TextDisabled("%d frames, %d marked, %d/%d files open",
+                        (int)lib.frames.size(), marked_total,
+                        lib.open_files, (int)lib.files.size());
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+    if (ImGui::Button("Mark Shown##seqscr_lib_mark_all", ImVec2(84, 20))) {
+        for (const SeqScrFrameRef &ref : lib.frames) {
+            if (s_seqscr_lib_file_filter >= 0 &&
+                ref.file_slot != s_seqscr_lib_file_filter) continue;
+            IMG *img = doc_get_img(document_get(ref.doc_idx), ref.img_idx);
+            if (!img) continue;
+            if (!filter_low.empty()) {
+                std::string low = ref.name;
+                for (char &c : low) c = (char)tolower((unsigned char)c);
+                if (low.find(filter_low) == std::string::npos) continue;
+            }
+            img->flags |= 1;
+            Document *owner = document_get(ref.doc_idx);
+            if (owner) owner->dirty = true;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear##seqscr_lib_clear", ImVec2(-1, 20))) {
+        for (const SeqScrFrameRef &ref : lib.frames) {
+            IMG *img = doc_get_img(document_get(ref.doc_idx), ref.img_idx);
+            if (img) img->flags &= ~1;
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Unmark every frame in the library, in all files.");
+
+    bool seq_loaded = state.embedded_active && !state.embedded_is_script &&
+                      state.embedded_record_index >= 0;
+    std::vector<SeqScrFrameRef> marked = SeqScrMarkedLibraryFrames();
+    bool any_marked = !marked.empty();
+
+    auto report = [&](const SeqScrAddOutcome &out) {
+        if (out.failed) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Could not add frames to the sequence.");
+        } else if (out.preview_only > 0) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Added %d frame%s: %d saved into the IMG, %d preview/ASM only (from sibling files).",
+                     out.added, out.added == 1 ? "" : "s",
+                     out.persisted, out.preview_only);
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Added %d frame%s to the sequence.",
+                     out.added, out.added == 1 ? "" : "s");
+        }
+        g_restore_msg_timer = 5.0f;
+    };
+
+    ImGui::BeginDisabled(!any_marked || !seq_loaded);
+    if (ImGui::Button("Add Marked to Sequence##seqscr_lib_add_cur", ImVec2(-1, 20)))
+        report(SeqScrAddFramesToLoadedRecord(state, marked));
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        if (!seq_loaded)
+            ImGui::SetTooltip("Load a sequence in the Anim tab first.");
+        else if (!any_marked)
+            ImGui::SetTooltip("Mark some frames above first.");
+        else
+            ImGui::SetTooltip("Append the %d marked frames to '%s', in file order.",
+                              (int)marked.size(),
+                              state.embedded_name.empty() ? "(unnamed)"
+                                                          : state.embedded_name.c_str());
+    }
+
+    ImGui::BeginDisabled(!any_marked || !g_doc);
+    if (ImGui::Button("New Sequence from Marked##seqscr_lib_add_new", ImVec2(-1, 20))) {
+        if (SeqScrAddRecord(false)) {
+            int new_idx = (int)g_doc->seqcnt - 1;
+            if (WorldLoadSeqScrRecord(new_idx)) {
+                /* A fresh record has no entries; the load leaves an empty lane
+                   that the append below fills. */
+                report(SeqScrAddFramesToLoadedRecord(state, marked));
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Created the sequence but could not open it.");
+                g_restore_msg_timer = 4.0f;
+            }
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Could not create a sequence (anim blob is truncated or out of memory).");
+            g_restore_msg_timer = 4.0f;
+        }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered() && any_marked)
+        ImGui::SetTooltip("Append an empty sequence to %s and fill it with the %d marked frames.",
+                          g_doc && g_doc->fname_s[0] ? g_doc->fname_s : "this IMG",
+                          (int)marked.size());
+    ImGui::PopStyleVar();
+
+    if (seq_loaded) {
+        int foreign = SeqScrForeignEntryCount(state);
+        if (foreign > 0) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                               "%d entr%s from sibling IMGs:", foreign,
+                               foreign == 1 ? "y" : "ies");
+            ImGui::TextWrapped("preview and ASM export only. A SEQSCR entry cannot name a sprite outside its own file.");
+        }
+    }
+}
+
+/* Transport, view toggles, and exports for the loaded record. Mirrors the
+   World View header's vocabulary so the two modes feel like one tool.
+   Returns false when the record was unloaded, so the caller can drop the now
+   stale lane instead of drawing a frame's worth of emptied-out tables. */
+static bool SeqScrDrawToolbar(WorldMarkedSequenceState &state,
+                              const std::vector<WorldMarkedLane> &lanes,
+                              IMG *selected_img, int active_doc_idx)
+{
+    int slot = kWorldEmbeddedSeqScrSlot;
+    int n = (int)state.sequence_frames[slot].size();
+    bool is_script = state.embedded_is_script;
+    int entry = WorldMarkedFrameForTick(state, slot, n, state.frame,
+                                        state.hold_end[slot]);
+    int total_ticks = WorldMarkedSequenceTicks(state, slot, n);
+
+    ImGui::Text("%s: %s   Entry %d/%d   Tick %d/%d",
+                is_script ? "Script" : "Sequence",
+                state.embedded_name.empty() ? "(unnamed)"
+                                            : state.embedded_name.c_str(),
+                n > 0 ? entry + 1 : 0, n, state.frame, total_ticks);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Close##seqscr_ws_close")) {
+        WorldExitEmbeddedSeqScr(state);
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Unloaded the sequence/script.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Unload this record. The SEQSCR data itself is untouched.");
+
+    /* Scripts are inspected row by row rather than played: each script entry
+       stands in for a whole sequence, so a wall-clock tick has no meaning. */
+    ImGui::SameLine();
+    ImGui::BeginDisabled(is_script);
+    if (ImGui::SmallButton(state.paused ? "Play##seqscr_ws_play"
+                                        : "Pause##seqscr_ws_play"))
+        state.paused = !state.paused;
+    ImGui::EndDisabled();
+    if (is_script && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Scripts load as paused tables. Select rows to inspect/edit them.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Restart##seqscr_ws_restart"))
+        WorldMarkedRestart(state);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(105.0f);
+    ImGui::SliderFloat("FPS##seqscr_ws_fps", &state.fps, 1.0f, 60.0f, "%.1f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Ticks per second. MK2 runs at %.1f, so that is\n"
+                          "what a hold of N ticks looks like in game.", kMk2TickHz);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Game##seqscr_ws_game_fps")) state.fps = kMk2TickHz;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Reset to the real MK2 tick rate (%.1f Hz).", kMk2TickHz);
+    ImGui::SameLine();
+    ImGui::TextDisabled("Tick");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70.0f);
+    int goto_tick = state.frame;
+    if (ImGui::InputInt("##seqscr_ws_goto_tick", &goto_tick, 0, 0))
+        WorldMarkedSetTick(state, goto_tick);
+
+    /* A sequence entry can be a multi-sprite frame. Capture the sprite
+       selected in the editor as another piece; its own anipoint anchors it to
+       the same world frame as the primary sprite. */
+    if (!is_script && active_doc_idx == state.embedded_doc_idx &&
+        selected_img && g_doc && g_doc->ilselected >= 0 && n > 0) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Add Selected to Frame##seqscr_ws_add_piece")) {
+            if (WorldMarkedAttachSpriteToFrame(state, slot, entry, g_doc,
+                                               active_doc_idx,
+                                               g_doc->ilselected)) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Added selected sprite to sequence frame %d (each piece uses its own anipoint).",
+                         entry + 1);
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Sprite is already in this frame, or belongs to another IMG tab.");
+            }
+            g_restore_msg_timer = 4.0f;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Make the currently selected sprite a second piece of this frame. Its anipoint is preserved, and the composite exports with the frame.");
+    }
+
+    if (ImGui::Checkbox("Game Placement##seqscr_ws_game_place",
+                        &g_world_state.game_placement)) {
+        if (g_world_state.game_placement) WorldApplyGamePlacement(state);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Stand the animation on the playfield floor, the way the\n"
+                          "game draws it, instead of hanging it off the stock\n"
+                          "(%d, 20) anchor. Each entry then offsets by its own dX/dY.\n"
+                          "Right-click to set the floor line.",
+                          g_world_state.origin_x);
+    if (ImGui::BeginPopupContextItem("##seqscr_ws_floor_cfg")) {
+        ImGui::TextDisabled("Playfield floor, in world pixels from the top.");
+        ImGui::SetNextItemWidth(110.0f);
+        if (ImGui::InputInt("Floor Y##seqscr_floor_y", &g_world_state.floor_y)) {
+            if (g_world_state.floor_y < 1) g_world_state.floor_y = 1;
+            if (g_world_state.floor_y > 512) g_world_state.floor_y = 512;
+            WorldApplyGamePlacement(state);
+        }
+        ImGui::SetNextItemWidth(110.0f);
+        if (ImGui::InputInt("Stand X##seqscr_stand_x", &g_world_state.origin_x)) {
+            if (g_world_state.origin_x < 0) g_world_state.origin_x = 0;
+            if (g_world_state.origin_x > g_world_state.w) g_world_state.origin_x = g_world_state.w;
+        }
+        if (ImGui::SmallButton("Re-stand on first frame##seqscr_restand"))
+            WorldApplyGamePlacement(state);
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("anchor y=%d", g_world_state.origin_y);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy ASM##seqscr_ws_copy_asm")) {
+        state.generated_asm = WorldBuildSeqScrAsmExport(state.embedded_record_index);
+        ImGui::SetClipboardText(state.generated_asm.c_str());
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Copied anim ASM for the loaded record.");
+        g_restore_msg_timer = 4.0f;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("View ASM##seqscr_ws_view_asm")) {
+        state.generated_asm = WorldBuildSeqScrAsmExport(state.embedded_record_index);
+        state.show_asm = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Save ASM##seqscr_ws_save_asm")) {
+        state.generated_asm = WorldBuildSeqScrAsmExport(state.embedded_record_index);
+        g_request_save_world_asm = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Save PNG##seqscr_ws_save_png"))
+        g_request_save_world_png = true;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Save PNG Seq##seqscr_ws_save_png_seq"))
+        g_request_save_world_png_seq = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Write one PNG per tick across the whole record,\n"
+                          "numbered <name>_0000.PNG onward.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d lane%s", (int)lanes.size(),
+                        lanes.size() == 1 ? "" : "s");
+    return true;
+}
+
+/* The Anim viewport draws the loaded record and nothing else: no lane tags, no
+   TV-safe bounds, no reference figure, no marked-row status line. Those are
+   World View's staging overlays and belong to World View. */
+static WorldMarkedSceneResult SeqScrDrawScene(WorldMarkedSequenceState &state,
+                                              const std::vector<WorldMarkedLane> &lanes,
+                                              ImVec2 avail, ImVec2 img_pos)
+{
+    WorldMarkedSceneResult result = {};
+    result.layout = ComputeWorldCanvasLayout(avail, img_pos,
+                                             g_world_state.w, g_world_state.h,
+                                             g_world_state.origin_x,
+                                             g_world_state.origin_y);
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 world_pos = result.layout.pos;
+    float ox = result.layout.origin_x;
+    float oy = result.layout.origin_y;
+
+    dl->AddRectFilled(world_pos,
+                      ImVec2(world_pos.x + result.layout.width,
+                             world_pos.y + result.layout.height),
+                      IM_COL32(0, 0, 0, 255));
+    dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy), IM_COL32(120, 120, 120, 255));
+    dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8), IM_COL32(120, 120, 120, 255));
+
+    WorldDrawMarkedLaneSprites(dl, state, lanes, result.layout,
+                               result.render_info);
+    dl->AddCircle(ImVec2(ox, oy), 4.0f, IM_COL32(255, 200, 0, 255), 0, 1.5f);
+
+    /* Dragging a sprite edits dX/dY, which are real ENTRY fields, so it stays.
+       The panel rect is parked off-screen: this mode has no floating panel for
+       the drag code to avoid. */
+    WorldMarkedPanelLayout no_panel;
+    no_panel.pos = ImVec2(-10000.0f, -10000.0f);
+    WorldHandleMarkedLaneDrag(dl, state, lanes, result.render_info,
+                              result.layout, no_panel);
+    result.panel_layout = no_panel;
+    return result;
+}
+
+bool DrawSeqScrWorkspace(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
+{
+    WorldMarkedSequenceState &state = g_world_marked_state;
+    IMG *selected_img = get_img(g_doc ? g_doc->ilselected : -1);
+    int active_doc_idx = document_active_index();
+    if (avail.x < 32.0f || avail.y < 32.0f) return true;
+    ImGui::SetCursorScreenPos(img_pos);
+
+    /* A record loaded from a document that has since closed leaves stale slot
+       data behind; drop it rather than animating a dangling lane. */
+    if (state.embedded_active && !document_get(state.embedded_doc_idx))
+        WorldExitEmbeddedSeqScr(state);
+
+    std::vector<WorldMarkedLane> lanes;
+    lanes.reserve(2);
+    int embedded_lane_idx = -1;
+    if (WorldAppendEmbeddedSeqScrLane(state, lanes))
+        embedded_lane_idx = (int)lanes.size() - 1;
+
+    if (embedded_lane_idx >= 0) {
+        state.marked_play = true;
+        WorldUpdateMarkedLanePlayback(state, lanes, io.DeltaTime);
+        if (!SeqScrDrawToolbar(state, lanes, selected_img, active_doc_idx)) {
+            lanes.clear();
+            embedded_lane_idx = -1;
+        }
+    } else {
+        ImGui::TextDisabled("No sequence or script loaded. Pick one from the list below.");
+    }
+
+    /* Split what's left: viewport on top, record list + entry table beneath.
+       ComputeWorldCanvasLayout never scales the playfield below 2x and centres
+       it in whatever it is handed, so a viewport shorter than that overflows
+       in both directions — over the toolbar above and the table below. Ask for
+       the height that rule actually wants, cap it so the table keeps a usable
+       share, and clip the remainder to the viewport rect. */
+    ImVec2 body_pos = ImGui::GetCursorScreenPos();
+    ImVec2 body_avail = ImGui::GetContentRegionAvail();
+    if (body_avail.x < 32.0f || body_avail.y < 32.0f) return true;
+
+    /* The table claims the height its rows actually need, so a short sequence
+       is fully visible without scrolling; the viewport takes the rest, keeping
+       a floor so the animation stays readable. A long record still scrolls,
+       but only once it has taken its share of the window. */
+    int entry_count = (embedded_lane_idx >= 0)
+                    ? (int)lanes[(size_t)embedded_lane_idx].frames.size() : 0;
+    float row_h = ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.y * 2.0f;
+    float table_chrome = ImGui::GetTextLineHeightWithSpacing() * 2.0f + 24.0f;
+    float thumbs_h = (embedded_lane_idx >= 0 && !state.embedded_is_script)
+                   ? 48.0f : 0.0f;
+    float wanted_table_h = table_chrome + thumbs_h +
+                           (float)(entry_count + 1) * row_h + 16.0f;
+    if (entry_count <= 0) wanted_table_h = 200.0f;
+
+    float min_anim_h = 240.0f;
+    float table_h = wanted_table_h;
+    if (table_h > body_avail.y - min_anim_h) table_h = body_avail.y - min_anim_h;
+    if (table_h < 140.0f) table_h = 140.0f;
+    if (table_h > body_avail.y - 60.0f) table_h = body_avail.y - 60.0f;
+    float anim_h = body_avail.y - table_h - 6.0f;
+    if (anim_h < 48.0f) anim_h = 48.0f;
+    ImVec2 anim_avail(body_avail.x, anim_h);
+    ImVec2 anim_max(body_pos.x + anim_avail.x, body_pos.y + anim_avail.y);
+
+    if (embedded_lane_idx >= 0) {
+        /* ComputeWorldCanvasLayout never scales the playfield below 2x and
+           centres it in whatever it is handed, so it can overflow the viewport
+           rect in both directions. Clip it rather than let it paint over the
+           toolbar above and the table below. */
+        ImGui::PushClipRect(body_pos, anim_max, true);
+        SeqScrDrawScene(state, lanes, anim_avail, body_pos);
+        ImGui::PopClipRect();
+        SeqScrDrawSpriteInspector(&lanes[(size_t)embedded_lane_idx], body_pos,
+                                  anim_max);
+    } else {
+        ImGui::GetWindowDrawList()->AddRectFilled(body_pos, anim_max,
+                                                  IM_COL32(0, 0, 0, 255));
+        /* With no record loaded the box is still the browser's viewfinder. */
+        if (SeqScrBrowserPreviewFrame(NULL, NULL))
+            SeqScrDrawSpriteInspector(NULL, body_pos, anim_max);
+    }
+    ImGui::SetCursorScreenPos(body_pos);
+    ImGui::Dummy(anim_avail);
+
+    int load_request = -1;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+    if (ImGui::BeginChild("##seqscr_ws_bottom", ImVec2(body_avail.x, table_h),
+                          false)) {
+        float list_w = body_avail.x * 0.24f;
+        if (list_w < 190.0f) list_w = 190.0f;
+        if (list_w > 300.0f) list_w = 300.0f;
+        if (ImGui::BeginChild("##seqscr_ws_list", ImVec2(list_w, 0.0f), true))
+            load_request = SeqScrDrawRecordPicker(state);
+        ImGui::EndChild();
+        ImGui::SameLine();
+        if (ImGui::BeginChild("##seqscr_ws_entries", ImVec2(0.0f, 0.0f), true,
+                              ImGuiWindowFlags_HorizontalScrollbar)) {
+            if (embedded_lane_idx >= 0) {
+                WorldMarkedLane &lane = lanes[(size_t)embedded_lane_idx];
+                float inner = ImGui::GetContentRegionAvail().y;
+                float rows_h = inner - ImGui::GetTextLineHeightWithSpacing() -
+                               (state.embedded_is_script ? 8.0f : 52.0f);
+                if (rows_h < 90.0f) rows_h = 90.0f;
+                if (state.embedded_is_script) {
+                    SeqScrDrawScriptTable(state, lane, rows_h);
+                } else {
+                    SeqScrDrawEntryTable(state, lane, rows_h);
+                    WorldMarkedLaneThumbClick thumb_click =
+                        WorldDrawMarkedLaneThumbnails(state, lane);
+                    if (thumb_click.clicked) {
+                        state.active_slot = lane.delay_slot;
+                        Document *doc = document_get(thumb_click.doc_idx);
+                        WorldSyncEditorSelectionToSprite(doc,
+                                                         thumb_click.doc_idx,
+                                                         thumb_click.img_idx);
+                    }
+                }
+            } else {
+                ImGui::TextDisabled("Select a sequence or script on the left to build and preview it here.");
+                ImGui::Spacing();
+                ImGui::TextWrapped("Sequences are frame lists: each entry targets an IMG sprite, with Ticks as the hold and dX/dY as local animation offsets.");
+                ImGui::TextWrapped("Scripts chain sequences: each entry targets a sequence, and \"Load Seq\" opens that sequence here.");
+            }
+        }
+        ImGui::EndChild();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+
+    if (WorldDrawMarkedAsmPopup(state)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied anim ASM.");
+        g_restore_msg_timer = 4.0f;
+    }
+
+    /* Push this frame's edits — typed fields, row reorders, viewport drags —
+       into the record. A no-op when nothing moved, so idle frames neither push
+       undo nor dirty the document. Runs before any pending load so an edit is
+       never lost by switching records. */
+    if (embedded_lane_idx >= 0)
+        SeqScrSyncLaneToBlob(state);
+
+    /* Deferred to here: loading rewrites the embedded slot the entry table
+       above was drawing from. */
+    if (load_request >= 0 && !WorldLoadSeqScrRecord(load_request)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Could not load that sequence/script.");
+        g_restore_msg_timer = 4.0f;
+    }
+    return true;
+}
+
 /* ---- World View PNG export ----------------------------------------
    Rebuilds the same lane set the World View draws, composites it in world
    pixels, and writes it out. Kept separate from the draw path so an export
@@ -15277,13 +16655,17 @@ static bool WorldBuildExportLanes(std::vector<WorldMarkedLane> &lanes)
     lanes.reserve(kWorldMarkedMaxTabs);
 
     bool dummy_decap_missing = false;
-    bool embedded_focus_only = state.embedded_active &&
+    /* Export whatever the active canvas mode is showing: the Sequence/Script
+       workspace's own record (plus its companions, when enabled), or World
+       View's marked rows and ASM lanes. */
+    bool embedded_focus_only = g_seqscr_workspace && state.embedded_active &&
                                !state.embedded_show_companions;
     if (!embedded_focus_only) {
         WorldAppendMarkedDocumentLanes(state, document_active_index(), lanes,
                                        &dummy_decap_missing);
     }
-    WorldAppendEmbeddedSeqScrLane(state, lanes);
+    if (g_seqscr_workspace)
+        WorldAppendEmbeddedSeqScrLane(state, lanes);
 
     if (!embedded_focus_only) {
         std::vector<WorldMarkedAsmLaneInput> asm_lanes;
@@ -15560,35 +16942,27 @@ void DrawWorldMarkedTimelinePanel(void)
     std::vector<WorldMarkedLane> lanes;
     lanes.reserve(kWorldMarkedMaxTabs);
     bool dummy_decap_missing = false;
-    bool embedded_focus_only = g_world_marked_state.embedded_active &&
-                               !g_world_marked_state.embedded_show_companions;
-    if (!embedded_focus_only) {
-        WorldAppendMarkedDocumentLanes(g_world_marked_state,
-                                       document_active_index(), lanes,
-                                       &dummy_decap_missing);
-    }
-    bool embedded_present =
-        WorldAppendEmbeddedSeqScrLane(g_world_marked_state, lanes);
+    WorldAppendMarkedDocumentLanes(g_world_marked_state,
+                                   document_active_index(), lanes,
+                                   &dummy_decap_missing);
 
     std::vector<WorldMarkedAsmLaneInput> asm_lanes;
     WorldCollectActiveAsmLanes(asm_lanes);
     bool asm_present = false;
-    if (!embedded_focus_only) {
-        for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
-            if (!input.enabled) continue;
-            if (WorldAppendAsmLane(g_world_marked_state, input.name,
-                                   input.frames, input.doc, input.doc_idx,
-                                   input.slot_id, lanes))
-                asm_present = true;
-        }
+    for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
+        if (!input.enabled) continue;
+        if (WorldAppendAsmLane(g_world_marked_state, input.name,
+                               input.frames, input.doc, input.doc_idx,
+                               input.slot_id, lanes))
+            asm_present = true;
     }
 
     if (lanes.empty()) {
         ImGui::TextDisabled("Mark sprites in at least two IMG tabs, or enable ASM lanes.");
         return;
     }
-    if (lanes.size() < 2 && !asm_present && !embedded_present) {
-        ImGui::TextDisabled("World View frame sequence needs a second marked row, ASM lane, or embedded sequence/script.");
+    if (lanes.size() < 2 && !asm_present) {
+        ImGui::TextDisabled("World View frame sequence needs a second marked row or an ASM lane.");
         return;
     }
     if (!WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, 0.0f)) {

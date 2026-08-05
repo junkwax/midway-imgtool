@@ -845,9 +845,15 @@ void DrawMainLayout(void)
         if (dx || dy) NudgeSelectedSpriteContent(dx, dy);
     }
 
-    /* Image Operations */
+    /* Image Operations. Space marks whichever list has the keyboard: the Anim
+       frame browser when it was the last one clicked, else the image list. */
     if (ImGui::Shortcut(ImGuiKey_Space, route)) {
-        IMG *img = get_img(g_doc->ilselected); if (img) { img->flags ^= 1; mark_dirty(); }
+        if (SeqScrFrameNavActive()) {
+            SeqScrToggleSelectedMark();
+        } else {
+            IMG *img = get_img(g_doc->ilselected);
+            if (img) { img->flags ^= 1; mark_dirty(); }
+        }
     }
     /* Timeline play/pause (K = standard video editor convention). */
     if (ImGui::Shortcut(ImGuiKey_K, route)) imgtool_toggle_timeline_play();
@@ -855,17 +861,18 @@ void DrawMainLayout(void)
        sequence when that preview is active. */
     /* A merely focused numeric widget must not steal Left/Right in World View.
        Active drags and text entry still block navigation normally. */
+    bool world_like_mode = g_world_state.enabled || g_seqscr_workspace;
     bool widget_using_keyboard = popup_using_keyboard || ImGui::IsAnyItemActive() ||
-                                 (!g_world_state.enabled && ImGui::IsAnyItemFocused()) ||
+                                 (!world_like_mode && ImGui::IsAnyItemFocused()) ||
                                  io.WantTextInput;
     if (!g_pasted.active && !content_nudge_armed && !widget_using_keyboard &&
         !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
         if (ImGui::Shortcut(ImGuiKey_LeftArrow, route)) {
-            if (g_world_state.enabled && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, -1);
+            if (world_like_mode && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, -1);
             else StepTimelinePlayhead(-1);
         }
         if (ImGui::Shortcut(ImGuiKey_RightArrow, route)) {
-            if (g_world_state.enabled && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, 1);
+            if (world_like_mode && g_world_marked_state.marked_play) StepWorldMarkedSequence(g_world_marked_state, 1);
             else StepTimelinePlayhead(1);
         }
     }
@@ -895,11 +902,19 @@ void DrawMainLayout(void)
      * between images (default) or palettes (when palette panel
      * was last clicked), matching DOS imgtool muscle memory. */
     if (!g_pasted.active && !content_nudge_armed && !popup_using_keyboard &&
-        !widget_using_keyboard && g_world_state.enabled &&
+        !widget_using_keyboard && SeqScrFrameNavActive()) {
+        /* The Anim frame browser was the last list clicked: Up/Down walk its
+           frames and each highlight previews in the workspace corner box. */
+        if (ImGui::Shortcut(ImGuiKey_DownArrow, route))
+            SeqScrStepFrameSelection(1);
+        if (ImGui::Shortcut(ImGuiKey_UpArrow, route))
+            SeqScrStepFrameSelection(-1);
+    } else if (!g_pasted.active && !content_nudge_armed && !popup_using_keyboard &&
+        !widget_using_keyboard && g_seqscr_workspace &&
         WorldEmbeddedSeqScrActive(g_world_marked_state)) {
-        /* When a World View script/sequence table is loaded, Up/Down step
-           through its entries (loading each target sprite) instead of walking
-           the main image list, so you can scrub the script without clicking. */
+        /* In the Sequence/Script workspace, Up/Down step through the loaded
+           record's entries (selecting each target sprite) instead of walking
+           the main image list, so you can scrub it without clicking. */
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route))
             StepWorldEmbeddedSeqScrEntry(g_world_marked_state, 1);
         if (ImGui::Shortcut(ImGuiKey_UpArrow, route))
@@ -925,10 +940,17 @@ void DrawMainLayout(void)
             g_zoom_reset = true;
         }
     }
-    /* Tab toggles World View mode (anipoint alignment workspace). */
+    /* Tab toggles World View mode (anipoint alignment workspace). From the
+       Sequence/Script workspace it returns to the pixel editor rather than
+       flipping a mode that is not currently showing. */
     if (ImGui::Shortcut(ImGuiKey_Tab, route)) {
         AnipointLink().enabled = false;
-        g_world_state.enabled = !g_world_state.enabled;
+        if (g_seqscr_workspace) {
+            g_seqscr_workspace = false;
+            g_world_state.enabled = false;
+        } else {
+            g_world_state.enabled = !g_world_state.enabled;
+        }
     }
 
     /* ---- Menu bar ---- */
@@ -1425,9 +1447,25 @@ void DrawMainLayout(void)
                 ImGui::EndMenu();
             }
             ImGui::MenuItem("DMA Compression", NULL, &g_show_dma_comp);
-            ImGui::MenuItem("Anim Scripts / Seqs", NULL, &g_show_seqscr_editor);
+            ImGui::MenuItem("Anim Scripts / Seqs (Raw Data)", NULL,
+                            &g_show_seqscr_editor);
             ImGui::Separator();
-            ImGui::MenuItem("World View",      NULL,   &g_world_state.enabled);
+            if (ImGui::MenuItem("World View", NULL, &g_world_state.enabled)) {
+                if (g_world_state.enabled) {
+                    g_seqscr_workspace = false;
+                    AnipointLink().enabled = false;
+                }
+            }
+            if (ImGui::MenuItem("Sequence / Script Workspace", NULL,
+                                &g_seqscr_workspace)) {
+                if (g_seqscr_workspace) {
+                    g_world_state.enabled = false;
+                    AnipointLink().enabled = false;
+                }
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Build and preview this IMG's embedded SEQSCR sequences\n"
+                "and scripts in their own animation workspace.");
             ImGui::MenuItem("World Reference Figure", NULL,
                             &g_world_state.show_reference);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -1436,8 +1474,10 @@ void DrawMainLayout(void)
                 "Reference checkbox (right-click it).");
             if (ImGui::MenuItem("Anipoint Link Workspace", NULL,
                                 &AnipointLink().enabled)) {
-                if (AnipointLink().enabled)
+                if (AnipointLink().enabled) {
                     g_world_state.enabled = false;
+                    g_seqscr_workspace = false;
+                }
             }
             if (g_world_state.enabled) {
                 if (ImGui::MenuItem("Marked Row Playback", NULL, &g_world_marked_state.marked_play)) {
@@ -1446,6 +1486,8 @@ void DrawMainLayout(void)
                 ImGui::MenuItem("Marked Playback Paused", NULL, &g_world_marked_state.paused);
                 ImGui::SetNextItemWidth(80);
                 ImGui::SliderFloat("Marked FPS", &g_world_marked_state.fps, 1.0f, 60.0f, "%.1f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Ticks per second. MK2 runs at %.1f.", kMk2TickHz);
                 if (ImGui::MenuItem("Dummy Decap Body", NULL,
                                     &g_world_marked_state.dummy_decap_body)) {
                     g_world_marked_state.dummy_decap_reset = true;
@@ -1518,14 +1560,9 @@ void DrawMainLayout(void)
         {
             const char *name = (g_doc->fname_s[0] != '\0') ? g_doc->fname_s : "(unsaved)";
             char label[128];
-            char zoom_part[32] = "";
-            if (g_doc->ilselected >= 0 && !g_world_state.enabled) {
-                snprintf(zoom_part, sizeof(zoom_part), "   Zoom %.0f%%",
-                         g_zoom_effective * 100.0f);
-            }
-            snprintf(label, sizeof(label), "%s%s%s",
+            snprintf(label, sizeof(label), "%s%s",
                      g_dirty ? "* " : "  ",     /* ASCII asterisk — universal 'modified' convention */
-                     name, zoom_part);
+                     name);
             float text_w = ImGui::CalcTextSize(label).x + 16.0f;
             float avail_w = ImGui::GetContentRegionAvail().x;
             if (avail_w > text_w) ImGui::SameLine(ImGui::GetCursorPosX() + (avail_w - text_w));
@@ -1546,13 +1583,16 @@ void DrawMainLayout(void)
     float work_h = sh - work_y;
     bool world_sequence_timeline =
         g_world_state.enabled && g_world_marked_state.marked_play;
-    g_world_marked_panel_docked = world_sequence_timeline;
-    bool hide_bottom_palette = g_world_state.enabled;
+    /* The Sequence/Script workspace lays out its own viewport, inspector, and
+       entry table inside the canvas, so it wants the whole canvas rect and
+       neither the palette strip nor the sprite timeline underneath it. */
+    g_world_marked_panel_docked = world_sequence_timeline || g_seqscr_workspace;
+    bool hide_bottom_palette = g_world_state.enabled || g_seqscr_workspace;
     float bottom_palette_h = hide_bottom_palette ? 0.0f : PALETTE_H;
     float canvas_x = TOOLBAR_W;
     float canvas_y = work_y;
     float canvas_w = sw - TOOLBAR_W - PANEL_W;
-    float timeline_h = TIMELINE_H;
+    float timeline_h = g_seqscr_workspace ? 0.0f : TIMELINE_H;
     float canvas_h = work_h - bottom_palette_h - timeline_h;
     if (world_sequence_timeline) {
         int guide_w = g_world_state.w > 512 ? g_world_state.w : 512;
@@ -1564,40 +1604,26 @@ void DrawMainLayout(void)
 
         int lane_count = 0;
         int entry_count = 0;
-        if (g_world_marked_state.embedded_active) {
-            lane_count = 1;
-            entry_count =
-                (int)g_world_marked_state.sequence_frames[kWorldEmbeddedSeqScrSlot].size();
-        } else {
-            for (int doc_idx = 0; doc_idx < document_tab_count(); doc_idx++) {
-                Document *doc = document_get(doc_idx);
-                bool has_marked_frames = false;
-                for (IMG *img = doc ? (IMG *)doc->img_p : NULL;
-                     img; img = (IMG *)img->nxt_p) {
-                    if ((img->flags & 1) && img->data_p &&
-                        img->w > 0 && img->h > 0) {
-                        has_marked_frames = true;
-                        entry_count++;
-                    }
+        for (int doc_idx = 0; doc_idx < document_tab_count(); doc_idx++) {
+            Document *doc = document_get(doc_idx);
+            bool has_marked_frames = false;
+            for (IMG *img = doc ? (IMG *)doc->img_p : NULL;
+                 img; img = (IMG *)img->nxt_p) {
+                if ((img->flags & 1) && img->data_p &&
+                    img->w > 0 && img->h > 0) {
+                    has_marked_frames = true;
+                    entry_count++;
                 }
-                if (has_marked_frames) lane_count++;
             }
-            if (g_world_marked_state.dummy_decap_body)
-                lane_count++;
+            if (has_marked_frames) lane_count++;
         }
+        if (g_world_marked_state.dummy_decap_body)
+            lane_count++;
         if (lane_count < 1) lane_count = 1;
         if (entry_count < 1) entry_count = 1;
 
-        float desired_panel_h = 0.0f;
-        if (g_world_marked_state.embedded_active) {
-            int visible_rows = entry_count < 10 ? entry_count : 10;
-            float table_base = g_world_marked_state.embedded_is_script
-                             ? 78.0f : 132.0f;
-            desired_panel_h = table_base + (float)(visible_rows + 1) * 24.0f;
-        } else {
-            desired_panel_h = 88.0f + (float)lane_count * 72.0f;
-            if (entry_count > 8) desired_panel_h += 24.0f;
-        }
+        float desired_panel_h = 88.0f + (float)lane_count * 72.0f;
+        if (entry_count > 8) desired_panel_h += 24.0f;
         if (desired_panel_h < TIMELINE_H) desired_panel_h = TIMELINE_H;
         if (desired_panel_h > 380.0f) desired_panel_h = 380.0f;
 
@@ -1714,8 +1740,10 @@ void DrawMainLayout(void)
         if (images_open) {
             float list_h = panel_h * 0.30f;
             if (ImGui::BeginListBox("##imglist", ImVec2(-1, list_h))) {
-                if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                     g_palette_nav = false;
+                    g_seqscr_frame_nav = false;
+                }
                 /* Auto-scroll: when g_doc->ilselected changes (typically via Up/Down
                    keyboard nav, but also Prev/Next-Marked jumps or programmatic
                    selection), make sure the selected row is visible. Without
@@ -1923,6 +1951,7 @@ void DrawMainLayout(void)
                     if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_AllowDoubleClick)) {
                         g_doc->ilselected = row.idx;
                         g_palette_nav = false;
+                        g_seqscr_frame_nav = false;
                         if (ImGui::IsMouseDoubleClicked(0)) img->flags ^= 1;
                     }
                     if (selected && need_scroll && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
@@ -1944,7 +1973,10 @@ void DrawMainLayout(void)
 
                     ImGuiStorage *storage = ImGui::GetStateStorage();
                     ImGuiID open_id = ImGui::GetID("subframes_open");
-                    bool open = storage->GetBool(open_id, true);
+                    /* Collapsed by default: a file like BOSS4 has hundreds of
+                       chopped pieces, and expanding every group on open buries
+                       the frames you actually animate. */
+                    bool open = storage->GetBool(open_id, false);
 
                     char label[96];
                     const char *vis_icon = marked ? (g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT) : "   ";
@@ -1964,6 +1996,7 @@ void DrawMainLayout(void)
                     if (clicked) {
                         g_doc->ilselected = row.idx;
                         g_palette_nav = false;
+                        g_seqscr_frame_nav = false;
                         if (ImGui::IsMouseDoubleClicked(0) && !toggle_clicked) img->flags ^= 1;
                     }
                     if (selected && need_scroll && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
@@ -2021,15 +2054,22 @@ void DrawMainLayout(void)
                         if (rows[child_id].idx == g_doc->ilselected) any_selected = true;
                     }
 
+                    /* This name has no record of its own in the IMG — it is
+                       inferred from the piece names (BGBIGFIST1A/1B/... imply
+                       BGBIGFIST1). Give it the folder icon so it reads as the
+                       group it is, rather than an unlabelled gap where every
+                       other row has an icon. */
                     const char *vis_icon = any_marked ? (g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT) : "   ";
+                    const char *grp_icon = g_icon_font_loaded ? ICON_FOLDER : ICON_FOLDER_TXT;
                     char label[96];
-                    snprintf(label, sizeof(label), "%s     %s", vis_icon, parent.c_str());
+                    snprintf(label, sizeof(label), "%s %s  %s  (%d)", vis_icon, grp_icon,
+                             parent.c_str(), (int)child_rows.size());
 
                     ImGui::PushID(src.c_str());
                     ImGui::PushID(parent.c_str());
                     ImGuiStorage *storage = ImGui::GetStateStorage();
                     ImGuiID open_id = ImGui::GetID("virtual_subframes_open");
-                    bool open = storage->GetBool(open_id, true);
+                    bool open = storage->GetBool(open_id, false);
                     if (any_selected) {
                         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
                         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
@@ -2043,6 +2083,33 @@ void DrawMainLayout(void)
                     if (clicked) {
                         g_doc->ilselected = rows[child_rows[0]].idx;
                         g_palette_nav = false;
+                        g_seqscr_frame_nav = false;
+                    }
+                    if (ImGui::IsItemHovered() && !toggle_clicked) {
+                        ImGui::SetTooltip("%s has no record of its own in this IMG — only its %d pieces.\n"
+                                          "Clicking selects the first piece; right-click to act on the whole group.",
+                                          parent.c_str(), (int)child_rows.size());
+                    }
+                    if (ImGui::BeginPopupContextItem("##virtual_group_ctx")) {
+                        ImGui::TextDisabled("%s  (%d pieces, no parent record)",
+                                            parent.c_str(), (int)child_rows.size());
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Mark All Pieces")) {
+                            for (int cid : child_rows)
+                                if (rows[cid].img) rows[cid].img->flags |= 1;
+                            mark_dirty();
+                        }
+                        if (ImGui::MenuItem("Unmark All Pieces")) {
+                            for (int cid : child_rows)
+                                if (rows[cid].img) rows[cid].img->flags &= ~1;
+                            mark_dirty();
+                        }
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Select First Piece")) {
+                            g_doc->ilselected = rows[child_rows[0]].idx;
+                            g_palette_nav = false;
+                        }
+                        ImGui::EndPopup();
                     }
                     if (any_selected) ImGui::PopStyleColor(2);
                     if (open) {
@@ -2465,8 +2532,15 @@ void DrawMainLayout(void)
                                 g_request_animation_sidebar
                                     ? ImGuiTabItemFlags_SetSelected : 0)) {
         g_request_animation_sidebar = false;
+        /* --- Frames across the numbered IMG set ---
+           Sits above Library because it is what this tab is for now: pick the
+           character's frames, mark them, push them into a sequence. Sequence
+           and script editing itself lives in the canvas Anim tab. */
+        if (ImGui::CollapsingHeader("Frames", ImGuiTreeNodeFlags_DefaultOpen))
+            DrawSeqScrFrameBrowser(panel_h * 0.42f);
+
         /* --- Library Info --- */
-        if (ImGui::CollapsingHeader("Library")) {
+        if (ImGui::CollapsingHeader("Library", ImGuiTreeNodeFlags_DefaultOpen)) {
             int altpal_tables = 0;
             int point_tables = 0;
             for (IMG *scan = (IMG *)g_doc->img_p; scan; scan = (IMG *)scan->nxt_p) {
@@ -2481,237 +2555,12 @@ void DrawMainLayout(void)
             ImGui::Text("AltPals:  %d", altpal_tables);
             ImGui::Text("PtTbls:   %d", point_tables);
             ImGui::Text("Version:  0x%04X", g_doc->fileversion);
-            bool has_anim_blob = g_doc->scrseqmem_p && g_doc->scrseqbytes > 0;
             ImGui::Text("AnimBlob: %u B", g_doc->scrseqbytes);
-            if (!has_anim_blob) ImGui::BeginDisabled();
-            if (ImGui::Button("View/Edit Anim Data", ImVec2(-1, 0)))
-                g_show_seqscr_editor = true;
-            if (!has_anim_blob) ImGui::EndDisabled();
+            /* Sequence/script lists, ASM export, and the raw-data editor moved
+               to the canvas Anim tab, which has room to show them properly. */
+            ImGui::TextDisabled("Sequences and scripts: canvas > Anim tab.");
         }
 
-        std::vector<SeqScrRecordView> seqscr_records;
-        bool seqscr_truncated = false;
-        bool has_seqscr_records = SeqScrBuildRecords(seqscr_records,
-                                                     &seqscr_truncated);
-        static int s_seqscr_panel_doc_idx = -1;
-        static int s_seqscr_panel_selected = -1;
-        int active_doc_idx_for_seqscr = document_active_index();
-        if (s_seqscr_panel_doc_idx != active_doc_idx_for_seqscr) {
-            s_seqscr_panel_doc_idx = active_doc_idx_for_seqscr;
-            s_seqscr_panel_selected = -1;
-        }
-        auto find_seqscr_record = [&](int record_index) -> const SeqScrRecordView * {
-            for (const SeqScrRecordView &rec : seqscr_records) {
-                if (rec.index == record_index) return &rec;
-            }
-            return NULL;
-        };
-        auto load_seqscr_record = [&](const SeqScrRecordView &rec,
-                                      const char *name) {
-            s_seqscr_panel_doc_idx = active_doc_idx_for_seqscr;
-            s_seqscr_panel_selected = rec.index;
-            const char *kind = rec.script ? "script" : "sequence";
-            if (WorldLoadSeqScrRecord(rec.index)) {
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Loaded %s '%s' into World View.", kind, name);
-            } else {
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Could not load %s '%s'.", kind, name);
-            }
-            g_restore_msg_timer = 4.0f;
-        };
-        auto copy_seqscr_record_asm = [&](int record_index, const char *name) {
-            g_world_marked_state.generated_asm =
-                WorldBuildSeqScrAsmExport(record_index);
-            ImGui::SetClipboardText(g_world_marked_state.generated_asm.c_str());
-            snprintf(g_restore_msg, sizeof(g_restore_msg),
-                     "Copied anim ASM for '%s'.", name);
-            g_restore_msg_timer = 4.0f;
-        };
-        auto add_seqscr_record = [&](bool scripts) {
-            if (SeqScrAddRecord(scripts)) {
-                int new_global = scripts ? (int)(g_doc->seqcnt + g_doc->scrcnt) - 1
-                                         : (int)g_doc->seqcnt - 1;
-                int local_idx = scripts ? new_global - (int)g_doc->seqcnt : new_global;
-                s_seqscr_panel_doc_idx = active_doc_idx_for_seqscr;
-                s_seqscr_panel_selected = new_global;
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Added %s %d. Use Edit... to fill in its entries.",
-                         scripts ? "script" : "sequence", local_idx);
-            } else {
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Could not add %s (anim blob is truncated or out of memory).",
-                         scripts ? "script" : "sequence");
-            }
-            g_restore_msg_timer = 4.0f;
-        };
-        auto draw_seqscr_name_list = [&](const char *title, bool scripts,
-                                         const char *id_part) {
-            if (ImGui::CollapsingHeader(title)) {
-                float row_h = ImGui::GetTextLineHeightWithSpacing();
-                float list_h = row_h * (scripts ? 6.0f : 8.0f);
-                float max_list_h = panel_h * 0.24f;
-                if (list_h > max_list_h) list_h = max_list_h;
-                if (list_h < row_h * 3.0f) list_h = row_h * 3.0f;
-
-                if (!has_seqscr_records) {
-                    ImGui::BeginDisabled();
-                    char empty_id[48];
-                    snprintf(empty_id, sizeof(empty_id), "##%s_empty", id_part);
-                    ImGui::BeginListBox(empty_id, ImVec2(-1, list_h));
-                    ImGui::TextDisabled("None");
-                    ImGui::EndListBox();
-                    ImGui::EndDisabled();
-                } else {
-                    char list_id[48];
-                    snprintf(list_id, sizeof(list_id), "##%s_list", id_part);
-                    if (ImGui::BeginListBox(list_id, ImVec2(-1, list_h))) {
-                        if (ImGui::IsWindowHovered() &&
-                            ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                            g_palette_nav = false;
-                        bool any = false;
-                        for (const SeqScrRecordView &rec : seqscr_records) {
-                            if (rec.script != scripts) continue;
-                            any = true;
-                            int local_idx = scripts ? rec.index - (int)g_doc->seqcnt
-                                                    : rec.index;
-                            char fallback[32];
-                            snprintf(fallback, sizeof(fallback), "%s %d",
-                                     scripts ? "Script" : "Sequence", local_idx);
-                            const char *name = rec.name[0] ? rec.name : fallback;
-                            char label[96];
-                            snprintf(label, sizeof(label), "%02d  %.48s%s",
-                                     local_idx, name,
-                                     rec.truncated ? "  (truncated)" : "");
-                            bool selected =
-                                s_seqscr_panel_doc_idx == active_doc_idx_for_seqscr &&
-                                s_seqscr_panel_selected == rec.index;
-                            bool loaded =
-                                g_world_marked_state.embedded_active &&
-                                g_world_marked_state.embedded_doc_idx ==
-                                    active_doc_idx_for_seqscr &&
-                                g_world_marked_state.embedded_record_index == rec.index;
-                            if (loaded) selected = true;
-
-                            ImGui::PushID(rec.index);
-                            if (rec.truncated) ImGui::BeginDisabled();
-                            if (loaded)
-                                ImGui::PushStyleColor(ImGuiCol_Text,
-                                                      ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
-                            if (ImGui::Selectable(label, selected)) {
-                                load_seqscr_record(rec, name);
-                            }
-                            if (loaded) ImGui::PopStyleColor();
-                            if (ImGui::IsItemHovered()) {
-                                ImGui::SetTooltip("Load into World View frame sequence");
-                            }
-                            if (ImGui::BeginPopupContextItem("##seqscr_ctx")) {
-                                if (ImGui::MenuItem("Load in World View"))
-                                    load_seqscr_record(rec, name);
-                                if (ImGui::MenuItem("Copy Anim ASM"))
-                                    copy_seqscr_record_asm(rec.index, name);
-                                if (ImGui::MenuItem("Save Anim ASM")) {
-                                    g_world_marked_state.generated_asm =
-                                        WorldBuildSeqScrAsmExport(rec.index);
-                                    g_request_save_world_asm = true;
-                                }
-                                ImGui::Separator();
-                                if (ImGui::MenuItem("View/Edit Anim Data"))
-                                    g_show_seqscr_editor = true;
-                                ImGui::EndPopup();
-                            }
-                            if (rec.truncated) ImGui::EndDisabled();
-                            ImGui::PopID();
-                        }
-                        if (!any) ImGui::TextDisabled("None");
-                        ImGui::EndListBox();
-                    }
-                }
-
-                const SeqScrRecordView *selected_rec =
-                    find_seqscr_record(s_seqscr_panel_selected);
-                bool selected_ok = selected_rec && selected_rec->script == scripts &&
-                                   !selected_rec->truncated;
-                char selected_name_buf[32];
-                const char *selected_name = "";
-                if (selected_ok) {
-                    int local_idx = selected_rec->script
-                                  ? selected_rec->index - (int)g_doc->seqcnt
-                                  : selected_rec->index;
-                    snprintf(selected_name_buf, sizeof(selected_name_buf),
-                             "%s %d",
-                             selected_rec->script ? "Script" : "Sequence",
-                             local_idx);
-                    selected_name = selected_rec->name[0]
-                                  ? selected_rec->name : selected_name_buf;
-                }
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
-                char add_id[48];
-                snprintf(add_id, sizeof(add_id), "+##%s_add", id_part);
-                if (seqscr_truncated) ImGui::BeginDisabled();
-                if (ImGui::Button(add_id, ImVec2(24, 20)))
-                    add_seqscr_record(scripts);
-                if (ImGui::IsItemHovered() && !seqscr_truncated)
-                    ImGui::SetTooltip("Append a new empty %s; edit its entries with Edit...",
-                                      scripts ? "script" : "sequence");
-                if (seqscr_truncated) ImGui::EndDisabled();
-                ImGui::SameLine();
-
-                if (!selected_ok) ImGui::BeginDisabled();
-                char load_id[48];
-                snprintf(load_id, sizeof(load_id), "Load##%s_load", id_part);
-                if (ImGui::Button(load_id, ImVec2(52, 20)))
-                    load_seqscr_record(*selected_rec, selected_name);
-                ImGui::SameLine();
-                char copy_id[48];
-                snprintf(copy_id, sizeof(copy_id), "Copy ASM##%s_copy", id_part);
-                if (ImGui::Button(copy_id, ImVec2(78, 20)))
-                    copy_seqscr_record_asm(selected_rec->index, selected_name);
-                if (!selected_ok) ImGui::EndDisabled();
-                ImGui::SameLine();
-                char edit_id[48];
-                snprintf(edit_id, sizeof(edit_id), "Edit...##%s_edit", id_part);
-                if (ImGui::Button(edit_id, ImVec2(-1, 20)))
-                    g_show_seqscr_editor = true;
-                ImGui::PopStyleVar();
-
-                if (seqscr_truncated) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
-                                       "SEQSCR blob is truncated.");
-                }
-            }
-        };
-        draw_seqscr_name_list("Sequences", false, "seqscr_seq");
-        draw_seqscr_name_list("Scripts", true, "seqscr_scr");
-        if (has_seqscr_records) {
-            bool loaded_embedded =
-                g_world_marked_state.embedded_active &&
-                g_world_marked_state.embedded_doc_idx == document_active_index() &&
-                g_world_marked_state.embedded_record_index >= 0;
-            if (!loaded_embedded) ImGui::BeginDisabled();
-            if (ImGui::Button("Copy Loaded Anim ASM", ImVec2(-1, 0))) {
-                g_world_marked_state.generated_asm =
-                    WorldBuildSeqScrAsmExport(g_world_marked_state.embedded_record_index);
-                ImGui::SetClipboardText(g_world_marked_state.generated_asm.c_str());
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Copied loaded sequence/script ASM.");
-                g_restore_msg_timer = 4.0f;
-            }
-            if (ImGui::Button("Save Loaded Anim ASM", ImVec2(-1, 0))) {
-                g_world_marked_state.generated_asm =
-                    WorldBuildSeqScrAsmExport(g_world_marked_state.embedded_record_index);
-                g_request_save_world_asm = true;
-            }
-            if (!loaded_embedded) ImGui::EndDisabled();
-            if (ImGui::Button("Copy All Anim ASM", ImVec2(-1, 0))) {
-                g_world_marked_state.generated_asm = WorldBuildSeqScrAsmExport(-1);
-                ImGui::SetClipboardText(g_world_marked_state.generated_asm.c_str());
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Copied all embedded sequence/script ASM.");
-                g_restore_msg_timer = 4.0f;
-            }
-            ImGui::TextDisabled("Use Export > Write TBL for marked image records.");
-        }
         ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -2809,6 +2658,9 @@ void DrawMainLayout(void)
         }
     }
 
+    /* The Sequence/Script workspace fills the canvas rect to the screen
+       bottom, so there is no timeline strip to draw under it. */
+    if (timeline_h > 0.0f) {
     float timeline_y = canvas_y + canvas_h;
     float timeline_x = world_sequence_timeline ? canvas_x : 0.0f;
     float timeline_w = world_sequence_timeline ? canvas_w : sw;
@@ -2847,6 +2699,10 @@ void DrawMainLayout(void)
         ImGui::SameLine();
         ImGui::PushItemWidth(120);
         ImGui::SliderFloat("FPS", &g_play_speed, 1.0f, 60.0f, "%.1f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Ticks per second. MK2 runs at %.1f.", kMk2TickHz);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Game##timeline_game_fps")) g_play_speed = kMk2TickHz;
         ImGui::PopItemWidth();
 
         ImGui::SameLine();
@@ -3009,6 +2865,7 @@ void DrawMainLayout(void)
     }
     ImGui::End();
     ImGui::PopStyleVar();
+    }
 
     /* ===== BOTTOM PALETTE BAR ===== */
     if (!hide_bottom_palette) {
@@ -3781,6 +3638,7 @@ static void RequestCloseDocumentTab(int idx)
         ActivateDocumentTab(idx);
         g_pending_action = PendingAction::CloseTab;
         g_pending_tab_index = idx;
+        g_pending_tab_doc = doc;
         g_show_unsaved_confirm = true;
         return;
     }
@@ -3822,6 +3680,12 @@ float DrawDocumentTabBar(float y, float sw)
 
     ImGuiTabBarFlags tab_flags = ImGuiTabBarFlags_FittingPolicyScroll |
                                  ImGuiTabBarFlags_Reorderable;
+    /* Document tabs get the cool/blue treatment; the view-mode tabs directly
+       beneath them are tinted purple. The two bars sit in the same corner, so
+       without distinct colours "which file" and "which view" read alike. */
+    ImGui::PushStyleColor(ImGuiCol_Tab,         ImVec4(0.10f, 0.16f, 0.24f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_TabHovered,  ImVec4(0.22f, 0.45f, 0.72f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_TabSelected, ImVec4(0.18f, 0.38f, 0.62f, 1.00f));
     if (ImGui::BeginTabBar("##img_document_tabs", tab_flags)) {
         tab_bar_ptr = ImGui::GetCurrentTabBar();
         int n = document_tab_count();
@@ -3884,6 +3748,7 @@ float DrawDocumentTabBar(float y, float sw)
             new_tab = true;
         ImGui::EndTabBar();
     }
+    ImGui::PopStyleColor(3);
     g_doc_tab_select_request = -1;
 
     ImGui::End();

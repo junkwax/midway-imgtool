@@ -4016,6 +4016,304 @@ void DrawPaletteHistogramDialog(void)
     ImGui::EndPopup();
 }
 
+/* Rotary control for the palette-wide hue shift.
+ *
+ * The HSL controls are relative offsets applied to every (or every selected)
+ * swatch, so an absolute color wheel cannot express them. A dial can: the ring
+ * is a static hue reference with 0 at the top, the highlighted arc shows how
+ * far the palette's hues are being rotated, and the knob sits at the shifted
+ * angle. Double-click recenters. Returns true while the value is changing. */
+static bool PaletteHueDial(const char *id, int *hue_deg, float diameter)
+{
+    const float PI_F = 3.14159265358979f;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(id, ImVec2(diameter, diameter));
+    bool hovered = ImGui::IsItemHovered();
+    bool active  = ImGui::IsItemActive();
+
+    ImVec2 center(p0.x + diameter * 0.5f, p0.y + diameter * 0.5f);
+    float r_out = diameter * 0.5f - 1.0f;
+    float r_in  = r_out * 0.66f;
+
+    bool changed = false;
+    if (active) {
+        ImVec2 m = ImGui::GetIO().MousePos;
+        float dx = m.x - center.x;
+        float dy = m.y - center.y;
+        /* Dead zone at the hub so a stray click near center does not fling
+           the hue to whatever angle the cursor happens to be at. */
+        if (dx * dx + dy * dy > 36.0f) {
+            /* Screen angle measured from straight up, clockwise positive. */
+            int v = (int)lroundf(atan2f(dx, -dy) * (180.0f / PI_F));
+            if (v >  180) v -= 360;
+            if (v < -180) v += 360;
+            if (!ImGui::GetIO().KeyShift) {   /* Shift drags without snapping */
+                if (v > -4 && v < 4) v = 0;
+                else if (v > 176) v = 180;
+                else if (v < -176) v = -180;
+                else v = (v / 5) * 5;
+            }
+            if (v != *hue_deg) { *hue_deg = v; changed = true; }
+        }
+    }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+        *hue_deg != 0) {
+        *hue_deg = 0;
+        changed = true;
+    }
+
+    /* Hue ring. */
+    const int SEG = 64;
+    for (int i = 0; i < SEG; i++) {
+        float a0 = (float)i / SEG * 2.0f * PI_F - PI_F * 0.5f;
+        float a1 = (float)(i + 1) / SEG * 2.0f * PI_F - PI_F * 0.5f;
+        float rr, gg, bb;
+        ImGui::ColorConvertHSVtoRGB((float)i / SEG, 0.85f, 0.95f, rr, gg, bb);
+        ImU32 c = IM_COL32((int)(rr * 255), (int)(gg * 255), (int)(bb * 255), 255);
+        ImVec2 quad[4] = {
+            ImVec2(center.x + cosf(a0) * r_in,  center.y + sinf(a0) * r_in),
+            ImVec2(center.x + cosf(a0) * r_out, center.y + sinf(a0) * r_out),
+            ImVec2(center.x + cosf(a1) * r_out, center.y + sinf(a1) * r_out),
+            ImVec2(center.x + cosf(a1) * r_in,  center.y + sinf(a1) * r_in),
+        };
+        dl->AddConvexPolyFilled(quad, 4, c);
+    }
+
+    /* Rotation arc from 12 o'clock to the current shift. */
+    float knob_a = (float)*hue_deg * (PI_F / 180.0f) - PI_F * 0.5f;
+    if (*hue_deg != 0) {
+        float a_from = -PI_F * 0.5f;
+        dl->PathArcTo(center, (r_in + r_out) * 0.5f,
+                      (*hue_deg > 0) ? a_from : knob_a,
+                      (*hue_deg > 0) ? knob_a : a_from, 48);
+        dl->PathStroke(IM_COL32(20, 20, 20, 210), 0, (r_out - r_in) * 0.42f);
+    }
+
+    /* Zero reference notch and knob. */
+    dl->AddLine(ImVec2(center.x, center.y - r_out - 1.0f),
+                ImVec2(center.x, center.y - r_in + 1.0f),
+                IM_COL32(255, 255, 255, 200), 2.0f);
+    ImVec2 knob(center.x + cosf(knob_a) * (r_in + r_out) * 0.5f,
+                center.y + sinf(knob_a) * (r_in + r_out) * 0.5f);
+    float knob_r = (r_out - r_in) * 0.46f;
+    dl->AddCircleFilled(knob, knob_r, IM_COL32(250, 250, 250, 255), 20);
+    dl->AddCircle(knob, knob_r, IM_COL32(0, 0, 0, 220), 20,
+                  (hovered || active) ? 2.5f : 1.5f);
+
+    /* Degree readout in the hub. */
+    char txt[16];
+    snprintf(txt, sizeof(txt), "%+d\xc2\xb0", *hue_deg);
+    ImVec2 ts = ImGui::CalcTextSize(txt);
+    dl->AddText(ImVec2(center.x - ts.x * 0.5f, center.y - ts.y * 0.5f),
+                IM_COL32(235, 235, 235, 255), txt);
+    return changed;
+}
+
+/* Coalesce a click-drag into one undo entry instead of one per frame. */
+static void begin_palette_drag_undo(void)
+{
+    if (!g_palette_drag_undo_active) {
+        doc_undo_push();
+        g_palette_drag_undo_active = true;
+    }
+}
+static void end_palette_drag_undo_if_idle(void)
+{
+    if (g_palette_drag_undo_active && !ImGui::IsAnyItemActive())
+        g_palette_drag_undo_active = false;
+}
+
+void DrawActiveSwatchPickerBody(float width)
+{
+    if (g_sel_color < 0 || g_sel_color >= 256) return;
+    SDL_Color &col = g_palette[g_sel_color];
+    ImGui::TextDisabled("Swatch #%d", g_sel_color);
+    /* The picker is a group of sub-widgets, so a tooltip hung off it only
+       fires in the gaps. Hang the hint on this label instead. */
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Spin the ring for hue, drag inside the triangle for saturation and\n"
+        "brightness. The R/G/B and H/S/V rows take typed values; right-click\n"
+        "the wheel to switch back to a hue bar. Colors are stored as 15-bit\n"
+        "RGB555, so fine steps may round.");
+    float rgbf[3] = { col.r / 255.0f, col.g / 255.0f, col.b / 255.0f };
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::ColorPicker3("##tool_color", rgbf,
+                            ImGuiColorEditFlags_PickerHueWheel |
+                            ImGuiColorEditFlags_DisplayRGB |
+                            ImGuiColorEditFlags_DisplayHSV |
+                            ImGuiColorEditFlags_DisplayHex |
+                            ImGuiColorEditFlags_NoSidePreview |
+                            ImGuiColorEditFlags_NoSmallPreview |
+                            ImGuiColorEditFlags_NoLabel)) {
+        begin_palette_drag_undo();
+        col.r = (unsigned char)lroundf(rgbf[0] * 255.0f);
+        col.g = (unsigned char)lroundf(rgbf[1] * 255.0f);
+        col.b = (unsigned char)lroundf(rgbf[2] * 255.0f);
+        palette_writeback(g_sel_color);
+        commit_palette_adjustments();
+    }
+    end_palette_drag_undo_if_idle();
+}
+
+/* Palette-wide HSL offsets: hue as a rotary dial, saturation and lightness as
+   bipolar sliders. Laid out in a single `width`-wide column so it fits the
+   narrow left toolbar. */
+void DrawActiveSwatchHslControls(float width)
+{
+    float x = ImGui::GetCursorPosX();
+    auto apply = [&]() {
+        begin_palette_drag_undo();
+        g_hue_last   = g_hue_slider;
+        g_sat_last   = g_sat_slider;
+        g_light_last = g_light_slider;
+        hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
+    };
+
+    int n_sel = 0;
+    for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) n_sel++;
+
+    ImGui::SetCursorPosX(x);
+    if (PaletteHueDial("##hue_dial", &g_hue_slider, width)) apply();
+    if (ImGui::IsItemHovered()) {
+        if (n_sel > 0)
+            ImGui::SetTooltip("Hue rotation, applied to the %d selected swatch%s.\n"
+                              "Drag to spin; Shift drags without the 5-degree snap;\n"
+                              "double-click recenters.",
+                              n_sel, n_sel == 1 ? "" : "es");
+        else
+            ImGui::SetTooltip("Hue rotation, applied to the whole palette.\n"
+                              "Ctrl/Shift-click swatches to scope it to a subset.\n"
+                              "Drag to spin; Shift drags without the 5-degree snap;\n"
+                              "double-click recenters.");
+    }
+
+    ImGui::SetCursorPosX(x);
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::DragInt("##hue", &g_hue_slider, 1.0f, -180, 180, "%d\xc2\xb0")) apply();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Exact hue rotation. Ctrl+click to type a value.");
+
+    ImGui::SetCursorPosX(x);
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::SliderInt("##sat", &g_sat_slider, -100, 100, "S %d%%")) apply();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Saturation: -100 = grayscale, +100 = fully saturated.");
+
+    ImGui::SetCursorPosX(x);
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::SliderInt("##light", &g_light_slider, -100, 100, "L %d%%")) apply();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Lightness: -100 = black, +100 = white.");
+
+    ImGui::SetCursorPosX(x);
+    if (ImGui::SmallButton("Reset")) {
+        doc_undo_push();
+        reset_palette_adjust_sliders();
+        reset_palette_to_baseline();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Zero the H/S/L offsets and restore the palette baseline.");
+
+    end_palette_drag_undo_if_idle();
+}
+
+void InvertSelectedPaletteColors(void)
+{
+    if (g_doc->plselected < 0) return;
+    PAL *pal = get_pal(g_doc->plselected);
+    if (!pal || !pal->data_p) return;
+    int n = (int)pal->numc;
+    if (n > 256) n = 256;
+    if (n <= 0) return;
+
+    bool any_sel = false;
+    for (int i = 0; i < n; i++) if (g_palette_selection[i]) { any_sel = true; break; }
+
+    doc_undo_push();
+    unsigned char *data = (unsigned char *)pal->data_p;
+    int inverted = 0;
+    for (int i = 0; i < n; i++) {
+        /* Whole-palette mode leaves index 0 alone: it is the transparent slot,
+           and flipping it silently changes what "Copy #0" pastes. Invert it
+           only when the user explicitly selected it. */
+        if (any_sel ? !g_palette_selection[i] : (i == 0)) continue;
+        unsigned short w = (unsigned short)(data[i * 2] | (data[i * 2 + 1] << 8));
+        unsigned short r5 = (unsigned short)(31 - ((w >> 10) & 0x1F));
+        unsigned short g5 = (unsigned short)(31 - ((w >>  5) & 0x1F));
+        unsigned short b5 = (unsigned short)(31 - ( w        & 0x1F));
+        w = (unsigned short)((r5 << 10) | (g5 << 5) | b5);
+        data[i * 2]     = (unsigned char)(w & 0xFF);
+        data[i * 2 + 1] = (unsigned char)((w >> 8) & 0xFF);
+        inverted++;
+    }
+
+    ApplyPalette(g_doc->plselected);
+    commit_palette_adjustments();
+    InvalidatePaletteUsage();
+    g_img_tex_idx = -2;
+    mark_dirty();
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             any_sel ? "Inverted %d selected palette color%s."
+                     : "Inverted %d palette color%s (index 0 left alone).",
+             inverted, inverted == 1 ? "" : "s");
+    g_restore_msg_timer = 4.0f;
+}
+
+/* Reverse the ORDER of colors across the selected indices: the lowest selected
+   index takes the highest selected index's color and so on. A light-to-dark
+   ramp becomes dark-to-light.
+
+   Pixel data is deliberately left alone. Remapping pixels to follow the colors
+   would leave the sprite looking identical, which defeats the point — this is
+   a ramp-direction effect, the same class of edit as the RGB complement
+   invert next to it. */
+void ReverseSelectedPaletteOrder(void)
+{
+    if (g_doc->plselected < 0) return;
+    PAL *pal = get_pal(g_doc->plselected);
+    if (!pal || !pal->data_p) return;
+    int n = (int)pal->numc;
+    if (n > 256) n = 256;
+    if (n <= 0) return;
+
+    bool any_sel = false;
+    for (int i = 0; i < n; i++) if (g_palette_selection[i]) { any_sel = true; break; }
+
+    /* Same index-0 rule as the color invert: the transparent slot is only
+       touched when the user selected it on purpose. */
+    std::vector<int> idx;
+    for (int i = 0; i < n; i++) {
+        if (any_sel ? !g_palette_selection[i] : (i == 0)) continue;
+        idx.push_back(i);
+    }
+    if (idx.size() < 2) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Select at least two swatches to reverse their order.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    doc_undo_push();
+    unsigned char *data = (unsigned char *)pal->data_p;
+    for (size_t a = 0, b = idx.size() - 1; a < b; a++, b--) {
+        int ia = idx[a], ib = idx[b];
+        std::swap(data[ia * 2],     data[ib * 2]);
+        std::swap(data[ia * 2 + 1], data[ib * 2 + 1]);
+    }
+
+    ApplyPalette(g_doc->plselected);
+    commit_palette_adjustments();
+    InvalidatePaletteUsage();
+    g_img_tex_idx = -2;
+    mark_dirty();
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Reversed the order of %d palette color%s (index %d..%d).",
+             (int)idx.size(), idx.size() == 1 ? "" : "s",
+             idx.front(), idx.back());
+    g_restore_msg_timer = 4.0f;
+}
+
 void DrawRightPanelPaletteEditor(float panel_h)
 {
     int n_pals = count_pals();
@@ -4237,6 +4535,23 @@ void DrawRightPanelPaletteEditor(float panel_h)
                 if (ImGui::MenuItem("Merge Duplicate Palettes")) MergeDuplicatePalettes();
                 if (ImGui::MenuItem("Inherit Colors from Marked")) InheritSelectedPaletteFromMarked();
                 ImGui::Separator();
+                {
+                    int n_sel = 0;
+                    for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) n_sel++;
+                    char label[56];
+                    if (n_sel > 0) snprintf(label, sizeof(label), "Invert Selected Colors (%d)", n_sel);
+                    else           snprintf(label, sizeof(label), "Invert Whole Palette");
+                    if (ImGui::MenuItem(label)) InvertSelectedPaletteColors();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                        "Flip colors to their RGB555 complement (31-R, 31-G, 31-B).\n"
+                        "With nothing selected this skips transparent index 0.\n"
+                        "Running it twice restores the original colors.");
+                    if (ImGui::MenuItem("Reverse Color Order")) ReverseSelectedPaletteOrder();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                        "Reverse the order of the colors across their indices\n"
+                        "(low-to-high becomes high-to-low). Colors unchanged.");
+                }
+                ImGui::Separator();
                 if (ImGui::MenuItem("Downscale Palette (Bpp)...")) OpenPaletteReduceDialog(7);
                 if (ImGui::MenuItem("Copy #0 to Opaque Slot")) CopyPaletteZeroToOpaqueSlot();
                 if (ImGui::MenuItem("Move Selected Colors to End")) MoveSelectedPaletteColorsToEnd();
@@ -4248,46 +4563,24 @@ void DrawRightPanelPaletteEditor(float panel_h)
     }
 
     if (ImGui::CollapsingHeader("Color Tools", ImGuiTreeNodeFlags_DefaultOpen)) {
-        auto begin_palette_drag_undo = []() {
-            if (!g_palette_drag_undo_active) {
-                doc_undo_push();
-                g_palette_drag_undo_active = true;
-            }
-        };
-        SDL_Color &col = g_palette[g_sel_color];
-        int r = col.r, g = col.g, b = col.b;
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("R");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("##tool_rgb_r", &r, 0, 255)) {
-            begin_palette_drag_undo();
-            col.r = (unsigned char)r;
-            palette_writeback(g_sel_color);
-            commit_palette_adjustments();
+        /* The wheel and the H/S/L controls live on the left toolbar now, next
+           to the active-color square. */
+        {
+            SDL_Color &col = g_palette[g_sel_color];
+            ImVec2 cp = ImGui::GetCursorScreenPos();
+            float sz = ImGui::GetFrameHeight();
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(cp, ImVec2(cp.x + sz, cp.y + sz),
+                              IM_COL32(col.r, col.g, col.b, 255));
+            dl->AddRect(cp, ImVec2(cp.x + sz, cp.y + sz), IM_COL32(255, 255, 255, 80));
+            ImGui::Dummy(ImVec2(sz, sz));
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("#%d - edit on the toolbar", g_sel_color);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Click the color square on the left toolbar to open the color\n"
+                "wheel; the hue dial and S/L sliders sit right under it.");
         }
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("G");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("##tool_rgb_g", &g, 0, 255)) {
-            begin_palette_drag_undo();
-            col.g = (unsigned char)g;
-            palette_writeback(g_sel_color);
-            commit_palette_adjustments();
-        }
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("B");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("##tool_rgb_b", &b, 0, 255)) {
-            begin_palette_drag_undo();
-            col.b = (unsigned char)b;
-            palette_writeback(g_sel_color);
-            commit_palette_adjustments();
-        }
-        if (g_palette_drag_undo_active && !ImGui::IsAnyItemActive())
-            g_palette_drag_undo_active = false;
         ImGui::Separator();
 
         PAL *active_pal = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
@@ -4329,46 +4622,29 @@ void DrawRightPanelPaletteEditor(float panel_h)
             "will become opaque too.");
         if (!can_copy_zero) ImGui::EndDisabled();
         ImGui::Separator();
-        bool any_sel = false;
-        for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) { any_sel = true; break; }
-        if (any_sel) {
-            int n_sel = 0;
-            for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) n_sel++;
-            ImGui::TextDisabled("HSL adjustments target %d selected swatch%s (Ctrl/Shift-click to add).",
-                                n_sel, n_sel == 1 ? "" : "es");
+        int n_sel = 0;
+        for (int psi = 0; psi < 256; psi++) if (g_palette_selection[psi]) n_sel++;
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        if (n_sel > 0) {
+            ImGui::TextWrapped("Color edits target %d selected swatch%s (Ctrl/Shift-click to add).",
+                               n_sel, n_sel == 1 ? "" : "es");
         } else {
-            ImGui::TextDisabled("HSL adjustments target the whole palette. Ctrl/Shift-click swatches to scope to a subset.");
+            ImGui::TextWrapped("Color edits target the whole palette. Ctrl/Shift-click swatches to scope to a subset.");
         }
-        ImGui::Text("Hue");
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("##hue", &g_hue_slider, -180, 180)) {
-            begin_palette_drag_undo();
-            g_hue_last = g_hue_slider;
-            hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
+        ImGui::PopStyleColor();
+        {
+            char label[48];
+            if (n_sel > 0) snprintf(label, sizeof(label), "Invert Selected (%d)", n_sel);
+            else           snprintf(label, sizeof(label), "Invert Whole Palette");
+            if (ImGui::SmallButton(label)) InvertSelectedPaletteColors();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                n_sel > 0
+                    ? "Flip each selected color to its RGB555 complement\n"
+                      "(31-R, 31-G, 31-B). Run it twice to get back."
+                    : "Flip every color to its RGB555 complement (31-R, 31-G,\n"
+                      "31-B), leaving transparent index 0 alone. Ctrl/Shift-click\n"
+                      "swatches first to invert only those. Run twice to get back.");
         }
-        ImGui::Text("Saturation");
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("##sat", &g_sat_slider, -100, 100, "%d%%")) {
-            begin_palette_drag_undo();
-            g_sat_last = g_sat_slider;
-            hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = grayscale, +100 = fully saturated. Makes a yellow more yellow at positive values.");
-        ImGui::Text("Lightness");
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("##light", &g_light_slider, -100, 100, "%d%%")) {
-            begin_palette_drag_undo();
-            g_light_last = g_light_slider;
-            hsl_adjust_palette_from_baseline(g_hue_slider, g_sat_slider, g_light_slider);
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("-100 = black, +100 = white.");
-        if (ImGui::SmallButton("Reset HSL")) {
-            doc_undo_push();
-            reset_palette_adjust_sliders();
-            reset_palette_to_baseline();
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Reset Hue/Saturation/Lightness sliders to 0 and restore the palette baseline.");
         ImGui::SameLine();
         if (ImGui::SmallButton("New from HSL")) {
             PAL *src = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
@@ -4394,8 +4670,7 @@ void DrawRightPanelPaletteEditor(float panel_h)
                 }
             }
         }
-        if (g_palette_drag_undo_active && !ImGui::IsAnyItemActive())
-            g_palette_drag_undo_active = false;
+        end_palette_drag_undo_if_idle();
         ImGui::Separator();
         if (ImGui::SmallButton("Variant Selection")) ApplyVariantToSelection();
         if (ImGui::IsItemHovered())

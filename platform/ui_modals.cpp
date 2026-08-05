@@ -89,7 +89,7 @@ static int  g_gif_trim_tolerance   = 12;
 static bool g_gif_export_loop = true;
 static bool g_gif_export_pingpong = false;
 static bool g_gif_export_align_anipoints = true;
-static float g_gif_export_fps = 12.0f;
+static float g_gif_export_fps = kMk2TickHz;  /* exported GIFs play at game speed */
 static int  g_sheet_bg_threshold  = 245;
 static int  g_sheet_min_pixels    = 160;
 static int  g_sheet_padding       = 2;
@@ -978,6 +978,78 @@ static const char* GetDialogExtension(FileDialogMode mode)
     return "";
 }
 
+/* Modes that write a file the user names. Open/import modes are excluded: a
+   partial name typed there is a filter, not a target, and appending to it
+   would break the match. SaveMarkedLbm is excluded too — it derives one name
+   per marked sprite and ignores the typed one. */
+static bool FileDialogModeWritesNamedFile(FileDialogMode mode)
+{
+    switch (mode) {
+        case FileDialogMode::SaveImg:
+        case FileDialogMode::SaveLbm:
+        case FileDialogMode::SaveTga:
+        case FileDialogMode::ExportTga:
+        case FileDialogMode::ExportPng:
+        case FileDialogMode::ExportGif:
+        case FileDialogMode::ExportPalette:
+        case FileDialogMode::ExportWorldPng:
+        case FileDialogMode::ExportWorldPngSeq:
+        case FileDialogMode::WriteAniLst:
+        case FileDialogMode::WriteTbl:
+        case FileDialogMode::WriteIrw:
+        case FileDialogMode::SaveAsmAnim:
+        case FileDialogMode::SaveWorldProject:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* Fill `out` with the name the save will actually use: the typed name plus the
+   mode's extension when it has none. Returns false when the name is already
+   complete (or the mode does not auto-complete), leaving `out` untouched.
+   An existing extension is always respected — "BOSS.BAK" stays "BOSS.BAK". */
+static bool FileDialogResolveSaveName(FileDialogMode mode, char *out, size_t out_sz)
+{
+    if (!FileDialogModeWritesNamedFile(mode)) return false;
+    if (g_file_dialog_file[0] == '\0') return false;
+    const char *ext = GetDialogExtension(mode);
+    if (!ext || ext[0] == '\0') return false;
+
+    /* Only the basename can carry an extension: a name like "..\OUT" must not
+       read the leading ".." as one. */
+    size_t base_off = 0;
+    for (size_t i = 0; g_file_dialog_file[i]; i++) {
+        char c = g_file_dialog_file[i];
+        if (c == '\\' || c == '/' || c == ':') base_off = i + 1;
+    }
+    const char *base = g_file_dialog_file + base_off;
+    if (base[0] == '\0' || strchr(base, '.')) return false;
+
+    size_t ext_len = strlen(ext);
+    size_t stem_len = strlen(base);
+    /* SaveImg writes through g_doc->fname_s, a DOS 8.3 field capped at 12
+       chars. Appending past that truncates the extension itself, so trim the
+       stem rather than producing "MYLONGNAME.I". */
+    if (mode == FileDialogMode::SaveImg) {
+        size_t max_stem = 12 - (ext_len + 1);
+        if (stem_len > max_stem) stem_len = max_stem;
+    }
+    if (base_off + stem_len + 1 + ext_len + 1 > out_sz) return false;
+    memcpy(out, g_file_dialog_file, base_off + stem_len);
+    out[base_off + stem_len] = '.';
+    memcpy(out + base_off + stem_len + 1, ext, ext_len + 1);
+    return true;
+}
+
+/* "SCORPION" typed into a Save dialog means SCORPION.IMG. */
+static void FileDialogAutoAppendExtension(FileDialogMode mode)
+{
+    char resolved[sizeof(g_file_dialog_file)];
+    if (FileDialogResolveSaveName(mode, resolved, sizeof(resolved)))
+        memcpy(g_file_dialog_file, resolved, strlen(resolved) + 1);
+}
+
 void OpenFileDialog(FileDialogMode mode) {
     /* For IMG-category modes, g_doc->fpath_s (set when an IMG is currently loaded)
        seeds the dialog so the user starts in the same dir as their open
@@ -1435,6 +1507,10 @@ void DrawFileDialog() {
         }
         if (g_file_dialog_mode == FileDialogMode::ExportGif) {
             ImGui::SliderFloat("Frames Per Second", &g_gif_export_fps, 1.0f, 60.0f, "%.1f");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Game##gif_game_fps")) g_gif_export_fps = kMk2TickHz;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("MK2 runs at %.1f ticks/sec.", kMk2TickHz);
             ImGui::Checkbox("Loop Forever", &g_gif_export_loop);
             ImGui::Checkbox("Ping-Pong", &g_gif_export_pingpong);
             ImGui::Checkbox("Align Frames by Primary Anipoint", &g_gif_export_align_anipoints);
@@ -1507,7 +1583,7 @@ void DrawFileDialog() {
         if (ImGui::InputText("File Name", g_file_dialog_file, sizeof(g_file_dialog_file)))
             FileDialogSyncTypedFilename();
         ImGui::SameLine();
-        
+
         const char* btn_text = (g_file_dialog_mode == FileDialogMode::ImportPng ||
                                 g_file_dialog_mode == FileDialogMode::ImportPngMatch ||
                                 g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch ||
@@ -1523,6 +1599,10 @@ void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::CompareTbl ||
                                 g_file_dialog_mode == FileDialogMode::ImportPalette) ? "Open" : "Save";
         if (ImGui::Button(btn_text, ImVec2(100, 0)) || dbl_click_commit) {
+            /* Before anything reads the name: a save with no extension gets
+               the mode's own. Every path below (full_path, g_doc->fname_s,
+               the per-mode forced extensions) then sees the completed name. */
+            FileDialogAutoAppendExtension(g_file_dialog_mode);
             std::vector<std::string> selected_files = FileDialogSelectedFiles();
             std::string full_path = PathCombine(g_file_dialog_dir, g_file_dialog_file);
 
@@ -1866,6 +1946,13 @@ void DrawFileDialog() {
         }
         if (FileDialogSupportsMultiSelect(g_file_dialog_mode) && g_file_dialog_multi_files.size() > 1)
             ImGui::TextDisabled("%d files selected", (int)g_file_dialog_multi_files.size());
+        {
+            /* Show the completed name before they commit, so the auto-extension
+               (and any 8.3 stem trim it forced) is never a surprise. */
+            char resolved[sizeof(g_file_dialog_file)];
+            if (FileDialogResolveSaveName(g_file_dialog_mode, resolved, sizeof(resolved)))
+                ImGui::TextDisabled("Saves as: %s", resolved);
+        }
         ImGui::EndPopup();
     }
 }
@@ -1911,7 +1998,7 @@ static int          g_asm_anim_canvas_w = 0, g_asm_anim_canvas_h = 0;
 static int          g_asm_anim_minx = 0, g_asm_anim_miny = 0;
 static int          g_asm_anim_last_drawn = -1;
 static bool         g_asm_anim_play = true;
-static float        g_asm_anim_fps = 12.0f;
+static float        g_asm_anim_fps = kMk2TickHz;
 
 /* =========================================================
    Extracted dialogs and modals from imgui_overlay.cpp
@@ -3389,7 +3476,7 @@ static bool LoadWorldProjectFile(const char *path)
     g_asm_anim_play = WvpGetBool(kv, "asm.window.play", g_asm_anim_play);
     g_asm_anim_fps = WvpGetFloat(kv, "asm.window.fps", g_asm_anim_fps);
     if (g_asm_anim_fps < 1.0f) g_asm_anim_fps = 1.0f;
-    if (g_asm_anim_fps > 30.0f) g_asm_anim_fps = 30.0f;
+    if (g_asm_anim_fps > 60.0f) g_asm_anim_fps = 60.0f;
 
     int active_saved = WvpGetInt(kv, "doc.active", -1);
     int active_idx = WvpResolveDocIndex(active_saved, std::string(), doc_map);
@@ -3521,7 +3608,9 @@ void DrawAsmAnimWindow(void)
 
     ImGui::Checkbox("Play", &g_asm_anim_play);
     ImGui::SameLine(); ImGui::SetNextItemWidth(120);
-    ImGui::SliderFloat("fps", &g_asm_anim_fps, 1.0f, 30.0f, "%.0f");
+    ImGui::SliderFloat("fps", &g_asm_anim_fps, 1.0f, 60.0f, "%.1f");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Game##asm_game_fps")) g_asm_anim_fps = kMk2TickHz;
     int nframes = (int)a.frames.size();
     if (nframes > 0) {
         ImGui::SameLine(); ImGui::SetNextItemWidth(140);
@@ -4410,7 +4499,7 @@ static void Mk2FatalityApplyTimelineFromPlan(const mk2fatal::AssetPlan &plan,
     if (!g_timeline_frames.empty()) {
         g_doc->ilselected = g_timeline_frames[0];
         g_is_playing = true;
-        g_play_speed = 8.0f;
+        g_play_speed = kMk2TickHz;
         g_zoom_reset = true;
     }
 }
@@ -5780,6 +5869,116 @@ bool SeqScrAppendEntries(int record_index, const std::vector<int> &target_indice
            old_bytes - insert_at);
     SeqScrWriteU16(nb + rec.offset + 18,
                    (unsigned short)(rec.num + target_indices.size()));
+    doc_undo_push();
+    free(g_doc->scrseqmem_p);
+    g_doc->scrseqmem_p = nb;
+    g_doc->scrseqbytes = (unsigned int)new_bytes;
+    mark_dirty();
+    return true;
+}
+
+bool SeqScrReadEntries(int record_index, std::vector<SeqScrEntryValues> &out)
+{
+    out.clear();
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    if (!SeqScrBuildRecords(records, &truncated) || truncated ||
+        record_index < 0 || record_index >= (int)records.size())
+        return false;
+    const SeqScrRecordView &rec = records[(size_t)record_index];
+    if (rec.truncated) return false;
+
+    const SeqScrLayoutInfo li = SeqScrLayout();
+    const unsigned char *blob = (const unsigned char *)g_doc->scrseqmem_p;
+    out.reserve((size_t)rec.num);
+    for (int e = 0; e < rec.num; e++) {
+        const unsigned char *entry = blob + rec.entries_offset +
+                                     (size_t)e * (size_t)li.entry_size;
+        SeqScrEntryValues v;
+        v.index = (int)SeqScrReadI16(entry + li.entry_index_off);
+        v.ticks = entry[li.entry_ticks_off];
+        v.dx    = (int)SeqScrReadI16(entry + li.entry_dx_off);
+        v.dy    = (int)SeqScrReadI16(entry + li.entry_dy_off);
+        out.push_back(v);
+    }
+    return true;
+}
+
+bool SeqScrReplaceEntries(int record_index,
+                          const std::vector<SeqScrEntryValues> &entries)
+{
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    if (!SeqScrBuildRecords(records, &truncated) || truncated ||
+        record_index < 0 || record_index >= (int)records.size())
+        return false;
+    const SeqScrRecordView &rec = records[(size_t)record_index];
+    if (rec.truncated) return false;
+
+    const SeqScrLayoutInfo li = SeqScrLayout();
+    for (const SeqScrEntryValues &v : entries) {
+        if (v.index < 0) return false;
+        if (!rec.script && v.index >= (int)g_doc->imgcnt) return false;
+        if (rec.script && v.index >= (int)g_doc->seqcnt) return false;
+        if (v.ticks < 0 || v.ticks > 255) return false;
+        if (v.dx < -32768 || v.dx > 32767) return false;
+        if (v.dy < -32768 || v.dy > 32767) return false;
+    }
+
+    unsigned char *blob = (unsigned char *)g_doc->scrseqmem_p;
+    int new_num = (int)entries.size();
+
+    /* Nothing to do when the blob already says this. Callers reconcile every
+       frame, so a no-op must not push undo or dirty the document. */
+    if (new_num == rec.num) {
+        bool same = true;
+        for (int e = 0; e < new_num && same; e++) {
+            const unsigned char *entry = blob + rec.entries_offset +
+                                         (size_t)e * (size_t)li.entry_size;
+            same = (int)SeqScrReadI16(entry + li.entry_index_off) == entries[(size_t)e].index &&
+                   (int)entry[li.entry_ticks_off] == entries[(size_t)e].ticks &&
+                   (int)SeqScrReadI16(entry + li.entry_dx_off) == entries[(size_t)e].dx &&
+                   (int)SeqScrReadI16(entry + li.entry_dy_off) == entries[(size_t)e].dy;
+        }
+        if (same) return true;
+    }
+
+    size_t old_bytes = (size_t)g_doc->scrseqbytes;
+    size_t old_entries_bytes = (size_t)rec.num * (size_t)li.entry_size;
+    size_t new_entries_bytes = (size_t)new_num * (size_t)li.entry_size;
+    size_t tail_off = rec.entries_offset + old_entries_bytes;
+    if (tail_off > old_bytes) return false;
+    size_t new_bytes = old_bytes - old_entries_bytes + new_entries_bytes;
+
+    unsigned char *nb = (unsigned char *)malloc(new_bytes ? new_bytes : 1);
+    if (!nb) return false;
+    memcpy(nb, blob, rec.entries_offset);
+
+    for (int e = 0; e < new_num; e++) {
+        unsigned char *dst = nb + rec.entries_offset +
+                             (size_t)e * (size_t)li.entry_size;
+        /* Carry the old entry across so its spare words survive; entries past
+           the old end start zeroed. */
+        if (e < rec.num) {
+            memcpy(dst, blob + rec.entries_offset +
+                        (size_t)e * (size_t)li.entry_size,
+                   (size_t)li.entry_size);
+        } else {
+            memset(dst, 0, (size_t)li.entry_size);
+        }
+        SeqScrWriteU16(dst + li.entry_index_off,
+                       (unsigned short)(short)entries[(size_t)e].index);
+        dst[li.entry_ticks_off] = (unsigned char)entries[(size_t)e].ticks;
+        SeqScrWriteU16(dst + li.entry_dx_off,
+                       (unsigned short)(short)entries[(size_t)e].dx);
+        SeqScrWriteU16(dst + li.entry_dy_off,
+                       (unsigned short)(short)entries[(size_t)e].dy);
+    }
+
+    memcpy(nb + rec.entries_offset + new_entries_bytes,
+           blob + tail_off, old_bytes - tail_off);
+    SeqScrWriteU16(nb + rec.offset + 18, (unsigned short)new_num);
+
     doc_undo_push();
     free(g_doc->scrseqmem_p);
     g_doc->scrseqmem_p = nb;
@@ -7334,9 +7533,11 @@ static void RunPendingAction(void)
     PendingAction act = g_pending_action;
     std::string   path = g_pending_action_path;
     int           tab_idx = g_pending_tab_index;
+    Document     *tab_doc = g_pending_tab_doc;
     g_pending_action = PendingAction::None;
     g_pending_action_path.clear();
     g_pending_tab_index = -1;
+    g_pending_tab_doc = NULL;
     switch (act) {
         case PendingAction::Quit: {
             int dirty_idx = FindDirtyDocumentIndex();
@@ -7350,14 +7551,76 @@ static void RunPendingAction(void)
         case PendingAction::OpenDialog:     OpenFileDialog(FileDialogMode::OpenImg); break;
         case PendingAction::OpenPath:       OpenImgFile(path); break;
         case PendingAction::OpenLodDialog:  OpenFileDialog(FileDialogMode::OpenLod); break;
-        case PendingAction::CloseTab:
-            if (tab_idx < 0) tab_idx = document_active_index();
-            document_close_tab(tab_idx);
+        case PendingAction::CloseTab: {
+            /* Resolve by document pointer, not by the index captured when the
+               prompt opened. Anything that opens or reorders tabs while the
+               modal is up (the Anim tab's sibling-IMG auto-open does exactly
+               that) shifts indices, and closing a stale index closes somebody
+               else's file. */
+            int resolved = -1;
+            if (tab_doc) {
+                for (int i = 0; i < document_tab_count(); i++)
+                    if (document_get(i) == tab_doc) { resolved = i; break; }
+                if (resolved < 0) break;   /* already gone; nothing to close */
+            } else {
+                resolved = (tab_idx >= 0) ? tab_idx : document_active_index();
+            }
+            document_close_tab(resolved);
             ResetPerDocumentUiState(false);
             g_doc_tab_select_request = document_active_index();
             break;
+        }
         case PendingAction::None: default:  break;
     }
+}
+
+/* Centre the next modal in the viewport. Applied on Appearing so a user can
+   still drag it, but a fresh open never lands off-screen. */
+void CenterNextModal(void)
+{
+    ImVec2 c = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+}
+
+/* Deadlock guard. A modal whose flag is set but whose BeginPopupModal keeps
+   returning false is invisible AND blocking: ImGui routes input to a popup
+   that never draws, so the window cannot be clicked or closed. That happens
+   when OpenPopup lands on a different ID-stack level than the Begin (e.g. it
+   fired while another popup owned the stack). Rather than leave the app
+   wedged, give it a few frames to appear and then drop the state. */
+static const char *s_modal_watch_name = NULL;
+static int s_modal_watch_frames = 0;
+
+void ModalWatchdogClear(void)
+{
+    s_modal_watch_name = NULL;
+    s_modal_watch_frames = 0;
+}
+
+void ModalWatchdog(bool &flag, const char *name)
+{
+    if (!flag) { ModalWatchdogClear(); return; }
+    if (s_modal_watch_name != name) {
+        s_modal_watch_name = name;
+        s_modal_watch_frames = 0;
+    }
+    if (++s_modal_watch_frames < 30) return;   /* ~half a second of grace */
+
+    /* Force it shut and clear anything queued behind it, so the user gets the
+       app back instead of a frozen window. The pending action is dropped
+       deliberately: silently closing a tab or quitting after a prompt the user
+       never saw would be worse than doing nothing. */
+    flag = false;
+    g_pending_action = PendingAction::None;
+    g_pending_action_path.clear();
+    g_pending_tab_index = -1;
+    g_pending_tab_doc = NULL;
+    g_pending_quit = false;
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Recovered from a '%s' dialog that could not be displayed; the action was cancelled.",
+             name);
+    g_restore_msg_timer = 6.0f;
+    ModalWatchdogClear();
 }
 
 void DrawUnsavedChangesConfirm(void)
@@ -7374,7 +7637,16 @@ void DrawUnsavedChangesConfirm(void)
         }
     }
     if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
-    if (!ImGui::BeginPopupModal("Unsaved Changes", &g_show_unsaved_confirm, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    /* Always (re)centre on appearing. ImGui persists window positions in
+       imgui.ini, so a modal that was once dragged off-screen — or that was
+       last shown on a bigger display — reopens outside the viewport. It still
+       captures input, which locks the app behind a dialog nobody can see. */
+    CenterNextModal();
+    if (!ImGui::BeginPopupModal("Unsaved Changes", &g_show_unsaved_confirm, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ModalWatchdog(g_show_unsaved_confirm, "Unsaved Changes");
+        return;
+    }
+    ModalWatchdogClear();
 
     const char *verb =
         (g_pending_action == PendingAction::OpenDialog ||
@@ -7384,6 +7656,17 @@ void DrawUnsavedChangesConfirm(void)
                                                         : "before quitting";
     ImGui::Text("You have unsaved changes.");
     ImGui::Text("Do you want to save %s?", verb);
+    /* Name the file. Closing a background tab activates it first, so without
+       this the prompt looks like it is asking about whatever tab you were
+       just looking at. */
+    {
+        Document *target = (g_pending_action == PendingAction::CloseTab && g_pending_tab_doc)
+                         ? g_pending_tab_doc : g_doc;
+        if (target && target->fname_s[0])
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "%s", target->fname_s);
+        else
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "(unsaved)");
+    }
     ImGui::Spacing();
     ImGui::Separator();
     if (ImGui::Button("Save", ImVec2(80, 0))) {
@@ -7430,6 +7713,7 @@ void DrawMk2UnsavedChangesConfirm(void)
 
 {
     if (g_show_mk2_unsaved_confirm) ImGui::OpenPopup("MK2 Hitboxes - Unsaved");
+    CenterNextModal();
     if (!ImGui::BeginPopupModal("MK2 Hitboxes - Unsaved", &g_show_mk2_unsaved_confirm,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
 
@@ -7468,6 +7752,7 @@ void DrawMk2FatalityUnsavedChangesConfirm(void)
 
 {
     if (g_show_mk2_fatality_unsaved_confirm) ImGui::OpenPopup("MK2 Fatality Lab - Unsaved");
+    CenterNextModal();
     if (!ImGui::BeginPopupModal("MK2 Fatality Lab - Unsaved", &g_show_mk2_fatality_unsaved_confirm,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
 

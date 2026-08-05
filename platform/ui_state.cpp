@@ -97,6 +97,15 @@ int g_clone_dx = 0;
 int g_clone_dy = 0;
 int g_remap_target_color = -1;
 int g_remap_tolerance = 0;
+int g_blur_brush = 3;
+int g_blur_strength = 60;
+int g_smudge_brush = 3;
+int g_smudge_strength = 70;
+int g_content_erase_brush = 4;
+int g_content_erase_passes = 8;
+int g_smudge_last_x = 0;
+int g_smudge_last_y = 0;
+bool g_smudge_have_last = false;
 int g_eraser_tolerance = 0;
 bool g_eraser_contiguous = true;
 bool g_eraser_defringe = true;
@@ -134,6 +143,32 @@ int  g_snap_guide_y = 0;
 
 WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
 bool g_world_marked_panel_docked = false;
+bool g_seqscr_workspace = false;
+bool g_seqscr_frame_nav = false;
+
+int g_canvas_backdrop = CanvasBackdrop_Checker;
+
+const char *CanvasBackdropName(int mode)
+{
+    switch (mode) {
+        case CanvasBackdrop_Pink:  return "Pink";
+        case CanvasBackdrop_Green: return "Green";
+        case CanvasBackdrop_Blue:  return "Blue";
+        default:                   return "Checker";
+    }
+}
+
+ImU32 CanvasBackdropColor(int mode)
+{
+    /* Saturated keys, deliberately outside the MK2 palettes' usual range so
+       leftover fringe pixels stand out instead of blending in. */
+    switch (mode) {
+        case CanvasBackdrop_Pink:  return IM_COL32(255, 0, 255, 255);
+        case CanvasBackdrop_Green: return IM_COL32(0, 255, 0, 255);
+        case CanvasBackdrop_Blue:  return IM_COL32(0, 90, 255, 255);
+        default:                   return IM_COL32(100, 100, 100, 255);
+    }
+}
 bool g_show_dma_comp = false;
 
 ImageListSort g_image_list_sort = ImageListSort::Original;
@@ -145,7 +180,7 @@ bool g_show_seqscr_editor = false;
 const float TOOLBAR_W = 76.0f;
 const float PANEL_W = 280.0f;
 
-float g_play_speed = 12.0f;
+float g_play_speed = kMk2TickHz;   /* ticks/sec: timeline holds are game ticks too */
 float g_play_timer = 0.0f;
 unsigned int g_timeline_built_for_imgcnt = 0;
 bool g_timeline_pingpong = false;
@@ -179,6 +214,7 @@ bool          g_show_unsaved_confirm = false;
 PendingAction g_pending_action = PendingAction::None;
 std::string   g_pending_action_path;
 int           g_pending_tab_index = -1;
+Document     *g_pending_tab_doc = NULL;
 bool          g_show_delete_images_confirm = false;
 char          g_pending_delete_parent_name[16] = {0};
 std::vector<int> g_pending_delete_base_indices;

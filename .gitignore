@@ -41,3 +41,7 @@ Thumbs.db
 !README.md
 !CHANGELOG.md
 !CONTRIBUTING.md
+
+# ImGui window/layout state — per-user, per-display. Committing it is how a
+# modal ends up reopening off-screen on someone else machine.
+imgui.ini
