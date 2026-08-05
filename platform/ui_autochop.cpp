@@ -132,7 +132,9 @@ static void AutoChopPreviewClear(AutoChopPreview *p)
     p->best_split_pos = 0;
 }
 
-static int AutoChopBppForImage(const IMG *img)
+/* Shared with the Sprite panel's ROM readout: both have to answer "what depth
+   will LOAD2 pack this at" the same way, or the two numbers disagree. */
+int Load2BppForImage(const IMG *img)
 {
     PAL *pal = img ? get_pal((int)img->palnum) : NULL;
     if (g_load2_ppp > 0 && g_load2_ppp <= 8) {
@@ -161,7 +163,7 @@ bool BuildAutoChopPreviewForImage(const IMG *img, AutoChopPreview *out)
         return false;
 
     out->target_count = 1;
-    out->bpp = AutoChopBppForImage(img);
+    out->bpp = Load2BppForImage(img);
     out->src_uncomp_bits = (long long)img->w * (long long)img->h * out->bpp;
     out->src_zcom_bits = EstimateZcomBitsForRect(img, 0, 0, img->w, img->h,
                                                  out->bpp);
@@ -310,7 +312,7 @@ static bool BuildAutoSplitPreviewForImageAt(const IMG *img, bool vertical,
 
     out->target_count = 1;
     out->raw_cells = 2;
-    out->bpp = AutoChopBppForImage(img);
+    out->bpp = Load2BppForImage(img);
     out->src_uncomp_bits = (long long)w * (long long)h * out->bpp;
     out->src_zcom_bits = EstimateZcomBitsForRect(img, 0, 0, w, h, out->bpp);
     out->best_split_valid = true;

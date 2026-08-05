@@ -32,6 +32,8 @@
 #include "mk2_hitbox.h"
 #include "mk2_fatality.h"
 #include "ui_bodysplit.h"
+#include "ui_autochop.h"
+#include "dma_pack.h"
 #include "compat.h"
 
 extern "C" { extern struct SDL_Color g_palette[256]; }
@@ -1727,9 +1729,17 @@ void DrawMainLayout(void)
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoSavedSettings);
     {
+        /* Mirror of the canvas view tabs: picking Animation here puts the
+           canvas on Anim, just as picking Anim there brings this panel
+           forward. Tracked as a selection transition because ImGui queues tab
+           selection a frame ahead of the tab body running. */
+        enum { kPanelTabAssets = 0, kPanelTabSprite, kPanelTabAnimation };
+        static int last_panel_tab = -1;
+        int panel_tab = last_panel_tab;
         if (ImGui::BeginTabBar("##right_panel_tabs",
                                ImGuiTabBarFlags_FittingPolicyScroll)) {
         if (ImGui::BeginTabItem("Assets")) {
+        panel_tab = kPanelTabAssets;
         /* --- Image List --- */
         int n_imgs = count_imgs();
         bool images_open = ImGui::CollapsingHeader("Images", ImGuiTreeNodeFlags_DefaultOpen);
@@ -2329,6 +2339,7 @@ void DrawMainLayout(void)
         }
 
         if (ImGui::BeginTabItem("Sprite")) {
+        panel_tab = kPanelTabSprite;
 
         /* --- Properties --- */
         if (ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -2337,24 +2348,53 @@ void DrawMainLayout(void)
                 LabeledValue("Name:", "%.15s", img->n_s);
                 LabeledValue("Size:", "%d x %d", (int)img->w, (int)img->h);
 
+                /* ROM cost, modelled on LOAD2 rather than estimated: the old
+                   readout assumed 8bpp and a byte per kept pixel, which
+                   overstated packed art badly (MK2 ships PPP> 6) and ignored
+                   the run-unit quantization. See platform/dma_pack.cpp. */
                 if (img->data_p && img->w > 0 && img->h > 0) {
-                    int uncomp_size = img->w * img->h;
-                    int comp_size = 0;
-                    unsigned short stride = (img->w + 3) & ~3;
-                    unsigned char *pixels = (unsigned char *)img->data_p;
-                    for (int y = 0; y < img->h; y++) {
-                        int leading = 0;
-                        while (leading < img->w && pixels[y * stride + leading] == 0) leading++;
-                        if (leading == img->w) {
-                            comp_size += 1; /* completely empty line: 1 byte header, 0 pixels */
-                        } else {
-                            int trailing = 0;
-                            while (trailing < img->w && pixels[y * stride + (img->w - 1 - trailing)] == 0) trailing++;
-                            comp_size += 1 + (img->w - leading - trailing);
-                        }
+                    int stride = ((int)img->w + 3) & ~3;
+                    const unsigned char *pixels = (const unsigned char *)img->data_p;
+                    int bpp = Load2BppForImage(img);
+                    DmaPackResult pack = DmaAnalyzeSprite(pixels, (int)img->w,
+                                                          (int)img->h, stride,
+                                                          bpp, true);
+                    unsigned long raw_b = DmaBitsToBytes(pack.raw_bits);
+                    unsigned long packed_b = DmaBitsToBytes(pack.packed_bits);
+
+                    LabeledValue("DMA ROM:", "%lu B raw @ %dbpp", raw_b, pack.bpp);
+                    if (pack.compressed) {
+                        int saved = raw_b ? (int)(100 - (packed_b * 100 / raw_b)) : 0;
+                        LabeledValue("", "%lu B packed  (-%d%%)", packed_b, saved);
+                    } else {
+                        LabeledValue("", "%lu B packed  (uncompressed)", packed_b);
                     }
-                    LabeledValue("DMA ROM:", "%d B raw", uncomp_size);
-                    LabeledValue("",         "%d B compressed", comp_size);
+                    if (ImGui::IsItemHovered()) {
+                        if (pack.compressed)
+                            ImGui::SetTooltip(
+                                "What LOAD2 would emit for this sprite.\n"
+                                "Zero compression on: leading runs in units of %d px,\n"
+                                "trailing in units of %d px, 8 bits of lead/trail\n"
+                                "header per line. DMA control word 0x%04X.",
+                                pack.lead_factor, pack.trail_factor,
+                                (unsigned)pack.control_word);
+                        else
+                            ImGui::SetTooltip(
+                                "What LOAD2 would emit for this sprite.\n"
+                                "Not zero-compressed: %s.\n"
+                                "DMA control word 0x%04X.",
+                                pack.skip_reason ? pack.skip_reason : "unknown",
+                                (unsigned)pack.control_word);
+                    }
+
+                    /* The depth is the lever worth surfacing: crossing a
+                       power-of-two boundary cuts every frame on this palette,
+                       and nothing else in the pipeline comes close. */
+                    int tight = DmaSuperBpp(pixels, (int)img->w, (int)img->h,
+                                            stride, bpp);
+                    if (tight < pack.bpp)
+                        LabeledValue("", "fits %dbpp (-%d%%)", tight,
+                                     (int)(100 - (long)tight * 100 / pack.bpp));
                 }
 
                 PAL *pal = get_pal(img->palnum);
@@ -2389,25 +2429,57 @@ void DrawMainLayout(void)
         }
 
         /* --- Anim Point Editor --- */
-        if (ImGui::CollapsingHeader("Anipts Tools")) {
+        if (ImGui::CollapsingHeader("Anipts Tools", ImGuiTreeNodeFlags_DefaultOpen)) {
             IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             if (img) {
                 int ax = (short)img->anix, ay = (short)img->aniy;
                 int ax2 = (short)img->anix2, ay2 = (short)img->aniy2, az2 = (short)img->aniz2;
-                if (AnimPointSliderInt("X1##ptx",  &ax,  -1024, 1024))
+                /* Captioned row per point rather than one full-width bar per
+                   component: the three second-point fields only fit across the
+                   280 px panel when the heading gets its own line, and the
+                   grouping is what tells you which numbers move together. */
+                const float kAniFieldW = 58.0f;
+                auto ani_field = [&](const char *caption, const char *id,
+                                     int *value) {
+                    ImGui::TextUnformatted(caption);
+                    ImGui::SameLine(0.0f, 3.0f);
+                    bool changed = AnimPointDragInt(id, value, -1024, 1024, kAniFieldW);
+                    ImGui::SameLine(0.0f, 8.0f);
+                    return changed;
+                };
+
+                ImGui::TextUnformatted("Point 1  (anchor)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Primary anipoint (anix/aniy): the pixel the game pins\n"
+                                      "to the object's position when it draws this frame.\n"
+                                      "Drag a field, or click it and use Left/Right to nudge\n"
+                                      "one pixel at a time.");
+                ImGui::Indent(10.0f);
+                if (ani_field("X", "##ptx", &ax))
                     set_primary_anipoint_local(img, ax, (int)(short)img->aniy);
-                if (AnimPointSliderInt("Y1##pty",  &ay,  -1024, 1024))
+                if (ani_field("Y", "##pty", &ay))
                     set_primary_anipoint_local(img, (int)(short)img->anix, ay);
-                if (AnimPointSliderInt("X2##ptx2", &ax2, -1024, 1024)) {
+                ImGui::NewLine();
+                ImGui::Unindent(10.0f);
+
+                ImGui::TextUnformatted("Point 2  (optional)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Secondary anipoint (anix2/aniy2/aniz2), -1/-1/-1 when\n"
+                                      "unused. Z is the depth this piece sorts at against the\n"
+                                      "other pieces of a multi-piece frame.");
+                ImGui::Indent(10.0f);
+                if (ani_field("X", "##ptx2", &ax2)) {
                     int cur_y2 = secondary_anipoint_in_use(img) ? (int)(short)img->aniy2 : 0;
                     set_secondary_anipoint_local(img, ax2, cur_y2);
                 }
-                if (AnimPointSliderInt("Y2##pty2", &ay2, -1024, 1024)) {
+                if (ani_field("Y", "##pty2", &ay2)) {
                     int cur_x2 = secondary_anipoint_in_use(img) ? (int)(short)img->anix2 : 0;
                     set_secondary_anipoint_local(img, cur_x2, ay2);
                 }
-                if (AnimPointSliderInt("AZ2##ptz2", &az2, -1024, 1024))
+                if (ani_field("Z", "##ptz2", &az2))
                     set_secondary_anipoint_z_local(img, az2);
+                ImGui::NewLine();
+                ImGui::Unindent(10.0f);
 
                 ImGui::Spacing();
                 DrawAnipointCenterOffsetReadout(img);
@@ -2531,6 +2603,7 @@ void DrawMainLayout(void)
         if (ImGui::BeginTabItem("Animation", NULL,
                                 g_request_animation_sidebar
                                     ? ImGuiTabItemFlags_SetSelected : 0)) {
+        panel_tab = kPanelTabAnimation;
         g_request_animation_sidebar = false;
         /* --- Frames across the numbered IMG set ---
            Sits above Library because it is what this tab is for now: pick the
@@ -2565,6 +2638,15 @@ void DrawMainLayout(void)
         }
         ImGui::EndTabBar();
         }
+        /* Link already pairs with this panel, so switching here while the Link
+           workspace is open leaves the canvas alone instead of kicking the
+           user out of it. */
+        if (panel_tab != last_panel_tab && panel_tab == kPanelTabAnimation &&
+            !AnipointLink().enabled) {
+            g_seqscr_workspace = true;
+            g_world_state.enabled = false;
+        }
+        last_panel_tab = panel_tab;
     }
     ImGui::End();
     ImGui::PopStyleColor();

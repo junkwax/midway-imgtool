@@ -307,10 +307,15 @@ void LabeledValue(const char *label, const char *fmt, ...)
     va_end(args);
 }
 
-bool AnimPointSliderInt(const char *label, int *value, int min_value, int max_value)
+/* Compact numeric field for one anipoint component. Drag to scrub,
+   double/ctrl-click to type, Left/Right to nudge by one pixel while it holds
+   focus — the nudge is the point, so the widget is kept narrow and captioned
+   by the caller rather than stretched across the panel like a scroll bar. */
+bool AnimPointDragInt(const char *label, int *value, int min_value, int max_value,
+                      float width)
 {
     int original_value = *value;
-    ImGui::SetNextItemWidth(-1);
+    ImGui::SetNextItemWidth(width);
     bool changed = ImGui::DragInt(label, value, 1.0f, min_value, max_value);
     bool selected = ImGui::IsItemActive() || ImGui::IsItemFocused();
 

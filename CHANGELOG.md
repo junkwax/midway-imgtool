@@ -8,6 +8,69 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.20.0] — the ROM readout tells the truth, and the tabs agree with each other
+
+Headline: the Sprite panel's DMA ROM figure is now a port of LOAD2's own
+packaging math rather than an estimate of it. The old readout assumed one byte
+per kept pixel — that is 8bpp, and MK2 ships `PPP> 6`, so it overstated every
+packed sprite by a third before the run-length quantization was even
+considered. `zcom_analysis()` is now reproduced statement for statement from
+`doc/load2/zcom.c`, with unit tests whose expected values are derived from the
+original so the port fails the build if it drifts.
+
+Alongside it: the canvas view tabs and the sidebar tabs stop disagreeing about
+what you are working on, and the anim point fields become something you can
+actually aim at.
+
+### ROM cost
+- **`platform/dma_pack.{h,cpp}`** — new pure module. `DmaAnalyzeSprite()` ports
+  zero compression including both clamps the estimates skipped: a field encodes
+  at most 15 run units (so a 28-pixel margin needs unit 2, not unit 1), and no
+  compressed line may keep fewer than `ZCOMPIXELS` pixels, which hands margin
+  back on small art in a wide frame. `DmaSuperBpp()` ports the `do_superbpp`
+  auto-packing ladder.
+- Faithful to the original's quirks, deliberately: fully transparent art packs
+  at 2bpp, because `max == 0` misses `== 1` and lands on `< 4`. Documented at
+  each site rather than corrected — a model that silently disagrees with the
+  packager is worse than no model.
+- **The Sprite panel** now reports `raw @ Nbpp` and packed bytes with a percent
+  saved, and names the DMA control word and both run units on hover. When
+  compression is refused it says which rule refused it (too narrow, taller than
+  LOAD2's 256-line `zero_array`, or simply larger compressed than raw).
+- **A `fits Nbpp` line** appears when the art does not need its declared depth.
+  Crossing a power-of-two boundary cuts every frame drawn from that palette,
+  and nothing else in the pipeline comes close — 41 colors is 6bpp art, and
+  getting under 32 buys a whole bit per pixel.
+- `AutoChopBppForImage` became `Load2BppForImage` in `ui_autochop.h`, so the
+  panel and the chopper cannot answer "what depth will this pack at"
+  differently. Both honor `PPP>` with the palette-depth override.
+- Unchanged on purpose: the approximations in `load2_verify.cpp` and
+  `ui_autochop.cpp`. Both document themselves as approximate and both are used
+  for deltas and for ranking options against each other, where that is fine.
+  Unifying them would move SAG-misalign verdicts, which is not a side effect a
+  readout fix should have.
+
+### View tabs
+- **Anim and Animation are one mode again.** Selecting the canvas `Anim` tab
+  brings the sidebar `Animation` panel forward, and selecting that panel puts
+  the canvas on `Anim`.
+- This also fixes the same sync for `Link`, which never worked: it hung off
+  `IsItemActivated()` inside the tab body, and ImGui queues tab selection, so
+  the frame a tab is clicked is never the frame its body runs. Both directions
+  now key off the selection transition instead.
+- Switching to `Animation` while the Link workspace is open leaves the canvas
+  alone, rather than kicking you out of Link to satisfy the pairing.
+
+### Anim points
+- **Anipts Tools opens by default** on the Sprite tab.
+- The five full-width drag bars become two captioned rows of compact fields —
+  `Point 1 (anchor)` with X and Y, `Point 2 (optional)` with X, Y and Z — so
+  the grouping shows which numbers move together and the widgets stop reading
+  as scroll bars. Hover either heading for what the values mean.
+- Behavior is unchanged: drag to scrub, double or ctrl-click to type, Left and
+  Right nudge a pixel at a time, and World View still reserves those keys for
+  frame flicking.
+
 ## [v3.19.0] — the Anim workspace, a character-wide frame library, and real game timing
 
 Headline: sequence and script editing has its own workspace instead of riding

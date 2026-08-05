@@ -8,6 +8,11 @@
 #include "img_format.h"
 #include "ui_internal.h" /* For AutoChopPreview */
 
+/* Bits per pixel LOAD2 will pack this sprite's data at: the PPP> directive
+   when one is in force (overridden by the palette's own depth if the palette
+   has more colors than PPP> can address), otherwise the palette's depth. */
+int Load2BppForImage(const IMG *img);
+
 void DrawAutoChopDialog(void);
 void OpenAutoChopDialog(void);
 void BuildAutoChopTargetSummary(AutoChopPreview *out);

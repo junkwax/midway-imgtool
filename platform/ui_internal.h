@@ -701,7 +701,8 @@ void RequestDeleteMarkedImages(void);
 
 struct SpriteCleanupOptions;
 void LabeledValue(const char *label, const char *fmt, ...);
-bool AnimPointSliderInt(const char *label, int *value, int min_value, int max_value);
+bool AnimPointDragInt(const char *label, int *value, int min_value, int max_value,
+                      float width = -1.0f);
 std::string sprite_family_key(const std::string &name);
 std::string sprite_family_regex_pattern(const std::string &name);
 int PushAnipointsToMatchingOpenTabs(const IMG *src, int *matched_count, int *doc_count, std::string *pattern_out);

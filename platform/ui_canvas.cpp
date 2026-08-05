@@ -8518,8 +8518,6 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
             if (ImGui::BeginTabItem("Link", NULL,
                                     sync_canvas_tab && requested_canvas_mode == 3
                                         ? ImGuiTabItemFlags_SetSelected : 0)) {
-                if (ImGui::IsItemActivated())
-                    g_request_animation_sidebar = true;
                 AnipointLink().enabled = true;
                 g_world_state.enabled = false;
                 g_seqscr_workspace = false;
@@ -8543,7 +8541,20 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
             ImGui::EndTabBar();
         }
         ImGui::PopStyleColor(3);
-        last_canvas_mode = current_canvas_mode();
+        /* Anim and Link are both driven from the Animation sidebar, so
+           entering either view brings that panel forward: the two tab strips
+           are two halves of one mode and should never disagree about what you
+           are working on. Keyed off the mode transition rather than the tab
+           click because ImGui queues tab selection — the frame a tab is
+           clicked is not the frame its body runs, so IsItemActivated() inside
+           the tab body never fires. The sidebar's matching sync (panel ->
+           canvas) is a transition too, so the pair settles instead of
+           ping-ponging. */
+        int new_canvas_mode = current_canvas_mode();
+        if (new_canvas_mode != last_canvas_mode &&
+            (new_canvas_mode == 2 || new_canvas_mode == 3))
+            g_request_animation_sidebar = true;
+        last_canvas_mode = new_canvas_mode;
         ImVec2 avail   = ImGui::GetContentRegionAvail();
         ImVec2 img_pos = ImGui::GetCursorScreenPos();
         ImVec2 canvas_origin = img_pos;
