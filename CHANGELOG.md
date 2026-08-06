@@ -8,6 +8,29 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.21.1] — Anim tab playback frame rate
+
+Fixes juddering playback in the Anim workspace. The frame browser submitted
+every row of the library on every frame — ~470 rows across a character's ten
+IMGs — and resolved each one with `doc_get_img`, which walks the image list
+from its head. Two more full passes ran for the marked count and the keyboard
+handlers' nav check. The result was hundreds of thousands of pointer hops and
+several hundred string allocations per frame, which dropped the render rate
+below the animation's 54.7 Hz tick rate.
+
+Ticks advance from elapsed real time, so the *timing* was right the whole
+time; there simply were not enough rendered frames to show it, which reads as
+judder rather than as wrong speed.
+
+- The browser resolves rows through an index table built once per draw instead
+  of an O(n) list walk per row.
+- `ImGuiListClipper` submits only the rows actually on screen, with the
+  keyboard selection force-included so stepping still scrolls to it.
+- The marked-count and Mark Shown / Clear passes share the same table, and the
+  nav check no longer touches IMGs at all.
+- The Anim toolbar shows the render rate beside the tick rate, and warns when
+  it falls below it, so under-sampling is distinguishable from bad timing.
+
 ## [v3.21.0] — World View stops fighting you
 
 Headline: three things in World View were quietly broken rather than merely
@@ -157,29 +180,6 @@ actually aim at.
 - Behavior is unchanged: drag to scrub, double or ctrl-click to type, Left and
   Right nudge a pixel at a time, and World View still reserves those keys for
   frame flicking.
-
-## [v3.19.1] — Anim tab playback frame rate
-
-Fixes juddering playback in the Anim workspace. The frame browser submitted
-every row of the library on every frame — ~470 rows across a character's ten
-IMGs — and resolved each one with `doc_get_img`, which walks the image list
-from its head. Two more full passes ran for the marked count and the keyboard
-handlers' nav check. The result was hundreds of thousands of pointer hops and
-several hundred string allocations per frame, which dropped the render rate
-below the animation's 54.7 Hz tick rate.
-
-Ticks advance from elapsed real time, so the *timing* was right the whole
-time; there simply were not enough rendered frames to show it, which reads as
-judder rather than as wrong speed.
-
-- The browser resolves rows through an index table built once per draw instead
-  of an O(n) list walk per row.
-- `ImGuiListClipper` submits only the rows actually on screen, with the
-  keyboard selection force-included so stepping still scrolls to it.
-- The marked-count and Mark Shown / Clear passes share the same table, and the
-  nav check no longer touches IMGs at all.
-- The Anim toolbar shows the render rate beside the tick rate, and warns when
-  it falls below it, so under-sampling is distinguishable from bad timing.
 
 ## [v3.19.0] — the Anim workspace, a character-wide frame library, and real game timing
 
