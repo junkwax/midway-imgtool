@@ -3802,29 +3802,9 @@ float DrawDocumentTabBar(float y, float sw)
                 close_idx = i;
         }
 
-        if (g_world_state.enabled) {
-            auto tab_toggle = [](const char *label, bool *value) {
-                bool was_on = *value;
-                if (was_on) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
-                    ImGui::PushStyleColor(ImGuiCol_Tab, ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
-                    ImGui::PushStyleColor(ImGuiCol_TabHovered, ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
-                }
-                if (ImGui::TabItemButton(label, ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
-                    *value = !*value;
-                if (was_on) ImGui::PopStyleColor(3);
-            };
-            tab_toggle(g_world_state.onion ? "Onion: On" : "Onion", &g_world_state.onion);
-            tab_toggle(g_world_state.show_borders ? "Borders: On" : "Borders", &g_world_state.show_borders);
-            tab_toggle(g_world_state.show_anipoint ? "Anipt: On" : "Anipt", &g_world_state.show_anipoint);
-            bool marked_was_on = g_world_marked_state.marked_play;
-            tab_toggle(g_world_marked_state.marked_play ? "Marked: On" : "Marked", &g_world_marked_state.marked_play);
-            if (marked_was_on != g_world_marked_state.marked_play) {
-                WorldMarkedRestart(g_world_marked_state);
-            }
-            tab_toggle(g_world_marked_state.mirror_active ? "Mirror 1: On" : "Mirror 1", &g_world_marked_state.mirror_active);
-            tab_toggle(g_world_marked_state.mirror_other ? "Mirror 2: On" : "Mirror 2", &g_world_marked_state.mirror_other);
-        }
+        /* The World View toggles used to live here, on the document strip.
+           They belong with the view that owns them, so they moved to the
+           canvas view-mode tab bar — see DrawCanvasWindow. */
 
         if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
             new_tab = true;

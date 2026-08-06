@@ -457,6 +457,12 @@ struct WorldMarkedSequenceState {
 
     bool marked_play = false;
     float fps = kMk2TickHz;   /* ticks per second, i.e. real game speed */
+    /* Ticks each frame holds when nothing else authored a timing for it. The
+       tick rate is hardware and does not move; this is the number that does,
+       and it is the same number you write into the ASM. A hold of 1 means 54.7
+       frames a second, which no MK2 animation runs at — 4 lands near 13.7 fps,
+       which is the neighbourhood real move art sits in. */
+    int default_hold = 4;
     float timer = 0.0f;
     int frame = 0;
     bool paused = false;
@@ -742,11 +748,15 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
 std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes);
 bool WorldDrawMarkedAsmPopup(WorldMarkedSequenceState &state);
+/* `canvas_min`/`canvas_max` bound where a grab may start. That is the whole
+   canvas rect, not the playfield: a sprite anchored past the world edge still
+   draws out there and has to stay grabbable. */
 void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
                                const WorldMarkedLaneRenderInfo &render_info,
                                const WorldCanvasLayout &world_layout,
-                               const WorldMarkedPanelLayout &panel_layout);
+                               const WorldMarkedPanelLayout &panel_layout,
+                               ImVec2 canvas_min, ImVec2 canvas_max);
 std::string WorldMarkedAsmToken(const std::string &raw, const char *fallback);
 std::string WorldMarkedAsmLabelPart(const char *raw, int slot);
 int ClampWorldMarkedAniptDelta(int value);
@@ -775,6 +785,10 @@ bool WorldMarkedAttachSpriteToFrame(WorldMarkedSequenceState &state,
    sync the editor selection to the target sprite. */
 void StepWorldEmbeddedSeqScrEntry(WorldMarkedSequenceState &state, int delta);
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count);
+/* Set every lane frame's hold to `ticks` and restart the tick clock so the new
+   timing is visible immediately. The dummy-decap slot is left alone: its holds
+   are a canned effect with their own reset button, not user timing. */
+void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks);
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
                             int frame_count, int frame_idx);
 int WorldMarkedSequenceTicks(WorldMarkedSequenceState &state, int slot, int frame_count);

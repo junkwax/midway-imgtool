@@ -2251,6 +2251,9 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
     EnsureWorldMarkedFrameDelays(state, slot_id, n);
     for (int k = 0; k < n; k++) {
         const WorldAsmLaneFrame &fr = frames[k];
+        /* Stays 1, and must: an ASM animation encodes a hold by repeating the
+           frame label, so the repeats already carry the timing. Applying the
+           default hold here would multiply it. */
         state.frame_delays[slot_id][k] = 1;
         state.local_dx[slot_id][k] = ClampWorldMarkedAniptDelta(
             fr.dx + state.lane_base_dx[slot_id]);
@@ -2701,7 +2704,8 @@ bool WorldLoadSeqScrRecord(int record_index)
 
     EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
     for (int i = 0; i < (int)frames.size(); i++) {
-        state.frame_delays[slot][i] = i < (int)delays.size() ? delays[i] : 1;
+        state.frame_delays[slot][i] = i < (int)delays.size()
+                                    ? delays[i] : state.default_hold;
         state.local_dx[slot][i] = i < (int)dxs.size() ? dxs[i] : 0;
         state.local_dy[slot][i] = i < (int)dys.size() ? dys[i] : 0;
         state.visible_from[slot][i] = 0;
@@ -3673,8 +3677,41 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
         result.panel_layout.height = 0.0f;
     }
     WorldHandleMarkedLaneDrag(dl, state, lanes, result.render_info,
-                              result.layout, result.panel_layout);
+                              result.layout, result.panel_layout,
+                              img_pos, ImVec2(img_pos.x + avail.x,
+                                              img_pos.y + avail.y));
     return result;
+}
+
+/* Ticks per frame, sitting next to the transport in both preview headers.
+   This is the control that actually sets playback speed: the tick rate is
+   hardware (54.7 Hz) and stays put, while the hold is authoring, and the value
+   here is literally what goes into the ASM — a hold of 4 is `.word 4` in a
+   script entry, or the frame label repeated four times in an animation. The
+   resulting frame rate is spelled out so the number can be judged by eye. */
+static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
+                                     const char *id_suffix)
+{
+    char id[64];
+    snprintf(id, sizeof(id), "##%s_hold", id_suffix);
+    ImGui::TextDisabled("Ticks/frame");
+    ImGui::SameLine(0.0f, 4.0f);
+    ImGui::SetNextItemWidth(76.0f);
+    int hold = state.default_hold;
+    if (ImGui::InputInt(id, &hold, 1, 1)) {
+        state.default_hold = ClampTimelineHold(hold);
+        WorldMarkedApplyUniformHold(state, state.default_hold);
+    }
+    if (ImGui::IsItemHovered()) {
+        int shown = ClampTimelineHold(state.default_hold);
+        ImGui::SetTooltip(
+            "Hold every frame this many ticks. This is the number you write\n"
+            "into the ASM, not a preview-only speed.\n\n"
+            "MK2 runs %.1f ticks a second, so a hold of %d plays at %.1f fps.\n"
+            "Changing it rewrites every lane's per-frame hold; the dummy body\n"
+            "keeps its own canned timing.",
+            kMk2TickHz, shown, kMk2TickHz / (float)shown);
+    }
 }
 
 WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &state,
@@ -3696,6 +3733,8 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
         WorldMarkedRestart(state);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Restart every marked tab sequence from frame 1.");
+    ImGui::SameLine();
+    WorldDrawTickHoldControl(state, "world_marked_panel");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(105.0f);
     ImGui::SliderFloat("FPS##world_marked_panel_fps", &state.fps, 1.0f, 60.0f, "%.1f");
@@ -6001,7 +6040,8 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                                const std::vector<WorldMarkedLane> &lanes,
                                const WorldMarkedLaneRenderInfo &render_info,
                                const WorldCanvasLayout &world_layout,
-                               const WorldMarkedPanelLayout &panel_layout)
+                               const WorldMarkedPanelLayout &panel_layout,
+                               ImVec2 canvas_min, ImVec2 canvas_max)
 {
     ImVec2 mouse = ImGui::GetMousePos();
     bool over_panel =
@@ -6009,15 +6049,17 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
         mouse.x <= panel_layout.pos.x + panel_layout.width &&
         mouse.y >= panel_layout.pos.y &&
         mouse.y <= panel_layout.pos.y + panel_layout.height;
-    bool over_world =
-        mouse.x >= world_layout.pos.x &&
-        mouse.x <= world_layout.pos.x + world_layout.width &&
-        mouse.y >= world_layout.pos.y &&
-        mouse.y <= world_layout.pos.y + world_layout.height;
+    /* The grab region is the canvas, not the playfield rect. Sprites are drawn
+       unclipped, so one anchored past the world edge is visible out there and
+       has to be grabbable — it is usually the frame whose anipoint most needs
+       fixing. The floating lane panel still wins wherever it overlaps. */
+    bool over_canvas =
+        mouse.x >= canvas_min.x && mouse.x <= canvas_max.x &&
+        mouse.y >= canvas_min.y && mouse.y <= canvas_max.y;
 
     int hover_slot = -1;
     bool hover_dual = false;
-    if (over_world && !over_panel) {
+    if (over_canvas && !over_panel) {
         /* Dual copies paint after their primary, so test them first; both
            rects exist whenever the entry draws its sprite twice. */
         for (int slot = 0; slot < (int)lanes.size() && hover_slot < 0; slot++) {
@@ -6058,7 +6100,7 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
     struct AnchorHit { IMG *img = NULL; bool mirror = false; };
     auto piece_at = [&](ImVec2 p) -> AnchorHit {
         AnchorHit hit;
-        if (!over_world || over_panel) return hit;
+        if (!over_canvas || over_panel) return hit;
         for (int li = (int)lanes.size() - 1; li >= 0; li--) {
             const WorldMarkedLane &lane = lanes[li];
             int fi = lane.frame_pos;
@@ -6094,7 +6136,7 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
     };
 
     if (state.anchor_link_mode) {
-        if (!state.anchor_link_active && over_world && !over_panel &&
+        if (!state.anchor_link_active && over_canvas && !over_panel &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             AnchorHit source = piece_at(mouse);
             if (source.img && !source.mirror) {
@@ -6387,14 +6429,31 @@ void WorldMarkedSetTick(WorldMarkedSequenceState &state, int tick)
     state.frame = ClampWorldMarkedVisibleFrom(tick);
 }
 
+void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks)
+{
+    ticks = ClampTimelineHold(ticks);
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
+        if (slot == kWorldDummyDecapSlot) continue;
+        for (int &delay : state.frame_delays[slot])
+            delay = ticks;
+    }
+    /* Rewind the tick clock rather than the sequences: the frame you were
+       looking at keeps its place in the list, it just holds longer now. */
+    state.frame = 0;
+    state.timer = 0.0f;
+}
+
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count)
 {
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     if (frame_count < 0) frame_count = 0;
 
     std::vector<int> &delays = state.frame_delays[slot];
+    /* Frames arriving with no authored timing take the default hold, not one
+       tick. A 1-tick hold is 54.7 fps, which is not a speed any MK2 animation
+       plays at, so it made a freshly marked set unwatchable. */
     if ((int)delays.size() < frame_count)
-        delays.resize((size_t)frame_count, 1);
+        delays.resize((size_t)frame_count, ClampTimelineHold(state.default_hold));
     else if ((int)delays.size() > frame_count)
         delays.resize((size_t)frame_count);
     for (int &delay : delays)
@@ -7967,6 +8026,15 @@ static void rebuild_world_onion_texture(IMG *img, int image_idx)
     SDL_UnlockTexture(s_world_onion_tex);
 }
 
+/* ImGui raises WantCaptureMouse for its own windows, and the canvas is one of
+   them — so testing that flag alone suppresses every canvas gesture instead of
+   only the ones a modal should swallow. Interaction is blocked when something
+   else is on top of the canvas, which is what !IsWindowHovered() catches. */
+static bool CanvasInputBlocked(const ImGuiIO &io)
+{
+    return io.WantCaptureMouse && !ImGui::IsWindowHovered();
+}
+
 bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
                                IMG *img, SDL_Texture *img_texture,
                                int image_idx, int image_count,
@@ -8046,11 +8114,16 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
     if (g_world_marked_state.show_boundary_overlay)
         WorldDrawBoundaryGuides(dl, layout);
 
-    if (!io.WantCaptureMouse) {
-        bool over_world =
-            io.MousePos.x >= wpos.x && io.MousePos.x < wpos.x + ww &&
-            io.MousePos.y >= wpos.y && io.MousePos.y < wpos.y + wh;
-        if (over_world &&
+    if (!CanvasInputBlocked(io)) {
+        /* The whole canvas drags, not just the playfield rect. A sprite whose
+           anipoint puts it past the world edge is still drawn out there, and
+           it has to stay reachable — otherwise the one frame that most needs
+           re-anchoring is the one you cannot grab. It also keeps a drag alive
+           when the cursor runs past the edge mid-gesture. */
+        bool over_canvas =
+            io.MousePos.x >= img_pos.x && io.MousePos.x < img_pos.x + avail.x &&
+            io.MousePos.y >= img_pos.y && io.MousePos.y < img_pos.y + avail.y;
+        if (over_canvas &&
             ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
         {
             ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
@@ -8330,7 +8403,7 @@ bool DrawAnipointLinkCanvas(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
         return p.x >= origin.x && p.y >= origin.y &&
                p.x < origin.x + img->w * s && p.y < origin.y + img->h * s;
     };
-    if (!io.WantCaptureMouse && over_stage && !state.dragging &&
+    if (!CanvasInputBlocked(io) && over_stage && !state.dragging &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         inside(io.MousePos, ref_pos, reference, scale)) {
         state.dragging = true;
@@ -8537,6 +8610,51 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                     ImGui::SetTooltip("Backdrop behind transparent pixels.\n"
                                       "Click to cycle: Checker, Pink, Green, Blue.\n"
                                       "A flat key makes stray fringe pixels obvious.");
+            }
+            /* World View's display toggles, trailing on the right, and only
+               while World View owns the canvas — the same rule the backdrop
+               button follows. They used to sit on the document tab strip,
+               where they read as files and outlived the view that used them.
+               The label never changes width: state is carried by the selected
+               tint and spelled out in the tooltip. A label that grew when you
+               switched it on re-laid out the whole trailing group, so every
+               button jumped out from under the cursor on click. */
+            if (requested_canvas_mode == 1) {
+                auto world_toggle = [](const char *label, bool *value,
+                                       const char *what) {
+                    bool was_on = *value;
+                    if (was_on) {
+                        ImGui::PushStyleColor(ImGuiCol_Tab,
+                            ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
+                        ImGui::PushStyleColor(ImGuiCol_TabHovered,
+                            ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
+                    }
+                    bool clicked = ImGui::TabItemButton(label,
+                        ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip);
+                    if (was_on) ImGui::PopStyleColor(2);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s\nCurrently %s.", what,
+                                          was_on ? "on" : "off");
+                    if (clicked) *value = !was_on;
+                    return clicked;
+                };
+                /* Submission order is left-to-right within the trailing group
+                   (TabItemComparerBySection ties break on IndexDuringLayout),
+                   so these read in the order they are written. */
+                world_toggle("Onion", &g_world_state.onion,
+                             "Ghost the previous frame behind this one.");
+                world_toggle("Borders", &g_world_state.show_borders,
+                             "Outline each sprite's bounds.");
+                world_toggle("Anipt", &g_world_state.show_anipoint,
+                             "Draw the shared anchor crosshair.");
+                if (world_toggle("Marked", &g_world_marked_state.marked_play,
+                                 "Play every marked row as its own lane instead\n"
+                                 "of showing the selected sprite alone."))
+                    WorldMarkedRestart(g_world_marked_state);
+                world_toggle("Mirror 1", &g_world_marked_state.mirror_active,
+                             "Flip the first marked lane horizontally.");
+                world_toggle("Mirror 2", &g_world_marked_state.mirror_other,
+                             "Flip the second marked lane horizontally.");
             }
             ImGui::EndTabBar();
         }
@@ -8826,7 +8944,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
          * suppress all canvas interaction (paint, eyedropper, highlight, drag,
          * marquee, anim-point handles, etc.) so clicks meant for the modal
          * don't bleed through to the sprite underneath. */
-        bool canvas_input_blocked = io.WantCaptureMouse && !ImGui::IsWindowHovered();
+        bool canvas_input_blocked = CanvasInputBlocked(io);
         if (canvas_input_blocked) mbdn = false;
 
         /* Set when an overlay widget (anim point, hitbox corner) eats this frame's
@@ -16361,6 +16479,8 @@ static bool SeqScrDrawToolbar(WorldMarkedSequenceState &state,
     if (ImGui::SmallButton("Restart##seqscr_ws_restart"))
         WorldMarkedRestart(state);
     ImGui::SameLine();
+    WorldDrawTickHoldControl(state, "seqscr_ws");
+    ImGui::SameLine();
     ImGui::SetNextItemWidth(105.0f);
     ImGui::SliderFloat("FPS##seqscr_ws_fps", &state.fps, 1.0f, 60.0f, "%.1f");
     if (ImGui::IsItemHovered())
@@ -16498,7 +16618,9 @@ static WorldMarkedSceneResult SeqScrDrawScene(WorldMarkedSequenceState &state,
     WorldMarkedPanelLayout no_panel;
     no_panel.pos = ImVec2(-10000.0f, -10000.0f);
     WorldHandleMarkedLaneDrag(dl, state, lanes, result.render_info,
-                              result.layout, no_panel);
+                              result.layout, no_panel,
+                              img_pos, ImVec2(img_pos.x + avail.x,
+                                              img_pos.y + avail.y));
     result.panel_layout = no_panel;
     return result;
 }
