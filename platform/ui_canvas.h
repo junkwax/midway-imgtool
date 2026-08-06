@@ -789,6 +789,25 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
    timing is visible immediately. The dummy-decap slot is left alone: its holds
    are a canned effect with their own reset button, not user timing. */
 void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks);
+
+/* ---- Baking World View placement back into the IMG ----------------------
+   A marked lane positions a frame at (origin - (anipoint + local dX/dY)), and
+   those deltas are preview state: they live in WorldMarkedSequenceState, not
+   in the file, so a drag in World View looks right and then saves as nothing.
+   Baking folds the delta into the sprite's own anipoint — the drawn position
+   does not move, but it now survives a save. */
+
+/* Locate the World View entry that draws this sprite. */
+bool WorldMarkedFindEntryForImage(WorldMarkedSequenceState &state,
+                                  int doc_idx, int img_idx,
+                                  int *out_slot, int *out_entry);
+
+/* Fold local dX/dY into anix/aniy for one entry, or for the whole slot when
+   `entry` is negative, and zero the deltas. Returns the number of sprites
+   changed; `out_conflicts` counts entries skipped because the same IMG was
+   already baked from an earlier entry with its own offset. */
+int WorldMarkedBakeEntryOffsets(WorldMarkedSequenceState &state,
+                                int slot, int entry, int *out_conflicts);
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
                             int frame_count, int frame_idx);
 int WorldMarkedSequenceTicks(WorldMarkedSequenceState &state, int slot, int frame_count);

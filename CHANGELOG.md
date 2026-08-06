@@ -8,6 +8,93 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.21.0] — World View stops fighting you
+
+Headline: three things in World View were quietly broken rather than merely
+awkward. A sprite anchored past the playfield edge was drawn out there but
+could not be grabbed. Two drag gestures — the single-sprite anipoint drag and
+the whole Link tool — could never fire at all. And playback ran at 54.7 frames
+a second, because a frame's hold defaulted to one tick and one tick is one
+video field on real hardware.
+
+Alongside those: World View placement can now be baked into the IMG, draw
+order belongs to the slot instead of the entry, the preview tick loops instead
+of counting forever, and the lane row is grouped by scope rather than being one
+25-widget wall.
+
+### Reachability and dead gestures
+- **The grab region is the canvas, not the playfield.** Sprites draw unclipped,
+  so one anchored past the world edge is visible out there and has to stay
+  reachable — it is usually the frame whose anipoint most needs fixing. The
+  floating lane panel still wins wherever it overlaps.
+- **Two drag gestures were unreachable.** Both gated on `!io.WantCaptureMouse`
+  alone, and ImGui raises that flag for its own windows, the canvas included —
+  so the condition was false wherever the gesture actually happens. This killed
+  the World View single-sprite anipoint drag and the Link tool's
+  reference-to-target drag outright. The correct idiom already existed on the
+  pixel-editing path: block only when something is *on top of* the canvas. It
+  is now a named helper, `CanvasInputBlocked`, used at all three sites.
+- An in-progress drag already survived leaving the world; only starting one was
+  blocked.
+
+### Timing
+- **Ticks/frame** sits beside the transport in both preview headers. The tick
+  rate is hardware and does not move; the hold is authoring, and it is the same
+  number you write into the ASM. Changing it rewrites every lane's per-frame
+  hold and rewinds the tick clock. The tooltip does the arithmetic.
+- **The default hold is 4**, or 13.7 fps. It was 1, which at MK2's 54.7 Hz field
+  rate meant 54.7 fps — a speed no animation in the game plays at, and the
+  reason a freshly marked set was unwatchable.
+- Note that 12 fps is not expressible: 54.7/12 is 4.56 ticks and the machine
+  only holds whole ticks. Hold 4 is 13.7 fps, hold 5 is 10.9 fps.
+- **ASM-imported lanes stay at one tick**, and must: an ASM animation encodes a
+  hold by repeating the frame label, so the repeats already carry the timing and
+  a default hold would multiply it. SEQSCR records keep their authored ticks;
+  the dummy body keeps its canned timing.
+- **The preview tick loops.** Lanes already wrapped on their own length, but the
+  global tick feeding Show@/Hide@/Stop@ climbed forever, so a scene that had
+  visibly finished kept running and those absolute-tick fields drifted out of
+  reach. It now wraps at the longest visible lane, extended past anything
+  scheduled beyond it. It keeps counting when something deliberately parks the
+  preview: a lane holding its last entry, a tick stop, or a ping-pong chain
+  whose reversal is computed from the running tick.
+
+### Baking placement into the IMG
+- **Inherit Position from World View** and **Inherit All from World View Slot**,
+  in Anipts Tools. A marked lane positions a frame at
+  `origin - (anipoint + local dX/dY)`, and those deltas are preview state — a
+  drag in World View looked right and then saved as nothing. These fold the
+  delta into the sprite's own anipoint. Nothing moves on screen; the placement
+  just becomes real.
+- One IMG can appear in several entries, since duplicating an entry to place the
+  same sprite twice is supported. Baking both would apply two deltas to one
+  anipoint, so the first wins and the rest are reported rather than silently
+  compounded.
+- Both are disabled, with an explanation, when the selected sprite is not in a
+  lane.
+
+### Lane row
+- **Z is per-slot.** Draw priority answers "which lane is in front", and a lane
+  whose Z changed halfway through would pop through the one it overlaps. The
+  control moved up to the slot row and writes every entry at once; the per-entry
+  array stays because the ASM export annotates each entry.
+- **Grouped by scope.** A `Row...` menu holds the structural edits — split,
+  duplicate, reset, delete — which are the destructive ones and were sitting one
+  stray click from "move entry later". A `Timing/FX` popup holds Show@, Hide@,
+  vX, vY, StopY and the whole Dual group; it shows a marker when the entry is
+  using any of them, so nothing goes quietly missing behind it. The entry row
+  drops from roughly 25 inline widgets to 12.
+
+### View tabs
+- The World View display toggles moved off the document tab strip, where they
+  read as files and outlived the view that used them, onto the canvas view-mode
+  tab bar — trailing, and only while World View owns the canvas, the rule the
+  backdrop button already followed.
+- **Their labels no longer change width.** "Onion" growing to "Onion: On"
+  re-laid out the whole trailing group, so every button jumped out from under
+  the cursor on click. State is carried by the selected tint and named in the
+  tooltip.
+
 ## [v3.20.0] — the ROM readout tells the truth, and the tabs agree with each other
 
 Headline: the Sprite panel's DMA ROM figure is now a port of LOAD2's own

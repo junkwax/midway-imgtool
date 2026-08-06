@@ -2857,6 +2857,44 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
     return result;
 }
 
+/* Ticks after which the whole preview repeats, or 0 when it should keep
+   counting. Individual lanes already wrap on their own length, but the global
+   tick fed to Show@/Hide@/Stop@ used to climb forever, so a scene that had
+   visibly finished kept running and those absolute-tick fields drifted out of
+   reach. The loop point is the longest visible lane, extended past any entry
+   scheduled beyond it so nothing is cut off mid-schedule.
+
+   Zero — keep counting — whenever something deliberately parks the preview on
+   a tick: a lane holding its last entry, a tick stop, or a ping-pong chain
+   whose reversal is computed from the running tick. */
+static int WorldMarkedPreviewLoopTicks(WorldMarkedSequenceState &state,
+                                       const std::vector<WorldMarkedLane> &lanes)
+{
+    int longest = 0;
+    for (size_t li = 0; li < lanes.size(); li++) {
+        const WorldMarkedLane &lane = lanes[li];
+        int slot = lane.delay_slot;
+        int n = (int)lane.frames.size();
+        if (n <= 0 || slot < 0 || slot >= kWorldMarkedMaxTabs) continue;
+        if (!state.lane_visible[slot]) continue;
+        if (state.hold_end[slot]) return 0;
+        if (state.stop_tick[slot] > 0) return 0;
+        if (state.chain_pingpong[slot]) return 0;
+
+        int span = WorldMarkedSequenceTicks(state, slot, n);
+        for (int i = 0; i < n; i++) {
+            if (i < (int)state.visible_from[slot].size() &&
+                state.visible_from[slot][i] + 1 > span)
+                span = state.visible_from[slot][i] + 1;
+            if (i < (int)state.visible_until[slot].size() &&
+                state.visible_until[slot][i] > span)
+                span = state.visible_until[slot][i];
+        }
+        if (span > longest) longest = span;
+    }
+    return longest;
+}
+
 bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                                    std::vector<WorldMarkedLane> &lanes,
                                    float delta_time)
@@ -2874,6 +2912,9 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
         state.timer -= step;
         state.frame++;
     }
+    int loop_ticks = WorldMarkedPreviewLoopTicks(state, lanes);
+    if (loop_ticks > 0 && state.frame >= loop_ticks)
+        state.frame %= loop_ticks;
 
     bool have_image = false;
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
@@ -5059,6 +5100,28 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         ImGui::SameLine();
         ImGui::Checkbox("Mirror##world_lane_mirror", mirror_flag);
     }
+    /* Z belongs to the slot, not the entry. Draw priority is "which lane is in
+       front", and a lane whose Z changed halfway through would pop through the
+       one it overlaps. The per-entry array stays — the ASM export annotates
+       each entry — but editing writes the whole slot at once. */
+    {
+        int slot_z = 0;
+        const std::vector<int> &zs = state.frame_z[lane.delay_slot];
+        if (!zs.empty()) slot_z = zs[0];
+        ImGui::SameLine();
+        ImGui::TextDisabled("Z");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(42.0f);
+        if (ImGui::InputInt("##world_lane_z", &slot_z, 0, 0)) {
+            int z = ClampWorldMarkedZ(slot_z);
+            for (int &entry_z : state.frame_z[lane.delay_slot])
+                entry_z = z;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw priority for this whole slot: higher Z draws on top\n"
+                              "of other lanes. Equal Z keeps the normal lane order\n"
+                              "(slot 1 on top). Applies to every entry in the slot.");
+    }
     if (!lane.dummy_decap) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Reverse##world_lane_reverse")) {
@@ -5136,52 +5199,59 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Remove this sequence entry. The sprite itself is not deleted.");
+            /* Structural edits — the ones that add, remove or rebuild whole
+               rows — are grouped away from the per-entry nudges. They are
+               used once in a while and are the most destructive things here,
+               so they should not sit a stray click away from "move entry
+               later". */
             ImGui::SameLine();
-            if (ImGui::SmallButton("Reset Seq##world_seq_reset")) {
-                WorldMarkedResetSequenceToDefaults(state, lane.delay_slot);
-                WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
-            }
+            if (ImGui::SmallButton("Row...##world_seq_row_menu"))
+                ImGui::OpenPopup("##world_seq_row_popup");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Rebuild this lane from the currently marked sprites and clear local sequence offsets.");
-            ImGui::SameLine();
-            bool can_split = lane.delay_slot >= 0 &&
-                             lane.delay_slot < kWorldMarkedSourceTabs &&
-                             edit_fi > 0 &&
-                             WorldMarkedFindFreeSplitSlot(lanes) >= 0;
-            ImGui::BeginDisabled(!can_split);
-            if (ImGui::SmallButton("Split Row##world_seq_split")) {
-                if (WorldMarkedSplitLaneAtFrame(state, lane, lanes, edit_fi))
-                    WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
-            }
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Move this entry and all later entries into a new row from the same IMG.");
-            ImGui::SameLine();
-            bool can_duplicate = lane.delay_slot >= 0 &&
+                ImGui::SetTooltip("Split, duplicate, delete or rebuild this row.");
+            if (ImGui::BeginPopup("##world_seq_row_popup")) {
+                bool can_split = lane.delay_slot >= 0 &&
                                  lane.delay_slot < kWorldMarkedSourceTabs &&
+                                 edit_fi > 0 &&
                                  WorldMarkedFindFreeSplitSlot(lanes) >= 0;
-            ImGui::BeginDisabled(!can_duplicate);
-            if (ImGui::SmallButton("Duplicate Slot##world_seq_duplicate_slot")) {
-                if (WorldMarkedDuplicateSlot(state, lane, lanes))
-                    WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
-            }
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Copy this whole row into a new editable World View slot.");
-            ImGui::SameLine();
-            bool can_delete_slot = WorldMarkedSlotReservedForSplit(state, lane.delay_slot);
-            ImGui::BeginDisabled(!can_delete_slot);
-            if (ImGui::SmallButton("Delete Slot##world_seq_delete_slot")) {
-                if (WorldMarkedDeleteSplitSlot(state, lane.delay_slot)) {
-                    ImGui::EndDisabled();
-                    return; /* row is gone; nothing below is safe to draw this frame */
+                if (ImGui::MenuItem("Split Row Here", NULL, false, can_split)) {
+                    if (WorldMarkedSplitLaneAtFrame(state, lane, lanes, edit_fi))
+                        WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
                 }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Move this entry and all later entries into a new row from the same IMG.");
+
+                bool can_duplicate = lane.delay_slot >= 0 &&
+                                     lane.delay_slot < kWorldMarkedSourceTabs &&
+                                     WorldMarkedFindFreeSplitSlot(lanes) >= 0;
+                if (ImGui::MenuItem("Duplicate Row", NULL, false, can_duplicate)) {
+                    if (WorldMarkedDuplicateSlot(state, lane, lanes))
+                        WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Copy this whole row into a new editable World View slot.");
+
+                ImGui::Separator();
+                if (ImGui::MenuItem("Reset Row to Marked")) {
+                    WorldMarkedResetSequenceToDefaults(state, lane.delay_slot);
+                    WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Rebuild this lane from the currently marked sprites and clear local sequence offsets.");
+
+                bool can_delete_slot = WorldMarkedSlotReservedForSplit(state, lane.delay_slot);
+                if (ImGui::MenuItem("Delete Row", NULL, false, can_delete_slot)) {
+                    if (WorldMarkedDeleteSplitSlot(state, lane.delay_slot)) {
+                        ImGui::EndPopup();
+                        return; /* row is gone; nothing below is safe to draw this frame */
+                    }
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip(can_delete_slot
+                        ? "Remove this split/duplicated row entirely so it's excluded from the ASM export."
+                        : "Only split or duplicated rows can be deleted; base marked-sprite rows can't.");
+                ImGui::EndPopup();
             }
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip(can_delete_slot
-                    ? "Remove this split/duplicated row entirely so it's excluded from the ASM export."
-                    : "Only split or duplicated rows can be deleted; base marked-sprite rows can't.");
         }
 
         int delay = state.frame_delays[lane.delay_slot][edit_fi];
@@ -5238,98 +5308,86 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Mirror this entry vertically around its anipoint.");
+        /* Scheduling, motion and the second instance are per-entry but rarely
+           touched, and inline they tripled the length of this row. They live
+           behind one button now; the button says when the entry is using any
+           of them, so nothing goes quietly missing. */
+        bool dual = state.dual_on[lane.delay_slot][edit_fi] != 0;
+        bool has_extras = show_at || hide_at || motion_dx || motion_dy ||
+                          motion_cap_x || motion_cap_y || dual;
         ImGui::SameLine();
-        ImGui::TextDisabled("Show@");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(52.0f);
-        if (ImGui::InputInt("##world_edit_show", &show_at, 0, 0))
-            state.visible_from[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleFrom(show_at);
+        if (ImGui::SmallButton(has_extras ? "Timing/FX *##world_edit_more"
+                                          : "Timing/FX##world_edit_more"))
+            ImGui::OpenPopup("##world_edit_more_popup");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hide this entry until the global preview tick reaches this value.");
-        ImGui::SameLine();
-        ImGui::TextDisabled("Hide@");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(52.0f);
-        if (ImGui::InputInt("##world_edit_hide", &hide_at, 0, 0))
-            state.visible_until[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleUntil(hide_at);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hide this entry once the global preview tick reaches this value. 0 disables the cutoff.");
+            ImGui::SetTooltip(has_extras
+                ? "Show/Hide ticks, per-tick motion, and the second sprite copy.\nThis entry is using some of them."
+                : "Show/Hide ticks, per-tick motion, and the second sprite copy.");
+        if (ImGui::BeginPopup("##world_edit_more_popup")) {
+            ImGui::TextDisabled("Entry %d/%d", edit_fi + 1, (int)lane.frames.size());
+            ImGui::Separator();
 
-        ImGui::SameLine();
-        ImGui::TextDisabled("vX");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(42.0f);
-        if (ImGui::InputInt("##world_edit_vx", &motion_dx, 0, 0))
-            state.motion_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dx);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Visual X motion in pixels per tick. Positive moves this entry right.");
-        ImGui::SameLine();
-        ImGui::TextDisabled("vY");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(42.0f);
-        if (ImGui::InputInt("##world_edit_vy", &motion_dy, 0, 0))
-            state.motion_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dy);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Visual Y motion in pixels per tick. Positive moves this entry down.");
-        if (motion_dx || motion_dy || motion_cap_x || motion_cap_y) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("StopY");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(48.0f);
-            if (ImGui::InputInt("##world_edit_stop_y", &motion_cap_y, 0, 0))
+            ImGui::TextDisabled("Schedule (global preview ticks)");
+            ImGui::SetNextItemWidth(90.0f);
+            if (ImGui::InputInt("Show@##world_edit_show", &show_at, 1, 1))
+                state.visible_from[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleFrom(show_at);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Hide this entry until the global preview tick reaches this value.");
+            ImGui::SetNextItemWidth(90.0f);
+            if (ImGui::InputInt("Hide@##world_edit_hide", &hide_at, 1, 1))
+                state.visible_until[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleUntil(hide_at);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Hide this entry once the global preview tick reaches this value. 0 disables the cutoff.");
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Motion (pixels per tick)");
+            ImGui::SetNextItemWidth(90.0f);
+            if (ImGui::InputInt("vX##world_edit_vx", &motion_dx, 1, 1))
+                state.motion_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dx);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Visual X motion in pixels per tick. Positive moves this entry right.");
+            ImGui::SetNextItemWidth(90.0f);
+            if (ImGui::InputInt("vY##world_edit_vy", &motion_dy, 1, 1))
+                state.motion_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dy);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Visual Y motion in pixels per tick. Positive moves this entry down.");
+            ImGui::BeginDisabled(!(motion_dx || motion_dy || motion_cap_x || motion_cap_y));
+            ImGui::SetNextItemWidth(90.0f);
+            if (ImGui::InputInt("StopY##world_edit_stop_y", &motion_cap_y, 1, 1))
                 state.motion_cap_y[lane.delay_slot][edit_fi] =
                     ClampWorldMarkedMotionCap(motion_cap_y);
-            if (ImGui::IsItemHovered())
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("Maximum visual Y travel before vY stops. 0 keeps moving.");
-        }
 
-        int frame_z = state.frame_z[lane.delay_slot][edit_fi];
-        ImGui::SameLine();
-        ImGui::TextDisabled("Z");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(38.0f);
-        if (ImGui::InputInt("##world_edit_z", &frame_z, 0, 0))
-            state.frame_z[lane.delay_slot][edit_fi] = ClampWorldMarkedZ(frame_z);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Draw priority for this entry: higher Z draws on top of other lanes.\n"
-                              "Equal Z keeps the normal lane order (slot 1 on top).");
-
-        bool dual = state.dual_on[lane.delay_slot][edit_fi] != 0;
-        ImGui::SameLine();
-        if (ImGui::Checkbox("Dual##world_edit_dual", &dual))
-            state.dual_on[lane.delay_slot][edit_fi] = dual ? 1 : 0;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Draw this entry's sprite a second time in the same frame,\n"
-                              "at its own local offset and Z. Drag either copy in the world canvas.");
-        if (dual) {
-            int dual_dx = state.dual_dx[lane.delay_slot][edit_fi];
-            int dual_dy = state.dual_dy[lane.delay_slot][edit_fi];
-            int dual_z = state.dual_z[lane.delay_slot][edit_fi];
-            ImGui::SameLine();
-            ImGui::TextDisabled("dAX2");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(46.0f);
-            if (ImGui::InputInt("##world_edit_dax2", &dual_dx, 0, 0))
-                state.dual_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(dual_dx);
+            ImGui::Separator();
+            if (ImGui::Checkbox("Dual##world_edit_dual", &dual))
+                state.dual_on[lane.delay_slot][edit_fi] = dual ? 1 : 0;
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Local anipoint X delta for the second copy of this sprite.");
-            ImGui::SameLine();
-            ImGui::TextDisabled("dAY2");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(46.0f);
-            if (ImGui::InputInt("##world_edit_day2", &dual_dy, 0, 0))
-                state.dual_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(dual_dy);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Local anipoint Y delta for the second copy of this sprite.");
-            ImGui::SameLine();
-            ImGui::TextDisabled("Z2");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(38.0f);
-            if (ImGui::InputInt("##world_edit_z2", &dual_z, 0, 0))
-                state.dual_z[lane.delay_slot][edit_fi] = ClampWorldMarkedZ(dual_z);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Draw priority for the second copy. Lower than Z puts it behind\n"
-                                  "the first copy (and behind other lanes it sorts under).");
+                ImGui::SetTooltip("Draw this entry's sprite a second time in the same frame,\n"
+                                  "at its own local offset and Z. Drag either copy in the world canvas.");
+            if (dual) {
+                int dual_dx = state.dual_dx[lane.delay_slot][edit_fi];
+                int dual_dy = state.dual_dy[lane.delay_slot][edit_fi];
+                int dual_z = state.dual_z[lane.delay_slot][edit_fi];
+                ImGui::SetNextItemWidth(90.0f);
+                if (ImGui::InputInt("dAX2##world_edit_dax2", &dual_dx, 1, 1))
+                    state.dual_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(dual_dx);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Local anipoint X delta for the second copy of this sprite.");
+                ImGui::SetNextItemWidth(90.0f);
+                if (ImGui::InputInt("dAY2##world_edit_day2", &dual_dy, 1, 1))
+                    state.dual_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(dual_dy);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Local anipoint Y delta for the second copy of this sprite.");
+                ImGui::SetNextItemWidth(90.0f);
+                if (ImGui::InputInt("Z2##world_edit_z2", &dual_z, 1, 1))
+                    state.dual_z[lane.delay_slot][edit_fi] = ClampWorldMarkedZ(dual_z);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Draw priority for the second copy. Lower than the slot Z puts\n"
+                                      "it behind the first copy (and behind lanes it sorts under).");
+            }
+            ImGui::EndPopup();
         }
 
         if (!lane.dummy_decap &&
@@ -7527,6 +7585,116 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
     WorldMarkedBuildSingleFrameLane(doc, frames, frame_pieces, frame_labels,
                                     &state.entry_pieces[slot], &state.frame_doc[slot]);
     EnsureWorldMarkedFrameDelays(state, slot, (int)frames.size());
+}
+
+/* Every IMG an entry draws: a composite entry lists its pieces, a plain one is
+   just the sequence frame. Returns false when the entry resolves to nothing. */
+static bool WorldMarkedEntryImages(WorldMarkedSequenceState &state,
+                                   int slot, int entry,
+                                   Document **out_doc,
+                                   std::vector<IMG*> *out_imgs)
+{
+    out_imgs->clear();
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return false;
+    if (entry < 0 || entry >= (int)state.sequence_frames[slot].size()) return false;
+
+    int doc_override = entry < (int)state.frame_doc[slot].size()
+                     ? state.frame_doc[slot][entry] : -1;
+    Document *doc = WorldMarkedResolveEntryDoc(state.sequence_doc[slot], doc_override);
+    if (!doc) return false;
+    *out_doc = doc;
+
+    const std::vector<int> *pieces = NULL;
+    if (entry < (int)state.entry_pieces[slot].size() &&
+        !state.entry_pieces[slot][entry].empty())
+        pieces = &state.entry_pieces[slot][entry];
+
+    std::vector<int> single;
+    if (!pieces) {
+        single.push_back(state.sequence_frames[slot][entry]);
+        pieces = &single;
+    }
+    for (size_t i = 0; i < pieces->size(); i++) {
+        IMG *img = doc_get_img(doc, (*pieces)[i]);
+        if (img) out_imgs->push_back(img);
+    }
+    return !out_imgs->empty();
+}
+
+bool WorldMarkedFindEntryForImage(WorldMarkedSequenceState &state,
+                                  int doc_idx, int img_idx,
+                                  int *out_slot, int *out_entry)
+{
+    Document *want = document_get(doc_idx);
+    if (!want || img_idx < 0) return false;
+    IMG *want_img = doc_get_img(want, img_idx);
+    if (!want_img) return false;
+
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
+        int n = (int)state.sequence_frames[slot].size();
+        for (int e = 0; e < n; e++) {
+            Document *doc = NULL;
+            std::vector<IMG*> imgs;
+            if (!WorldMarkedEntryImages(state, slot, e, &doc, &imgs)) continue;
+            for (size_t i = 0; i < imgs.size(); i++) {
+                if (imgs[i] != want_img) continue;
+                if (out_slot) *out_slot = slot;
+                if (out_entry) *out_entry = e;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int WorldMarkedBakeEntryOffsets(WorldMarkedSequenceState &state,
+                                int slot, int entry, int *out_conflicts)
+{
+    if (out_conflicts) *out_conflicts = 0;
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return 0;
+
+    int first = entry, last = entry;
+    if (entry < 0) { first = 0; last = (int)state.sequence_frames[slot].size() - 1; }
+
+    /* One IMG can appear in several entries — duplicating an entry so the same
+       sprite sits at two offsets is a supported move. Baking both would apply
+       two deltas to one anipoint, so the first wins and the rest are reported
+       rather than silently compounded. */
+    std::vector<IMG*> baked;
+    int changed = 0;
+    for (int e = first; e <= last; e++) {
+        if (e < 0 || e >= (int)state.local_dx[slot].size()) continue;
+        int dx = state.local_dx[slot][e];
+        int dy = state.local_dy[slot][e];
+
+        Document *doc = NULL;
+        std::vector<IMG*> imgs;
+        if (!WorldMarkedEntryImages(state, slot, e, &doc, &imgs)) continue;
+
+        bool seen = false;
+        for (size_t i = 0; i < imgs.size(); i++)
+            for (size_t b = 0; b < baked.size(); b++)
+                if (baked[b] == imgs[i]) seen = true;
+        if (seen) {
+            if (dx || dy) { if (out_conflicts) (*out_conflicts)++; }
+            continue;
+        }
+        for (size_t i = 0; i < imgs.size(); i++)
+            baked.push_back(imgs[i]);
+
+        if (!dx && !dy) continue;
+        for (size_t i = 0; i < imgs.size(); i++) {
+            IMG *img = imgs[i];
+            img->anix = signed_to_img_word((int)(short)img->anix + dx);
+            img->aniy = signed_to_img_word((int)(short)img->aniy + dy);
+            changed++;
+        }
+        state.local_dx[slot][e] = 0;
+        state.local_dy[slot][e] = 0;
+        doc->dirty = true;
+        if (doc == g_doc) g_img_tex_idx = -2;
+    }
+    return changed;
 }
 
 void WorldMarkedResetSequenceToDefaults(WorldMarkedSequenceState &state, int slot)

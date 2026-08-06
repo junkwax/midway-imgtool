@@ -2506,6 +2506,67 @@ void DrawMainLayout(void)
                     ImGui::SetTooltip("Clears X2/Y2/AZ2. AZ2 becomes -1.");
                 if (!had_second_point) ImGui::EndDisabled();
 
+                /* World View placement is preview state until it is baked:
+                   dragging a frame there writes a local dX/dY that never
+                   reaches the file. These fold it into the sprite's own
+                   anipoint, so what you lined up is what saves. */
+                ImGui::Spacing();
+                {
+                    WorldMarkedSequenceState &wstate = g_world_marked_state;
+                    int wslot = -1, wentry = -1;
+                    bool in_world = WorldMarkedFindEntryForImage(
+                        wstate, document_active_index(), g_doc->ilselected,
+                        &wslot, &wentry);
+
+                    ImGui::BeginDisabled(!in_world);
+                    if (ImGui::Button("Inherit Position from World View", ImVec2(-1, 0))) {
+                        int conflicts = 0;
+                        int changed = WorldMarkedBakeEntryOffsets(wstate, wslot,
+                                                                  wentry, &conflicts);
+                        if (changed > 0) InvalidateThumb(g_doc->ilselected);
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 changed > 0
+                                     ? "Baked this frame's World View offset into its anipoint."
+                                     : "This frame sits at its own anipoint already.");
+                        g_restore_msg_timer = 4.0f;
+                    }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip(in_world
+                            ? "Slot %d, entry %d: add that entry's local dX/dY to this\n"
+                              "sprite's anipoint and clear the offset. The sprite does\n"
+                              "not move on screen — the placement just becomes real."
+                            : "This sprite is not in any World View lane.\n"
+                              "Mark its row and turn on Marked in World View first.",
+                            wslot + 1, wentry + 1);
+
+                    if (ImGui::Button("Inherit All from World View Slot", ImVec2(-1, 0))) {
+                        int conflicts = 0;
+                        int changed = WorldMarkedBakeEntryOffsets(wstate, wslot,
+                                                                  -1, &conflicts);
+                        ClearTimelineThumbCache();
+                        if (conflicts > 0)
+                            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                     "Baked %d anipoint%s. %d entr%s skipped: the same "
+                                     "sprite appears more than once with its own offset.",
+                                     changed, changed == 1 ? "" : "s", conflicts,
+                                     conflicts == 1 ? "y was" : "ies were");
+                        else
+                            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                     changed > 0
+                                         ? "Baked %d World View offset%s into anipoints."
+                                         : "Nothing to bake — this slot has no offsets.",
+                                     changed, changed == 1 ? "" : "s");
+                        g_restore_msg_timer = 5.0f;
+                    }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip(in_world
+                            ? "Do the same for every entry in slot %d, so a whole\n"
+                              "animation's staging lands in the IMGs at once."
+                            : "This sprite is not in any World View lane.",
+                            wslot + 1);
+                    ImGui::EndDisabled();
+                }
+
                 ImGui::Spacing();
                 if (ImGui::Button("Push to Open Tabs", ImVec2(-1, 0))) {
                     int matched = 0;
