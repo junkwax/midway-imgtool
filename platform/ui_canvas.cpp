@@ -16027,19 +16027,61 @@ const SeqScrFrameLibrary &SeqScrFrameLib(void) { return g_seqscr_frame_lib; }
 
 static void SeqScrClearBrowseSelection(void) { s_seqscr_lib_selected = -1; }
 
+/* index -> IMG* per document, built once per use.
+
+   doc_get_img walks the image list from its head, so it is O(n) per call. The
+   browser has hundreds of rows across ten files, and resolving each row that
+   way every frame cost more than the rest of the UI put together — enough to
+   drop the frame rate far below the animation's tick rate, which is what made
+   playback in the Anim tab judder. One pass builds the whole table. */
+struct SeqScrImgCache {
+    std::vector<int> docs;
+    std::vector<std::vector<IMG*>> imgs;
+
+    void build(const SeqScrFrameLibrary &lib)
+    {
+        docs.clear();
+        imgs.clear();
+        for (int d : lib.file_docs) {
+            if (d < 0) continue;
+            bool have = false;
+            for (int e : docs) if (e == d) { have = true; break; }
+            if (have) continue;
+            Document *doc = document_get(d);
+            if (!doc) continue;
+            docs.push_back(d);
+            imgs.push_back(std::vector<IMG*>());
+            std::vector<IMG*> &v = imgs.back();
+            for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p)
+                v.push_back(img);
+        }
+    }
+    IMG *get(int doc_idx, int img_idx) const
+    {
+        for (size_t i = 0; i < docs.size(); i++) {
+            if (docs[i] != doc_idx) continue;
+            if (img_idx < 0 || img_idx >= (int)imgs[i].size()) return NULL;
+            return imgs[i][(size_t)img_idx];
+        }
+        return NULL;
+    }
+};
+
 /* Rows currently on screen, honouring the file dropdown and the text filter,
-   so keyboard stepping walks exactly what the eye sees. */
+   so keyboard stepping walks exactly what the eye sees. Deliberately does no
+   IMG lookup: this runs from the keyboard handlers every frame, and a row that
+   turns out to be unresolvable is simply skipped when drawn. */
 static std::vector<int> SeqScrVisibleFrameRows(void)
 {
     std::vector<int> rows;
     const SeqScrFrameLibrary &lib = g_seqscr_frame_lib;
     std::string filter_low(s_seqscr_lib_search);
     for (char &c : filter_low) c = (char)tolower((unsigned char)c);
+    rows.reserve(lib.frames.size());
     for (int i = 0; i < (int)lib.frames.size(); i++) {
         const SeqScrFrameRef &ref = lib.frames[(size_t)i];
         if (s_seqscr_lib_file_filter >= 0 &&
             ref.file_slot != s_seqscr_lib_file_filter) continue;
-        if (!doc_get_img(document_get(ref.doc_idx), ref.img_idx)) continue;
         if (!filter_low.empty()) {
             std::string low = ref.name;
             for (char &c : low) c = (char)tolower((unsigned char)c);
@@ -16332,12 +16374,12 @@ static SeqScrAddOutcome SeqScrAddFramesToLoadedRecord(
 /* Every marked frame in the library, in file then list order. Marking reuses
    the IMG's own mark bit, so a selection made here is the same one World View
    rows, TBL export, and "Add Marked Frames" already act on. */
-static std::vector<SeqScrFrameRef> SeqScrMarkedLibraryFrames(void)
+static std::vector<SeqScrFrameRef> SeqScrMarkedLibraryFrames(const SeqScrImgCache &cache)
 {
     std::vector<SeqScrFrameRef> out;
     const SeqScrFrameLibrary &lib = g_seqscr_frame_lib;
     for (const SeqScrFrameRef &ref : lib.frames) {
-        IMG *img = doc_get_img(document_get(ref.doc_idx), ref.img_idx);
+        IMG *img = cache.get(ref.doc_idx, ref.img_idx);
         if (img && (img->flags & 1)) out.push_back(ref);
     }
     return out;
@@ -16425,27 +16467,46 @@ void DrawSeqScrFrameBrowser(float avail_h)
 
     float list_h = avail_h;
     if (list_h < 120.0f) list_h = 120.0f;
+
+    /* One O(total images) pass instead of an O(n) list walk per row. */
+    SeqScrImgCache cache;
+    cache.build(lib);
+
     int marked_total = 0;
-    int shown = 0;
+    for (const SeqScrFrameRef &r : lib.frames) {
+        IMG *m = cache.get(r.doc_idx, r.img_idx);
+        if (m && (m->flags & 1)) marked_total++;
+    }
+
+    std::vector<int> rows = SeqScrVisibleFrameRows();
+    int shown = (int)rows.size();
+
     if (ImGui::BeginListBox("##seqscr_lib_frames", ImVec2(-1, list_h))) {
         if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             g_palette_nav = false;
             g_seqscr_frame_nav = true;   /* Up/Down/Space now walk this list */
         }
-        for (int i = 0; i < (int)lib.frames.size(); i++) {
+        /* Clip to what is on screen. Submitting all ~470 rows every frame cost
+           more than the animation had left to run on. */
+        ImGuiListClipper clipper;
+        clipper.Begin(shown);
+        /* Keyboard stepping can land on a row the clipper would skip, so tell
+           it to include that one. */
+        if (s_seqscr_lib_scroll_to_sel) {
+            for (int k = 0; k < shown; k++) {
+                if (rows[(size_t)k] == s_seqscr_lib_selected) {
+                    clipper.IncludeItemByIndex(k);
+                    break;
+                }
+            }
+        }
+        while (clipper.Step())
+        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+            int i = rows[(size_t)row];
             const SeqScrFrameRef &ref = lib.frames[(size_t)i];
-            if (s_seqscr_lib_file_filter >= 0 &&
-                ref.file_slot != s_seqscr_lib_file_filter) continue;
-            IMG *img = doc_get_img(document_get(ref.doc_idx), ref.img_idx);
+            IMG *img = cache.get(ref.doc_idx, ref.img_idx);
             if (!img) continue;
             bool marked = (img->flags & 1) != 0;
-            if (marked) marked_total++;
-            if (!filter_low.empty()) {
-                std::string low = ref.name;
-                for (char &c : low) c = (char)tolower((unsigned char)c);
-                if (low.find(filter_low) == std::string::npos) continue;
-            }
-            shown++;
 
             ImGui::PushID(i);
             if (ImGui::Checkbox("##mark", &marked)) {
@@ -16502,16 +16563,10 @@ void DrawSeqScrFrameBrowser(float avail_h)
 
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
     if (ImGui::Button("Mark Shown##seqscr_lib_mark_all", ImVec2(84, 20))) {
-        for (const SeqScrFrameRef &ref : lib.frames) {
-            if (s_seqscr_lib_file_filter >= 0 &&
-                ref.file_slot != s_seqscr_lib_file_filter) continue;
-            IMG *img = doc_get_img(document_get(ref.doc_idx), ref.img_idx);
+        for (int i : rows) {
+            const SeqScrFrameRef &ref = lib.frames[(size_t)i];
+            IMG *img = cache.get(ref.doc_idx, ref.img_idx);
             if (!img) continue;
-            if (!filter_low.empty()) {
-                std::string low = ref.name;
-                for (char &c : low) c = (char)tolower((unsigned char)c);
-                if (low.find(filter_low) == std::string::npos) continue;
-            }
             img->flags |= 1;
             Document *owner = document_get(ref.doc_idx);
             if (owner) owner->dirty = true;
@@ -16520,7 +16575,7 @@ void DrawSeqScrFrameBrowser(float avail_h)
     ImGui::SameLine();
     if (ImGui::Button("Clear##seqscr_lib_clear", ImVec2(-1, 20))) {
         for (const SeqScrFrameRef &ref : lib.frames) {
-            IMG *img = doc_get_img(document_get(ref.doc_idx), ref.img_idx);
+            IMG *img = cache.get(ref.doc_idx, ref.img_idx);
             if (img) img->flags &= ~1;
         }
     }
@@ -16529,7 +16584,7 @@ void DrawSeqScrFrameBrowser(float avail_h)
 
     bool seq_loaded = state.embedded_active && !state.embedded_is_script &&
                       state.embedded_record_index >= 0;
-    std::vector<SeqScrFrameRef> marked = SeqScrMarkedLibraryFrames();
+    std::vector<SeqScrFrameRef> marked = SeqScrMarkedLibraryFrames(cache);
     bool any_marked = !marked.empty();
 
     auto report = [&](const SeqScrAddOutcome &out) {
@@ -16717,7 +16772,27 @@ static bool SeqScrDrawToolbar(WorldMarkedSequenceState &state,
         ImGui::EndPopup();
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("anchor y=%d", g_world_state.origin_y);
+    /* Render rate next to the tick rate: ticks advance off real elapsed time,
+       so timing stays right even when frames are dropped, but you can only SEE
+       one frame per render. If this reads below the tick rate the animation is
+       correct and under-sampled, which looks like judder. */
+    {
+        float render_fps = ImGui::GetIO().Framerate;
+        bool starved = render_fps > 1.0f && render_fps < state.fps * 0.9f;
+        if (starved)
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                               "anchor y=%d  %.0f fps < %.1f ticks/s",
+                               g_world_state.origin_y, render_fps, state.fps);
+        else
+            ImGui::TextDisabled("anchor y=%d  %.0f fps",
+                                g_world_state.origin_y, render_fps);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Ticks advance from elapsed time, so a hold of N ticks\n"
+                              "lasts N/%.1f s regardless of frame rate. When the render\n"
+                              "rate falls below the tick rate you see fewer than every\n"
+                              "frame, which reads as judder rather than wrong timing.",
+                              state.fps);
+    }
     ImGui::SameLine();
     if (ImGui::SmallButton("Copy ASM##seqscr_ws_copy_asm")) {
         state.generated_asm = WorldBuildSeqScrAsmExport(state.embedded_record_index);
