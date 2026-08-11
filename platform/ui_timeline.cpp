@@ -49,7 +49,7 @@ int ClampTimelineHold(int hold)
 void EnsureTimelineHolds(void)
 {
     if (g_timeline_holds.size() < g_timeline_frames.size())
-        g_timeline_holds.resize(g_timeline_frames.size(), 1);
+        g_timeline_holds.resize(g_timeline_frames.size(), kDefaultTimelineHold);
     else if (g_timeline_holds.size() > g_timeline_frames.size())
         g_timeline_holds.resize(g_timeline_frames.size());
     for (int &hold : g_timeline_holds)
@@ -65,7 +65,7 @@ void TimelinePushFrame(int img_idx, int hold)
 void TimelineSetFrames(const std::vector<int> &frames)
 {
     g_timeline_frames = frames;
-    g_timeline_holds.assign(g_timeline_frames.size(), 1);
+    g_timeline_holds.assign(g_timeline_frames.size(), kDefaultTimelineHold);
 }
 
 void TimelineClearFrames(void)

@@ -1,0 +1,68 @@
+name: Wiki Sync
+
+# The wiki is hand-authored and browser-editable by design -- anyone can fix a
+# page without a pull request. One page is the exception: Keyboard-Reference is
+# generated from g_help_text in platform/ui_modals.cpp, because a shortcut list
+# that disagrees with the binary is worse than no list. That drift is not
+# hypothetical -- the changelog advertised E and C for Smart Eraser and Clone
+# Stamp across several releases while neither key was bound.
+#
+# Only Keyboard-Reference.md is touched here. Every other wiki page is left
+# exactly as whoever edited it last left it.
+
+on:
+  push:
+    branches: ["SDL-main"]
+    paths:
+      # The help text itself, plus the generator and the editorial fragments
+      # that sit beside it.
+      - "platform/ui_modals.cpp"
+      - "tools/wiki/**"
+      - ".github/workflows/wiki-sync.yml"
+  # Lets a maintainer force a resync after editing the page in the browser.
+  workflow_dispatch:
+
+# Pushing to <repo>.wiki.git needs write access to repository contents; the
+# default GITHUB_TOKEN is read-only.
+permissions:
+  contents: write
+
+# A second run pushing to the same wiki while the first is mid-push would
+# collide, so serialize them.
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+jobs:
+  keyboard-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Clone wiki
+        run: |
+          git clone \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" \
+            wiki
+
+      - name: Regenerate Keyboard-Reference.md
+        # The generator exits non-zero if the help text stops parsing cleanly --
+        # a malformed table is not published, the run fails and says why.
+        run: python tools/wiki/gen_keyboard_reference.py --out wiki/Keyboard-Reference.md
+
+      - name: Commit and push if changed
+        working-directory: wiki
+        run: |
+          if git diff --quiet -- Keyboard-Reference.md; then
+            echo "Keyboard-Reference.md is already up to date; nothing to push."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Keyboard-Reference.md
+          git commit -m "Regenerate Keyboard-Reference from ${GITHUB_SHA:0:7}"
+          git push

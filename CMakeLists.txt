@@ -108,6 +108,7 @@ set(IMGTOOL_SOURCES
     platform/world_render.cpp
     platform/anipoint.cpp
     platform/anipoint_edit.cpp
+    platform/anipoint_level.cpp
     platform/anipoint_mirror.cpp
     platform/tbl_diff.cpp
     platform/img_util.cpp
@@ -278,8 +279,9 @@ add_test(NAME world_blit COMMAND world_blit_test)
 # only: img_format.h includes document.h which includes SDL.h. SDL_MAIN_HANDLED
 # keeps SDL from redefining main(). Add new pure-logic modules here as the
 # overlay split proceeds.
-foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_mirror
-                  tbl_diff img_util body_split gif_trim dma_pack stamp_erase)
+foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_level
+                  anipoint_mirror tbl_diff img_util body_split gif_trim dma_pack
+                  stamp_erase)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp

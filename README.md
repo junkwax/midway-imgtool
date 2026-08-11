@@ -142,6 +142,7 @@ The build copies `SDL2.dll` (Windows) and the Material Symbols icon font next to
 | `Arrows` (after Paste as New Sprite / canvas resize) | Nudge the art inside its canvas (`Shift` = 10px) |
 | `Ctrl+J` / `Ctrl+E` / `Ctrl+T` | Duplicate / Merge Down / Free Transform |
 | `P` / `R` / `W` / `L` / `I` | Pencil / Marquee / Magic Wand / Lasso / Eyedropper |
+| `G` / `V` / `E` / `C` | Paint Bucket / Variant Paint / Smart Eraser / Clone Stamp |
 | `[` / `]` (Pencil mode) | Shrink / grow brush radius |
 | `[` / `]` (no paint tool) | Set palette for marked / for current image |
 | `Shift+R` / `Shift+8` / `Del` | Rename / Merge marked into / Delete palette |

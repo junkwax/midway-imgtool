@@ -7987,6 +7987,7 @@ Edit:
   Ctrl+Z               Undo (paint stroke, anipoint, hitbox, palette ops)
   Ctrl+Y               Redo
   Ctrl+C / Ctrl+X / Ctrl+V   Copy / Cut / Paste
+  Ctrl+Shift+C         Copy selection to a new sprite
   Ctrl+Shift+X         Cut selection to a new sprite
   Ctrl+Shift+V         Paste clipboard as a new sprite
   Ctrl+A               Select all
@@ -8010,7 +8011,7 @@ Image list:
   Shift+Del            Delete image from anywhere
   Ctrl+R               Rename current image
   Ctrl+P               Add / Remove point table on current image
-  Alt+PgUp / PgDn      Move current image up / down in the list
+  Alt+PgUp / Alt+PgDn  Move current image up / down in the list
                        (or drag a row onto another to move it there)
   Tab                  Swap image lists (lists 1 and 2)
   ;                    Least-squares size reduce on marked
@@ -8023,7 +8024,10 @@ Tools (toolbar shortcuts):
   W                    Magic Wand (Ctrl-click adds)
   L                    Lasso
   I                    Eyedropper - pick color from canvas
-  (no shortcut)        Smart Eraser, Clone Stamp, Smart Remap (toolbar buttons)
+  E                    Smart Eraser - chroma-key remove with tolerance
+  C                    Clone Stamp - Alt+click anchors the source
+  (no shortcut)        Smart Remap, Blur, Smudge, Content-Aware Erase
+                       (toolbar buttons)
 
 Brush-specific (only fire while Pencil or Variant Paint is active):
   [ / ]                Shrink / grow brush radius (1..16)
@@ -8038,7 +8042,7 @@ Palette (only fire when no paint tool is active):
 Timeline / Anim:
   K                    Toggle timeline play / stop
   Left / Right         Step prev / next animation frame
-  Ctrl+Left / Right    Move current timeline frame earlier / later
+  Ctrl+Left / Ctrl+Right   Move current timeline frame earlier / later
   Hold                 Set extra base ticks before the current frame advances
   Ctrl-click frames    Pair two frames; Play/Left/Right advances both
   Drag paired sprite   Move sprite by editing its anipoint; lock Back/Front to protect it

@@ -24,6 +24,7 @@
 #include "world_render.h"
 #include "anipoint.h"
 #include "anipoint_edit.h"
+#include "anipoint_level.h"
 #include "img_util.h"
 #include "sprite_resize_ops.h"
 #include "img_io.h"
@@ -297,6 +298,62 @@ static void DrawSetGroupAnipointsDialog(void)
     if (ImGui::Button("Cancel", ImVec2(90, 0)))
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
+}
+
+/* ---- Stance-referenced anipoint levelling ----
+ * Frames added to a shipped library arrive with anix/aniy = 0,0, which anchors
+ * them to their own top-left corner; played back they bob against the original
+ * art because each frame's pixels sit at a different height inside its box.
+ * The shipped STANCE frame knows where the ground is, so it supplies the line
+ * everything else stands on. Effects on another palette have no feet and get
+ * centred on their own pixels instead. See anipoint_level.h. */
+static void LevelUnsetAnipointsFromStance(void)
+{
+    std::vector<IMG *> imgs;
+    for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p)
+        imgs.push_back(p);
+
+    AnipointLevelPlan plan = AnipointLevelBuildPlan(imgs);
+
+    if (!plan.has_reference) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No STANCE frame here — nothing to measure a ground line from.");
+        g_restore_msg_timer = 5.0f;
+        return;
+    }
+
+    const char *ref_name = imgs[(size_t)plan.reference_index]->n_s;
+
+    if (plan.entries.empty()) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Ground line %d from %.15s; nothing to level (%d already anchored).",
+                 plan.ground_line, ref_name, plan.skipped_anchored);
+        g_restore_msg_timer = 5.0f;
+        return;
+    }
+
+    doc_undo_push();
+    for (const AnipointLevelPlanEntry &e : plan.entries) {
+        IMG *img = imgs[(size_t)e.index];
+        img->anix = signed_to_img_word(e.new_anix);
+        img->aniy = signed_to_img_word(e.new_aniy);
+    }
+    mark_dirty();
+    /* Thumbnails and the canvas texture both draw the crosshair, so they go
+       stale the moment an anchor moves. */
+    ClearTimelineThumbCache();
+    g_img_tex_idx = -2;
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Ground line %d from %.15s: stood %d frame%s on it, centred %d effect%s"
+             "%s%d already anchored%s.",
+             plan.ground_line, ref_name,
+             plan.ground_count, plan.ground_count == 1 ? "" : "s",
+             plan.center_count, plan.center_count == 1 ? "" : "s",
+             plan.skipped_anchored > 0 ? ", left " : " (",
+             plan.skipped_anchored,
+             plan.skipped_anchored > 0 ? "." : " untouched).");
+    g_restore_msg_timer = 6.0f;
 }
 
 
@@ -732,6 +789,20 @@ void DrawMainLayout(void)
     }
     if (!g_pasted.active && ImGui::Shortcut(ImGuiKey_V, route)) {
         g_active_tool = (g_active_tool == ActiveTool::VariantPaint) ? ActiveTool::None : ActiveTool::VariantPaint;
+    }
+    /* E and C were advertised in the v2.x changelog when Smart Eraser and
+       Clone Stamp landed, but the bindings themselves were never wired — the
+       tools stayed toolbar-only. Both bare keys are otherwise unused (only
+       Ctrl+E / Ctrl+C / Ctrl+Shift+C are taken), so the advertised shortcuts
+       cost nothing to honor. Neither tool has a floating-paste meaning, so
+       unlike H/V/L they need no g_pasted guard. */
+    if (ImGui::Shortcut(ImGuiKey_E, route)) {
+        g_active_tool = (g_active_tool == ActiveTool::BackgroundEraser)
+                            ? ActiveTool::None : ActiveTool::BackgroundEraser;
+    }
+    if (ImGui::Shortcut(ImGuiKey_C, route)) {
+        g_active_tool = (g_active_tool == ActiveTool::CloneStamp)
+                            ? ActiveTool::None : ActiveTool::CloneStamp;
     }
     /* [ and ] do double duty depending on context:
          - Pencil active: [ shrinks brush, ] grows brush (Photoshop convention).
@@ -1272,6 +1343,17 @@ void DrawMainLayout(void)
                 "Y/Z values stay unchanged. Convention: %s.\n"
                 "Change it under View > Mirror Preview.",
                 mirror_convention_label(g_mirror_convention));
+            if (ImGui::MenuItem("Level Unset Anipoints from Stance")) {
+                LevelUnsetAnipointsFromStance();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Gives frames that never got an anipoint (still 0,0) a sensible\n"
+                "one, using the STANCE frame's footing as the reference.\n\n"
+                "Same palette as the stance: stood on its ground line, so added\n"
+                "frames stop bobbing against the shipped art.\n"
+                "Other palettes (effects): centred on their own pixels.\n\n"
+                "Frames that already carry an anipoint are never touched, even\n"
+                "when they disagree with the stance.");
             ImGui::Separator();
             if (ImGui::MenuItem("Least-Squares Reduce", ";"))               LeastSquaresReduceMarked();
             ImGui::Separator();
@@ -2865,8 +2947,21 @@ void DrawMainLayout(void)
         if (ImGui::InputInt("Hold", &cur_hold, 1, 4))
             TimelineSetHoldAt(g_timeline_play_idx, cur_hold);
         ImGui::PopItemWidth();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Base ticks to wait before this frame advances. At 12 FPS, Hold 3 lasts 0.25 seconds.");
+        if (ImGui::IsItemHovered()) {
+            /* Spell the timing out from the live rate rather than a canned
+               example: the slider beside this defaults to hardware speed, so a
+               fixed "at 12 FPS" line described a rate the timeline was not
+               running at. */
+            int shown = ClampTimelineHold(cur_hold);
+            float rate = g_play_speed > 0.0f ? g_play_speed : kMk2TickHz;
+            ImGui::SetTooltip(
+                "Base ticks to wait before this frame advances. This is the\n"
+                "number you write into the ASM, not a preview-only speed.\n\n"
+                "At %.1f ticks/sec, a hold of %d lasts %.0f ms (%.1f fps).\n"
+                "New frames start at %d.",
+                rate, shown, 1000.0f * (float)shown / rate, rate / (float)shown,
+                kDefaultTimelineHold);
+        }
         
         ImGui::SameLine();
         if (ImGui::Button("Reset Sequence")) {

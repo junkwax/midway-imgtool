@@ -8,6 +8,105 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.23.0] — Playback speed that matches the hardware, and stance-levelled anipoints
+
+### New timelines no longer play at 54.7 fps
+
+Playback is driven at the hardware tick rate, and every new timeline frame held
+for exactly one tick — so a freshly built sequence ran at 54.7 fps, which is not
+a speed any MK2 animation uses. World View had already been fixed to default to
+4, but the Image timeline had its own hardcoded `1` and the two had no reason to
+ever agree again.
+
+Both now share `kDefaultTimelineHold` (4 ticks, ~13.7 fps at 54.7 Hz), so the
+two previews cannot drift apart.
+
+The tick model itself was already right and has not changed: ticks are what you
+write into the ASM, and 54.7 Hz is fixed hardware, so expressing the default as
+an fps number would have been a step backwards. What was missing was the
+arithmetic. The Image timeline's Hold tooltip claimed "At 12 FPS, Hold 3 lasts
+0.25 seconds" — a rate the timeline was not running at. It now reads the live
+rate and spells out the real result in both ms and fps.
+
+### Level Unset Anipoints from Stance (Operations menu)
+
+Frames added to a shipped library arrive with `anix/aniy = 0,0`, anchoring them
+to their own top-left corner. Played back they bob against the original art,
+because each frame's pixels sit at a different height inside its own box —
+BOSS8's four `BGEYESHOT` frames drift 19px between them.
+
+The shipped `STANCE` frame knows where the ground is, so it supplies the line.
+The command finds it, measures its ground line (bottom of its opaque art
+relative to its anipoint), and stands every unset same-palette frame on it.
+
+- Grouping is by **palette**, not sprite size. In real libraries the character's
+  frames share one palette while effects carry their own (BOSS8: pal 3 boss,
+  pal 4 spark), whereas no two sprites in the file share a size — matching on
+  size would have matched nothing.
+- Frames on a **different** palette are effects with no feet, so they are
+  centred on their own opaque pixels rather than stood on the ground line.
+- Only frames still at `0,0` are touched. `BGHAMMERTOP1-6` agree with each other
+  on a ground line 15px below the stance's; whether that is wrong is a judgement
+  call for a human, not a bulk edit, so they are left alone and counted in the
+  result message.
+
+The reference is the stance specifically rather than whichever ground line the
+most frames agree on: the stance ships with the game, the frames being fixed
+were added afterwards, and a majority of added frames being wrong together does
+not make them right.
+
+Logic lives in `platform/anipoint_level.{h,cpp}` as a pure module with unit
+coverage, including the BOSS8 shape and the case where an already-correct frame
+must not be reported as a change.
+
+### The eraser and stamp shortcuts that were never wired
+
+`E` and `C` were announced as the Smart Eraser and Clone Stamp shortcuts when
+those tools landed, and documented that way ever since. They were never bound.
+Both tools have been toolbar-only the whole time, and the in-app help had
+quietly corrected itself to say so — `(no shortcut) Smart Eraser, Clone Stamp,
+Smart Remap` — leaving the changelog as the only place still claiming
+otherwise.
+
+Both bare keys were free (only `Ctrl+E`, `Ctrl+C`, and `Ctrl+Shift+C` were
+taken), so the advertised bindings now exist rather than the claim being
+withdrawn:
+
+- `E` toggles Smart Eraser, `C` toggles Clone Stamp, matching how `P`, `G`,
+  `V`, `R`, `W`, `L`, and `I` already behave — a second press returns to no
+  tool.
+- Neither takes a `g_pasted` guard. `H`, `V`, and `L` need one because they
+  mean flip-horizontal, flip-vertical, and drop-to-layer while a paste is
+  floating; eraser and stamp have no floating-paste meaning.
+- Smart Remap, Blur, Smudge, and Content-Aware Erase stay toolbar-only. The
+  in-app help now lists them under that heading explicitly instead of implying
+  the list of keyless tools is shorter than it is.
+
+Documented in the in-app help (`h`), the README key table, and the wiki.
+
+### The help text is now the wiki's source of truth
+
+The shortcut list existed in two places that had no way to agree, which is how
+`E` and `C` stayed wrong for as long as they did. The wiki's Keyboard Reference
+page is now generated from `g_help_text` by
+`tools/wiki/gen_keyboard_reference.py`, and `.github/workflows/wiki-sync.yml`
+republishes it on push to `SDL-main`. Only that one page is generated; the rest
+of the wiki stays hand-written and browser-editable.
+
+Generating from the help text immediately turned up things wrong with it:
+
+- `Ctrl+Shift+C` (Copy to New Sprite) was bound and in the Edit menu but had
+  never been listed.
+- `Alt+PgUp / PgDn` and `Ctrl+Left / Right` abbreviated the second key of each
+  pair, which reads as `PgDn` and `Right` being bare shortcuts.
+
+The generator parses the fixed-column console layout rather than guessing at
+whitespace — descriptions start at column 23, and keys that outgrow the column
+push right. Two-space runs occur *inside* keys (`Alt+L  / Alt+S`) and *between*
+key and description (`Alt+PgUp / Alt+PgDn  Move ...`), so neither a naive split
+nor a fixed column works alone. A malformed entry fails the run instead of
+publishing a mangled table.
+
 ## [v3.22.0] — Erase Copied Object, and tabs that agree with themselves
 
 ### Erase Copied Object (Operations menu)

@@ -15,6 +15,7 @@
 #include <vector>
 #include "document.h"    /* Document */
 #include "img_format.h"  /* IMG */
+#include "ui_timeline.h" /* kDefaultTimelineHold — shared with the Image timeline */
 
 enum {
     kWorldMarkedSourceTabs = 10,                  /* marked IMG rows */
@@ -459,10 +460,10 @@ struct WorldMarkedSequenceState {
     float fps = kMk2TickHz;   /* ticks per second, i.e. real game speed */
     /* Ticks each frame holds when nothing else authored a timing for it. The
        tick rate is hardware and does not move; this is the number that does,
-       and it is the same number you write into the ASM. A hold of 1 means 54.7
-       frames a second, which no MK2 animation runs at — 4 lands near 13.7 fps,
-       which is the neighbourhood real move art sits in. */
-    int default_hold = 4;
+       and it is the same number you write into the ASM. See
+       kDefaultTimelineHold for why it is 4 rather than 1 — the Image timeline
+       shares the constant so the two previews cannot disagree. */
+    int default_hold = kDefaultTimelineHold;
     float timer = 0.0f;
     int frame = 0;
     bool paused = false;

@@ -18,11 +18,20 @@ extern std::vector<int> g_timeline_frames;
 extern std::vector<int> g_timeline_holds;
 extern int              g_timeline_play_idx;
 
+/* Ticks a frame holds when nothing has authored a timing for it.
+   Playback is driven at the hardware tick rate (kMk2TickHz, 54.7 Hz), so a
+   hold of 1 is 54.7 fps -- not a speed any MK2 animation runs at, and fast
+   enough that a new timeline looks broken rather than merely quick. 4 ticks
+   is ~13.7 fps, the neighbourhood real move art sits in.
+   This is the same default World View applies to its lanes; it lives here so
+   the two cannot drift apart, which they previously had. */
+constexpr int kDefaultTimelineHold = 4;
+
 int  TimelineFramePosition(int img_idx);   /* position of img_idx, or -1 */
 int  WrapTimelinePosition(int pos);        /* wrap pos into [0, size) */
 int  ClampTimelineHold(int hold);          /* clamp to [1, 120] */
 void EnsureTimelineHolds(void);            /* keep holds[] sized to frames[] */
-void TimelinePushFrame(int img_idx, int hold = 1);
+void TimelinePushFrame(int img_idx, int hold = kDefaultTimelineHold);
 void TimelineSetFrames(const std::vector<int> &frames);
 void TimelineClearFrames(void);
 int  TimelineHoldAt(int pos);
