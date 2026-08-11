@@ -14,12 +14,17 @@
 static std::deque<Document> g_documents;
 static int g_active_document = 0;
 
+/* Never reused, never 0: 0 means "no document". A session would have to open
+   four billion files to wrap. */
+static unsigned int g_next_document_uid = 1;
+
 Document *g_doc = NULL;
 
 static void document_set_defaults(Document *doc)
 {
     if (!doc) return;
     memset(doc, 0, sizeof(*doc));
+    doc->uid = g_next_document_uid++;
     doc->file_bufscr[0] = 0xFF;
     doc->file_bufscr[1] = 0xFF;
     doc->file_bufscr[2] = 0xFF;
@@ -54,6 +59,10 @@ void document_clear_contents(Document *doc)
 {
     if (!doc) return;
 
+    /* Emptying a document is not closing it: the tab stays on screen, so it
+       keeps its identity and its ImGui tab along with it. */
+    unsigned int keep_uid = doc->uid;
+
     free_img_chain(doc->img_p);
     free_img_chain(doc->img2_p);
     free_pal_chain(doc->pal_p);
@@ -61,6 +70,7 @@ void document_clear_contents(Document *doc)
     if (doc->damtbl_p) free(doc->damtbl_p);
 
     document_set_defaults(doc);
+    if (keep_uid) doc->uid = keep_uid;
 }
 
 static void document_repoint_active(void)
@@ -105,6 +115,20 @@ Document *document_get(int idx)
 Document *document_active(void)
 {
     return g_doc;
+}
+
+unsigned int document_uid(int idx)
+{
+    if (idx < 0 || idx >= (int)g_documents.size()) return 0;
+    return g_documents[(size_t)idx].uid;
+}
+
+int document_index_of_uid(unsigned int uid)
+{
+    if (!uid) return -1;
+    for (int i = 0; i < (int)g_documents.size(); i++)
+        if (g_documents[(size_t)i].uid == uid) return i;
+    return -1;
 }
 
 int document_new_tab(void)

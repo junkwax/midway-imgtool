@@ -86,6 +86,15 @@ typedef struct Document {
        dirty/clean independently while legacy code keeps reaching through
        g_doc. */
     int           dirty;
+
+    /* Stable identity for this open document, handed out once at creation and
+       never reused. Slot indices are not an identity: closing or dragging a tab
+       renumbers every document after it. The tab bar hashes this into its
+       ImGui tab ID so a tab keeps the same widget across renames, the dirty
+       asterisk appearing, neighbours closing, and drag-reorders — all of which
+       used to mint a new ID and let ImGui move the highlight to some other
+       file while the active document stayed put. */
+    unsigned int  uid;
 } Document;
 
 /* The currently-active document. Points at one element of the tabs
@@ -102,6 +111,11 @@ void document_init(void);
 int       document_tab_count(void);
 int       document_active_index(void);
 Document *document_get(int idx);
+/* Stable identity helpers — see Document::uid. `document_uid` returns 0 for an
+   out-of-range slot; `document_index_of_uid` returns -1 when no open document
+   carries that uid (it was closed). */
+unsigned int document_uid(int idx);
+int          document_index_of_uid(unsigned int uid);
 Document *document_active(void);
 int       document_new_tab(void);
 void      document_set_active(int idx);

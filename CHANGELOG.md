@@ -8,6 +8,73 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.22.0] — Erase Copied Object, and tabs that agree with themselves
+
+### Erase Copied Object (Operations menu)
+
+Copy an object once, then subtract it from every frame it was composited into.
+Built for the case where a sprite is reused verbatim under an effect —
+UMK3FIRE.IMG holds a clean skeleton in UMK3SKEL18 and the same skeleton under
+a flame in UMK3SKEL4..17 — and getting the flame on its own means removing the
+skeleton from fourteen frames by hand.
+
+Nothing has to line up first. Each frame is searched for the object by its own
+pixels: samples taken from all over the object vote on where it would have to
+be, votes are weighted toward colors the frame rarely uses, no single color may
+cast many (so a large flat region cannot outvote everything else), the
+best-supported placements are scored properly, and the winner is walked to its
+exact position. Anipoints are not consulted, and the frames being different
+sizes does not matter. About 1.3 ms per frame.
+
+Only pixels whose palette index matches the object exactly are cleared, so
+whatever was painted over it stays. That is the whole trick: where the flame
+covers the skeleton the indices differ, so those pixels survive and the flame
+comes out whole.
+
+- Scope is marked frames, all frames, or just the selected one. The frame the
+  clipboard came from is skipped by default — it matches itself perfectly and
+  would be wiped clean.
+- Every searched frame is listed with its match percentage, where the object
+  was found, and how many pixels would go. Clicking a row jumps the editor to
+  that frame. Rows are ticked by threshold and can be overridden by hand.
+- Do not expect high percentages. Against the real UMK3FIRE art the frames that
+  genuinely hold the skeleton score 21-35% — the flame recolors most of it —
+  while frames that do not hold it sit under 12%. The gap is the signal, which
+  is why the threshold defaults to 20% rather than something confident-looking.
+- The whole sweep is one undo step.
+- Matching and subtraction live in `platform/stamp_erase.{h,cpp}`, unit-tested
+  including the heavy-occlusion case (three quarters of the object repainted,
+  placement still exact). The search agrees with an exhaustive one on 24 of
+  UMK3FIRE's 26 skeleton frames; the two it differs on are frames the object is
+  not in.
+
+### Document tabs stop disagreeing with the editor
+
+The highlighted tab and the file actually being edited could end up being two
+different files, with no way back short of clicking around.
+
+Tab IDs were built from the tab's own label and its slot index, so both halves
+moved constantly. The moment an edit added the `*` dirty marker, ImGui saw the
+old tab disappear and a new one appear, dropped the selection, and fell back to
+whichever tab it had highlighted least recently — the active document had not
+changed, so nothing ever put the highlight back. Closing a tab renumbered every
+slot after it and did the same thing, and a drag-reorder applied its
+permutation twice, once inside ImGui and once to the backing store.
+
+- Documents now carry a stable uid, minted once and never reused, and the tab
+  is keyed on it alone (`###`). Renames, the dirty marker, neighbours closing,
+  and reorders all leave a tab's identity untouched.
+- Clicks and closes are recorded by uid too, so a drag that reorders and
+  selects in the same frame no longer loses the click.
+- Exactly one tab may claim the selection per frame; two used to, and the later
+  submission silently won.
+- Whatever ImGui is drawing as selected now wins on any frame we did not drive
+  the selection ourselves, so a stray selection change resyncs instead of
+  persisting.
+- Undo no longer stamps another document's identity onto the open tab: the
+  history stack is app-wide, and restoring a snapshot taken in a different tab
+  used to hand two tabs the same ID.
+
 ## [v3.21.1] — Anim tab playback frame rate
 
 Fixes juddering playback in the Anim workspace. The frame browser submitted

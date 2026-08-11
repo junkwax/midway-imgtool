@@ -33,6 +33,7 @@
 #include "mk2_fatality.h"
 #include "ui_bodysplit.h"
 #include "ui_autochop.h"
+#include "ui_stamp_erase.h"
 #include "dma_pack.h"
 #include "compat.h"
 
@@ -1207,6 +1208,16 @@ void DrawMainLayout(void)
                 "One-pass edge defringe: every pixel touching a transparent\n"
                 "neighbor is averaged toward its non-transparent neighbors,\n"
                 "killing the 1px halo of blue/green-spill on digitized actors.");
+            if (ImGui::MenuItem("Erase Copied Object...", NULL, false,
+                                StampEraseAvailable()))
+                OpenStampEraseDialog();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Copy an object once (Ctrl+C), then subtract it from every frame\n"
+                "it was composited into. Each frame is searched for the object's\n"
+                "own pixels — no anipoints, no lining anything up — and only\n"
+                "pixels that match it exactly are cleared, so whatever was painted\n"
+                "over the top survives. Built for pulling a reused sprite back out\n"
+                "from under an effect (UMK3SKEL18 under the flames in UMK3FIRE).");
             if (ImGui::MenuItem("Clean Sprite Artifacts...", NULL, false,
                                 CountMarkedImages() > 0 || g_doc->ilselected >= 0)) {
                 OpenSpriteCleanupDialog();
@@ -3070,6 +3081,7 @@ void DrawMainLayout(void)
     DrawOpacityGradientDialog();
     DrawInnerStrokeDialog();
     DrawSpriteCleanupDialog();
+    DrawStampEraseDialog();
 
     DrawBulkResizeDialog();
 
@@ -3804,8 +3816,10 @@ float DrawDocumentTabBar(float y, float sw)
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoBackground);
 
-    int activate_idx = -1;
-    int close_idx = -1;
+    /* Clicks are recorded as document uids, not slot indices: a drag-reorder in
+       the same frame renumbers the slots before the click is acted on. */
+    unsigned int activate_uid = 0;
+    unsigned int close_uid = 0;
     bool new_tab = false;
     int active = document_active_index();
 
@@ -3838,13 +3852,24 @@ float DrawDocumentTabBar(float y, float sw)
             if (!doc) continue;
 
             const char *base = doc->fname_s[0] ? doc->fname_s : "Untitled";
+            /* `###` keys the tab on the uid alone, so the visible half is free
+               to change. With `##` the ID hashed the whole label: the moment an
+               edit added the dirty asterisk, ImGui saw the old tab vanish and a
+               brand-new one appear, dropped the selection, and fell back to
+               whichever tab it had highlighted least recently — the active
+               document had not changed, so nothing ever put the highlight
+               back. */
             char label[96];
-            snprintf(label, sizeof(label), "%s%s##doc_tab_%d",
-                     doc->dirty ? "* " : "", base, i);
+            snprintf(label, sizeof(label), "%s%s###doc_tab_uid_%u",
+                     doc->dirty ? "* " : "", base, doc->uid);
 
             bool open = true;
-            bool want_select = force_select &&
-                               (i == active || i == g_doc_tab_select_request);
+            /* Exactly one SetSelected per frame. A pending request outranks the
+               current active index; when two tabs claimed it the later
+               submission silently won. */
+            int select_slot = (g_doc_tab_select_request >= 0)
+                            ? g_doc_tab_select_request : active;
+            bool want_select = force_select && (i == select_slot);
             ImGuiTabItemFlags item_flags = want_select ? ImGuiTabItemFlags_SetSelected
                                                        : ImGuiTabItemFlags_None;
             bool visible = ImGui::BeginTabItem(label, &open, item_flags);
@@ -3856,11 +3881,11 @@ float DrawDocumentTabBar(float y, float sw)
                     tab_bar_ptr->Tabs[tab_bar_ptr->LastTabItemIdx].ID;
             bool activated = ImGui::IsItemActivated();
             if (activated && i != active)
-                activate_idx = i;
+                activate_uid = doc->uid;
             if (visible)
                 ImGui::EndTabItem();
             if (!open)
-                close_idx = i;
+                close_uid = doc->uid;
         }
 
         /* The World View toggles used to live here, on the document strip.
@@ -3879,8 +3904,9 @@ float DrawDocumentTabBar(float y, float sw)
 
     /* If the user dragged a tab, ImGui has reordered tab_bar->Tabs by now.
        Map that order back to document indices and apply it to the backing
-       store so the new order persists. A reorder rewrites the indices, so the
-       click-derived activate/close indices from this frame no longer apply. */
+       store so the new order persists. Tab IDs are uid-keyed, so ImGui's order
+       and the document order agree afterwards — applying the permutation to
+       both is not a double-shuffle. */
     bool reordered = false;
     if (tab_bar_ptr && (int)doc_tab_ids.size() == document_tab_count()) {
         std::vector<int> new_order;
@@ -3898,26 +3924,41 @@ float DrawDocumentTabBar(float y, float sw)
             for (int i = 0; i < (int)new_order.size(); i++) {
                 if (new_order[i] != i) { reordered = true; break; }
             }
-            if (reordered) {
+            if (reordered)
                 document_reorder(new_order.data(), (int)new_order.size());
-                /* Tab IDs encode the index, so the active document's tab gets a
-                   new ID at its new slot; re-assert its selection next frame so
-                   the highlight follows it instead of snapping to tab 0. */
-                g_doc_tab_select_request = document_active_index();
-            }
         }
     }
 
-    if (!reordered) {
-        if (activate_idx >= 0)
-            ActivateDocumentTab(activate_idx);
-        if (close_idx >= 0)
-            RequestCloseDocumentTab(close_idx);
+    /* Uid-keyed, so these survive the reorder above. */
+    if (activate_uid) {
+        int idx = document_index_of_uid(activate_uid);
+        if (idx >= 0) ActivateDocumentTab(idx);
+    }
+    if (close_uid) {
+        int idx = document_index_of_uid(close_uid);
+        if (idx >= 0) RequestCloseDocumentTab(idx);
     }
     if (new_tab) {
         document_new_tab();
         g_doc_tab_select_request = document_active_index();
         ResetPerDocumentUiState(false);
+    }
+
+    /* Last line of defence: whatever ImGui is drawing as the selected tab is
+       what the user sees, so the active document follows it. This catches
+       selection changes we do not raise ourselves — keyboard nav onto the bar,
+       ImGui picking a neighbour when the selected tab disappears — which
+       otherwise leave the highlight and the canvas showing different files
+       with no way back short of clicking around. Skipped on any frame we
+       already drove the selection, since ImGui applies a click one frame
+       later and reading it early would bounce the document straight back. */
+    if (tab_bar_ptr && !force_select && !reordered && !new_tab &&
+        !activate_uid && !close_uid && tab_bar_ptr->SelectedTabId != 0) {
+        for (int i = 0; i < (int)doc_tab_ids.size(); i++) {
+            if (doc_tab_ids[(size_t)i] != tab_bar_ptr->SelectedTabId) continue;
+            if (i != document_active_index()) ActivateDocumentTab(i);
+            break;
+        }
     }
 
     s_last_synced_active = document_active_index();

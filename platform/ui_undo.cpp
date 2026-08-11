@@ -242,6 +242,10 @@ static bool RestoreDocSnapshot(DocSnapshot *snap)
     snap->doc.pal_p = NULL;
     snap->doc.scrseqmem_p = NULL;
     snap->doc.damtbl_p = NULL;
+    /* The tab's identity belongs to the open tab, not to the snapshot: the
+       history stack is app-wide, so a snapshot taken in another document would
+       otherwise stamp its uid here and give two tabs the same ImGui ID. */
+    restored.uid = g_doc->uid;
     *g_doc = restored;
 
     if (g_doc->ilselected >= (int)g_doc->imgcnt)
