@@ -6076,6 +6076,31 @@ static bool SeqScrBeginBlobEdit(void)
     return doc_undo_push();
 }
 
+bool SeqScrSetName(int record_index, const char *name)
+{
+    if (!name) return false;
+
+    std::vector<SeqScrRecordView> records;
+    bool truncated = false;
+    if (!SeqScrBuildRecords(records, &truncated)) return false;
+    if (record_index < 0 || record_index >= (int)records.size()) return false;
+
+    const SeqScrRecordView &rec = records[(size_t)record_index];
+    if (rec.truncated) return false;   /* never write into a malformed blob */
+
+    if (!SeqScrBeginBlobEdit()) return false;
+
+    /* Zero the whole 16-byte field first: writing only the new characters
+       would leave the tail of a longer previous name in place, so renaming
+       "BGHAMMERTOP1" to "SPARK" would read back as "SPARKMERTOP1". */
+    unsigned char *base = (unsigned char *)g_doc->scrseqmem_p + rec.offset;
+    memset(base, 0, 16);
+    strncpy((char *)base, name, 15);   /* 15, so byte 16 stays a terminator */
+
+    mark_dirty();
+    return true;
+}
+
 static bool SeqScrInputI16(const char *label, unsigned char *base, int off,
                            bool editing, int width = 74)
 {
@@ -6183,13 +6208,7 @@ static void SeqScrDrawRecordEditor(const SeqScrRecordView &rec,
                          sizeof(s_name_edit));
         ImGui::SameLine();
         if (ImGui::SmallButton("Apply##seqscr_name_apply")) {
-            if (SeqScrBeginBlobEdit()) {
-                unsigned char *edit_blob = (unsigned char *)g_doc->scrseqmem_p;
-                unsigned char *edit_base = edit_blob + rec.offset;
-                memset(edit_base, 0, 16);
-                strncpy((char *)edit_base, s_name_edit, 15);
-                mark_dirty();
-            }
+            SeqScrSetName(rec.index, s_name_edit);
             s_name_record = -1;
         }
         ImGui::SameLine();

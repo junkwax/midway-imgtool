@@ -345,14 +345,13 @@ static void LevelUnsetAnipointsFromStance(void)
     g_img_tex_idx = -2;
 
     snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "Ground line %d from %.15s: stood %d frame%s on it, centred %d effect%s"
-             "%s%d already anchored%s.",
+             "Ground line %d from %.15s: %d frame%s levelled (Y only — X is "
+             "authored motion, set it by hand), %d effect%s centred, %d left "
+             "alone as already anchored.",
              plan.ground_line, ref_name,
              plan.ground_count, plan.ground_count == 1 ? "" : "s",
              plan.center_count, plan.center_count == 1 ? "" : "s",
-             plan.skipped_anchored > 0 ? ", left " : " (",
-             plan.skipped_anchored,
-             plan.skipped_anchored > 0 ? "." : " untouched).");
+             plan.skipped_anchored);
     g_restore_msg_timer = 6.0f;
 }
 

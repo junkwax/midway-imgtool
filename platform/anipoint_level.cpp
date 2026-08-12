@@ -67,8 +67,12 @@ bool anipoint_level_content_center(const IMG *img, int *out_cx, int *out_cy)
     }
     if (max_x < 0) return false;
 
-    if (out_cx) *out_cx = (min_x + max_x) / 2;
-    if (out_cy) *out_cy = (min_y + max_y) / 2;
+    /* Round up, not down. Checked against all twelve hand-authored BGSPARK
+       frames in BOSS8: every one has anix == w/2 and aniy == h/2, which for
+       art spanning 0..w-1 is (min+max+1)/2. Truncating instead lands a pixel
+       left and up on every even dimension. */
+    if (out_cx) *out_cx = (min_x + max_x + 1) / 2;
+    if (out_cy) *out_cy = (min_y + max_y + 1) / 2;
     return true;
 }
 
@@ -150,17 +154,28 @@ AnipointLevelPlan AnipointLevelBuildPlan(const std::vector<IMG *> &imgs)
         e.cur_aniy = level_signed(img->aniy);
 
         if ((int)img->palnum == plan.reference_pal) {
-            /* Same character: stand it on the stance's ground line. X centres
-               on the art, which is what the stance frames themselves do -- an
-               anchor off to one side would swing the body sideways between
-               frames even with the feet correct. */
+            /* Same character: stand it on the stance's ground line.
+
+               Y only. X is deliberately left alone, because it is not
+               derivable from the pixels. Measured against the hand-authored
+               BOSS8 frames, the best geometric guess (horizontal centroid of
+               the bottom rows -- the feet) still misses by 12.6px on average,
+               and the BGFATHAM run is off by a near-constant 22px across all
+               seven frames: that constant is the character travelling across
+               the screen during the fatality. anix encodes authored world
+               motion, so any value computed from a bounding box overwrites
+               animation with geometry. Frame centre is worse still (19.8px).
+
+               Leaving it means an unset frame keeps anix = 0 and still needs a
+               human, which is honest -- the Y fix alone stops the vertical
+               bobbing, and the caller reports that X was not touched. */
             int bottom = anipoint_level_content_bottom(img);
             e.action     = AnipointLevelAction::GroundAlign;
-            e.new_anix   = cx;
+            e.new_anix   = e.cur_anix;
             e.new_aniy   = bottom - plan.ground_line;
             e.cur_ground = bottom - e.cur_aniy;
             e.new_ground = plan.ground_line;
-            e.reason     = "same palette as stance: aligned to ground line";
+            e.reason     = "same palette as stance: Y aligned to ground line, X left for authoring";
             plan.ground_count++;
         } else {
             /* Different palette: an effect, not the character. It has no feet,

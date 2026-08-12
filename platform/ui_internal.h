@@ -50,6 +50,10 @@ bool SeqScrBuildRecords(std::vector<SeqScrRecordView> &records,
                         bool *truncated_out);
 const char *SeqScrRecordTypeLabel(const SeqScrRecordView &rec);
 bool SeqScrAddRecord(bool script);
+/* Rename a sequence or script in place. `name` is truncated to the 15 usable
+   bytes of the 16-byte field and the remainder zeroed, so a shorter name never
+   leaves the tail of the old one behind. Pushes one undo step. */
+bool SeqScrSetName(int record_index, const char *name);
 bool SeqScrAppendEntry(int record_index, int target_index);
 bool SeqScrAppendEntries(int record_index, const std::vector<int> &target_indices);
 bool SeqScrDeleteEntry(int record_index, int entry_index);
@@ -145,9 +149,11 @@ extern int           g_img_tex_h;
 #define ICON_MARK     "\xEE\xA0\xB4"     /* U+E834 check_box — reads as 'this sprite is checked/marked' */
 #define ICON_MARK_ALL "\xEE\x85\xA2"     /* U+E162 select_all */
 #define ICON_CLEAR    "\xEE\xA0\xB5"     /* U+E835 check_box_outline_blank — paired visually with ICON_MARK */
-#define ICON_POINTS   "\xEE\x86\xB3"     /* U+E1B3 gps_fixed — concentric registration target */
+#define ICON_POINTS   "\xEE\x86\xB3"     /* U+E1B3 my_location — concentric registration target */
 #define ICON_HITBOX   "\xEE\x87\xA6"     /* U+E1E6 activity_zone */
-#define ICON_MARQUEE  "\xEE\xBD\x92"     /* U+EF52 highlight_alt — dashed-rect marquee */
+#define ICON_MARQUEE  "\xEE\xBD\x92"     /* U+EF52 ink_selection — dashed-rect marquee */
+#define ICON_ZOOM_FIT "\xEE\xA8\x90"     /* U+EA10 fit_screen — completes the zoom pair */
+#define ICON_ONION    "\xEE\x94\xBB"     /* U+E53B layers — stacked ghost frames */
 #define ICON_UNDO     "\xEE\x85\xA6"     /* U+E166 undo */
 #define ICON_REDO     "\xEE\x85\x9A"     /* U+E15A redo */
 #define ICON_RESIZE   "\xEE\xA1\x9B"     /* U+E85B aspect_ratio */
@@ -157,6 +163,25 @@ extern int           g_img_tex_h;
 #define ICON_UNLOCK   "\xEE\xA2\x98"     /* U+E898 lock_open */
 #define ICON_SUBFRAME "\xEE\x97\x9A"     /* U+E5DA subdirectory_arrow_right */
 #define ICON_FLIP_PREVIEW "\xEE\x8F\xA8"  /* U+E3E8 flip — h-mirror preview */
+
+/* Paint-tool glyphs for the right-hand toolbar column. Named rather than left
+   as inline literals so the set can be audited: two tools previously shared
+   U+E40A palette, and several others carried a glyph whose real name had
+   nothing to do with the tool (a trash can for content-aware erase, an empty
+   square for blur). Every name below was read out of the shipped font's post
+   table, not assumed — see the codepoint comments. */
+#define ICON_T_WAND    "\xEF\x8C\x9F"    /* U+F31F wand_shine */
+#define ICON_T_PENCIL  "\xEE\x8F\x89"    /* U+E3C9 edit */
+#define ICON_T_BUCKET  "\xEE\x88\xBA"    /* U+E23A format_color_fill — an actual bucket */
+#define ICON_T_VARIANT "\xEE\x90\x8A"    /* U+E40A palette */
+#define ICON_T_ERASER  "\xEE\x9B\x90"    /* U+E6D0 ink_eraser */
+#define ICON_T_CLONE   "\xEE\x85\x8D"    /* U+E14D content_copy — sample and duplicate */
+#define ICON_T_REMAP   "\xEE\x8E\xB8"    /* U+E3B8 colorize — swap one colour for another */
+#define ICON_T_BLUR    "\xEE\x8E\xA5"    /* U+E3A5 blur_on */
+#define ICON_T_SMUDGE  "\xEE\x85\x95"    /* U+E155 gesture — a dragged stroke */
+#define ICON_T_HEAL    "\xEE\x99\xA2"    /* U+E662 auto_fix — erase and heal from surroundings */
+#define ICON_T_LASSO   "\xEE\xAC\x83"    /* U+EB03 lasso_select */
+#define ICON_T_DROPPER "\xEF\x8D\x91"    /* U+F351 dropper_eye */
 
 #define ICON_OPEN_TXT     "Op"
 #define ICON_FOLDER_TXT   "D "
@@ -178,6 +203,8 @@ extern int           g_img_tex_h;
 #define ICON_UNLOCK_TXT   "Un"
 #define ICON_SUBFRAME_TXT "|-"
 #define ICON_FLIP_PREVIEW_TXT "<>"
+#define ICON_ZOOM_FIT_TXT "Zf"
+#define ICON_ONION_TXT    "On"
 
 /* ---- Zoom / Pan ---- */
 extern float g_zoom;

@@ -2046,6 +2046,13 @@ static int WorldMarkedFindBaseSourceSlot(WorldMarkedSequenceState &state,
     return -1;
 }
 
+/* Whether a lane is divisible at all, ignoring which frame is selected.
+   Kept in one place so the toolbar button and the Row... menu item cannot
+   drift into disagreeing about when a split is legal — the split itself
+   re-checks, so this only governs whether the control is greyed out. */
+static bool WorldMarkedLaneCanSplit(const WorldMarkedLane &lane,
+                                    const std::vector<WorldMarkedLane> &lanes);
+
 static int WorldMarkedFindFreeSplitSlot(const std::vector<WorldMarkedLane> &lanes)
 {
     bool used_source_slots[kWorldMarkedSourceTabs] = {};
@@ -5199,6 +5206,31 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Remove this sequence entry. The sprite itself is not deleted.");
+            /* Split is back out on the strip. v3.21.0 folded it into the
+               Row... menu with the other structural edits, but it is not like
+               the others: dividing a run at the frame you are looking at is
+               part of laying out an animation, not a once-in-a-while rebuild,
+               and it reads directly off the entry the cursor is already on.
+               The destructive operations stay behind the menu. */
+            bool can_split = WorldMarkedLaneCanSplit(lane, lanes) && edit_fi > 0;
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!can_split);
+            if (ImGui::SmallButton("Split##world_seq_split")) {
+                if (WorldMarkedSplitLaneAtFrame(state, lane, lanes, edit_fi))
+                    WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (lane.delay_slot == kWorldEmbeddedSeqScrSlot)
+                    ImGui::SetTooltip(
+                        "Move this entry and all later entries into a new row.\n\n"
+                        "This lane is showing an embedded sequence. Splitting it\n"
+                        "detaches the preview from that record — the sequence\n"
+                        "saved in the IMG is left exactly as it is.");
+                else
+                    ImGui::SetTooltip("Move this entry and all later entries into a new row from the same IMG.");
+            }
+
             /* Structural edits — the ones that add, remove or rebuild whole
                rows — are grouped away from the per-entry nudges. They are
                used once in a while and are the most destructive things here,
@@ -5210,10 +5242,6 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Split, duplicate, delete or rebuild this row.");
             if (ImGui::BeginPopup("##world_seq_row_popup")) {
-                bool can_split = lane.delay_slot >= 0 &&
-                                 lane.delay_slot < kWorldMarkedSourceTabs &&
-                                 edit_fi > 0 &&
-                                 WorldMarkedFindFreeSplitSlot(lanes) >= 0;
                 if (ImGui::MenuItem("Split Row Here", NULL, false, can_split)) {
                     if (WorldMarkedSplitLaneAtFrame(state, lane, lanes, edit_fi))
                         WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
@@ -7706,15 +7734,44 @@ void WorldMarkedResetSequenceToDefaults(WorldMarkedSequenceState &state, int slo
     WorldMarkedRestart(state);
 }
 
+static bool WorldMarkedLaneCanSplit(const WorldMarkedLane &lane,
+                                    const std::vector<WorldMarkedLane> &lanes)
+{
+    if (lane.dummy_decap) return false;
+    int slot = lane.delay_slot;
+    bool splittable_source = (slot >= 0 && slot < kWorldMarkedSourceTabs) ||
+                             slot == kWorldEmbeddedSeqScrSlot;
+    if (!splittable_source) return false;
+    /* The tail has to land somewhere: splits always target a free marked row,
+       including when the source is the embedded lane. */
+    return WorldMarkedFindFreeSplitSlot(lanes) >= 0;
+}
+
 bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
                                  const WorldMarkedLane &lane,
                                  const std::vector<WorldMarkedLane> &lanes,
                                  int frame_idx)
 {
     int src_slot = lane.delay_slot;
+    /* Marked rows split freely. The embedded SEQSCR lane is allowed too --
+       splitting the single unmarked view is the whole point of this path --
+       but it needs the detach below first. Everything else (dummy body, ASM
+       lane) has no frame list of its own to divide. */
+    bool embedded_src = (src_slot == kWorldEmbeddedSeqScrSlot);
     if (lane.dummy_decap ||
-        src_slot < 0 || src_slot >= kWorldMarkedSourceTabs)
+        (!embedded_src && (src_slot < 0 || src_slot >= kWorldMarkedSourceTabs)))
         return false;
+
+    if (embedded_src) {
+        /* SeqScrSyncLaneToBlob writes this lane back into the IMG's SEQSCR
+           record whenever it stops matching what was loaded. A split truncates
+           the source frame list, so leaving the lane attached would quietly
+           delete the tail entries from the record on the next frame -- the
+           user asked to divide a preview, not to destroy half a sequence.
+           Detaching turns it into an ordinary preview lane, exactly like the
+           marked rows, and the record on disk is left alone. */
+        state.embedded_active = false;
+    }
 
     std::vector<int> &src_frames = state.sequence_frames[src_slot];
     if (src_frames.empty())
@@ -15907,6 +15964,12 @@ static void SeqScrDrawSpriteInspector(const WorldMarkedLane *lane,
    Loading is deferred to the end of the frame because it rewrites the lane
    slot the entry table alongside this list is still drawing from.
    "+" appends an empty record so entries can be built up from scratch. */
+/* Pending rename target, as a combined sequence+script record index, and the
+   edit buffer. Held outside the per-row loop so the popup that does the actual
+   editing survives the context menu closing. -1 = nothing being renamed. */
+static int  s_seqscr_rename_record = -1;
+static char s_seqscr_rename_buf[17] = {};
+
 static int SeqScrDrawRecordPicker(WorldMarkedSequenceState &state)
 {
     std::vector<SeqScrRecordView> records;
@@ -15984,6 +16047,19 @@ static int SeqScrDrawRecordPicker(WorldMarkedSequenceState &state)
             if (ImGui::BeginPopupContextItem("##seqscr_ws_ctx")) {
                 if (ImGui::MenuItem("Load"))
                     load_request = rec.index;
+                /* Renaming from the list itself, not only from the loaded
+                   record's panel: this list is where both sequences AND
+                   scripts are visible, and a record you want to name is often
+                   not the one currently loaded. rec.index is the combined
+                   sequence+script index the blob helpers expect, so this is
+                   correct for scripts as well. */
+                if (ImGui::MenuItem("Rename...")) {
+                    s_seqscr_rename_record = rec.index;
+                    memset(s_seqscr_rename_buf, 0, sizeof(s_seqscr_rename_buf));
+                    strncpy(s_seqscr_rename_buf, rec.name,
+                            sizeof(s_seqscr_rename_buf) - 1);
+                    ImGui::CloseCurrentPopup();
+                }
                 if (ImGui::MenuItem("Copy Anim ASM")) {
                     state.generated_asm = WorldBuildSeqScrAsmExport(rec.index);
                     ImGui::SetClipboardText(state.generated_asm.c_str());
@@ -16002,6 +16078,46 @@ static int SeqScrDrawRecordPicker(WorldMarkedSequenceState &state)
         }
         if (!any) ImGui::TextDisabled("None");
         ImGui::EndListBox();
+    }
+
+    if (s_seqscr_rename_record >= 0) {
+        ImGui::OpenPopup("Rename Anim Record");
+        /* Centre it: the picker is a narrow side panel, and a popup anchored
+           to the cursor there can open half off the window. */
+        ImVec2 c = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    }
+    if (ImGui::BeginPopupModal("Rename Anim Record", NULL,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextDisabled("Names are 15 characters, and become the record\n"
+                            "label in the exported anim ASM.");
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(240.0f);
+        bool enter = ImGui::InputText("##seqscr_rename_input", s_seqscr_rename_buf,
+                                      sizeof(s_seqscr_rename_buf),
+                                      ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
+        ImGui::Spacing();
+        if (ImGui::Button("Rename", ImVec2(110, 0)) || enter) {
+            if (SeqScrSetName(s_seqscr_rename_record, s_seqscr_rename_buf)) {
+                if (state.embedded_record_index == s_seqscr_rename_record)
+                    state.embedded_name = s_seqscr_rename_buf;
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Renamed anim record to '%s'.", s_seqscr_rename_buf);
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Could not rename (record truncated or no anim blob).");
+            }
+            g_restore_msg_timer = 4.0f;
+            s_seqscr_rename_record = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(110, 0))) {
+            s_seqscr_rename_record = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     return load_request;
@@ -16604,6 +16720,55 @@ void DrawSeqScrFrameBrowser(float avail_h)
         g_restore_msg_timer = 5.0f;
     };
 
+    /* Renaming used to exist only in the raw Anim Scripts / Seqs window, behind
+       an "Enable in-place editing" checkbox — so a sequence built here stayed
+       called NEWSEQ with no visible way to change it. The name is what the ASM
+       export emits, so it belongs next to the thing that creates sequences. */
+    if (seq_loaded && state.embedded_record_index >= 0) {
+        static int  s_rename_record = -1;
+        static char s_rename_buf[17] = {};
+        if (s_rename_record == state.embedded_record_index) {
+            ImGui::SetNextItemWidth(-64.0f);
+            bool commit = ImGui::InputText("##seqscr_lib_rename", s_rename_buf,
+                                           sizeof(s_rename_buf),
+                                           ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("OK##seqscr_lib_rename_ok") || commit) {
+                if (SeqScrSetName(state.embedded_record_index, s_rename_buf)) {
+                    state.embedded_name = s_rename_buf;
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Renamed to '%s'.", s_rename_buf);
+                } else {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Could not rename (blob truncated or missing).");
+                }
+                g_restore_msg_timer = 4.0f;
+                s_rename_record = -1;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("X##seqscr_lib_rename_cancel"))
+                s_rename_record = -1;
+        } else {
+            ImGui::TextDisabled("Name:");
+            ImGui::SameLine();
+            ImGui::TextUnformatted(state.embedded_name.empty()
+                                       ? "(unnamed)" : state.embedded_name.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Rename##seqscr_lib_rename_start")) {
+                s_rename_record = state.embedded_record_index;
+                memset(s_rename_buf, 0, sizeof(s_rename_buf));
+                strncpy(s_rename_buf, state.embedded_name.c_str(),
+                        sizeof(s_rename_buf) - 1);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Rename this record. Sequences and scripts are\n"
+                                  "both renameable; the name is what the ASM\n"
+                                  "export emits as the record label.\n"
+                                  "Right-click any row in the list to rename it\n"
+                                  "without loading it first.");
+        }
+    }
+
     ImGui::BeginDisabled(!any_marked || !seq_loaded);
     if (ImGui::Button("Add Marked to Sequence##seqscr_lib_add_cur", ImVec2(-1, 20)))
         report(SeqScrAddFramesToLoadedRecord(state, marked));
@@ -16628,6 +16793,13 @@ void DrawSeqScrFrameBrowser(float avail_h)
                 /* A fresh record has no entries; the load leaves an empty lane
                    that the append below fills. */
                 report(SeqScrAddFramesToLoadedRecord(state, marked));
+                /* Every new record is called NEWSEQ until told otherwise, and
+                   a list of identical NEWSEQs is useless. Prompt while the
+                   user still knows what they just built; Cancel leaves the
+                   default, so nothing is forced. */
+                s_seqscr_rename_record = new_idx;
+                memset(s_seqscr_rename_buf, 0, sizeof(s_seqscr_rename_buf));
+                strncpy(s_seqscr_rename_buf, "NEWSEQ", sizeof(s_seqscr_rename_buf) - 1);
             } else {
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          "Created the sequence but could not open it.");
@@ -16644,6 +16816,36 @@ void DrawSeqScrFrameBrowser(float avail_h)
         ImGui::SetTooltip("Append an empty sequence to %s and fill it with the %d marked frames.",
                           g_doc && g_doc->fname_s[0] ? g_doc->fname_s : "this IMG",
                           (int)marked.size());
+
+    /* Scripts had no entry point here at all -- creating one meant opening the
+       raw Anim Scripts / Seqs window. A script takes no marked frames, since
+       its entries call sequences rather than naming sprites, so this is not
+       gated on a selection. */
+    ImGui::BeginDisabled(!g_doc);
+    if (ImGui::Button("New Script##seqscr_lib_add_script", ImVec2(-1, 20))) {
+        if (SeqScrAddRecord(true)) {
+            int new_idx = (int)g_doc->seqcnt + (int)g_doc->scrcnt - 1;
+            if (WorldLoadSeqScrRecord(new_idx)) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Created a script. Add calls to sequences with the picker above.");
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Created the script but could not open it.");
+            }
+            g_restore_msg_timer = 5.0f;
+            s_seqscr_rename_record = new_idx;
+            memset(s_seqscr_rename_buf, 0, sizeof(s_seqscr_rename_buf));
+            strncpy(s_seqscr_rename_buf, "NEWSCRIPT", sizeof(s_seqscr_rename_buf) - 1);
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Could not create a script (anim blob is truncated or out of memory).");
+            g_restore_msg_timer = 4.0f;
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Scripts chain sequences together. Create the sequences\n"
+                          "first, then add calls to them from the script's row.");
+    ImGui::EndDisabled();
     ImGui::PopStyleVar();
 
     if (seq_loaded) {
@@ -16720,6 +16922,59 @@ static bool SeqScrDrawToolbar(WorldMarkedSequenceState &state,
     int goto_tick = state.frame;
     if (ImGui::InputInt("##seqscr_ws_goto_tick", &goto_tick, 0, 0))
         WorldMarkedSetTick(state, goto_tick);
+
+    /* Scripts call sequences, so the frame-adding controls above are useless
+       to them -- a script populated with sprite indices would resolve to the
+       wrong thing entirely. Without this, a script created here could only be
+       filled in from the raw Anim Scripts / Seqs window. */
+    if (is_script && state.embedded_record_index >= 0 &&
+        active_doc_idx == state.embedded_doc_idx && g_doc && g_doc->seqcnt > 0) {
+        std::vector<SeqScrRecordView> recs;
+        bool trunc = false;
+        SeqScrBuildRecords(recs, &trunc);
+
+        static int s_call_target = 0;
+        if (s_call_target >= (int)g_doc->seqcnt) s_call_target = (int)g_doc->seqcnt - 1;
+        if (s_call_target < 0) s_call_target = 0;
+
+        /* Name the sequences rather than making the user match raw indices to
+           whatever the list is showing. */
+        char preview[64];
+        const char *tname = (s_call_target < (int)recs.size() && recs[(size_t)s_call_target].name[0])
+                                ? recs[(size_t)s_call_target].name : "(unnamed)";
+        snprintf(preview, sizeof(preview), "%02d  %.40s", s_call_target, tname);
+
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::BeginCombo("##seqscr_ws_call_target", preview)) {
+            for (int i = 0; i < (int)g_doc->seqcnt && i < (int)recs.size(); i++) {
+                char row[64];
+                snprintf(row, sizeof(row), "%02d  %.40s  (%d)", i,
+                         recs[(size_t)i].name[0] ? recs[(size_t)i].name : "(unnamed)",
+                         recs[(size_t)i].num);
+                if (ImGui::Selectable(row, i == s_call_target)) s_call_target = i;
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Which sequence this script should call next.");
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Add Call##seqscr_ws_add_call")) {
+            if (SeqScrAppendEntry(state.embedded_record_index, s_call_target)) {
+                /* Reload so the table shows the entry that was just written. */
+                WorldLoadSeqScrRecord(state.embedded_record_index);
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Added a call to sequence %02d.", s_call_target);
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Could not add the call (blob truncated or out of memory).");
+            }
+            g_restore_msg_timer = 4.0f;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Append a call to the chosen sequence, at the end of this script.");
+    }
 
     /* A sequence entry can be a multi-sprite frame. Capture the sprite
        selected in the editor as another piece; its own anipoint anchors it to

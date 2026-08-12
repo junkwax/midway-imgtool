@@ -8,6 +8,96 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.24.0] — Anim records you can name, a split that is findable again, and honest anipoint X
+
+### Anipoint X is no longer guessed
+
+v3.23.0 set both axes when levelling an unset frame, taking X from the centre
+of the art. Checked against hand-authored BOSS8 anipoints, that is simply not
+recoverable from pixels:
+
+| X estimate | mean error vs authored |
+|---|---|
+| frame centre (what v3.23.0 shipped) | 19.8 px |
+| feet centroid, bottom 4 rows | 12.7 px |
+| feet centroid, bottom 10 rows | 13.6 px |
+
+Feet beat centre, but none of them is usable, and BGFATHAM shows why: all seven
+frames are off by a near-constant ~22px. That constant is the character
+travelling across the screen during the fatality. `anix` encodes authored world
+motion, so any value computed from a bounding box overwrites animation with
+geometry. Levelling now sets **Y only** and says so; X is left for a human.
+
+The ground-line half was confirmed correct by the same file — all six
+BGHAMMERTOP frames were hand-moved to exactly the 168 the algorithm computes.
+
+Centring for effect frames was also a pixel out. All twelve BGSPARK frames sit
+at `w/2, h/2`; the old `(min+max)/2` truncates on even dimensions.
+
+### Sequences and scripts can be named
+
+Renaming existed, but only inside the raw Anim Scripts / Seqs window, behind an
+"Enable in-place editing" checkbox — so a sequence built in the Anim tab stayed
+called NEWSEQ with no visible way to change it.
+
+- `SeqScrSetName()` is now a real API rather than an open-coded write, and
+  zeroes the whole 16-byte field first: renaming BGHAMMERTOP1 to SPARK used to
+  be able to read back as SPARKMERTOP1.
+- **Rename…** on the right-click menu of any row in the Sequences/Scripts list,
+  so a record can be named without loading it first. `rec.index` is the
+  combined sequence+script index the blob helpers expect, which is what makes
+  this correct for scripts and not just sequences.
+- Creating a record prompts for its name, rather than silently producing
+  another NEWSEQ in a list of NEWSEQs.
+
+### New Script, and a way to fill it
+
+Scripts could only be created from the raw window. There is now a **New Script**
+button beside New Sequence, ungated by marked frames since a script's entries
+call sequences rather than naming sprites.
+
+A bare button would have been a dead end: the frame-adding path deliberately
+excludes scripts, because filling one with sprite indices writes targets that
+resolve to something else entirely. So a loaded script gets a sequence picker
+and **Add Call**, listing sequences by name and entry count instead of raw
+index.
+
+### Split is back on the strip
+
+v3.21.0 folded Split Row into the Row... menu with the other structural edits.
+That grouping is right for delete and rebuild and wrong for split: dividing a
+run at the frame you are looking at is part of laying out an animation, and it
+reads off the entry the cursor is already on. The direct button is back; the
+destructive operations stay behind the menu. Both share one
+`WorldMarkedLaneCanSplit()` predicate so they cannot disagree about when a
+split is legal.
+
+**The single unmarked view can split too**, which needed care. That lane is the
+embedded SEQSCR record, and `SeqScrSyncLaneToBlob` writes it back into the IMG
+whenever it stops matching what was loaded. A split truncates the source frame
+list, so enabling it naively would have deleted every tail entry from the
+record on the next frame. Splitting the embedded lane now detaches it from the
+record first: it becomes an ordinary preview lane and the sequence on disk is
+untouched.
+
+### Toolbar icons
+
+The paint-tool glyphs were inline byte literals with no names, which is how a
+duplicate survived: Smart Remap and Variant Paint were both `palette`. Reading
+the shipped font's `post` table turned up four more whose real name had nothing
+to do with the tool — a trash can (`delete`) on Content-Aware Erase, an empty
+square (`filter_none`) on Blur, `brush` on Paint Bucket, and
+`control_point_duplicate` on Clone Stamp.
+
+Now named `ICON_T_*` with the real glyph name in each comment, and fixed:
+`colorize` for Smart Remap, `format_color_fill` for Paint Bucket, `blur_on`,
+`auto_fix` for Content-Aware Erase, `content_copy` for Clone Stamp, `gesture`
+for Smudge. Two header comments named the wrong glyph and were corrected
+(`ICON_MARQUEE` is `ink_selection`, `ICON_POINTS` is `my_location`).
+
+The left column gained **Fit Sprite** and **Onion Skin** — existing behaviour
+with no button — which also balances the two columns at 13 each.
+
 ## [v3.23.0] — Playback speed that matches the hardware, and stance-levelled anipoints
 
 ### New timelines no longer play at 54.7 fps

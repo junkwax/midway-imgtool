@@ -88,32 +88,32 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
 
         tool_button(ActiveTool::Marquee, ICON_MARQUEE, ICON_MARQUEE_TXT,
                     TOOL_ACTIVE_COL(0.2f,0.4f,0.7f), "Marquee Select Tool (R)");
-        tool_button(ActiveTool::MagicWand, "\xEF\x8C\x9F", "Wd",
+        tool_button(ActiveTool::MagicWand, ICON_T_WAND, "Wd",
                     TOOL_ACTIVE_COL(0.5f,0.2f,0.7f), "Magic Wand Tool (W)\nCtrl-click adds to the current selection");
-        tool_button(ActiveTool::Pencil, "\xEE\x8F\x89", "Pn",
+        tool_button(ActiveTool::Pencil, ICON_T_PENCIL, "Pn",
                     TOOL_ACTIVE_COL(0.7f,0.6f,0.2f), "Pencil (P)\n[ / ] to shrink / grow brush");
-        tool_button(ActiveTool::PaintBucket, "\xEE\x8E\xAE", "Bk",
+        tool_button(ActiveTool::PaintBucket, ICON_T_BUCKET, "Bk",
                     TOOL_ACTIVE_COL(0.7f,0.45f,0.15f), "Paint Bucket (G)");
-        tool_button(ActiveTool::VariantPaint, "\xEE\x90\x8A", "Vt",
+        tool_button(ActiveTool::VariantPaint, ICON_T_VARIANT, "Vt",
                     TOOL_ACTIVE_COL(0.2f,0.6f,0.7f), "Variant Paint (V)");
-        tool_button(ActiveTool::BackgroundEraser, "\xEE\x9B\x90", "Er",
-                    TOOL_ACTIVE_COL(0.7f,0.2f,0.2f), "Smart Eraser");
-        tool_button(ActiveTool::CloneStamp, "\xEE\x8E\xBB", "Cl",
-                    TOOL_ACTIVE_COL(0.2f,0.6f,0.3f), "Clone Stamp");
-        tool_button(ActiveTool::SmartRemap, "\xEE\x90\x8A", "Rm",
+        tool_button(ActiveTool::BackgroundEraser, ICON_T_ERASER, "Er",
+                    TOOL_ACTIVE_COL(0.7f,0.2f,0.2f), "Smart Eraser (E)");
+        tool_button(ActiveTool::CloneStamp, ICON_T_CLONE, "Cl",
+                    TOOL_ACTIVE_COL(0.2f,0.6f,0.3f), "Clone Stamp (C)\nAlt+click anchors the source");
+        tool_button(ActiveTool::SmartRemap, ICON_T_REMAP, "Rm",
                     TOOL_ACTIVE_COL(0.8f,0.4f,0.1f), "Smart Palette Remapper");
-        tool_button(ActiveTool::Blur, "\xEE\x8F\xA0", "Bl",
+        tool_button(ActiveTool::Blur, ICON_T_BLUR, "Bl",
                     TOOL_ACTIVE_COL(0.35f,0.55f,0.75f),
                     "Blur\nSoftens under the brush by averaging in RGB,\nthen remapping to the nearest palette index.");
-        tool_button(ActiveTool::Smudge, "\xEE\x90\xA1", "Sm",
+        tool_button(ActiveTool::Smudge, ICON_T_SMUDGE, "Sm",
                     TOOL_ACTIVE_COL(0.6f,0.45f,0.75f),
                     "Smudge\nDrags colour along the stroke, like pulling wet paint.");
-        tool_button(ActiveTool::ContentErase, "\xEE\xA1\xB2", "Ce",
+        tool_button(ActiveTool::ContentErase, ICON_T_HEAL, "Ce",
                     TOOL_ACTIVE_COL(0.75f,0.35f,0.45f),
                     "Content-Aware Eraser\nRemoves the brushed area and heals it from the\nsurrounding pixels instead of punching a hole.");
-        tool_button(ActiveTool::Lasso, "\xEE\xAC\x83", "Ls",
+        tool_button(ActiveTool::Lasso, ICON_T_LASSO, "Ls",
                     TOOL_ACTIVE_COL(0.3f,0.5f,0.8f), "Lasso Selection Tool (L)");
-        tool_button(ActiveTool::Eyedropper, "\xEF\x8D\x91", "Ey",
+        tool_button(ActiveTool::Eyedropper, ICON_T_DROPPER, "Ey",
                     TOOL_ACTIVE_COL(0.6f,0.7f,0.2f), "Eyedropper Tool (I)");
 
         action_button(ICON_MARK, ICON_MARK_TXT, "Mark/Unmark (Space)", false, false, [&]() {
@@ -149,6 +149,22 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
         });
         action_button(ICON_ZOOM_OUT, ICON_ZOOM_OUT_TXT, "Zoom Out (Ctrl+-)", g_doc->ilselected < 0, false, [&]() {
             QueueZoomStep(-1);
+        });
+        /* Fit belongs beside the zoom pair it completes — reaching for the
+           menu (or remembering Ctrl+0) to undo a zoom is the common case. */
+        action_button(ICON_ZOOM_FIT, ICON_ZOOM_FIT_TXT, "Fit Sprite to Canvas (Ctrl+0)",
+                      g_doc->ilselected < 0, false, [&]() {
+            QueueZoomFit();
+        });
+        /* Onion skin sits with the other overlay toggles (points, hitbox,
+           mirror) rather than only on the timeline strip, since it is a view
+           state you flip while looking at the canvas. */
+        action_button(ICON_ONION, ICON_ONION_TXT,
+                      "Onion Skin\nGhosts the previous and next timeline frame at 25% alpha\n"
+                      "while scrubbing or playing, and draws the previous frame's\n"
+                      "anipoint as a dim crosshair for registration.",
+                      false, g_timeline_onion, [&]() {
+            g_timeline_onion = !g_timeline_onion;
         });
         action_button(ICON_UNDO, ICON_UNDO_TXT, "Undo (Ctrl+Z)", !CanUndo(), false, [&]() {
             DoUndo();

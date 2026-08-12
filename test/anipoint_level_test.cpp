@@ -69,8 +69,8 @@ int main(void)
         CHECK(anipoint_level_content_bottom(&img) == 25);
         int cx = -1, cy = -1;
         CHECK(anipoint_level_content_center(&img, &cx, &cy));
-        CHECK(cx == (4 + 15) / 2);
-        CHECK(cy == (6 + 25) / 2);
+        CHECK(cx == (4 + 15 + 1) / 2);   /* rounds up: matches authored art */
+        CHECK(cy == (6 + 25 + 1) / 2);
     }
     {
         /* Fully transparent: no bottom, no centre. */
@@ -161,15 +161,18 @@ int main(void)
                 CHECK(e.action == AnipointLevelAction::GroundAlign);
                 CHECK(e.new_aniy == 147 - 168);        /* -21 */
                 CHECK(e.new_ground == 168);
-                CHECK(e.new_anix == (20 + 60) / 2);    /* centred on the art */
+                /* X is authored motion, not geometry: it must be left as it
+                   was rather than guessed from the bounding box. */
+                CHECK(e.new_anix == e.cur_anix);
             } else if (e.index == 3) {   /* BGEYESHOT4: bottom 130 */
                 CHECK(e.action == AnipointLevelAction::GroundAlign);
                 CHECK(e.new_aniy == 130 - 168);        /* -38 */
                 CHECK(e.new_ground == 168);
+                CHECK(e.new_anix == e.cur_anix);
             } else if (e.index == 4) {   /* BGSPARK1: centred, not grounded */
                 CHECK(e.action == AnipointLevelAction::Center);
-                CHECK(e.new_anix == (4 + 61) / 2);
-                CHECK(e.new_aniy == (6 + 55) / 2);
+                CHECK(e.new_anix == (4 + 61 + 1) / 2);
+                CHECK(e.new_aniy == (6 + 55 + 1) / 2);
             } else {
                 CHECK(false);            /* unexpected entry */
             }
