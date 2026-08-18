@@ -8,6 +8,64 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.25.0] — Colors you can send back to transparent, renames from either list, and a pencil that stays a pencil
+
+### The pencil stops handing you the marquee
+
+Clicking a transparent pixel while no tool was explicitly selected flipped the
+active tool to Marquee and swallowed the click. It was the only path in the
+tree that changed tools without being asked — the other `g_active_tool =
+ActiveTool::Marquee` is `select_all()`, which is what Ctrl+A is for.
+
+It read as random because `ActiveTool::None` is itself a working pencil: the
+canvas paint branch accepts `None` alongside `Pencil` and the only difference
+is brush radius, so the default state draws like a 1px pencil while the toolbar
+lights nothing. Clicking empty background — the most ordinary pencil action
+there is — was therefore the trigger, and whether it fired depended on whether
+the pencil had ever actually been picked. Pressing `P` twice put you back there
+invisibly, since None still paints.
+
+The heuristic is gone. Clicking empty background now paints, which it did not
+do before: the marquee arm also gated the paint branch, so that click did
+nothing but arm a selection. Marquee comes from the toolbar, `R`, or Ctrl+A.
+
+The toolbar also stops lying about the default state — the pencil button now
+lights for `None` as well as `Pencil`, and clicking it promotes `None` to a
+real `Pencil` (so `[` / `]` size the brush) rather than toggling dark.
+
+### Colors can be sent back to transparent
+
+The palette right-click menu had tools for moving index 0 *out* to an opaque
+slot, but nothing for the other direction. **Make Selected Colors Transparent**
+rewrites every pixel drawn with the Ctrl/Shift-selected swatches to index 0,
+which the hardware draws as nothing. Three scopes:
+
+- **In Current Sprite**
+- **In Canvas Selection Only** (disabled without a live selection)
+- **In All Sprites Using This Palette**
+
+With no multi-select the right-clicked swatch is the target, so the menu still
+does the obvious thing, and the label switches to name the single color.
+
+Palette entries are deliberately left in place. Deleting them would shift every
+index above, which would silently recolor sprites that were not in scope — run
+**Clean Up Palette** afterwards to drop the now-unused entries. The pass counts
+before it edits and refuses with a message when nothing matches, so an
+accidental invocation costs no undo step; a real one pushes exactly one.
+
+### Renaming works from either list
+
+v3.24.0 put **Rename…** on the Anim tab's record picker. The raw Anim Scripts /
+Seqs window still made you expand the record, tick "Enable in-place editing",
+and find the Rename button — for the one field you would normally change from
+the list.
+
+Both lists now share one request-and-modal pair (`SeqScrBeginRename` /
+`SeqScrDrawRenamePopup`) rather than a second copy of the popup, since two
+windows calling `OpenPopup` on the same name in one frame collide. The owner
+tag decides which list draws it. Truncated records are disabled in the raw
+window's menu, matching what `SeqScrSetName` will actually accept.
+
 ## [v3.24.0] — Anim records you can name, a split that is findable again, and honest anipoint X
 
 ### Anipoint X is no longer guessed

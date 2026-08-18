@@ -9175,7 +9175,6 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
         /* Set when an overlay widget (anim point, hitbox corner) eats this frame's
            click, so the grid-selection block below doesn't also start a selection. */
         bool widget_consumed_click = false;
-        bool blank_marquee_click = false;
 
         if (rotate_buttons_visible && !canvas_input_blocked && !timeline_composite_preview_active) {
             for (int i = 0; i < 1; i++) {
@@ -9262,14 +9261,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                             CanvasAnipointHitTest(cimg, img_pos, sx, sy,
                                                   mouse, NULL, NULL);
                     }
-                    if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 &&
-                        g_hitbox_drag_corner < 0 && g_active_tool == ActiveTool::None &&
-                        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && *pix == 0 &&
-                        !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
-                        blank_marquee_click = true;
-                        g_active_tool = ActiveTool::Marquee;
-                    }
-                    if (!blank_marquee_click && !g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
+                    if (!g_pasted.active && !over_anipoint && !g_anipoint_drag1 && !g_anipoint_drag2 && g_hitbox_drag_corner < 0
                         && (g_active_tool == ActiveTool::None || g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::PaintBucket || g_active_tool == ActiveTool::VariantPaint || g_active_tool == ActiveTool::BackgroundEraser || g_active_tool == ActiveTool::CloneStamp || g_active_tool == ActiveTool::SmartRemap
                             || g_active_tool == ActiveTool::Blur || g_active_tool == ActiveTool::Smudge
                             || g_active_tool == ActiveTool::ContentErase)) {
@@ -15964,12 +15956,6 @@ static void SeqScrDrawSpriteInspector(const WorldMarkedLane *lane,
    Loading is deferred to the end of the frame because it rewrites the lane
    slot the entry table alongside this list is still drawing from.
    "+" appends an empty record so entries can be built up from scratch. */
-/* Pending rename target, as a combined sequence+script record index, and the
-   edit buffer. Held outside the per-row loop so the popup that does the actual
-   editing survives the context menu closing. -1 = nothing being renamed. */
-static int  s_seqscr_rename_record = -1;
-static char s_seqscr_rename_buf[17] = {};
-
 static int SeqScrDrawRecordPicker(WorldMarkedSequenceState &state)
 {
     std::vector<SeqScrRecordView> records;
@@ -16054,10 +16040,7 @@ static int SeqScrDrawRecordPicker(WorldMarkedSequenceState &state)
                    sequence+script index the blob helpers expect, so this is
                    correct for scripts as well. */
                 if (ImGui::MenuItem("Rename...")) {
-                    s_seqscr_rename_record = rec.index;
-                    memset(s_seqscr_rename_buf, 0, sizeof(s_seqscr_rename_buf));
-                    strncpy(s_seqscr_rename_buf, rec.name,
-                            sizeof(s_seqscr_rename_buf) - 1);
+                    SeqScrBeginRename(kSeqScrRenameAnimTab, rec.index, rec.name);
                     ImGui::CloseCurrentPopup();
                 }
                 if (ImGui::MenuItem("Copy Anim ASM")) {
@@ -16080,44 +16063,14 @@ static int SeqScrDrawRecordPicker(WorldMarkedSequenceState &state)
         ImGui::EndListBox();
     }
 
-    if (s_seqscr_rename_record >= 0) {
-        ImGui::OpenPopup("Rename Anim Record");
-        /* Centre it: the picker is a narrow side panel, and a popup anchored
-           to the cursor there can open half off the window. */
-        ImVec2 c = ImGui::GetMainViewport()->GetCenter();
-        ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    }
-    if (ImGui::BeginPopupModal("Rename Anim Record", NULL,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextDisabled("Names are 15 characters, and become the record\n"
-                            "label in the exported anim ASM.");
-        ImGui::Spacing();
-        ImGui::SetNextItemWidth(240.0f);
-        bool enter = ImGui::InputText("##seqscr_rename_input", s_seqscr_rename_buf,
-                                      sizeof(s_seqscr_rename_buf),
-                                      ImGuiInputTextFlags_EnterReturnsTrue);
-        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
-        ImGui::Spacing();
-        if (ImGui::Button("Rename", ImVec2(110, 0)) || enter) {
-            if (SeqScrSetName(s_seqscr_rename_record, s_seqscr_rename_buf)) {
-                if (state.embedded_record_index == s_seqscr_rename_record)
-                    state.embedded_name = s_seqscr_rename_buf;
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Renamed anim record to '%s'.", s_seqscr_rename_buf);
-            } else {
-                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                         "Could not rename (record truncated or no anim blob).");
-            }
-            g_restore_msg_timer = 4.0f;
-            s_seqscr_rename_record = -1;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(110, 0))) {
-            s_seqscr_rename_record = -1;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
+    /* Renaming the loaded record has to update the label the workspace is
+       already showing; every other row just redraws from the blob. */
+    int renamed = -1;
+    std::string renamed_name;
+    if (SeqScrDrawRenamePopup(kSeqScrRenameAnimTab, &renamed, &renamed_name) &&
+        state.embedded_active && state.embedded_doc_idx == active_doc_idx &&
+        state.embedded_record_index == renamed) {
+        state.embedded_name = renamed_name;
     }
 
     return load_request;
@@ -16797,9 +16750,7 @@ void DrawSeqScrFrameBrowser(float avail_h)
                    a list of identical NEWSEQs is useless. Prompt while the
                    user still knows what they just built; Cancel leaves the
                    default, so nothing is forced. */
-                s_seqscr_rename_record = new_idx;
-                memset(s_seqscr_rename_buf, 0, sizeof(s_seqscr_rename_buf));
-                strncpy(s_seqscr_rename_buf, "NEWSEQ", sizeof(s_seqscr_rename_buf) - 1);
+                SeqScrBeginRename(kSeqScrRenameAnimTab, new_idx, "NEWSEQ");
             } else {
                 snprintf(g_restore_msg, sizeof(g_restore_msg),
                          "Created the sequence but could not open it.");
@@ -16833,9 +16784,7 @@ void DrawSeqScrFrameBrowser(float avail_h)
                          "Created the script but could not open it.");
             }
             g_restore_msg_timer = 5.0f;
-            s_seqscr_rename_record = new_idx;
-            memset(s_seqscr_rename_buf, 0, sizeof(s_seqscr_rename_buf));
-            strncpy(s_seqscr_rename_buf, "NEWSCRIPT", sizeof(s_seqscr_rename_buf) - 1);
+            SeqScrBeginRename(kSeqScrRenameAnimTab, new_idx, "NEWSCRIPT");
         } else {
             snprintf(g_restore_msg, sizeof(g_restore_msg),
                      "Could not create a script (anim blob is truncated or out of memory).");

@@ -68,8 +68,15 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
         auto tool_button = [&](ActiveTool tool, const char *icon, const char *txt,
                                ImVec4 active_col, const char *tip) {
             place_tool();
+            /* ActiveTool::None paints exactly like the pencil (same canvas
+               branch, only the brush radius differs), so leaving every button
+               dark in the default state told users nothing about what a click
+               would do. Light the pencil for None as well. */
+            bool tool_lit = (g_active_tool == tool) ||
+                            (tool == ActiveTool::Pencil &&
+                             g_active_tool == ActiveTool::None);
             ImGui::PushStyleColor(ImGuiCol_Button,
-                g_active_tool == tool ? active_col : tool_idle);
+                tool_lit ? active_col : tool_idle);
             if (ImGui::Button(TB_LABEL(icon, txt), btn)) toggle_tool(tool);
             ImGui::PopStyleColor();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);

@@ -6101,6 +6101,78 @@ bool SeqScrSetName(int record_index, const char *name)
     return true;
 }
 
+/* ---- Shared rename flow ----
+ * Sequences and scripts are listed in two places -- the Anim tab's record
+ * picker and the raw Anim Scripts / Seqs window -- and both want the same
+ * "right-click a record, rename it" gesture. The request and the modal live
+ * here so the two lists cannot drift apart. `s_rename_owner` decides which
+ * list draws the popup: two windows calling OpenPopup on the same name in one
+ * frame would collide. */
+static int  s_rename_owner  = -1;
+static int  s_rename_record = -1;
+static char s_rename_buf[17] = {};
+
+void SeqScrBeginRename(int owner, int record_index, const char *current_name)
+{
+    s_rename_owner = owner;
+    s_rename_record = record_index;
+    memset(s_rename_buf, 0, sizeof(s_rename_buf));
+    if (current_name)
+        strncpy(s_rename_buf, current_name, sizeof(s_rename_buf) - 1);
+}
+
+bool SeqScrDrawRenamePopup(int owner, int *renamed_index,
+                           std::string *renamed_name)
+{
+    if (s_rename_owner != owner) return false;
+
+    if (s_rename_record >= 0) {
+        ImGui::OpenPopup("Rename Anim Record");
+        /* Centre it: both callers are narrow panels, and a popup anchored to
+           the cursor there can open half off the window. */
+        ImVec2 c = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    }
+
+    bool applied = false;
+    if (ImGui::BeginPopupModal("Rename Anim Record", NULL,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextDisabled("Names are 15 characters, and become the record\n"
+                            "label in the exported anim ASM.");
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(240.0f);
+        bool enter = ImGui::InputText("##seqscr_rename_input", s_rename_buf,
+                                      sizeof(s_rename_buf),
+                                      ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
+        ImGui::Spacing();
+        if (ImGui::Button("Rename", ImVec2(110, 0)) || enter) {
+            if (SeqScrSetName(s_rename_record, s_rename_buf)) {
+                if (renamed_index) *renamed_index = s_rename_record;
+                if (renamed_name)  *renamed_name = s_rename_buf;
+                applied = true;
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Renamed anim record to '%s'.", s_rename_buf);
+            } else {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Could not rename (record truncated or no anim blob).");
+            }
+            g_restore_msg_timer = 4.0f;
+            s_rename_record = -1;
+            s_rename_owner = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(110, 0))) {
+            s_rename_record = -1;
+            s_rename_owner = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    return applied;
+}
+
 static bool SeqScrInputI16(const char *label, unsigned char *base, int off,
                            bool editing, int width = 74)
 {
@@ -6447,7 +6519,22 @@ void DrawSeqScrEditorWindow(void)
                      SeqScrRecordTypeLabel(rec), local_index, rec.name,
                      rec.num, rec.truncated ? "  TRUNCATED" : "");
             ImGui::PushID(rec.index);
-            if (ImGui::CollapsingHeader(header)) {
+            bool open = ImGui::CollapsingHeader(header);
+            /* Rename without expanding the record, ticking the editing
+               checkbox, and hunting for the Rename button: the name is the one
+               field you change from the list, and the modal is explicit enough
+               not to need the in-place editing gate. */
+            if (ImGui::BeginPopupContextItem("##seqscr_raw_ctx")) {
+                if (rec.truncated) ImGui::BeginDisabled();
+                if (ImGui::MenuItem("Rename...")) {
+                    SeqScrBeginRename(kSeqScrRenameRawWindow, rec.index,
+                                      rec.name);
+                    ImGui::CloseCurrentPopup();
+                }
+                if (rec.truncated) ImGui::EndDisabled();
+                ImGui::EndPopup();
+            }
+            if (open) {
                 SeqScrDrawRecordEditor(rec, li, records, s_editing);
                 ImGui::Spacing();
             }
@@ -6455,6 +6542,10 @@ void DrawSeqScrEditorWindow(void)
         }
     }
     ImGui::EndChild();
+
+    /* Drawn at window level, not inside the record child: OpenPopup and
+       BeginPopupModal have to sit in the same ID stack. */
+    SeqScrDrawRenamePopup(kSeqScrRenameRawWindow, NULL, NULL);
 
     if (s_seqscr_pending_append_record >= 0) {
         SeqScrAppendEntry(s_seqscr_pending_append_record,

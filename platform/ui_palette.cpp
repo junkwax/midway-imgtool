@@ -16,6 +16,7 @@
 
 #include <imgui.h>
 #include <vector>
+#include <utility>
 #include <algorithm>
 #include <cstdio>
 #include <cmath>
@@ -186,6 +187,9 @@ static int                g_palette_usage_low_colors = 0;    /* excludes #0 */
 static int                g_palette_usage_low_threshold = 8;
 
 enum class PaletteZeroRemapMode { None, Selection, CurrentImage };
+
+/* Which pixels a "send these colors to transparent #0" pass rewrites. */
+enum class PaletteTransparentScope { Selection, CurrentImage, PaletteImages };
 
 /* ---- Private Algorithms & Helpers ---- */
 
@@ -1405,6 +1409,144 @@ static void CopyPaletteZeroAndRemap(PaletteZeroRemapMode mode, int requested_slo
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Copied transparent color #0 to opaque palette index %d.", slot);
     }
+    g_restore_msg_timer = 5.0f;
+}
+
+/* ---- Send colors back to transparent index 0 ----------------------------
+   The inverse of the "Copy #0 to an opaque slot" tools above: pixels drawn
+   with the Ctrl/Shift-selected swatches are rewritten to index 0, which the
+   hardware treats as transparent. Palette entries are left alone so no other
+   index shifts; "Clean Up Palette" can drop them afterwards. */
+
+static int count_pixels_in_color_set(IMG *img, const bool *targets, bool selection_only)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return 0;
+    if (selection_only && !g_grid_sel.active) return 0;
+
+    int count = 0;
+    int stride = (img->w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            if (targets[pix[y * stride + x]] &&
+                (!selection_only || selection_contains_pixel(img, x, y)))
+                count++;
+        }
+    }
+    return count;
+}
+
+static int remap_color_set_to_zero(IMG *img, const bool *targets, bool selection_only)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) return 0;
+    if (selection_only && !g_grid_sel.active) return 0;
+
+    int changed = 0;
+    int stride = (img->w + 3) & ~3;
+    unsigned char *pix = (unsigned char *)img->data_p;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            unsigned char *p = pix + y * stride + x;
+            if (targets[*p] && (!selection_only || selection_contains_pixel(img, x, y))) {
+                *p = 0;
+                changed++;
+            }
+        }
+    }
+    return changed;
+}
+
+/* Targets come from the Ctrl/Shift multi-select; a right-clicked swatch is
+   the fallback so the menu still does something obvious with no multi-select. */
+static void RemapSelectedColorsToTransparent(PaletteTransparentScope scope, int fallback_slot)
+{
+    if (!g_doc) return;
+
+    /* Index 0 is already transparent, so it is never a target. */
+    bool targets[256] = { false };
+    int n_targets = 0;
+    for (int i = 1; i < 256; i++) {
+        if (g_palette_selection[i]) { targets[i] = true; n_targets++; }
+    }
+    bool used_fallback = false;
+    if (n_targets == 0 && fallback_slot > 0 && fallback_slot < 256) {
+        targets[fallback_slot] = true;
+        n_targets = 1;
+        used_fallback = true;
+    }
+    if (n_targets == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Ctrl+click palette swatches to pick the colors to make transparent.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    bool selection_only = (scope == PaletteTransparentScope::Selection);
+    if (selection_only && !g_grid_sel.active) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No canvas selection to remap. Drag a selection first.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    /* Collect the sprites in scope once, with their list index, so the count
+       and the edit agree and each touched thumbnail can be refreshed. */
+    std::vector<std::pair<IMG *, int> > scope_imgs;
+    if (scope == PaletteTransparentScope::PaletteImages) {
+        int pal_idx = g_doc->plselected;
+        int idx = 0;
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+            if ((int)img->palnum == pal_idx && img->data_p && img->w > 0 && img->h > 0)
+                scope_imgs.push_back(std::make_pair(img, idx));
+        }
+    } else {
+        IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+        if (img) scope_imgs.push_back(std::make_pair(img, g_doc->ilselected));
+    }
+
+    int pending = 0;
+    for (size_t i = 0; i < scope_imgs.size(); i++)
+        pending += count_pixels_in_color_set(scope_imgs[i].first, targets, selection_only);
+
+    if (pending == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No pixels here use %s %d selected color%s.",
+                 n_targets == 1 ? "the" : "any of the",
+                 n_targets, n_targets == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    doc_undo_push();
+
+    int changed = 0, touched_imgs = 0;
+    for (size_t i = 0; i < scope_imgs.size(); i++) {
+        int n = remap_color_set_to_zero(scope_imgs[i].first, targets, selection_only);
+        if (n > 0) {
+            changed += n;
+            touched_imgs++;
+            InvalidateThumb(scope_imgs[i].second);
+        }
+    }
+
+    if (changed > 0) {
+        mark_dirty();
+        InvalidatePaletteUsage();
+        g_img_tex_idx = -2;
+    }
+
+    const char *where = (scope == PaletteTransparentScope::Selection)    ? "the canvas selection"
+                      : (scope == PaletteTransparentScope::CurrentImage) ? "this sprite"
+                                                                         : "sprites on this palette";
+    char sprite_note[48] = "";
+    if (scope == PaletteTransparentScope::PaletteImages)
+        snprintf(sprite_note, sizeof(sprite_note), " (%d sprite%s)",
+                 touched_imgs, touched_imgs == 1 ? "" : "s");
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Made %d pixel%s transparent (#0) in %s%s from %d color%s%s.",
+             changed, changed == 1 ? "" : "s", where, sprite_note,
+             n_targets, n_targets == 1 ? "" : "s",
+             used_fallback ? " (the right-clicked swatch)" : "");
     g_restore_msg_timer = 5.0f;
 }
 
@@ -3172,6 +3314,55 @@ void DrawBottomPaletteBar(ImVec2 avail)
                 CopyPaletteZeroAndRemap(PaletteZeroRemapMode::CurrentImage, i == 0 ? -1 : i);
             }
             ImGui::Separator();
+            {
+                /* The other direction: push the Ctrl-selected colors into
+                   transparent index 0 so those pixels stop drawing. */
+                int sel_slots = 0;
+                for (int si = 1; si < 256; si++) if (g_palette_selection[si]) sel_slots++;
+                bool fallback = (sel_slots == 0 && i > 0);
+                int targets = sel_slots > 0 ? sel_slots : (fallback ? 1 : 0);
+                char sub_label[72];
+                if (sel_slots > 0)
+                    snprintf(sub_label, sizeof(sub_label),
+                             "Make Selected Colors Transparent (%d)", sel_slots);
+                else
+                    snprintf(sub_label, sizeof(sub_label),
+                             "Make This Color Transparent (#%d)", i);
+
+                if (targets == 0) ImGui::BeginDisabled();
+                if (ImGui::BeginMenu(sub_label)) {
+                    if (ImGui::MenuItem("In Current Sprite"))
+                        RemapSelectedColorsToTransparent(
+                            PaletteTransparentScope::CurrentImage, i);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Rewrites every pixel using %s to index 0\n"
+                                          "in the current sprite only.",
+                                          sel_slots > 0 ? "the selected colors"
+                                                        : "this color");
+
+                    if (!g_grid_sel.active) ImGui::BeginDisabled();
+                    if (ImGui::MenuItem("In Canvas Selection Only"))
+                        RemapSelectedColorsToTransparent(
+                            PaletteTransparentScope::Selection, i);
+                    if (!g_grid_sel.active) ImGui::EndDisabled();
+
+                    if (ImGui::MenuItem("In All Sprites Using This Palette"))
+                        RemapSelectedColorsToTransparent(
+                            PaletteTransparentScope::PaletteImages, i);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Same rewrite across every sprite assigned\n"
+                                          "to palette %.9s.",
+                                          (g_doc->plselected >= 0 && get_pal(g_doc->plselected))
+                                              ? get_pal(g_doc->plselected)->n_s : "");
+                    ImGui::EndMenu();
+                }
+                if (targets == 0) ImGui::EndDisabled();
+                if (ImGui::IsItemHovered() && targets > 0)
+                    ImGui::SetTooltip("Index 0 draws as transparent. The palette entries\n"
+                                      "stay put, so no other index shifts - run Clean Up\n"
+                                      "Palette afterwards to drop the now-unused colors.");
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Move Selected Colors to End")) {
                 MoveSelectedPaletteColorsToEnd();
             }
@@ -3209,7 +3400,7 @@ void DrawBottomPaletteBar(ImVec2 avail)
                                         nearest, sqrt((double)nearest_dist));
                 }
             }
-            ImGui::TextDisabled("Right-click: #0 relocation tools");
+            ImGui::TextDisabled("Right-click: #0 relocation and make-transparent tools");
             ImGui::TextDisabled("Alt+click: isolate this color in the canvas");
             ImGui::TextDisabled("Ctrl/Shift+click: multi-select — selected swatches stay lit, rest dim on canvas");
             ImGui::EndTooltip();

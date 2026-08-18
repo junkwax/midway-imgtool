@@ -54,6 +54,19 @@ bool SeqScrAddRecord(bool script);
    bytes of the 16-byte field and the remainder zeroed, so a shorter name never
    leaves the tail of the old one behind. Pushes one undo step. */
 bool SeqScrSetName(int record_index, const char *name);
+
+/* Right-click rename, shared by every list that shows sequences and scripts.
+   Begin stores the request; Draw puts up the modal and applies it. `owner`
+   keeps two open lists from fighting over one popup ID: only the list that
+   asked for the rename draws it. Draw returns true on the frame the name was
+   written, so a caller showing that record can refresh its own label. */
+enum SeqScrRenameOwner {
+    kSeqScrRenameAnimTab = 0,
+    kSeqScrRenameRawWindow = 1
+};
+void SeqScrBeginRename(int owner, int record_index, const char *current_name);
+bool SeqScrDrawRenamePopup(int owner, int *renamed_index,
+                           std::string *renamed_name);
 bool SeqScrAppendEntry(int record_index, int target_index);
 bool SeqScrAppendEntries(int record_index, const std::vector<int> &target_indices);
 bool SeqScrDeleteEntry(int record_index, int entry_index);
