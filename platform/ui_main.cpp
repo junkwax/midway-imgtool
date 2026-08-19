@@ -1978,7 +1978,7 @@ void DrawMainLayout(void)
                         if (ImGui::MenuItem("Resize..."))     OpenResizeSpriteDialog();
                         if (ImGui::MenuItem("Canvas Size...")) OpenCanvasSizeDialog();
                         if (ImGui::MenuItem("Break into Subframes (Auto-Chop)..."))
-                            OpenAutoChopDialog();
+                            OpenAutoChopDialogForImage(img_idx);
                         if (ImGui::BeginMenu("Transform")) {
                             DrawSpriteTransformMenuItems();
                             ImGui::EndMenu();
@@ -3143,6 +3143,7 @@ void DrawMainLayout(void)
     if (g_request_save_world_asm) { g_request_save_world_asm = false; OpenFileDialog(FileDialogMode::SaveAsmAnim); }
     if (g_request_save_world_project) { g_request_save_world_project = false; OpenFileDialog(FileDialogMode::SaveWorldProject); }
     if (g_request_load_world_project) { g_request_load_world_project = false; OpenFileDialog(FileDialogMode::LoadWorldProject); }
+    if (g_request_load_world_bg)      { g_request_load_world_bg = false; OpenFileDialog(FileDialogMode::LoadWorldBdd); }
     if (g_request_save_world_png) { g_request_save_world_png = false; OpenFileDialog(FileDialogMode::ExportWorldPng); }
     if (g_request_save_world_png_seq) { g_request_save_world_png_seq = false; OpenFileDialog(FileDialogMode::ExportWorldPngSeq); }
     if (g_request_load_asm)       { g_request_load_asm = false; g_asm_dialog_opponent = false; OpenFileDialog(FileDialogMode::LoadAsmAnim); }

@@ -86,6 +86,28 @@ struct WorldViewState {
     int ref_h = 110;
     int ref_dx = 0;
     int ref_dy = 234;   /* = h(254) - origin_y(20) */
+
+    /* ---- Reference background ----
+       An optional MK2 stage (BDD/BDB pair) composited behind the
+       playfield, so an animation can be judged against the art it
+       will actually play over instead of flat black. Strictly a
+       backdrop: nothing here edits the stage, and none of it
+       reaches a saved IMG.
+
+       bg_x/bg_y are the world coordinates drawn at the playfield's
+       top-left corner — i.e. a camera position, moved by the popup
+       or by snapping to a module. The stage is far larger than the
+       400x254 playfield, so it is always a window onto the art.
+
+       Real parallax is not reconstructable from BDD/BDB alone (the
+       rates, per-plane offsets and draw order live in BGND.ASM), so
+       placement is the user's to set; bg_module records which plane
+       they snapped to purely so the popup can show it. */
+    bool bg_enabled = false;
+    int bg_x = 0;
+    int bg_y = 0;
+    int bg_alpha = 255;
+    int bg_module = -1;
 };
 
 /* Two-sprite anipoint staging workspace.  The selected target is adjusted
@@ -117,6 +139,18 @@ struct WorldCanvasLayout {
    ComputeWorldCanvasLayout(). No-op when state.show_reference is false. */
 void WorldDrawReferenceFigure(ImDrawList *dl, const WorldCanvasLayout &layout,
                               const WorldViewState &state);
+
+/* Draw the loaded stage behind everything else in a World View canvas laid out
+   by ComputeWorldCanvasLayout(), clipped to that canvas. No-op when
+   state.bg_enabled is false or no stage is loaded. */
+void WorldDrawReferenceBackground(ImDrawList *dl, const WorldCanvasLayout &layout,
+                                  const WorldViewState &state);
+
+/* Position the loaded stage so module `module_idx` is centred in the playfield
+   with its bottom edge on state.floor_y. No-op on an out-of-range index. */
+struct BddBackground;
+void WorldBgSnapToModule(WorldViewState &state, const BddBackground &bg,
+                         int module_idx);
 
 struct WorldMarkedPanelLayout {
     ImVec2 pos = ImVec2(0, 0);
@@ -435,7 +469,7 @@ struct WorldMarkedSequenceState {
     WorldMarkedSequenceState()
     {
         for (int i = 0; i < kWorldMarkedMaxTabs; i++) {
-            sequence_doc_idx[i] = -1;
+            sequence_doc_uid[i] = 0;
             lane_visible[i] = true;
             auto_step[i] = 3;
             auto_life[i] = 32;
@@ -528,15 +562,33 @@ struct WorldMarkedSequenceState {
     /* Owning doc TAB INDEX per entry (not a Document*): document tabs live in
        a container that can reshuffle or replace its backing storage on
        reorder/close, so a Document* cached here across frames can dangle.
-       -1 means "use this row's own sequence_doc[slot]". Rows default every
+       -1 means "use this row's own sequence_doc_uid[slot]". Rows default every
        entry to -1; a frame dragged in from another row's document stores
        that document's current tab index so mixed-source rows resolve
-       correctly, re-derived via document_get() fresh every frame. */
+       correctly, re-derived via document_get() fresh every frame.
+
+       An index cannot dangle — document_get() bounds-checks it — but it does
+       shift when a lower tab closes, so a mixed-source entry can end up
+       naming the wrong file. Unlike the row binding above that is a
+       misdraw rather than a crash, which is why this is still an index. */
     std::vector<int> frame_doc[kWorldMarkedMaxTabs];
     std::vector<int> sequence_frames[kWorldMarkedMaxTabs];
     std::vector<int> default_frames[kWorldMarkedMaxTabs];
-    Document *sequence_doc[kWorldMarkedMaxTabs] = {};
-    int sequence_doc_idx[kWorldMarkedMaxTabs] = {};
+    /* Owning document per row, held as a Document::uid — NOT a Document* and
+       NOT a tab index, both of which go wrong the moment tabs change.
+
+       Tabs live in a std::deque that erases on close and is move-assigned
+       wholesale on reorder, so a cached Document* dangles: reading it after a
+       close returns recycled heap, and walking the IMG list off it faults.
+       That is the 0xC0000005 in doc_get_img this field exists to prevent.
+       A tab index survives the free but not the shift — closing a lower tab
+       silently rebinds every row above it to its neighbour's file.
+
+       The uid survives both. 0 means "no document". Resolve through
+       WorldMarkedRowDoc()/WorldMarkedRowDocIndex() at the point of use rather
+       than caching the result across frames, and assign through
+       WorldMarkedSetRowDoc()/WorldMarkedClearRowDoc(). */
+    unsigned int sequence_doc_uid[kWorldMarkedMaxTabs] = {};
     int pingpong_delay[kWorldMarkedMaxTabs] = {}; /* pause before a generated reverse pass */
     int stop_tick[kWorldMarkedMaxTabs] = {};      /* 0 = run normally; >0 freezes preview at this tick */
     int auto_step[kWorldMarkedMaxTabs] = {};
@@ -575,7 +627,7 @@ struct WorldMarkedLane {
 
 struct WorldAsmLaneFrame {
     const std::vector<int> *piece_img = nullptr;
-    const std::vector<Document*> *piece_doc = nullptr;
+    const std::vector<unsigned int> *piece_doc_uid = nullptr;
     int dx = 0;
     int dy = 0;
     bool mirror = false;
@@ -606,6 +658,7 @@ struct WorldMarkedPanelAction {
     bool request_load_project = false;
     bool request_save_png = false;
     bool request_save_png_seq = false;
+    bool request_load_bg = false;
     bool dummy_assigned = false;
     bool dummy_assign_failed = false;
 };
@@ -642,6 +695,8 @@ struct WorldMarkedSceneResult {
 };
 
 WorldViewState &WorldView(void);
+struct BddBackground;
+BddBackground &WorldBackground(void);
 AnipointLinkState &AnipointLink(void);
 WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
@@ -652,6 +707,17 @@ WorldMarkedPanelLayout ComputeWorldMarkedPanelLayout(ImVec2 avail,
                                                      int lane_count);
 WorldMarkedSequenceState &WorldMarkedState(void);
 bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot);
+
+/* Row -> document binding. Always resolve through these rather than caching a
+   Document* or tab index across frames: see sequence_doc_uid for why both go
+   wrong when tabs are closed or reordered. Both return "nothing" (NULL / -1)
+   for an unbound row or one whose document has since been closed. */
+Document *WorldMarkedRowDoc(const WorldMarkedSequenceState &state, int slot);
+int WorldMarkedRowDocIndex(const WorldMarkedSequenceState &state, int slot);
+/* Bind `slot` to the document at tab index `doc_idx`; an out-of-range index
+   clears the binding. */
+void WorldMarkedSetRowDoc(WorldMarkedSequenceState &state, int slot, int doc_idx);
+void WorldMarkedClearRowDoc(WorldMarkedSequenceState &state, int slot);
 
 /* Pure string helpers used by the marked World View panel. */
 bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *prefix);

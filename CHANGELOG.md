@@ -8,6 +8,185 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.26.0] — A real stage behind the animation, edges that feather, and dialogs you can always see
+
+### Opacity Gradient can feather just the edge, and screen it with a checker
+
+Two additions to **Opacity Gradient**, both aimed at the same job: softening a
+sprite's outline so it sits on a background instead of being stamped onto it.
+
+**Edge Feather (outline inward)** is a seventh direction. Instead of ramping
+across a bounding box, it measures each pixel's distance to the nearest
+transparent one and fades only the outermost few — **Feather width**, default
+5px. Everything deeper is left byte-for-byte alone, which is the whole point:
+"just the edge" has to mean that, or switching direction with a fade-out preset
+still loaded would dissolve the entire interior.
+
+Distance follows the silhouette, not the bounds, so a sprite with a hole in it
+feathers around the hole too. The canvas edge counts as an outline, since art
+here is routinely trimmed flush to its content.
+
+**Pattern** picks the screen the opacity is drawn with. IMG has no alpha — every
+"opacity" in this dialog is really a pattern of pixels dropped to index 0 — and
+which pattern matters more than it looks. The original hash dissolve scatters
+pixels randomly, which needs room to average out; across a five-pixel band it
+has none, and reads as damage rather than a fade. **Checker (2x2)** lays down
+the regular alternating screen that this era's art used to fake half
+transparency on hardware with no alpha, and stays even however narrow the band
+is. **Bayer (4x4)** sits between the two when a fade needs more than a couple of
+steps. Noise remains the default and is still the right choice for wide
+dissolves; the seed box now only appears when it is selected.
+
+### Fixed: right-clicking a sprite to break it broke the marked set instead
+
+**Break into Subframes (Auto-Chop)** on an image row's right-click menu chopped
+whatever was marked, ignoring the sprite that was actually clicked. With marks
+left over from earlier work — which is most of the time, since marking is how
+every bulk operation here is driven — picking one row silently rewrote a dozen
+other sprites, and you found out by reading the undo.
+
+The rule underneath was `marked > 0 ? marked : selected` in
+`CollectAutoChopTargets()` and again in `ChopMarkedImages()`, so the marked set
+always won and the click had no way to say otherwise. Right-clicking a row
+names a target; that now takes precedence.
+
+The dialog also stops hiding which it is. It is reachable two ways — from a row
+(that sprite) or from the menus (the marked set) — and once open the two were
+indistinguishable. There is now a **Break:** selector at the top naming the
+sprite or the mark count, preselected from how the dialog was opened and
+switchable without closing it. The menu-bar and toolbar entries are unchanged:
+they still mean the marked set, falling back to the selection.
+
+### Fixed: a dialog you cannot see, that will not let go
+
+An ImGui modal captures input whether or not it is on screen, so one that opens
+outside the viewport — or opens but never draws — locks the app behind a dialog
+nobody can find, with no way to dismiss it.
+
+`DrawUnsavedChangesConfirm` has been carrying two guards against this for a
+while. `DrawFileDialog` had neither, so every file dialog in the app was one
+bad frame away from wedging it. It now re-centres on appearing via
+`CenterNextModal()`, and a `ModalWatchdog` hands the app back with a message if
+it ever fails to draw at all.
+
+The watchdog itself was broken in a way that would have stopped it firing.
+It tracked a single modal by name, but cleared its timer unconditionally
+whenever *any* caller passed a flag that was down. `DrawUnsavedChangesConfirm()`
+runs immediately after `DrawFileDialog()` every frame, so with its own flag down
+it reset the count for the stuck dialog forever. The clear is now scoped to the
+modal being watched.
+
+Related: the World View background popup's **Load BDD…** button now closes its
+popup before the file dialog opens. Opening a modal while a popup still owns the
+ID stack is the documented route to a modal that never draws.
+
+### Fixed: closing a tab could crash World View
+
+Closing or reordering a document tab left every World View row — and every ASM
+animation piece — holding a pointer to freed memory, and the next frame that
+looked at one crashed:
+
+```
+Exception code: 0xC0000005
+  doc_get_img              world_render.cpp:18
+  WorldMarkedEntryImages   ui_canvas.cpp
+  WorldMarkedFindEntryForImage
+  DrawMainLayout           ui_main.cpp
+```
+
+Rows cached the owning `Document*` across frames. Tabs live in a `std::deque`
+that erases on close and is move-assigned wholesale on reorder, so both
+operations free the storage the cached pointer names. Nothing told World View
+about either — `ResetPerDocumentUiState()`, which the close path calls, has
+never touched the marked-row state.
+
+The trigger needed no interaction with World View at all. The anipoint panel
+calls `WorldMarkedFindEntryForImage` every frame just to decide whether to grey
+out **Inherit Position from World View**, and that sweeps all rows and
+dereferences whatever each one cached. Populate a row, close a tab, click a
+sprite — crash, with the World View panel closed.
+
+Rows now record the document's `uid` and resolve it at the point of use through
+`WorldMarkedRowDoc()` / `WorldMarkedRowDocIndex()`. The old `Document*` and its
+companion tab index are both gone, which also fixes a quieter bug they shared:
+an index survives the free but not the shift, so closing a lower tab silently
+rebound every row above it to its neighbour's file. A row whose document was
+closed now resolves to nothing and is skipped, instead of being followed.
+
+Saved World View projects are unaffected — the `.WVP` format only ever stored a
+tab index and a path, and still does.
+
+`test/document_test.cpp` pins the identity guarantee this rests on: uids
+surviving close and reorder, a closed document becoming unresolvable, a
+malformed reorder being refused outright, and — so the reason for the uid
+cannot be optimised away later — the index-shift hazard itself.
+
+The ASM animation viewer had the same defect on a second surface and is fixed
+with it. `AsmAnimFrame::piece_doc` cached one `Document*` per sprite piece,
+resolved once at load and then dereferenced every frame the lane drew; the
+`g_asm_anim_doc` / `g_asm_opp_doc` globals cached the representative document
+the same way. A character's frames routinely span a dozen IMGs that the loader
+opens for you, so closing any one of them armed the same crash through the ASM
+lane rather than a marked row.
+
+Pieces now carry `piece_doc_uid`, the name map they resolve through carries
+uids instead of pointers, and both globals became `g_asm_anim_doc_uid` /
+`g_asm_opp_doc_uid`. A piece whose IMG was closed resolves to nothing and is
+skipped, so the animation loses that piece instead of the process.
+
+Resolution happens once per frame into the per-frame lane and is never written
+back, which is the rule the old code broke: `WorldMarkedLane` may hold
+`Document*` because it is rebuilt from scratch every frame, and anything that
+outlives a frame may not.
+
+`document_from_uid()` is the shared accessor all of this resolves through.
+
+### World View can load a BDD stage as a backdrop
+
+Alignment work happened against flat black. Whether a fireball cleared the
+pit, whether a body landed on the walkway rather than through it, whether a
+foreground pillar would have covered the hit — none of that was checkable
+without exporting a PNG and opening it next to a screenshot.
+
+**BG** in the World View toolbar composites a real MK2 stage behind the
+playfield. Right-click it for **Load BDD…**, or tick it with nothing loaded
+and the picker opens. Both World View modes get it — the marked-row scene and
+the single-sprite canvas — and it draws straight onto the cleared canvas, so
+every guide, the reference figure, and all lane sprites still sit over it.
+
+The stage is a backdrop and nothing else. There is no editing surface, no undo
+entry, nothing written back to the BDD, and nothing that reaches a saved IMG.
+bddtool owns authoring; this only looks.
+
+**Pick either half of the pair.** A `.BDD` holds the pixels, the matching
+`.BDB` holds every placement, and neither draws a stage alone — so the sibling
+is found by stem next to whichever one you picked, and a missing one is
+reported by name instead of loading a blank.
+
+**It opens somewhere useful.** A stage is packed as stacked bands, not
+overlaid planes, so the whole-world composite is a tall atlas — DEDPOOL
+declares 4000×3000 and paints 2364×2077 of it, most of which is not the part
+you want. On load the plane the fighters stand on is picked (the module
+holding the most 1.0×-scroll layer 0x40/0x41 objects) and parked with its
+painted centre in the playfield and its painted bottom on the floor line.
+Every module is listed in the popup as a plane you can snap to, alongside X/Y
+and an alpha slider for when the scenery competes with the sprites.
+
+**What it cannot do, and why.** This is not the game camera. Parallax rates,
+per-plane screen offsets and draw order live in `BGND.ASM` (`<stage>_scroll`,
+the `.word x,y` after each `BMOD`, `dlists_<stage>`) — none of it is in the
+BDD/BDB, so no amount of reading these two files reconstructs it. A stage's
+floor is a runtime layer that is not in them either, which is why bare canvas
+shows under the scenery. Placement is therefore yours to set, and the popup
+says so rather than implying an accuracy it does not have.
+
+Parsing and compositing were ported from midway-bddtool's `bdd_core` and its
+`render` command, read paths only, and live in `platform/bdd_bg.{h,cpp}`
+covered by `test/bdd_bg_test.cpp` — index 0 staying transparent, 5-bit
+channels replicating to a true 255, the DMA word's flip bits, BDB order being
+draw order, and the refusals for a missing sibling or an unresolvable
+placement.
+
 ## [v3.25.0] — Colors you can send back to transparent, renames from either list, and a pencil that stays a pencil
 
 ### The pencil stops handing you the marquee

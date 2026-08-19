@@ -632,8 +632,7 @@ bool         g_show_asm_anim = false;
 std::vector<AsmAnim> g_asm_opp_anims;
 int          g_asm_opp_sel = -1;
 
-Document    *g_asm_opp_doc = NULL;
-int          g_asm_opp_doc_idx = -1;
+unsigned int g_asm_opp_doc_uid = 0;
 
 bool         g_asm_dialog_opponent = false;
 bool         g_openimg_for_asm = false;

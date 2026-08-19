@@ -112,6 +112,14 @@ void AutoChopSetThreeBandSize(void)
 void OpenAutoChopDialog(void)
 {
     AutoChopSetThreeBandSize();
+    g_autochop_only_img = -1;   /* marked set, falling back to the selection */
+    g_show_auto_chop = true;
+}
+
+void OpenAutoChopDialogForImage(int img_idx)
+{
+    AutoChopSetThreeBandSize();
+    g_autochop_only_img = img_idx;
     g_show_auto_chop = true;
 }
 
@@ -429,11 +437,16 @@ void BuildAutoChopTargetSummary(AutoChopPreview *out)
 static void CollectAutoChopTargets(std::vector<AutoChopTargetRef> &targets)
 {
     targets.clear();
+    /* An explicitly named sprite wins over the marked set. Right-clicking a row
+       states a target, and quietly chopping whatever happened to be marked
+       instead is the sort of surprise that costs an undo to discover. */
+    int only = g_autochop_only_img;
     int marked = CountMarkedImages();
     int idx = 0;
     for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
-        bool target = marked > 0 ? ((img->flags & 1) != 0)
-                                 : (idx == g_doc->ilselected);
+        bool target = (only >= 0) ? (idx == only)
+                    : (marked > 0) ? ((img->flags & 1) != 0)
+                                   : (idx == g_doc->ilselected);
         if (target) targets.push_back({img, idx});
     }
 }

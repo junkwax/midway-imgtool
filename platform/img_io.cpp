@@ -1285,12 +1285,18 @@ static void make_chop_subframe_suffix(const char *parent_name, int piece_no,
     }
 }
 
-int ChopMarkedImages(int grid_w, int grid_h, bool trim)
+int ChopMarkedImages(int grid_w, int grid_h, bool trim, int only_idx)
 {
     if (grid_w <= 0 || grid_h <= 0) return 0;
     int count = 0;
 
     std::vector<IMG*> targets;
+    if (only_idx >= 0) {
+        /* Caller named one sprite; the marked set does not get a say. */
+        IMG *one = get_img(only_idx);
+        if (one) targets.push_back(one);
+        if (targets.empty()) return 0;
+    } else {
     for (IMG *p = (IMG *)g_doc->img_p; p; p = (IMG *)p->nxt_p) {
         if (p->flags & 1) targets.push_back(p);
     }
@@ -1298,6 +1304,7 @@ int ChopMarkedImages(int grid_w, int grid_h, bool trim)
     if (targets.empty() && g_doc->ilselected >= 0) {
         IMG *selected = get_img(g_doc->ilselected);
         if (selected) targets.push_back(selected);
+    }
     }
     if (targets.empty()) return 0;
 

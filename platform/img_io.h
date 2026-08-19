@@ -163,7 +163,10 @@ int  ExecuteBulkRestoreDiff (const std::vector<BulkRestoreMatch>& matches);
  * untouched (unlike Pairs mode's zero-fill). */
 int  ExecuteBulkRestoreReconstruct(const std::vector<BulkRestoreMatch>& matches);
 
-int  ChopMarkedImages(int grid_w, int grid_h, bool trim); /* marked sprites, or selected sprite if none are marked */
+/* Break sprites into a grid of subframes. `only_idx` >= 0 chops exactly that
+   sprite; -1 means the marked set, or the selected sprite when none are
+   marked. Returns the number of pieces created. */
+int  ChopMarkedImages(int grid_w, int grid_h, bool trim, int only_idx = -1);
 
 /* Edge defringe for all marked images.
  * For each pixel within `radius` pixels of a transparent boundary (8-connected),

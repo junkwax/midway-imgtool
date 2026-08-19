@@ -116,6 +116,9 @@ Document *document_get(int idx);
    carries that uid (it was closed). */
 unsigned int document_uid(int idx);
 int          document_index_of_uid(unsigned int uid);
+/* The open document carrying `uid`, or NULL when it was closed (or uid is 0).
+   Use this instead of caching a Document* anywhere that outlives a frame. */
+Document *document_from_uid(unsigned int uid);
 Document *document_active(void);
 int       document_new_tab(void);
 void      document_set_active(int idx);

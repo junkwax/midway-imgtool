@@ -21,6 +21,7 @@
 #include "shim_vid.h"       /* g_palette */
 #include "ui_timeline.h"    /* ClampTimelineHold */
 #include "world_render.h"   /* doc_get_img */
+#include "bdd_bg.h"         /* World View reference background */
 #include "sprite_resize_ops.h"
 
 #include <algorithm>
@@ -48,6 +49,12 @@ WorldViewState &WorldView(void)
 {
     static WorldViewState state;
     return state;
+}
+
+BddBackground &WorldBackground(void)
+{
+    static BddBackground bg;
+    return bg;
 }
 
 AnipointLinkState &AnipointLink(void)
@@ -1398,6 +1405,59 @@ void WorldDrawReferenceFigure(ImDrawList *dl, const WorldCanvasLayout &layout,
                 IM_COL32(140, 200, 255, 70), 0.0f, 0, 1.0f);
 }
 
+/* Park a stage module in the playfield: its horizontal centre at the
+   playfield's centre, its bottom edge on the floor line. A module is one
+   parallax plane, so this is the closest thing to "where the game would put
+   it" that the BDD/BDB can honestly support. */
+void WorldBgSnapToModule(WorldViewState &state, const BddBackground &bg,
+                         int module_idx)
+{
+    if (module_idx < 0 || module_idx >= (int)bg.modules.size()) return;
+    const BddBgModule &mod = bg.modules[(size_t)module_idx];
+    /* Align the painted edges, not the declared rect: a module's rect is a
+       packing region and its art rarely fills it, so using the rect leaves a
+       dead band between the stage and the floor line. */
+    int x1 = mod.has_content ? mod.cx1 : mod.x1;
+    int x2 = mod.has_content ? mod.cx2 : mod.x2;
+    int y2 = mod.has_content ? mod.cy2 : mod.y2;
+    state.bg_x = (x1 + x2) / 2 - state.w / 2;
+    state.bg_y = y2 - state.floor_y;
+    state.bg_module = module_idx;
+}
+
+void WorldDrawReferenceBackground(ImDrawList *dl, const WorldCanvasLayout &layout,
+                                  const WorldViewState &state)
+{
+    if (!dl || !state.bg_enabled) return;
+    BddBackground &bg = WorldBackground();
+    if (!bg.loaded) return;
+    SDL_Texture *tex = BddBgTexture(&bg);
+    if (!tex) return;
+
+    /* bg_x/bg_y are the world coordinates shown at the canvas's top-left, so
+       the stage slides under a fixed playfield rather than the reverse. The
+       composite was cropped to its art, hence the content_x/content_y term. */
+    float s = layout.scale;
+    ImVec2 p0(layout.pos.x + (float)(bg.content_x - state.bg_x) * s,
+              layout.pos.y + (float)(bg.content_y - state.bg_y) * s);
+    ImVec2 p1(p0.x + (float)bg.w * s, p0.y + (float)bg.h * s);
+
+    ImVec2 clip_min = layout.pos;
+    ImVec2 clip_max(layout.pos.x + layout.width, layout.pos.y + layout.height);
+    if (p1.x <= clip_min.x || p0.x >= clip_max.x ||
+        p1.y <= clip_min.y || p0.y >= clip_max.y)
+        return;   /* panned entirely off the canvas */
+
+    int alpha = state.bg_alpha;
+    if (alpha < 0) alpha = 0;
+    if (alpha > 255) alpha = 255;
+
+    dl->PushClipRect(clip_min, clip_max, true);
+    dl->AddImage((ImTextureID)(intptr_t)tex, p0, p1, ImVec2(0, 0), ImVec2(1, 1),
+                 IM_COL32(255, 255, 255, alpha));
+    dl->PopClipRect();
+}
+
 int CanvasFlipPreviewOffsetPx(const IMG *img)
 {
     if (!img || img->w == 0) return 0;
@@ -1600,6 +1660,35 @@ WorldMarkedSequenceState &WorldMarkedState(void)
 {
     static WorldMarkedSequenceState state;
     return state;
+}
+
+/* ---- Row -> document binding ----
+   Every one of these resolves from the stored uid on the spot. Nothing here
+   may cache a Document* or an index into the state: that caching is exactly
+   what let a closed tab leave a dangling pointer behind. */
+
+int WorldMarkedRowDocIndex(const WorldMarkedSequenceState &state, int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return -1;
+    return document_index_of_uid(state.sequence_doc_uid[slot]);
+}
+
+Document *WorldMarkedRowDoc(const WorldMarkedSequenceState &state, int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return NULL;
+    return document_from_uid(state.sequence_doc_uid[slot]);
+}
+
+void WorldMarkedSetRowDoc(WorldMarkedSequenceState &state, int slot, int doc_idx)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    state.sequence_doc_uid[slot] = document_uid(doc_idx);  /* 0 when out of range */
+}
+
+void WorldMarkedClearRowDoc(WorldMarkedSequenceState &state, int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    state.sequence_doc_uid[slot] = 0;
 }
 
 bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot)
@@ -2024,7 +2113,8 @@ static int WorldMarkedFindBaseSourceSlot(WorldMarkedSequenceState &state,
     for (int slot = 0; slot < kWorldMarkedSourceTabs; slot++) {
         if (used_source_slots[slot] || WorldMarkedSlotReservedForSplit(state, slot))
             continue;
-        if (state.sequence_doc[slot] == doc && state.sequence_doc_idx[slot] == doc_idx)
+        if (WorldMarkedRowDoc(state, slot) == doc &&
+            WorldMarkedRowDocIndex(state, slot) == doc_idx)
             return slot;
     }
     for (int slot = 0; slot < kWorldMarkedSourceTabs; slot++) {
@@ -2036,7 +2126,7 @@ static int WorldMarkedFindBaseSourceSlot(WorldMarkedSequenceState &state,
            genuinely fresh/never-built slot (both empty) apart from one that
            was built and then deliberately emptied (default_frames remains
            the last marked-set snapshot). */
-        if (state.sequence_doc_idx[slot] < 0 || state.default_frames[slot].empty())
+        if (WorldMarkedRowDocIndex(state, slot) < 0 || state.default_frames[slot].empty())
             return slot;
     }
     for (int slot = 0; slot < kWorldMarkedSourceTabs; slot++) {
@@ -2230,14 +2320,16 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
         std::vector<int> pcs;
         std::vector<Document*> pcs_docs;
         const std::vector<int> *piece_img = fr.piece_img;
-        const std::vector<Document*> *piece_doc = fr.piece_doc;
+        const std::vector<unsigned int> *piece_uid = fr.piece_doc_uid;
         if (piece_img) {
             for (size_t p = 0; p < piece_img->size(); p++) {
                 int ri = (*piece_img)[p];
                 if (ri < 0) continue;
-                Document *pdoc = (piece_doc && p < piece_doc->size() &&
-                                  (*piece_doc)[p])
-                               ? (*piece_doc)[p] : doc;
+                /* Resolved here, once per frame, and only into the per-frame
+                   lane below — never stored back into the animation. */
+                Document *pdoc = (piece_uid && p < piece_uid->size())
+                               ? document_from_uid((*piece_uid)[p]) : NULL;
+                if (!pdoc) pdoc = doc;
                 pcs.push_back(ri);
                 pcs_docs.push_back(pdoc);
                 if (!rep_doc) rep_doc = pdoc;
@@ -2693,8 +2785,7 @@ bool WorldLoadSeqScrRecord(int record_index)
     WorldMarkedClearSequenceState(state, slot);
     state.default_frames[slot] = frames;
     state.sequence_frames[slot] = frames;
-    state.sequence_doc[slot] = g_doc;
-    state.sequence_doc_idx[slot] = document_active_index();
+    WorldMarkedSetRowDoc(state, slot, document_active_index());
     state.embedded_active = true;
     state.embedded_is_script = is_script;
     /* The Anim workspace shows this record and nothing else. Marked rows, ASM
@@ -3692,6 +3783,9 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
                       ImVec2(world_pos.x + world_width,
                              world_pos.y + world_height),
                       IM_COL32(0, 0, 0, 255));
+    /* Straight onto the cleared canvas, so the stage replaces the flat black
+       and every guide, figure and sprite below still draws over it. */
+    WorldDrawReferenceBackground(dl, result.layout, world);
     dl->AddLine(ImVec2(origin_x - 8, origin_y),
                 ImVec2(origin_x + 8, origin_y),
                 IM_COL32(120, 120, 120, 255));
@@ -3847,6 +3941,104 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
         ImGui::TextDisabled("Feet dX/dY place the figure's feet centre relative\n"
                             "to the shared anchor, in world pixels.");
         ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    {
+        BddBackground &bg = WorldBackground();
+        WorldViewState &world = g_world_state;
+        /* Deliberately never disabled: the right-click popup is the only door
+           to the load dialog, and a disabled item takes no clicks at all. */
+        if (ImGui::Checkbox("BG##world_bg_enable", &world.bg_enabled) &&
+            world.bg_enabled && !bg.loaded)
+            action.request_load_bg = true;   /* ticked with nothing to show */
+        if (ImGui::IsItemHovered()) {
+            if (bg.loaded)
+                ImGui::SetTooltip("Draw %s behind the playfield as an alignment\n"
+                                  "reference. Right-click to place it or load another.",
+                                  bg.stage_name.c_str());
+            else
+                ImGui::SetTooltip("Draw an MK2 stage behind the playfield as an\n"
+                                  "alignment reference. Nothing is loaded — tick or\n"
+                                  "right-click to pick a stage .BDD.");
+        }
+        if (ImGui::BeginPopupContextItem("##world_bg_cfg")) {
+            ImGui::TextDisabled("Reference background (view only — never saved)");
+            if (ImGui::Button("Load BDD...##world_bg_load")) {
+                action.request_load_bg = true;
+                /* Dismiss this popup before the file dialog opens. Leaving it
+                   up means a modal is opened while a popup still owns the ID
+                   stack, which is how a modal ends up open-but-never-drawn —
+                   invisible and blocking. */
+                ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Pick a stage .BDD. Its .BDB sibling is loaded with it —\n"
+                                  "the BDD holds the pixels, the BDB every placement.");
+            if (bg.loaded) {
+                ImGui::SameLine();
+                if (ImGui::Button("Clear##world_bg_clear")) {
+                    BddBgFree(&bg);
+                    world.bg_enabled = false;
+                    world.bg_module = -1;
+                }
+
+                ImGui::Separator();
+                ImGui::Text("%s  %dx%d world, %d objects",
+                            bg.stage_name.c_str(), bg.world_w, bg.world_h,
+                            bg.object_count);
+                if (bg.skipped_objects > 0)
+                    ImGui::TextDisabled("%d placement(s) skipped — missing image or palette",
+                                        bg.skipped_objects);
+
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::InputInt("X##world_bg_x", &world.bg_x);
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::InputInt("Y##world_bg_y", &world.bg_y);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("World coordinates drawn at the canvas's top-left.\n"
+                                      "The stage is far bigger than the playfield, so this\n"
+                                      "is a camera onto it.");
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::SliderInt("Alpha##world_bg_alpha", &world.bg_alpha, 32, 255);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Fade the stage back when it competes with the sprites.");
+
+                /* Planes, not layers: each BDB module is one parallax plane, and
+                   jumping between them is how you find the band you want behind
+                   the animation without hunting with the X/Y fields. */
+                if (!bg.modules.empty()) {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Planes (BDB modules)");
+                    for (size_t m = 0; m < bg.modules.size(); m++) {
+                        const BddBgModule &mod = bg.modules[m];
+                        char label[128];
+                        snprintf(label, sizeof(label), "%s  (%d obj)##world_bg_mod%d",
+                                 mod.name.c_str(), mod.object_count, (int)m);
+                        bool selected = (world.bg_module == (int)m);
+                        if (ImGui::RadioButton(label, selected))
+                            WorldBgSnapToModule(world, bg, (int)m);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Centre this plane in the playfield with its\n"
+                                              "bottom edge on the floor line (y=%d).\n"
+                                              "World rect %d,%d .. %d,%d",
+                                              world.floor_y, mod.x1, mod.y1,
+                                              mod.x2, mod.y2);
+                    }
+                }
+
+                ImGui::Separator();
+                ImGui::TextDisabled(
+                    "Placement is manual on purpose: real parallax rates,\n"
+                    "per-plane offsets and draw order live in BGND.ASM, not\n"
+                    "in the BDD/BDB, so this cannot reproduce the game camera.\n"
+                    "A stage's floor is a runtime layer and is not in these\n"
+                    "files either — expect bare canvas under the scenery.");
+            } else if (!bg.error.empty()) {
+                ImGui::Separator();
+                ImGui::TextWrapped("%s", bg.error.c_str());
+            }
+            ImGui::EndPopup();
+        }
     }
     ImGui::SameLine();
     if (ImGui::Checkbox("Link Anchors##world_anchor_link", &state.anchor_link_mode))
@@ -4175,8 +4367,7 @@ void WorldExitEmbeddedSeqScr(WorldMarkedSequenceState &state)
     const int slot = kWorldEmbeddedSeqScrSlot;
     WorldMarkedClearSequenceState(state, slot);
     state.default_frames[slot].clear();
-    state.sequence_doc[slot] = NULL;
-    state.sequence_doc_idx[slot] = -1;
+    WorldMarkedClearRowDoc(state, slot);
     state.embedded_active = false;
     state.embedded_is_script = false;
     state.embedded_show_companions = false;
@@ -4207,7 +4398,7 @@ bool WorldMarkedAttachSpriteToFrame(WorldMarkedSequenceState &state,
     /* A composite frame currently has one owning document.  Refuse a
        cross-tab mix rather than silently resolving the extra piece against
        the wrong IMG library. */
-    int owner_doc_idx = state.sequence_doc_idx[slot];
+    int owner_doc_idx = WorldMarkedRowDocIndex(state, slot);
     if (frame_idx < (int)state.frame_doc[slot].size() &&
         state.frame_doc[slot][frame_idx] >= 0)
         owner_doc_idx = state.frame_doc[slot][frame_idx];
@@ -5611,7 +5802,7 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
         int drag_img_idx = state.sequence_frames[dragging_slot][dragging_frame_idx];
         int drag_doc_idx = (dragging_frame_idx < (int)state.frame_doc[dragging_slot].size())
                          ? state.frame_doc[dragging_slot][dragging_frame_idx] : -1;
-        Document *drag_doc = WorldMarkedResolveEntryDoc(state.sequence_doc[dragging_slot],
+        Document *drag_doc = WorldMarkedResolveEntryDoc(WorldMarkedRowDoc(state, dragging_slot),
                                                         drag_doc_idx);
         IMG *drag_img = doc_get_img(drag_doc, drag_img_idx);
         SDL_Texture *drag_tex = BuildWorldSpriteTexture(drag_doc, drag_img, 230);
@@ -6469,7 +6660,7 @@ void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta)
             if (!usable_slot(s)) continue;
             for (size_t fi = 0; fi < state.sequence_frames[s].size(); fi++) {
                 int doc_idx = (fi < state.frame_doc[s].size() && state.frame_doc[s][fi] >= 0)
-                            ? state.frame_doc[s][fi] : state.sequence_doc_idx[s];
+                            ? state.frame_doc[s][fi] : WorldMarkedRowDocIndex(state, s);
                 if (doc_idx == active_doc && state.sequence_frames[s][fi] == selected_img) {
                     slot = s;
                     break;
@@ -6478,7 +6669,7 @@ void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta)
         }
         if (!usable_slot(slot)) {
             for (int s = 0; s < kWorldMarkedMaxTabs; s++) {
-                if (usable_slot(s) && state.sequence_doc_idx[s] == active_doc) {
+                if (usable_slot(s) && WorldMarkedRowDocIndex(state, s) == active_doc) {
                     slot = s;
                     break;
                 }
@@ -6502,7 +6693,7 @@ void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta)
 
     int doc_idx = (next < (int)state.frame_doc[slot].size() &&
                    state.frame_doc[slot][next] >= 0)
-                ? state.frame_doc[slot][next] : state.sequence_doc_idx[slot];
+                ? state.frame_doc[slot][next] : WorldMarkedRowDocIndex(state, slot);
     Document *doc = document_get(doc_idx);
     WorldSyncEditorSelectionToSprite(doc, doc_idx,
                                      state.sequence_frames[slot][next]);
@@ -6640,7 +6831,7 @@ void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int
     size_t old_fdoc_size = fdoc.size();
     fdoc.resize((size_t)frame_count);
     for (size_t i = old_fdoc_size; i < fdoc.size(); i++)
-        fdoc[i] = -1; /* defer to this row's own sequence_doc[slot] */
+        fdoc[i] = -1; /* defer to this row's own sequence_doc_uid[slot] */
 }
 
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
@@ -7126,8 +7317,7 @@ static bool WorldMarkedSwapEntryWithSubframesAtTick(
     state.dual_z[slot][insert_at] = 0;
     entry_pieces[insert_at] = subframes;
 
-    state.sequence_doc[slot] = lane.doc;
-    state.sequence_doc_idx[slot] = lane.doc_idx;
+    WorldMarkedSetRowDoc(state, slot, lane.doc_idx);
     state.paused = true;
     state.timer = 0.0f;
     state.frame = swap_tick;
@@ -7275,8 +7465,7 @@ static bool WorldMarkedChopEntryAtWaterline(WorldMarkedSequenceState &state,
         state.dual_z[slot][fi] = 0;
     }
 
-    state.sequence_doc[slot] = lane.doc;
-    state.sequence_doc_idx[slot] = lane.doc_idx;
+    WorldMarkedSetRowDoc(state, slot, lane.doc_idx);
     state.paused = true;
     state.timer = 0.0f;
     state.frame = chop_tick;
@@ -7496,8 +7685,8 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
         return;
 
     const std::vector<int> defaults = frames;
-    bool doc_changed = state.sequence_doc[slot] != doc ||
-                       state.sequence_doc_idx[slot] != doc_idx;
+    bool doc_changed = WorldMarkedRowDoc(state, slot) != doc ||
+                       WorldMarkedRowDocIndex(state, slot) != doc_idx;
     /* Whether this slot has ever been seeded for the current doc, NOT
        whether it currently holds any frames. A row the user drained to zero
        (e.g. by dragging its last frame into another row) must stay empty —
@@ -7524,8 +7713,7 @@ void WorldMarkedSyncSequenceOverride(WorldMarkedSequenceState &state, int slot,
     if (doc_changed || !initialized) {
         /* A different sprite/tab now occupies this slot (or there is nothing
            built yet): seed the sequence straight from the marked frames. */
-        state.sequence_doc[slot] = doc;
-        state.sequence_doc_idx[slot] = doc_idx;
+        WorldMarkedSetRowDoc(state, slot, doc_idx);
         state.default_frames[slot] = defaults;
         state.sequence_frames[slot] = defaults;
         WorldMarkedClearSequenceState(state, slot);
@@ -7628,7 +7816,7 @@ static bool WorldMarkedEntryImages(WorldMarkedSequenceState &state,
 
     int doc_override = entry < (int)state.frame_doc[slot].size()
                      ? state.frame_doc[slot][entry] : -1;
-    Document *doc = WorldMarkedResolveEntryDoc(state.sequence_doc[slot], doc_override);
+    Document *doc = WorldMarkedResolveEntryDoc(WorldMarkedRowDoc(state, slot), doc_override);
     if (!doc) return false;
     *out_doc = doc;
 
@@ -7810,8 +7998,7 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
     dst_fdoc.assign(src_fdoc.begin() + frame_idx, src_fdoc.end());
     src_fdoc.erase(src_fdoc.begin() + frame_idx, src_fdoc.end());
 
-    state.sequence_doc[dst_slot] = lane.doc;
-    state.sequence_doc_idx[dst_slot] = lane.doc_idx;
+    WorldMarkedSetRowDoc(state, dst_slot, lane.doc_idx);
     state.default_frames[dst_slot] = tail;
     state.sequence_frames[dst_slot] = tail;
     state.lane_visible[dst_slot] = state.lane_visible[src_slot];
@@ -7858,8 +8045,7 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
         dst_slot == src_slot)
         return false;
 
-    state.sequence_doc[dst_slot] = lane.doc;
-    state.sequence_doc_idx[dst_slot] = lane.doc_idx;
+    WorldMarkedSetRowDoc(state, dst_slot, lane.doc_idx);
     state.default_frames[dst_slot] = src_frames;
     state.sequence_frames[dst_slot] = src_frames;
 
@@ -7997,8 +8183,7 @@ bool WorldMarkedDeleteSplitSlot(WorldMarkedSequenceState &state, int slot)
     state.sequence_frames[slot].clear();
     state.default_frames[slot].clear();
     state.entry_pieces[slot].clear();
-    state.sequence_doc[slot] = NULL;
-    state.sequence_doc_idx[slot] = -1;
+    WorldMarkedClearRowDoc(state, slot);
     state.lane_visible[slot] = true;
     state.hold_end[slot] = false;
     bool *mirror = WorldMarkedMirrorFlag(state, slot);
@@ -8032,8 +8217,7 @@ void WorldMarkedClearSplitLanes(WorldMarkedSequenceState &state)
         if (split_slots[slot]) {
             state.sequence_frames[slot].clear();
             state.default_frames[slot].clear();
-            state.sequence_doc[slot] = NULL;
-            state.sequence_doc_idx[slot] = -1;
+            WorldMarkedClearRowDoc(state, slot);
             state.lane_visible[slot] = true;
             state.hold_end[slot] = false;
             bool *mirror = WorldMarkedMirrorFlag(state, slot);
@@ -8136,7 +8320,7 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
     bool dst_has_frames = !state.sequence_frames[dst_slot].empty();
     int src_entry_doc_idx = (src_frame_idx < (int)state.frame_doc[src_slot].size())
                           ? state.frame_doc[src_slot][src_frame_idx] : -1;
-    Document *src_entry_doc = WorldMarkedResolveEntryDoc(state.sequence_doc[src_slot],
+    Document *src_entry_doc = WorldMarkedResolveEntryDoc(WorldMarkedRowDoc(state, src_slot),
                                                          src_entry_doc_idx);
 
     /* A composite ("Use Subframe") entry's extra pieces still resolve
@@ -8147,7 +8331,7 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
     bool is_composite = src_frame_idx < (int)state.entry_pieces[src_slot].size() &&
                         state.entry_pieces[src_slot][src_frame_idx].size() > 1;
     if (!same_slot && is_composite && dst_has_frames &&
-        src_entry_doc != state.sequence_doc[dst_slot])
+        src_entry_doc != WorldMarkedRowDoc(state, dst_slot))
         return false;
 
     int frame_val = src_frames[src_frame_idx];
@@ -8172,8 +8356,7 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
     if (insert_at > (int)dst_frames.size()) insert_at = (int)dst_frames.size();
 
     if (!same_slot && !dst_has_frames) {
-        state.sequence_doc[dst_slot] = state.sequence_doc[src_slot];
-        state.sequence_doc_idx[dst_slot] = state.sequence_doc_idx[src_slot];
+        state.sequence_doc_uid[dst_slot] = state.sequence_doc_uid[src_slot];
     }
 
     /* Within the same row, the original value (whether -1 "this row's own
@@ -8183,7 +8366,7 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
        current absolute doc index before handing it to a different row. */
     int insert_doc_idx = same_slot ? src_entry_doc_idx
                         : (src_entry_doc_idx >= 0 ? src_entry_doc_idx
-                                                  : state.sequence_doc_idx[src_slot]);
+                                                  : WorldMarkedRowDocIndex(state, src_slot));
 
     EnsureWorldMarkedFrameDelays(state, dst_slot, (int)dst_frames.size());
     dst_frames.insert(dst_frames.begin() + insert_at, frame_val);
@@ -8282,6 +8465,7 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),
                       IM_COL32(0, 0, 0, 255));
+    WorldDrawReferenceBackground(dl, layout, g_world_state);
 
     float ox = layout.origin_x;
     float oy = layout.origin_y;
@@ -15711,8 +15895,12 @@ static void WorldCollectActiveAsmLanes(std::vector<WorldMarkedAsmLaneInput> &asm
 {
     asm_lanes.clear();
     asm_lanes.reserve(2);
+    /* Resolved from the uid on entry rather than held across frames: the tab
+       an ASM was loaded against can be closed while its lane stays enabled. */
     auto add_asm_lane = [&](std::vector<AsmAnim> &anims, bool enabled, int sel,
-                            int slot_id, Document *doc, int doc_idx) {
+                            int slot_id, unsigned int doc_uid) {
+        int doc_idx = document_index_of_uid(doc_uid);
+        Document *doc = document_get(doc_idx);
         if (!enabled || sel < 0 || sel >= (int)anims.size() || !doc) return;
         AsmAnim &a = anims[sel];
         if (a.frames.empty()) return;
@@ -15726,7 +15914,7 @@ static void WorldCollectActiveAsmLanes(std::vector<WorldMarkedAsmLaneInput> &asm
         for (const AsmAnimFrame &fr : a.frames) {
             WorldAsmLaneFrame view = {};
             view.piece_img = &fr.piece_img;
-            view.piece_doc = &fr.piece_doc;
+            view.piece_doc_uid = &fr.piece_doc_uid;
             view.dx = fr.dx;
             view.dy = fr.dy;
             view.mirror = fr.mirror;
@@ -15736,9 +15924,9 @@ static void WorldCollectActiveAsmLanes(std::vector<WorldMarkedAsmLaneInput> &asm
         asm_lanes.push_back(input);
     };
     add_asm_lane(g_asm_anims, g_asm_lane_enabled, g_asm_anim_sel,
-                 kWorldAsmSlot, g_asm_anim_doc, g_asm_anim_doc_idx);
+                 kWorldAsmSlot, g_asm_anim_doc_uid);
     add_asm_lane(g_asm_opp_anims, g_asm_opp_enabled, g_asm_opp_sel,
-                 kWorldAsmOpponentSlot, g_asm_opp_doc, g_asm_opp_doc_idx);
+                 kWorldAsmOpponentSlot, g_asm_opp_doc_uid);
 }
 
 static void WorldHandleMarkedPanelResult(const WorldMarkedPanelResult &panel_result)
@@ -15761,6 +15949,8 @@ static void WorldHandleMarkedPanelResult(const WorldMarkedPanelResult &panel_res
         g_request_save_world_png_seq = true;
     if (panel_action.request_load_project)
         g_request_load_world_project = true;
+    if (panel_action.request_load_bg)
+        g_request_load_world_bg = true;
     if (panel_action.request_load_asm) {
         g_show_asm_anim = true;
         g_request_load_asm = true;

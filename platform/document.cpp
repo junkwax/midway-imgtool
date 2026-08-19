@@ -131,6 +131,11 @@ int document_index_of_uid(unsigned int uid)
     return -1;
 }
 
+Document *document_from_uid(unsigned int uid)
+{
+    return document_get(document_index_of_uid(uid));
+}
+
 int document_new_tab(void)
 {
     g_documents.emplace_back();

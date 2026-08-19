@@ -130,6 +130,7 @@ int g_hitbox_h = 32;
 int g_hitbox_drag_corner = -1;
 
 bool g_show_auto_chop = false;
+int g_autochop_only_img = -1;
 int g_chop_mode = 0; // AutoChopMode_BestHorizontal
 int g_chop_w = 64;
 int g_chop_h = 64;
@@ -142,6 +143,7 @@ int  g_snap_guide_x = 0;
 int  g_snap_guide_y = 0;
 
 WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
+BddBackground &g_world_bg = WorldBackground();
 bool g_world_marked_panel_docked = false;
 bool g_seqscr_workspace = false;
 bool g_seqscr_frame_nav = false;
@@ -199,6 +201,7 @@ bool g_request_save_world_project = false;
 bool g_request_save_world_png = false;
 bool g_request_save_world_png_seq = false;
 bool g_request_load_world_project = false;
+bool g_request_load_world_bg = false;
 bool g_request_load_asm = false;
 bool g_request_load_opp_asm = false;
 bool g_request_asm_autoload = false;
@@ -224,8 +227,7 @@ std::vector<int> g_pending_delete_subframe_indices;
 SDL_Texture  *g_load2_drift_tex = NULL;
 int           g_load2_drift_tex_w = 0;
 int           g_load2_drift_tex_h = 0;
-Document     *g_asm_anim_doc = NULL;
-int           g_asm_anim_doc_idx = -1;
+unsigned int  g_asm_anim_doc_uid = 0;
 bool          g_asm_lane_enabled = false;
 bool          g_asm_opp_enabled = false;
 bool          g_request_animation_sidebar = false;

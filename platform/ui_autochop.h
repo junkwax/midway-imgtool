@@ -15,6 +15,9 @@ int Load2BppForImage(const IMG *img);
 
 void DrawAutoChopDialog(void);
 void OpenAutoChopDialog(void);
+/* Open the dialog scoped to one sprite, for the image-list right-click menu:
+   picking a row there names a target, and the marked set must not override it. */
+void OpenAutoChopDialogForImage(int img_idx);
 void BuildAutoChopTargetSummary(AutoChopPreview *out);
 void AutoChopSetThreeBandSize(void);
 bool SelectedImageWillAutoChop(void);

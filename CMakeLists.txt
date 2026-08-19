@@ -106,6 +106,7 @@ set(IMGTOOL_SOURCES
     platform/ui_bodysplit.cpp
     platform/body_split.cpp
     platform/world_render.cpp
+    platform/bdd_bg.cpp
     platform/anipoint.cpp
     platform/anipoint_edit.cpp
     platform/anipoint_level.cpp
@@ -281,7 +282,7 @@ add_test(NAME world_blit COMMAND world_blit_test)
 # overlay split proceeds.
 foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_level
                   anipoint_mirror tbl_diff img_util body_split gif_trim dma_pack
-                  stamp_erase)
+                  stamp_erase bdd_bg document)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp

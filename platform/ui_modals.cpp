@@ -40,6 +40,7 @@
 #include "ui_palette.h"
 #include "ui_tools.h"
 #include "world_render.h"
+#include "bdd_bg.h"
 #include "anipoint.h"
 #include "anipoint_edit.h"
 #include "img_util.h"
@@ -108,6 +109,11 @@ static bool g_opacity_gradient_content_bounds = true;
 static bool g_opacity_gradient_trim = false;
 static int  g_opacity_gradient_seed = 17;
 static bool g_opacity_gradient_preview = true;
+/* Feather band in pixels, measured inward from the silhouette edge. Only used
+   by the Edge Feather direction, where everything deeper is left alone. */
+static int  g_opacity_gradient_edge_px = 5;
+/* 0 = hash noise (the original dissolve), 1 = 2x2 checker, 2 = 4x4 Bayer. */
+static int  g_opacity_gradient_dither = 0;
 
 static bool g_show_inner_stroke = false;
 static float g_inner_stroke_rgb[3] = { 0.52f, 0.25f, 0.84f };
@@ -173,6 +179,7 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::SaveAsmAnim:     return "asm";
         case FileDialogMode::LoadWorldProject:
         case FileDialogMode::SaveWorldProject:return "world";
+        case FileDialogMode::LoadWorldBdd:    return "bdd";
     }
     return "img";
 }
@@ -974,6 +981,7 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::SaveAsmAnim: return "ASM";
         case FileDialogMode::LoadWorldProject:
         case FileDialogMode::SaveWorldProject: return "WVP";
+        case FileDialogMode::LoadWorldBdd: return "BDD";
     }
     return "";
 }
@@ -1302,14 +1310,25 @@ void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::LoadAsmAnim) title = "Load Character ASM";
     else if (g_file_dialog_mode == FileDialogMode::SaveAsmAnim) title = "Save World View ASM";
     else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) title = "Load World View Project";
+    else if (g_file_dialog_mode == FileDialogMode::LoadWorldBdd) title = "Load Reference Background (BDD)";
     else if (g_file_dialog_mode == FileDialogMode::SaveWorldProject) title = "Save World View Project";
     else if (g_file_dialog_mode == FileDialogMode::ExportWorldPng) title = "Export World View PNG";
     else if (g_file_dialog_mode == FileDialogMode::ExportWorldPngSeq) title = "Export World View PNG Sequence";
 
     if (g_show_file_dialog) ImGui::OpenPopup(title);
-    
+
     ImGui::SetNextWindowSize(ImVec2(800, 520), ImGuiCond_Once);
-    if (ImGui::BeginPopupModal(title, &g_show_file_dialog, ImGuiWindowFlags_NoSavedSettings)) {
+    /* Same protection the Unsaved Changes modal has carried for a while, and
+       for the same reason: a modal captures input whether or not the user can
+       see it, so one that opens off-screen locks the app behind a dialog
+       nobody can find. Centre it on appearing, and if it somehow never draws
+       at all, let the watchdog hand the app back instead of wedging. */
+    CenterNextModal();
+    bool file_dialog_open = ImGui::BeginPopupModal(title, &g_show_file_dialog,
+                                                   ImGuiWindowFlags_NoSavedSettings);
+    if (file_dialog_open) ModalWatchdogClear();
+    else                  ModalWatchdog(g_show_file_dialog, "File Dialog");
+    if (file_dialog_open) {
         
         if (ImGui::InputText("Directory", g_file_dialog_dir, sizeof(g_file_dialog_dir))) {
             g_file_dialog_file[0] = '\0';
@@ -1595,6 +1614,7 @@ void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::LoadLbm ||
                                 g_file_dialog_mode == FileDialogMode::LoadTga ||
                                 g_file_dialog_mode == FileDialogMode::LoadWorldProject ||
+                                g_file_dialog_mode == FileDialogMode::LoadWorldBdd ||
                                 g_file_dialog_mode == FileDialogMode::LoadAsmAnim ||
                                 g_file_dialog_mode == FileDialogMode::CompareTbl ||
                                 g_file_dialog_mode == FileDialogMode::ImportPalette) ? "Open" : "Save";
@@ -1760,6 +1780,27 @@ void DrawFileDialog() {
                     g_last_world_project_path = full_path;
             } else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) {
                 LoadWorldProjectFile(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::LoadWorldBdd) {
+                BddBackground &bg = WorldBackground();
+                if (BddBgLoad(full_path.c_str(), &bg)) {
+                    /* Land on the plane the fighters stand on, so a stage opens
+                       showing usable art instead of an empty packing band. */
+                    int plane = BddBgPlayfieldModule(&bg);
+                    if (plane >= 0)
+                        WorldBgSnapToModule(g_world_state, bg, plane);
+                    else
+                        g_world_state.bg_x = g_world_state.bg_y = 0;
+                    g_world_state.bg_enabled = true;
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Loaded %s: %d objects, %d images, %d palettes.",
+                             bg.stage_name.c_str(), bg.object_count,
+                             bg.image_count, bg.palette_count);
+                } else {
+                    g_world_state.bg_enabled = false;
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Background: %s", bg.error.c_str());
+                }
+                g_restore_msg_timer = 5.0f;
             } else if (g_file_dialog_mode == FileDialogMode::WriteTbl) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".TBL";
@@ -1796,10 +1837,10 @@ void DrawFileDialog() {
                 }
                 if (g_openimg_for_opp) {
                     g_openimg_for_opp = false;
-                    g_asm_opp_doc = g_doc;
-                    g_asm_opp_doc_idx = document_active_index();
+                    g_asm_opp_doc_uid = document_uid(document_active_index());
                     if (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
-                        AsmResolveAnimAgainstDoc(g_asm_opp_anims[g_asm_opp_sel], g_asm_opp_doc);
+                        AsmResolveAnimAgainstDoc(g_asm_opp_anims[g_asm_opp_sel],
+                                                 document_from_uid(g_asm_opp_doc_uid));
                 }
             } else if (g_file_dialog_mode == FileDialogMode::LoadAsmAnim) {
                 if (g_asm_dialog_opponent) {
@@ -2354,7 +2395,7 @@ static std::string AsmSymKey(const std::string &sym)
    so a single animation only resolves fully when its pieces are looked up across
    all loaded documents. The active doc is inserted last so it wins name ties. */
 static void AsmBuildGlobalNameMap(
-        std::unordered_map<std::string, std::pair<Document*,int>> &m)
+        std::unordered_map<std::string, std::pair<unsigned int,int>> &m)
 {
     m.clear();
     int active = document_active_index();
@@ -2366,30 +2407,31 @@ static void AsmBuildGlobalNameMap(
             if ((pass == 1) != is_active) continue;
             Document *d = document_get(t);
             if (!d) continue;
+            unsigned int uid = document_uid(t);
             int idx = 0;
             for (IMG *img = (IMG *)d->img_p; img; img = (IMG *)img->nxt_p, idx++) {
                 std::string n = img_name_string(img);
                 for (char &c : n) c = (char)toupper((unsigned char)c);
-                if (!n.empty()) m[n] = std::make_pair(d, idx);
+                if (!n.empty()) m[n] = std::make_pair(uid, idx);
             }
         }
     }
 }
 
 /* Resolve every piece of an animation against all open documents, filling both
-   the doc-local index (piece_img) and the owning document (piece_doc). */
+   the doc-local index (piece_img) and the owning document (piece_doc_uid). */
 static void AsmResolveAnimGlobal(AsmAnim &a)
 {
-    std::unordered_map<std::string, std::pair<Document*,int>> m;
+    std::unordered_map<std::string, std::pair<unsigned int,int>> m;
     AsmBuildGlobalNameMap(m);
     a.missing = 0;
     for (auto &fr : a.frames) {
         fr.piece_img.assign(fr.piece_syms.size(), -1);
-        fr.piece_doc.assign(fr.piece_syms.size(), (Document*)NULL);
+        fr.piece_doc_uid.assign(fr.piece_syms.size(), 0u);
         for (size_t p = 0; p < fr.piece_syms.size(); p++) {
             auto it = m.find(AsmSymKey(fr.piece_syms[p]));
             if (it != m.end()) {
-                fr.piece_doc[p] = it->second.first;
+                fr.piece_doc_uid[p] = it->second.first;
                 fr.piece_img[p] = it->second.second;
             } else {
                 a.missing++;
@@ -2594,7 +2636,7 @@ static int AsmAutoOpenImgsForAnim(const AsmAnim &a, const char *asm_path)
 
     /* Drop symbols any already-open document provides. */
     {
-        std::unordered_map<std::string, std::pair<Document*,int>> m;
+        std::unordered_map<std::string, std::pair<unsigned int,int>> m;
         AsmBuildGlobalNameMap(m);
         for (auto it = need.begin(); it != need.end(); ) {
             if (m.count(it->first)) it = need.erase(it);
@@ -2703,8 +2745,7 @@ bool LoadAsmOpponent(const char *path)      /* fatality opponent */
         return false;
     }
     g_asm_opp_file = path;
-    g_asm_opp_doc = g_doc;
-    g_asm_opp_doc_idx = document_active_index();
+    g_asm_opp_doc_uid = document_uid(document_active_index());
     g_asm_opp_sel = g_asm_opp_anims.empty() ? -1 : 0;
     if (g_asm_opp_sel >= 0)
         AsmResolveAnimGlobal(g_asm_opp_anims[g_asm_opp_sel]);
@@ -2790,8 +2831,8 @@ void AsmAnimSelect(int i)
     ClearAsmAnimTexture();
     if (i < 0 || i >= (int)g_asm_anims.size()) return;
 
-    g_asm_anim_doc = g_doc;                         /* representative doc for lane fallback */
-    g_asm_anim_doc_idx = document_active_index();
+    /* representative doc for lane fallback */
+    g_asm_anim_doc_uid = document_uid(document_active_index());
 
     AsmAnim &a = g_asm_anims[i];
     AsmResolveAnimGlobal(a);                         /* resolve across all open IMGs */
@@ -2801,7 +2842,7 @@ void AsmAnimSelect(int i)
         for (size_t p = 0; p < fr.piece_syms.size(); p++) {
             int ri = fr.piece_img[p];
             if (ri < 0) continue;
-            IMG *img = doc_get_img(fr.piece_doc[p], ri);
+            IMG *img = doc_get_img(document_from_uid(fr.piece_doc_uid[p]), ri);
             if (!img) continue;
             int x0 = -(int)(short)img->anix + fr.dx, y0 = -(int)(short)img->aniy + fr.dy;
             int x1 = x0 + img->w, y1 = y0 + img->h;
@@ -2841,8 +2882,7 @@ void AsmProcessOppAutoload(void)
     if (g_asm_opp_sel < 0 || g_asm_opp_sel >= (int)g_asm_opp_anims.size()) return;
     AsmAutoOpenImgsForAnim(g_asm_opp_anims[g_asm_opp_sel], g_asm_opp_file.c_str());
     AsmResolveAnimGlobal(g_asm_opp_anims[g_asm_opp_sel]);
-    g_asm_opp_doc = g_doc;
-    g_asm_opp_doc_idx = document_active_index();
+    g_asm_opp_doc_uid = document_uid(document_active_index());
 
     int resolved = 0;
     for (auto &fr : g_asm_opp_anims[g_asm_opp_sel].frames)
@@ -2980,15 +3020,6 @@ static std::vector<int> WvpGetVec(
     return it == kv.end() ? std::vector<int>() : WvpParseInts(it->second);
 }
 
-static int WvpDocIndexForPointer(Document *doc)
-{
-    if (!doc) return -1;
-    for (int i = 0; i < document_tab_count(); i++)
-        if (document_get(i) == doc)
-            return i;
-    return -1;
-}
-
 static std::vector<int> WvpMarkedIndices(Document *doc)
 {
     std::vector<int> out;
@@ -3030,14 +3061,12 @@ static void WvpClearAsmState(void)
     g_asm_anims.clear();
     g_asm_anim_sel = -1;
     g_asm_anim_file.clear();
-    g_asm_anim_doc = NULL;
-    g_asm_anim_doc_idx = -1;
+    g_asm_anim_doc_uid = 0;
     g_asm_lane_enabled = false;
     g_asm_opp_anims.clear();
     g_asm_opp_sel = -1;
     g_asm_opp_file.clear();
-    g_asm_opp_doc = NULL;
-    g_asm_opp_doc_idx = -1;
+    g_asm_opp_doc_uid = 0;
     g_asm_opp_enabled = false;
     g_request_asm_autoload = false;
     g_request_asm_opp_autoload = false;
@@ -3094,9 +3123,7 @@ static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
                          int slot)
 {
     char key[128];
-    int doc_idx = state.sequence_doc_idx[slot];
-    if (doc_idx < 0)
-        doc_idx = WvpDocIndexForPointer(state.sequence_doc[slot]);
+    int doc_idx = WorldMarkedRowDocIndex(state, slot);
     std::string doc_path = DocFullPath(document_get(doc_idx));
 
     snprintf(key, sizeof(key), "slot.%d.visible", slot);
@@ -3181,8 +3208,7 @@ static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
     int saved_doc_idx = WvpGetInt(kv, prefix + "doc_idx", -1);
     std::string doc_path = WvpGetString(kv, prefix + "doc_path");
     int doc_idx = WvpResolveDocIndex(saved_doc_idx, doc_path, doc_map);
-    state.sequence_doc_idx[slot] = doc_idx;
-    state.sequence_doc[slot] = document_get(doc_idx);
+    WorldMarkedSetRowDoc(state, slot, doc_idx);
 
     state.sequence_frames[slot] = WvpGetVec(kv, prefix + "sequence_frames");
     state.default_frames[slot] = WvpGetVec(kv, prefix + "default_frames");
@@ -3525,8 +3551,9 @@ static void AsmAnimRefillTexture(void)
     for (size_t p = 0; p < fr.piece_img.size(); p++) {
         int ri = fr.piece_img[p];
         if (ri < 0) continue;
-        Document *pdoc = (p < fr.piece_doc.size() && fr.piece_doc[p]) ? fr.piece_doc[p]
-                                                                      : g_asm_anim_doc;
+        Document *pdoc = (p < fr.piece_doc_uid.size() && fr.piece_doc_uid[p])
+                       ? document_from_uid(fr.piece_doc_uid[p])
+                       : document_from_uid(g_asm_anim_doc_uid);
         IMG *img = doc_get_img(pdoc, ri);
         if (!img || !img->data_p) continue;
         PAL *pal = doc_get_pal(pdoc, img->palnum);
@@ -5306,8 +5333,52 @@ void DrawAutoChopDialog(void)
     if (g_show_auto_chop) ImGui::OpenPopup("Break into Subframes");
     if (!ImGui::BeginPopupModal("Break into Subframes", &g_show_auto_chop, ImGuiWindowFlags_AlwaysAutoResize)) return;
 
-    ImGui::TextWrapped("Breaks marked sprites, or the selected sprite if none are marked,\n"
-                       "into parent-aware subframes and recalculates ANIX/ANIY.");
+    ImGui::TextWrapped("Breaks sprites into parent-aware subframes and recalculates "
+                       "ANIX/ANIY.");
+    ImGui::Spacing();
+
+    /* What gets broken, stated plainly and changeable without reopening.
+       This dialog is reached two ways — from an image row (that sprite) or
+       from the menus (the marked set) — and once open the two were
+       indistinguishable, so a right-click meaning "this one" silently broke
+       whatever happened to be marked instead. */
+    {
+        int marked_count = CountMarkedImages();
+        if (g_autochop_only_img >= 0 && !get_img(g_autochop_only_img))
+            g_autochop_only_img = -1;      /* the named sprite is gone */
+
+        int one_idx = (g_autochop_only_img >= 0)
+                    ? g_autochop_only_img
+                    : (g_doc ? g_doc->ilselected : -1);
+        IMG *one_img = get_img(one_idx);
+
+        char one_label[96];
+        if (one_img) {
+            std::string n = img_name_string(one_img);
+            snprintf(one_label, sizeof(one_label), "This sprite: %s##chop_scope_one",
+                     n.c_str());
+        } else {
+            snprintf(one_label, sizeof(one_label), "This sprite (none)##chop_scope_one");
+        }
+        char marked_label[64];
+        snprintf(marked_label, sizeof(marked_label), "Marked sprites (%d)##chop_scope_marked",
+                 marked_count);
+
+        /* No marks means the selection is already the only possible target. */
+        bool scope_one = (g_autochop_only_img >= 0) || marked_count == 0;
+
+        ImGui::TextDisabled("Break:");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!one_img);
+        if (ImGui::RadioButton(one_label, scope_one) && one_img)
+            g_autochop_only_img = one_idx;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(marked_count == 0);
+        if (ImGui::RadioButton(marked_label, !scope_one && marked_count > 0))
+            g_autochop_only_img = -1;
+        ImGui::EndDisabled();
+    }
     ImGui::Spacing();
 
     AutoSplitTargetSummary horizontal_summary;
@@ -5385,7 +5456,8 @@ void DrawAutoChopDialog(void)
         if (best_horizontal || best_vertical)
             count = ApplyBestAutoSplitToTargets(best_vertical);
         else
-            count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim);
+            count = ChopMarkedImages(g_chop_w, g_chop_h, g_chop_trim,
+                                     g_autochop_only_img);
         if (count > 0) {
             snprintf(g_restore_msg, sizeof(g_restore_msg), "Broke into %d subframe piece(s).", count);
         } else {
@@ -6856,6 +6928,85 @@ static unsigned int OpacityGradientHash(int x, int y, unsigned char ci,
     return h;
 }
 
+/* Direction index of the edge-feather mode. It does not use OpacityGradientT:
+   its ramp runs inward from the silhouette rather than across a bounding box. */
+enum { kOpacityDirectionEdge = 6 };
+
+/* Ordered-dither threshold for this pixel, 0..99.
+
+   The noise dissolve scatters pixels, which reads as grain. A feather a few
+   pixels wide has too little room for grain to average out, so it looks like
+   damage rather than a fade. An ordered matrix gives a regular screen instead:
+   at 50% the 2x2 lands on exactly the alternating checkerboard, which is how
+   this era's art faked half transparency on hardware with no alpha. */
+static int OpacityGradientOrderedThreshold(int x, int y, int mode)
+{
+    static const int kBayer2[2][2] = { { 0, 2 },
+                                       { 3, 1 } };
+    static const int kBayer4[4][4] = { {  0,  8,  2, 10 },
+                                       { 12,  4, 14,  6 },
+                                       {  3, 11,  1,  9 },
+                                       { 15,  7, 13,  5 } };
+    /* Wrap negatives too: x/y are always >= 0 here, but the & keeps it total. */
+    if (mode == 1)
+        return (kBayer2[y & 1][x & 1] * 100 + 50) / 4;
+    return (kBayer4[y & 3][x & 3] * 100 + 50) / 16;
+}
+
+/* Chamfer distance from every opaque pixel to the nearest transparent one, in
+   pixels, so a feather can follow the silhouette instead of a bounding box.
+
+   Anything outside the image counts as transparent: sprites here are routinely
+   trimmed flush to their content, and a sprite whose art runs to the canvas
+   edge still has an edge there. Two passes with 1 / sqrt(2) weights — cheap,
+   and close enough to Euclidean that the band does not go boxy at corners. */
+static void OpacityGradientEdgeDistance(const IMG *img, std::vector<float> &dist)
+{
+    int w = (int)img->w;
+    int h = (int)img->h;
+    int stride = (w + 3) & ~3;
+    const unsigned char *pix = (const unsigned char *)img->data_p;
+    const float BIG = 1.0e9f;
+
+    dist.assign((size_t)w * (size_t)h, BIG);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            if (pix[(size_t)y * stride + x] == 0)
+                dist[(size_t)y * w + x] = 0.0f;
+
+    const float D1 = 1.0f;
+    const float D2 = 1.41421356f;
+    auto at = [&](int ax, int ay) -> float {
+        if (ax < 0 || ay < 0 || ax >= w || ay >= h) return 0.0f;  /* outside = edge */
+        return dist[(size_t)ay * w + ax];
+    };
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            float d = dist[(size_t)y * w + x];
+            if (d == 0.0f) continue;
+            float c;
+            c = at(x - 1, y    ) + D1; if (c < d) d = c;
+            c = at(x    , y - 1) + D1; if (c < d) d = c;
+            c = at(x - 1, y - 1) + D2; if (c < d) d = c;
+            c = at(x + 1, y - 1) + D2; if (c < d) d = c;
+            dist[(size_t)y * w + x] = d;
+        }
+    }
+    for (int y = h - 1; y >= 0; y--) {
+        for (int x = w - 1; x >= 0; x--) {
+            float d = dist[(size_t)y * w + x];
+            if (d == 0.0f) continue;
+            float c;
+            c = at(x + 1, y    ) + D1; if (c < d) d = c;
+            c = at(x    , y + 1) + D1; if (c < d) d = c;
+            c = at(x + 1, y + 1) + D2; if (c < d) d = c;
+            c = at(x - 1, y + 1) + D2; if (c < d) d = c;
+            dist[(size_t)y * w + x] = d;
+        }
+    }
+}
+
 static bool OpacityGradientOpaqueBounds(const IMG *img,
                                         int *min_x, int *min_y,
                                         int *max_x, int *max_y)
@@ -6953,21 +7104,52 @@ static int ApplyOpacityGradientOne(IMG *img, int image_idx, bool apply)
     int start = OpacityGradientClamp(g_opacity_gradient_start, 0, 100);
     int end = OpacityGradientClamp(g_opacity_gradient_end, 0, 100);
 
+    bool edge_mode = (g_opacity_gradient_direction == kOpacityDirectionEdge);
+    std::vector<float> edge_dist;
+    float band = (float)OpacityGradientClamp(g_opacity_gradient_edge_px, 1, 64);
+    if (edge_mode)
+        OpacityGradientEdgeDistance(img, edge_dist);
+
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             unsigned char *p = pix + (size_t)y * stride + x;
             unsigned char ci = *p;
             if (ci == 0) continue;
-            float t = OpacityGradientT(g_opacity_gradient_direction,
-                                       x, y, min_x, min_y, max_x, max_y);
-            int keep_pct = (int)floorf((float)start +
+
+            int keep_pct;
+            if (edge_mode) {
+                /* Depth 1 is the outermost opaque pixel. Past the band the
+                   sprite is left exactly as it was — "just the edge" has to
+                   mean that, or switching direction with a fade-out preset
+                   loaded would dissolve the whole interior. */
+                float d = edge_dist[(size_t)y * w + x];
+                if (d > band) continue;
+                float t = (band > 1.0f) ? (d - 1.0f) / (band - 1.0f) : 1.0f;
+                if (t < 0.0f) t = 0.0f;
+                if (t > 1.0f) t = 1.0f;
+                keep_pct = (int)floorf((float)start +
+                                       (100.0f - (float)start) * t + 0.5f);
+            } else {
+                float t = OpacityGradientT(g_opacity_gradient_direction,
+                                           x, y, min_x, min_y, max_x, max_y);
+                keep_pct = (int)floorf((float)start +
                                        ((float)end - (float)start) * t +
                                        0.5f);
+            }
             keep_pct = OpacityGradientClamp(keep_pct, 0, 100);
-            bool keep = keep_pct >= 100 ||
-                        (keep_pct > 0 &&
-                         (int)(OpacityGradientHash(x, y, ci, image_idx,
-                                                   g_opacity_gradient_seed) % 100u) < keep_pct);
+
+            bool keep;
+            if (keep_pct >= 100) {
+                keep = true;
+            } else if (keep_pct <= 0) {
+                keep = false;
+            } else if (g_opacity_gradient_dither == 0) {
+                keep = (int)(OpacityGradientHash(x, y, ci, image_idx,
+                                                 g_opacity_gradient_seed) % 100u) < keep_pct;
+            } else {
+                keep = OpacityGradientOrderedThreshold(x, y,
+                                                       g_opacity_gradient_dither) < keep_pct;
+            }
             if (!keep) {
                 changed++;
                 if (apply) *p = 0;
@@ -7400,32 +7582,66 @@ void DrawOpacityGradientDialog(void)
         "Top to Bottom",
         "Bottom to Top",
         "Center to Edge",
-        "Edge to Center"
+        "Edge to Center",
+        "Edge Feather (outline inward)"
     };
     ImGui::Combo("Direction", &g_opacity_gradient_direction,
                  directions, (int)(sizeof(directions) / sizeof(directions[0])));
 
-    ImGui::SetNextItemWidth(190.0f);
-    ImGui::SliderInt("Start opacity", &g_opacity_gradient_start, 0, 100, "%d%%");
-    ImGui::SetNextItemWidth(190.0f);
-    ImGui::SliderInt("End opacity", &g_opacity_gradient_end, 0, 100, "%d%%");
-    if (ImGui::SmallButton("Swap Start/End")) {
-        int t = g_opacity_gradient_start;
-        g_opacity_gradient_start = g_opacity_gradient_end;
-        g_opacity_gradient_end = t;
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Reset Fade Out")) {
-        g_opacity_gradient_start = 100;
-        g_opacity_gradient_end = 0;
+    bool edge_mode = (g_opacity_gradient_direction == kOpacityDirectionEdge);
+
+    if (edge_mode) {
+        ImGui::SetNextItemWidth(190.0f);
+        ImGui::SliderInt("Feather width", &g_opacity_gradient_edge_px, 1, 32, "%d px");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How far in from the sprite's outline the fade reaches.\n"
+                              "Distance follows the silhouette, not the bounding box,\n"
+                              "and the canvas edge counts as an outline too.");
+        ImGui::SetNextItemWidth(190.0f);
+        ImGui::SliderInt("Edge opacity", &g_opacity_gradient_start, 0, 100, "%d%%");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Opacity of the outermost pixel, ramping to solid at the\n"
+                              "full feather width. Everything deeper is left untouched.");
+    } else {
+        ImGui::SetNextItemWidth(190.0f);
+        ImGui::SliderInt("Start opacity", &g_opacity_gradient_start, 0, 100, "%d%%");
+        ImGui::SetNextItemWidth(190.0f);
+        ImGui::SliderInt("End opacity", &g_opacity_gradient_end, 0, 100, "%d%%");
+        if (ImGui::SmallButton("Swap Start/End")) {
+            int t = g_opacity_gradient_start;
+            g_opacity_gradient_start = g_opacity_gradient_end;
+            g_opacity_gradient_end = t;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset Fade Out")) {
+            g_opacity_gradient_start = 100;
+            g_opacity_gradient_end = 0;
+        }
     }
 
-    ImGui::Checkbox("Use opaque content bounds", &g_opacity_gradient_content_bounds);
+    /* IMG has no alpha, so every "opacity" here is really a screen of dropped
+       pixels. Which screen matters: noise reads as grain and needs room to
+       average out, which a few-pixel feather does not have. */
+    const char *dithers[] = { "Noise (dissolve)", "Checker (2x2)", "Bayer (4x4)" };
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::Combo("Pattern", &g_opacity_gradient_dither,
+                 dithers, (int)(sizeof(dithers) / sizeof(dithers[0])));
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Span the gradient over the non-transparent sprite bounds instead of the padded canvas.");
+        ImGui::SetTooltip("Noise scatters pixels randomly — good for wide dissolves.\n"
+                          "Checker is the classic alternating half-transparency and\n"
+                          "stays even over a narrow band. Bayer ramps more smoothly\n"
+                          "when the fade needs more than a couple of steps.");
+
+    if (!edge_mode) {
+        ImGui::Checkbox("Use opaque content bounds", &g_opacity_gradient_content_bounds);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Span the gradient over the non-transparent sprite bounds instead of the padded canvas.");
+    }
     ImGui::Checkbox("Trim transparent bounds after apply", &g_opacity_gradient_trim);
-    ImGui::SetNextItemWidth(120.0f);
-    ImGui::InputInt("Pattern seed", &g_opacity_gradient_seed, 1, 17);
+    if (g_opacity_gradient_dither == 0) {
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputInt("Pattern seed", &g_opacity_gradient_seed, 1, 17);
+    }
 
     bool can_marked = marked_count > 0;
     if (!can_marked && g_opacity_gradient_marked)
@@ -7709,7 +7925,14 @@ void ModalWatchdogClear(void)
 
 void ModalWatchdog(bool &flag, const char *name)
 {
-    if (!flag) { ModalWatchdogClear(); return; }
+    /* Only the modal currently being watched may clear the timer. Several
+       modals call this every frame with their flag down, and an unconditional
+       clear here let a closed one reset the count for the stuck one — the
+       watchdog then never reached its threshold and the app stayed wedged. */
+    if (!flag) {
+        if (s_modal_watch_name == name) ModalWatchdogClear();
+        return;
+    }
     if (s_modal_watch_name != name) {
         s_modal_watch_name = name;
         s_modal_watch_frames = 0;

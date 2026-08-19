@@ -103,7 +103,10 @@ void ClearAll(void);
 struct AsmAnimFrame {
     std::vector<std::string> piece_syms; /* sprite-piece symbols composing this frame */
     std::vector<int>         piece_img;  /* resolved IMG index per piece, -1 if missing */
-    std::vector<Document*>   piece_doc;  /* doc each piece resolved against (parallel) */
+    /* Owning document per piece, as a Document::uid rather than a Document*.
+       These outlive the frame that resolved them, and a tab close frees the
+       storage a cached pointer names — see Document::uid. 0 = unresolved. */
+    std::vector<unsigned int> piece_doc_uid;
     int  dx = 0, dy = 0;                 /* cumulative ani_adjustx/xy offset at this frame */
     bool mirror = false;                 /* ani_flip state at this frame */
     bool mirror_v = false;               /* ani_flip_v state at this frame */
@@ -120,8 +123,9 @@ extern bool g_openimg_for_asm;
 extern bool g_openimg_for_opp;
 extern std::vector<AsmAnim> g_asm_anims;
 extern int g_asm_anim_sel;
-extern Document *g_asm_opp_doc;
-extern int g_asm_opp_doc_idx;
+/* Document the opponent ASM was loaded against, by uid: the lane is rebuilt
+   every frame from this, so a raw pointer here dangles once its tab closes. */
+extern unsigned int g_asm_opp_doc_uid;
 extern int g_asm_opp_sel;
 extern std::vector<AsmAnim> g_asm_opp_anims;
 extern bool g_asm_dialog_opponent;
@@ -691,6 +695,12 @@ void FloodFill(IMG *img, int sx, int sy, unsigned char new_color);
 struct WorldMarkedSequenceState;
 extern WorldMarkedSequenceState &g_world_marked_state;
 extern bool g_world_marked_panel_docked;
+/* The stage composited behind the World View playfield, when one is loaded.
+   One per session rather than per document: it is a property of the view you
+   are aligning against, not of any IMG, and every document tab is judged
+   against the same stage. Placement lives in g_world_state (bg_x/bg_y). */
+struct BddBackground;
+extern BddBackground &g_world_bg;
 /* Sequence/Script workspace is its own canvas mode ("Anim"), not a World View
    overlay: SEQSCR records animate, get inspected, and get edited there so
    World View stays the marked-row alignment surface it was. */
@@ -809,6 +819,7 @@ extern bool g_request_save_world_project;
 extern bool g_request_save_world_png;
 extern bool g_request_save_world_png_seq;
 extern bool g_request_load_world_project;
+extern bool g_request_load_world_bg;
 extern bool g_request_load_asm;
 extern bool g_request_load_opp_asm;
 extern bool g_request_asm_autoload;
@@ -831,6 +842,10 @@ void StripMarkedImages(int max_transparent_neighbors, int specific_color = -1);
 void DitherReplaceMarkedImages(int specific_color);
 void OpenRenameMarkedImages(void);
 void OpenAutoChopDialog(void);
+void OpenAutoChopDialogForImage(int img_idx);
+/* Sprite the Auto-Chop dialog is scoped to, or -1 for "marked, else selected".
+   Set when the dialog is opened from a specific image row. */
+extern int g_autochop_only_img;
 void OpenBulkResizeDialog(void);
 void CopySelectionToNewImage(void);
 void CutSelectionToNewImage(void);
@@ -889,8 +904,8 @@ void AddNewBlankImage(int w = 32, int h = 32);
 extern SDL_Texture  *g_load2_drift_tex;
 extern int           g_load2_drift_tex_w;
 extern int           g_load2_drift_tex_h;
-extern Document     *g_asm_anim_doc;
-extern int           g_asm_anim_doc_idx;
+/* As g_asm_opp_doc_uid, for the player ASM. */
+extern unsigned int  g_asm_anim_doc_uid;
 extern bool          g_asm_lane_enabled;
 extern bool          g_asm_opp_enabled;
 extern bool          g_request_animation_sidebar;
