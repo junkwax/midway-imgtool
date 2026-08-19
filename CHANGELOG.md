@@ -8,10 +8,7 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
-## [Unreleased]
-
-<!-- Rename this header to the next `## [vX.Y.Z]` when cutting a release; the
-     workflow only extracts sections whose anchor matches the pushed tag. -->
+## [v3.26.1] — A chop grid that stays put
 
 ### Break into Subframes remembers the grid you set
 
@@ -29,6 +26,14 @@ Sizing also follows the sprite you actually right-clicked. The seed ran through
 context menu could size the grid from a different sprite and drag the selection
 over to it — the same override the context-menu entry point was added to
 prevent.
+
+### CI
+
+Both workflows now run actions on their Node 24 lines (`checkout` v7,
+`upload-artifact` v7, `action-gh-release` v3, `setup-python` v7), clearing the
+deprecation warning the runners printed on every job. Note that
+`upload-artifact@v5` is still Node 20 — v6 is the first of that line to move —
+so a single-major bump there would have kept the warning.
 
 ## [v3.26.0] — A real stage behind the animation, edges that feather, and dialogs you can always see
 
