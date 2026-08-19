@@ -29,6 +29,7 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         arch: [x64, Win32]
@@ -123,11 +124,35 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    # Without a bound, a stalled apt sits until the six-hour default and the
+    # release never finishes. Fail in minutes so a retry is cheap.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
       - name: Install SDL2
-        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+        # apt on the hosted runners intermittently stalls on a mirror -- the
+        # same command has passed on one runner and hung indefinitely on
+        # another within the same minute. Bound each call and retry rather
+        # than hoping for a good mirror. DEBIAN_FRONTEND keeps a debconf
+        # prompt from waiting on input nobody can supply.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -u
+          for attempt in 1 2 3; do
+            echo "::group::apt attempt $attempt"
+            if timeout 240 sudo -E apt-get update -o Acquire::Retries=3 &&
+               timeout 300 sudo -E apt-get install -y --no-install-recommends libsdl2-dev; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "apt attempt $attempt failed or timed out; retrying"
+            sleep 15
+          done
+          echo "apt failed three times -- see the grouped output above"
+          exit 1
 
       - name: Configure CMake
         run: cmake -B build
@@ -191,6 +216,7 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
