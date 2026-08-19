@@ -8,6 +8,28 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [Unreleased]
+
+<!-- Rename this header to the next `## [vX.Y.Z]` when cutting a release; the
+     workflow only extracts sections whose anchor matches the pushed tag. -->
+
+### Break into Subframes remembers the grid you set
+
+Opening the dialog rederived a three-band split from the sprite every time,
+which threw away the piece size just dialled in and forced Manual Grid back on
+top of a Best Cut choice. Chopping a run of sprites to one grid — the normal way
+this gets used — meant retyping the same two numbers for every sprite.
+
+Piece size and mode now persist for the session. The sprite seeds the grid only
+on the first open; **Auto 3 Subframes** rederives from the current sprite
+whenever you want it back, and says so in its tooltip.
+
+Sizing also follows the sprite you actually right-clicked. The seed ran through
+`AutoChopPrimaryTarget`, which prefers the marked set, so opening from a row's
+context menu could size the grid from a different sprite and drag the selection
+over to it — the same override the context-menu entry point was added to
+prevent.
+
 ## [v3.26.0] — A real stage behind the animation, edges that feather, and dialogs you can always see
 
 ### Opacity Gradient can feather just the edge, and screen it with a checker

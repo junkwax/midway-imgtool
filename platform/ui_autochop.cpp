@@ -97,29 +97,49 @@ static IMG *AutoChopPrimaryTarget(int *out_idx = NULL)
     return NULL;
 }
 
-void AutoChopSetThreeBandSize(void)
+/* Whether the grid has been sized at least once this session.
+
+   Piece size, and the mode alongside it, are remembered across opens. Chopping
+   a run of sprites to one grid is the normal way this gets used, and rederiving
+   a three-band split on every open threw away the number just dialled in — and
+   silently forced Manual Grid back on top of a Best Cut choice. The sprite only
+   seeds the grid the first time; "Auto 3 Subframes" rederives on demand. */
+static bool s_chop_size_seeded = false;
+
+static void AutoChopSizeFromImage(const IMG *img)
 {
-    int idx = -1;
-    IMG *img = AutoChopPrimaryTarget(&idx);
     if (!img || img->w == 0 || img->h == 0) return;
     g_chop_mode = AutoChopMode_ManualGrid;
     g_chop_w = (int)img->w;
     g_chop_h = ((int)img->h + 2) / 3;
     if (g_chop_h < 1) g_chop_h = 1;
+    s_chop_size_seeded = true;
+}
+
+void AutoChopSetThreeBandSize(void)
+{
+    int idx = -1;
+    IMG *img = AutoChopPrimaryTarget(&idx);
+    if (!img) return;
+    AutoChopSizeFromImage(img);
     if (idx >= 0) g_doc->ilselected = idx;
 }
 
 void OpenAutoChopDialog(void)
 {
-    AutoChopSetThreeBandSize();
     g_autochop_only_img = -1;   /* marked set, falling back to the selection */
+    if (!s_chop_size_seeded) AutoChopSetThreeBandSize();
     g_show_auto_chop = true;
 }
 
 void OpenAutoChopDialogForImage(int img_idx)
 {
-    AutoChopSetThreeBandSize();
     g_autochop_only_img = img_idx;
+    /* Seed from the sprite that was actually right-clicked. AutoChopPrimaryTarget
+       prefers whatever is marked, which would size the grid from a different
+       sprite and drag the selection over to it — the same override this entry
+       point exists to prevent. */
+    if (!s_chop_size_seeded) AutoChopSizeFromImage(get_img(img_idx));
     g_show_auto_chop = true;
 }
 

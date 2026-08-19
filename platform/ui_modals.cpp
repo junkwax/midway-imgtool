@@ -5404,6 +5404,10 @@ void DrawAutoChopDialog(void)
     if (g_chop_mode == AutoChopMode_ManualGrid) {
         ImGui::Spacing();
         if (ImGui::Button("Auto 3 Subframes", ImVec2(140, 0))) AutoChopSetThreeBandSize();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Resize the grid to three horizontal bands of this sprite.\n"
+                              "Piece size is otherwise kept from last time, so a run of\n"
+                              "sprites can be chopped to the same grid.");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(100);
         if (ImGui::InputInt("Piece Width", &g_chop_w)) { if (g_chop_w < 1) g_chop_w = 1; }
