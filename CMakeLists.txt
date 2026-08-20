@@ -119,6 +119,7 @@ set(IMGTOOL_SOURCES
     platform/image_ops.cpp
     platform/canvas_ops.cpp
     platform/stamp_erase.cpp
+    platform/subframe_align.cpp
     platform/ui_stamp_erase.cpp
     platform/gif_trim.cpp
     platform/palette_math.cpp
@@ -299,6 +300,23 @@ foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_lev
     endif()
     add_test(NAME ${pure_test} COMMAND ${pure_test}_test)
 endforeach()
+
+# subframe_align rides on stamp_erase's matcher, so it needs two sources and
+# cannot use the one-source foreach above.
+add_executable(subframe_align_test
+    test/subframe_align_test.cpp
+    platform/subframe_align.cpp
+    platform/stamp_erase.cpp
+)
+target_include_directories(subframe_align_test PRIVATE platform)
+target_link_libraries(subframe_align_test PRIVATE SDL2::SDL2)
+if(MSVC)
+    target_compile_options(subframe_align_test PRIVATE /W3)
+    target_compile_definitions(subframe_align_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+else()
+    target_compile_definitions(subframe_align_test PRIVATE SDL_MAIN_HANDLED)
+endif()
+add_test(NAME subframe_align COMMAND subframe_align_test)
 
 # image_ops depends on palette_math, so it links both modules.
 add_executable(image_ops_test

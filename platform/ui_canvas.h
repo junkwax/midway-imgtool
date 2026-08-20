@@ -490,7 +490,11 @@ struct WorldMarkedSequenceState {
         hold_end[kWorldDummyDecapSlot] = true;
     }
 
-    bool marked_play = false;
+    /* On by default. Marked rows are what World View is for, and the toggle
+       was an extra step between opening it and seeing the lane tools -- with
+       nothing marked the lane draw returns early anyway, so defaulting it on
+       costs nothing and skips the ritual. */
+    bool marked_play = true;
     float fps = kMk2TickHz;   /* ticks per second, i.e. real game speed */
     /* Ticks each frame holds when nothing else authored a timing for it. The
        tick rate is hardware and does not move; this is the number that does,

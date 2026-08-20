@@ -8,6 +8,95 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.28.0] — The parent frame is the authority
+
+### Subframes answer to their parent
+
+A chopped piece stores its position as `parent_anipoint - piece_offset`, and
+that difference is the *only* record of where it sits inside the parent —
+`img_io.cpp`'s Bulk Restore reads it back the same way to copy parent pixels
+into a child. Nothing ever re-checked it, so a parent that moved without its
+children left the composite silently split, and the pixel mapping wrong with it.
+
+- **Moving a parent carries its pieces.** World View's bind, its sprite drag,
+  and both "Inherit … from World View" bakes now apply the parent's delta to
+  its direct subframes, so `parent - child` never changes. Deliberately
+  narrower than the sequence-wide propagation on the canvas drag, which matches
+  on the numbered stem and sweeps in every sibling frame too.
+- **Recalculate Subframes from Parent.** A new button in the Sprite tab locates
+  each piece's pixels inside the parent's own bitmap and sets its anipoint to
+  `parent - found_offset`. The art is the authority, not the stored number.
+  Selecting a piece retargets to its parent, so the sprite the audit names is
+  the one you can act on. Already-correct pieces score their stored offset
+  first and are left untouched, so it is idempotent and cheap to run.
+- **`--check-subframes <input.img>`** audits every parent/piece pair headlessly,
+  changes nothing, and exits 1 if any stored anipoint disagrees with where the
+  pixels are — so a build can gate on it. Across the stock UGMO library it
+  finds three: `UGSPARK1A`, `UGWALKLEG9A`, `UGWALKLEG9B`.
+- New `platform/subframe_align.{h,cpp}`, built on `stamp_erase`'s matcher
+  rather than a second one, with its own unit suite.
+
+### World View works with one marked row
+
+- **A single marked tab is enough.** The panel used to return early unless a
+  second row or an ASM lane existed, which hid split, per-frame timing, motion,
+  visibility, mirroring and the ASM export behind marking a throwaway tab.
+  Everything it carries is per-row work; the second row was never needed.
+- **Marked row playback is on by default.** Nothing ever set it false but the
+  declaration, and with nothing marked the lane draw returns early anyway.
+- **Slot 1 owns the keys and tools** until another row is clicked. The old
+  fallback chose whichever row held the editor's selected sprite, so the tools
+  drifted as you clicked around the image list — and before the first keypress
+  no row was marked at all. The same pass re-homes the keys when the active row
+  stops being displayed.
+- **Subframes no longer appear as lanes.** A marked piece is previewed as its
+  parent, whose bitmap already holds the whole drawing. Pieces whose parent is
+  not in the file are left alone, so an orphaned chop stays previewable.
+
+### Fixes
+
+- **World View's bind wrote into a document it never marked dirty.** Lanes can
+  be fed from any open file, but the write called `mark_dirty()`, which only
+  ever flags the active document. Linking a piece from another tab left that
+  document clean — no asterisk, no save, and no close prompt, since the prompt
+  gates on the dirty flag. The edit was simply lost.
+- **Bind could grab the wrong sprite.** Its hit-test resolved every piece of a
+  composite against `frame_docs[]`, which records only the *first* piece's
+  document, so a frame whose pieces span files looked up later pieces by index
+  in the wrong image list. It now resolves per piece, as the draw path does.
+- **Bind and the World View bakes are undoable.** They were the only anipoint
+  writes in the tool that went straight through.
+- **The "bad Y anchor" badge called ordinary art corrupt.** It flagged every
+  negative `aniy` — but art is placed at `anchor - aniy`, so a negative value
+  is simply art hanging below its anchor. 79 of the 100 frames in `UGMO8.IMG`
+  carry one, the idle stance among them. It also tested `0xFFFF`, which is
+  `aniy == -1`, twice over. Now judged on magnitude: a word that cannot be an
+  anipoint at all.
+- **…and it never displayed.** `WorldBoundaryClassify` opened with
+  `(void)bad_y_anchor`. The flag was computed at two sites and discarded; the
+  stub and the feature landed in the same commit, so the badge advertised in
+  v3.14.0 has never once reflected it. Now wired.
+- **The Sprite tab could blank the whole panel.** An `ImGui::BeginDisabled`
+  without its `EndDisabled` left the disabled stack one deep, and ImGui unwinds
+  the window instead of finishing the draw. Selecting a subframe made it
+  obvious. All UI translation units swept for the same imbalance.
+
+### Opacity Gradient
+
+- **Limit fade depth.** Directional and radial ramps ran their full
+  start..end range across the whole sprite, so a fade from the top thinned
+  pixels all the way to the far side and an edge-to-center fade reached the
+  middle. Capped, the ramp completes within the first N pixels and everything
+  deeper is left exactly as it was.
+
+### Title bar
+
+- **The full path, not just the filename.** Two `UGMO8.IMG` tabs from different
+  folders were indistinguishable, which is exactly when editing or saving the
+  wrong one costs most. The path is measured against what is left of the menu
+  bar and sheds whole leading folders with an ellipsis when it does not fit;
+  the filename always survives. Hovering shows the untruncated path.
+
 ## [v3.27.0] — Every reaction an opponent has, and where its anipoints sit
 
 ### React: a tab for the animations that happen TO a fighter

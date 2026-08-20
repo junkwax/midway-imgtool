@@ -637,6 +637,65 @@ static void DrawTblCompareDialog(void)
     ImGui::EndPopup();
 }
 
+/* Directory of `doc` with any trailing separator removed, so "C:\data" and
+   "C:\data\\" compare equal. */
+static std::string DocDirKey(const Document *doc)
+{
+    if (!doc) return std::string();
+    std::string dir(doc->fpath_s);
+    while (!dir.empty() && (dir[dir.size() - 1] == '\\' || dir[dir.size() - 1] == '/'))
+        dir.erase(dir.size() - 1);
+    return dir;
+}
+
+/* Full "dir\file" path, or just the filename when the document has no dir. */
+static std::string DocFullPathLabel(const Document *doc)
+{
+    if (!doc || doc->fname_s[0] == '\0') return std::string();
+    std::string dir = DocDirKey(doc);
+    if (dir.empty()) return std::string(doc->fname_s);
+#ifdef _WIN32
+    return dir + "\\" + doc->fname_s;
+#else
+    return dir + "/" + doc->fname_s;
+#endif
+}
+
+/* What the title bar shows: the whole path. A bare filename cannot tell you
+   which UGMO8.IMG you are editing, and that matters most exactly when it is
+   easiest to get wrong -- two copies of a file open from different folders. */
+static std::string DocTitleName(const Document *doc)
+{
+    if (!doc || doc->fname_s[0] == '\0') return std::string("(unsaved)");
+    return DocFullPathLabel(doc);
+}
+
+/* Fit `prefix + path` into `max_w` by dropping whole leading directories and
+   marking the cut with an ellipsis, so a path too long for the menu bar
+   degrades to its last few folders rather than overflowing or being clipped
+   mid-word. Whole components only -- half a folder name is just noise -- and
+   the filename survives even when nothing else fits. */
+static std::string ElidePathLabel(const std::string &prefix,
+                                  const std::string &path, float max_w)
+{
+    std::string full = prefix + path;
+    if (max_w <= 0.0f || ImGui::CalcTextSize(full.c_str()).x <= max_w)
+        return full;
+
+    std::string best = full;
+    size_t pos = 0;
+    for (;;) {
+        size_t next = path.find_first_of("\\/", pos);
+        if (next == std::string::npos) break;
+        pos = next + 1;
+        if (pos >= path.size()) break;
+        best = prefix + "..." + path.substr(pos);
+        if (ImGui::CalcTextSize(best.c_str()).x <= max_w)
+            break;
+    }
+    return best;
+}
+
 void DrawMainLayout(void)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -1667,11 +1726,6 @@ void DrawMainLayout(void)
            reminder that there are unsaved changes — without this, the only
            "this file is modified" signal is the quit-time confirmation. */
         {
-            const char *name = (g_doc->fname_s[0] != '\0') ? g_doc->fname_s : "(unsaved)";
-            char label[128];
-            snprintf(label, sizeof(label), "%s%s",
-                     g_dirty ? "* " : "  ",     /* ASCII asterisk — universal 'modified' convention */
-                     name);
             /* Canvas zoom rides just left of the filename. It used to be
                drawn at the canvas window's own top-left corner, which stacked
                a dim grey percentage on top of the "Image" view tab — neither
@@ -1684,10 +1738,19 @@ void DrawMainLayout(void)
             if (image_canvas && !g_zoom_fit && g_doc->ilselected >= 0)
                 snprintf(zoom_label, sizeof(zoom_label), "%.0f%%", g_zoom * 100.0f);
 
-            float text_w = ImGui::CalcTextSize(label).x + 16.0f;
             float zoom_w = zoom_label[0]
                          ? ImGui::CalcTextSize(zoom_label).x + 16.0f : 0.0f;
             float avail_w = ImGui::GetContentRegionAvail().x;
+
+            /* ASCII asterisk — universal 'modified' convention. The path is
+               measured against what is actually left of the menu bar, so it
+               shows in full when it fits and sheds leading folders when it
+               does not. std::string rather than a fixed buffer: fpath_s alone
+               is 1024 bytes. */
+            std::string label = ElidePathLabel(g_dirty ? "* " : "  ",
+                                               DocTitleName(g_doc),
+                                               avail_w - zoom_w - 16.0f);
+            float text_w = ImGui::CalcTextSize(label.c_str()).x + 16.0f;
             if (avail_w > text_w + zoom_w)
                 ImGui::SameLine(ImGui::GetCursorPosX() + (avail_w - text_w - zoom_w));
             if (zoom_label[0]) {
@@ -1699,10 +1762,16 @@ void DrawMainLayout(void)
                 ImGui::SameLine(0.0f, 16.0f);
             }
             if (g_dirty) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.2f, 1.0f));
-            ImGui::TextUnformatted(label);
+            ImGui::TextUnformatted(label.c_str());
             if (g_dirty) ImGui::PopStyleColor();
-            if (g_dirty && ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Unsaved changes — Ctrl+S to save");
+            if (ImGui::IsItemHovered()) {
+                /* The path is worth showing on hover even when it is not
+                   ambiguous — it answers "which file is this" without a trip
+                   through the File menu. */
+                std::string tip = DocFullPathLabel(g_doc);
+                if (tip.empty()) tip = "Not saved to a file yet";
+                if (g_dirty) tip += "\n\nUnsaved changes — Ctrl+S to save";
+                ImGui::SetTooltip("%s", tip.c_str());
             }
         }
         ImGui::PopStyleVar(2);
@@ -2643,6 +2712,70 @@ void DrawMainLayout(void)
                     ImGui::SetTooltip("Clears X2/Y2/AZ2. AZ2 becomes -1.");
                 if (!had_second_point) ImGui::EndDisabled();
 
+                /* The pieces of a chop hold their position as
+                   parent - offset, and nothing re-checks that against the
+                   art. This puts the art back in charge. */
+                {
+                    /* Recalculating is a parent-level operation, but the thing
+                       you have selected is usually the piece -- the audit and
+                       the image list both name it. Making you go hunt for the
+                       parent first is friction for nothing, so a selected
+                       subframe retargets to its parent and gets fixed along
+                       with its siblings. */
+                    IMG *recalc_img = img;
+                    IMG *owner = find_subframe_parent(g_doc, img);
+                    if (owner) recalc_img = owner;
+                    int kids = count_subframes(g_doc, recalc_img);
+                    std::string recalc_name =
+                        trim_sprite_name(img_name_string(recalc_img));
+
+                    ImGui::BeginDisabled(kids <= 0);
+                    if (ImGui::Button(owner ? "Recalculate This Piece from Parent"
+                                            : "Recalculate Subframes from Parent",
+                                      ImVec2(-1, 0))) {
+                        SubframeRecalcReport r =
+                            recalc_subframe_anipoints_from_parent(g_doc, recalc_img);
+                        if (r.changed > 0)
+                            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                     "Re-anchored %d of %d subframe%s from %s "
+                                     "(%d exact, %d approximate).",
+                                     r.changed, r.considered,
+                                     r.considered == 1 ? "" : "s",
+                                     recalc_name.c_str(),
+                                     r.exact, r.approximate);
+                        else if (r.considered > 0)
+                            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                     "All %d subframe%s already sit where %s "
+                                     "says.", r.considered,
+                                     r.considered == 1 ? "" : "s",
+                                     recalc_name.c_str());
+                        else
+                            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                     "This sprite has no subframes.");
+                        g_restore_msg_timer = 5.0f;
+                    }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                        if (kids <= 0)
+                            ImGui::SetTooltip("This sprite has no subframes, and\n"
+                                              "is not a piece of anything in this\n"
+                                              "file. Chop it first.");
+                        else if (owner)
+                            ImGui::SetTooltip("This is a piece of %s. Re-anchor\n"
+                                              "that frame's %d piece%s from where\n"
+                                              "their art really sits inside it.",
+                                              recalc_name.c_str(), kids,
+                                              kids == 1 ? "" : "s");
+                        else
+                            ImGui::SetTooltip("Find each of the %d subframe's\n"
+                                              "pixels inside this sprite's own\n"
+                                              "bitmap and set its anipoint to\n"
+                                              "parent - offset. A piece already in\n"
+                                              "the right place is left alone.",
+                                              kids);
+                    }
+                    ImGui::EndDisabled();
+                }
+
                 /* World View placement is preview state until it is baked:
                    dragging a frame there writes a local dX/dY that never
                    reaches the file. These fold it into the sprite's own
@@ -2657,6 +2790,10 @@ void DrawMainLayout(void)
 
                     ImGui::BeginDisabled(!in_world);
                     if (ImGui::Button("Inherit Position from World View", ImVec2(-1, 0))) {
+                        /* Baking rewrites anipoints in place. Snapshot first so
+                           a bake that lands the wrong way is one Ctrl+Z, not a
+                           hand-typed restore. */
+                        doc_undo_push();
                         int conflicts = 0;
                         int changed = WorldMarkedBakeEntryOffsets(wstate, wslot,
                                                                   wentry, &conflicts);
@@ -2677,6 +2814,7 @@ void DrawMainLayout(void)
                             wslot + 1, wentry + 1);
 
                     if (ImGui::Button("Inherit All from World View Slot", ImVec2(-1, 0))) {
+                        doc_undo_push();
                         int conflicts = 0;
                         int changed = WorldMarkedBakeEntryOffsets(wstate, wslot,
                                                                   -1, &conflicts);

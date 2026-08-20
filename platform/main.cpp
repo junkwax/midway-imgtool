@@ -23,7 +23,11 @@
 #include "img_format.h"
 #include "load2_verify.h"
 #include "lod_parser.h"
+#include "anipoint.h"        /* InferSubframeParentName */
+#include "img_util.h"        /* img_name_string */
+#include "subframe_align.h"  /* subframe_align_from_parent */
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 #include <cerrno>
 
@@ -53,6 +57,7 @@ static bool is_headless_command(const char *arg)
          std::strcmp(arg, "--compare-tbl") == 0 ||
          std::strcmp(arg, "--export-irw") == 0 ||
          std::strcmp(arg, "--export-png") == 0 ||
+         std::strcmp(arg, "--check-subframes") == 0 ||
          std::strcmp(arg, "--build-tga") == 0 ||
          std::strcmp(arg, "--debug-spritesheet") == 0 ||
          std::strcmp(arg, "--build-lod") == 0 ||
@@ -80,9 +85,14 @@ static void print_cli_help(FILE *out, const char *exe)
         "  %s --compare-tbl <input.img> <existing.tbl>\n"
         "  %s --export-irw <input.img> <output.irw> [options]\n"
         "  %s --export-png <input.img> <output_dir>\n"
+        "  %s --check-subframes <input.img>\n"
         "  %s --build-tga <input.img> <output.tga>\n"
         "  %s --debug-spritesheet <sheet.png|jpg|tga> <output_dir> [options]\n"
         "  %s --build-lod <manifest.lod> <output.img> [--override-dir=DIR]\n"
+        "\n"
+        "check-subframes writes nothing. It locates every subframe's art inside\n"
+        "its parent and exits 1 if a stored anipoint disagrees with where the\n"
+        "pixels actually are.\n"
         "\n"
         "Compare exits 1 when the table and the IMG disagree, so a build can\n"
         "gate on it. SAG is never compared: LOAD2 assigns ROM addresses, the\n"
@@ -114,9 +124,9 @@ static void print_cli_help(FILE *out, const char *exe)
         "Exit status: 0 on success; non-zero on invalid args, failed loads,\n"
         "or LOAD2 breaking issues.\n",
 #ifdef IMGTOOL_CLI_ONLY
-        exe, exe, exe, exe, exe, exe, exe, exe, exe);
-#else
         exe, exe, exe, exe, exe, exe, exe, exe, exe, exe);
+#else
+        exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe);
 #endif
 }
 
@@ -327,6 +337,86 @@ static int run_headless_cli(int argc, char *argv[]) {
         }
         std::printf("  No issues found.\n");
         return 0;
+    }
+
+    if (std::strcmp(cmd, "--check-subframes") == 0) {
+        if (argc < 3) {
+            std::fprintf(stderr, "Error: --check-subframes requires <input.img>\n");
+            return 2;
+        }
+        const char *input_img = argv[2];
+        if (argc > 3) {
+            std::fprintf(stderr, "Error: unknown --check-subframes option: %s\n",
+                         argv[3]);
+            return 2;
+        }
+        if (!headless_load_img(input_img)) return 1;
+
+        /* Read-only audit. Each subframe is located inside its parent by its
+           own pixels, and the stored anipoint is compared against the offset
+           that placement implies. Nothing is written back. */
+        struct Row { IMG *img; std::string name; };
+        std::vector<Row> all;
+        for (IMG *rec = (IMG *)g_doc->img_p; rec; rec = (IMG *)rec->nxt_p) {
+            Row r; r.img = rec; r.name = trim_sprite_name(img_name_string(rec));
+            all.push_back(r);
+        }
+
+        int pairs = 0, drifted = 0, unplaced = 0, orphans = 0, approx = 0;
+        for (size_t i = 0; i < all.size(); i++) {
+            std::string owner = InferSubframeParentName(all[i].name.c_str());
+            if (owner.empty()) continue;
+
+            const Row *parent = NULL;
+            for (size_t j = 0; j < all.size(); j++)
+                if (ascii_iequals(all[j].name, owner)) { parent = &all[j]; break; }
+            if (!parent) { orphans++; continue; }
+            if (!parent->img->data_p || !all[i].img->data_p) { unplaced++; continue; }
+
+            pairs++;
+            StampBuf pbuf;
+            pbuf.pixels = (const unsigned char *)parent->img->data_p;
+            pbuf.w = (int)parent->img->w; pbuf.h = (int)parent->img->h;
+            pbuf.stride = ((int)parent->img->w + 3) & ~3;
+
+            StampBuf cbuf;
+            cbuf.pixels = (const unsigned char *)all[i].img->data_p;
+            cbuf.w = (int)all[i].img->w; cbuf.h = (int)all[i].img->h;
+            cbuf.stride = ((int)all[i].img->w + 3) & ~3;
+
+            int pax = (int)(short)parent->img->anix;
+            int pay = (int)(short)parent->img->aniy;
+            int cax = (int)(short)all[i].img->anix;
+            int cay = (int)(short)all[i].img->aniy;
+
+            SubframeAlign a = subframe_align_from_parent(pbuf, pax, pay,
+                                                         cbuf, cax, cay);
+            if (!a.valid) {
+                unplaced++;
+                std::printf("  UNPLACED %-15s in %-15s (no opaque pixels)\n",
+                            all[i].name.c_str(), parent->name.c_str());
+                continue;
+            }
+            if (!a.exact) approx++;
+            if (a.new_anix != cax || a.new_aniy != cay) {
+                drifted++;
+                int claim_x = 0, claim_y = 0;
+                subframe_claimed_offset(pax, pay, cax, cay, &claim_x, &claim_y);
+                std::printf("  DRIFT    %-15s in %-15s  anipoint says (%d,%d), "
+                            "art is at (%d,%d)  match %.0f%%  -> anix %d aniy %d\n",
+                            all[i].name.c_str(), parent->name.c_str(),
+                            claim_x, claim_y, a.off_x, a.off_y,
+                            subframe_align_score(a) * 100.0f,
+                            a.new_anix, a.new_aniy);
+            }
+        }
+
+        std::printf("%s: %d parent/subframe pair%s checked, %d drifted, "
+                    "%d partial match%s, %d unplaced, %d orphan%s\n",
+                    input_img, pairs, pairs == 1 ? "" : "s", drifted,
+                    approx, approx == 1 ? "" : "es", unplaced,
+                    orphans, orphans == 1 ? "" : "s");
+        return drifted > 0 ? 1 : 0;
     }
 
     if (std::strcmp(cmd, "--debug-spritesheet") == 0) {

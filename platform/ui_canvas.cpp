@@ -41,6 +41,30 @@ static int s_world_onion_idx = -1;
 static const int kWorldFrameMirrorX = 1;
 static const int kWorldFrameMirrorY = 2;
 
+/* Magnitude past which a Y anipoint cannot be describing a 512x254 playfield
+   and is therefore a corrupt word rather than an aggressive placement. */
+static const int kWorldAnipointSaneLimit = 0x4000;
+
+/* A Y anchor worth warning about.
+
+   Deliberately NOT "aniy is negative". The renderer places art at
+   anchor - aniy, so a negative aniy is simply art that hangs *below* its
+   anchor, and stock Midway art leans on that constantly -- 79 of the 100
+   frames in UGMO8.IMG carry a negative aniy, UGSTANCE1 (the idle stance)
+   among them. The original check flagged every one of those, plus -1 a
+   second time via the 0xFFFF test. What is genuinely broken is a word that
+   cannot be an anipoint at all. */
+static bool WorldBadYAnchor(const IMG *img, int effective_ay)
+{
+    if (!img) return false;
+    /* Kept from the original check. 0x4000 appears nowhere else in this
+       codebase's format handling, so treat it as a suspicious literal rather
+       than claim it is a documented sentinel. */
+    if ((int)img->aniy == 0x4000) return true;
+    return effective_ay <= -kWorldAnipointSaneLimit ||
+           effective_ay >= kWorldAnipointSaneLimit;
+}
+
 static int  g_selection_add_mask_w = 0;
 static int  g_selection_add_mask_h = 0;
 static std::vector<bool> g_selection_add_mask;
@@ -1844,14 +1868,57 @@ bool WorldAssignSelectedDummyDecap(WorldMarkedSequenceState &state,
     return true;
 }
 
+/* Index of the drawable sprite named `name` in `doc`, or -1. */
+static int WorldFindFrameByName(Document *doc, const std::string &name)
+{
+    if (!doc || name.empty()) return -1;
+    int idx = 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+        if (ascii_iequals(trim_sprite_name(img_name_string(img)), name))
+            return idx;
+    }
+    return -1;
+}
+
+/* World View shows parent frames, never subframes.
+
+   A chopped piece is authored through its parent: on the Image tab you pick
+   the parent and reach its pieces from there. The parent's own bitmap already
+   holds the whole drawing, and the two draw identically -- a child's anchor is
+   parent - piece_offset and its art sits at that same offset inside the parent
+   (the relation img_io.cpp's Bulk Restore depends on) -- so a marked piece is
+   previewed here as its parent. That also keeps World View's editing gestures
+   pointed at the frame that owns the placement, so a move propagates to the
+   pieces instead of splitting the composite.
+
+   A piece whose parent is not in this file has nothing to stand in for it and
+   is left alone, so an orphaned chop stays previewable. */
+static int WorldResolveMarkedFrame(Document *doc, int idx)
+{
+    IMG *img = doc_get_img(doc, idx);
+    if (!img) return idx;
+    std::string parent = InferSubframeParentName(img_name_string(img).c_str());
+    if (parent.empty()) return idx;
+    int parent_idx = WorldFindFrameByName(doc, parent);
+    return parent_idx >= 0 ? parent_idx : idx;
+}
+
 void WorldCollectMarkedFrames(Document *doc, std::vector<int> &out)
 {
     out.clear();
     if (!doc) return;
     int idx = 0;
     for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
-        if ((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0)
-            out.push_back(idx);
+        if (!((img->flags & 1) && img->data_p && img->w > 0 && img->h > 0))
+            continue;
+        int frame = WorldResolveMarkedFrame(doc, idx);
+        /* Marking a parent and two of its pieces still has to yield one frame,
+           and so does marking three pieces of the same parent. */
+        bool dup = false;
+        for (size_t i = 0; i < out.size(); i++)
+            if (out[i] == frame) { dup = true; break; }
+        if (!dup) out.push_back(frame);
     }
 }
 
@@ -2922,16 +2989,22 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
     WorldAppendMarkedDocumentLanes(state, active_doc_idx, lanes,
                                    &dummy_decap_missing);
 
-    bool asm_present = false;
     for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
         if (!input.enabled) continue;
-        if (WorldAppendAsmLane(state, input.name, input.frames, input.doc,
-                               input.doc_idx, input.slot_id, lanes))
-            asm_present = true;
+        WorldAppendAsmLane(state, input.name, input.frames, input.doc,
+                           input.doc_idx, input.slot_id, lanes);
     }
 
+    /* One marked row is enough.
+
+       This used to require a second row (or an ASM lane) before it would draw
+       anything, on the assumption that the panel exists to play two animations
+       against each other. But everything the panel carries -- splitting a lane,
+       per-frame delays and offsets, motion, visibility, mirroring, the ASM
+       export -- is per-row work that is just as necessary when staging a single
+       move. Requiring a second row meant marking a throwaway tab to unlock the
+       tools for the row you actually cared about. */
     if (lanes.empty()) return result;
-    if (lanes.size() < 2 && !asm_present) return result;
     if (!WorldUpdateMarkedLanePlayback(state, lanes, delta_time))
         return result;
 
@@ -3304,9 +3377,7 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
 
             int ax = (int)(short)img->anix + local_dx;
             int ay = (int)(short)img->aniy + local_dy;
-            int raw_aniy = (int)img->aniy;
-            if ((short)img->aniy < 0 || raw_aniy == 0x4000 ||
-                raw_aniy == 0xFFFF || ay < 0 || ay >= 0x4000)
+            if (WorldBadYAnchor(img, ay))
                 *bad_y_anchor = true;
             float spw = img->w * layout.scale;
             float sph = img->h * layout.scale;
@@ -3465,7 +3536,12 @@ static WorldBoundaryRect WorldBoundaryRectFromScreen(ImVec2 rect_min,
 static WorldBoundaryClass WorldBoundaryClassify(const WorldBoundaryRect &r,
                                                 bool bad_y_anchor)
 {
-    (void)bad_y_anchor;
+    /* v3.14.0 shipped this as "lanes and dual instances flag a bad Y anchor",
+       but the parameter arrived stubbed out with (void) and stayed that way,
+       so the badge has never once reflected it. An anipoint word that cannot
+       be an anipoint outranks art merely hanging off the playfield edge. */
+    if (bad_y_anchor)
+        return WorldBoundary_Red;
 
     if (r.top < 0 || r.bottom > 253 || r.right > 511)
         return WorldBoundary_Red;
@@ -4914,6 +4990,26 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
         result.header =
             WorldDrawMarkedPanelHeader(state, lanes, dummy_decap_missing,
                                        selected_img, active_doc_idx);
+
+        /* Slot 1 owns the keys and the per-frame tools until a row is clicked.
+
+           The old fallback chose whichever row happened to contain the
+           editor's selected sprite, resolved lazily on the first Left/Right.
+           That moves as you click around the image list, so the tools drifted
+           off the row you were actually animating -- and until you pressed a
+           key, no row was marked at all. The same pass re-homes the keys when
+           the active row stops being displayed, which otherwise left [KEYS]
+           pointing at a lane that was no longer there. */
+        if (!lanes.empty()) {
+            int active = state.active_slot;
+            bool usable = active >= 0 && active < kWorldMarkedMaxTabs &&
+                          !state.sequence_frames[active].empty();
+            bool displayed = false;
+            for (size_t i = 0; i < lanes.size() && !displayed; i++)
+                if (lanes[i].delay_slot == active) displayed = true;
+            if (!usable || !displayed)
+                state.active_slot = lanes[0].delay_slot;
+        }
 
         for (int slot = 0; slot < (int)lanes.size(); slot++) {
             WorldMarkedLane &lane = lanes[slot];
@@ -6370,7 +6466,12 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
     /* Link mode is deliberately separate from ordinary lane dragging. It
        operates on the actual individual pieces of a composite frame, rather
        than the lane's union rectangle. */
-    struct AnchorHit { IMG *img = NULL; bool mirror = false; };
+    struct AnchorHit {
+        IMG *img = NULL;
+        Document *doc = NULL;   /* the document that actually owns img */
+        int idx = -1;           /* its index within that document */
+        bool mirror = false;
+    };
     auto piece_at = [&](ImVec2 p) -> AnchorHit {
         AnchorHit hit;
         if (!over_canvas || over_panel) return hit;
@@ -6386,13 +6487,24 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                 fi < (int)lane.frame_pieces.size() ? &lane.frame_pieces[fi] : NULL;
             std::vector<int> fallback;
             if (!pieces || pieces->empty()) { fallback.push_back(lane.frames[fi]); pieces = &fallback; }
+            const std::vector<Document*> *piece_docs =
+                fi < (int)lane.frame_piece_docs.size() ? &lane.frame_piece_docs[fi]
+                                                       : NULL;
             Document *fdoc = (fi < (int)lane.frame_docs.size() && lane.frame_docs[fi])
                            ? lane.frame_docs[fi] : lane.doc;
             int dx = 0, dy = 0;
             WorldMarkedEffectiveLocalDelta(state, ss, (int)lane.frames.size(), fi,
                                            false, lane.tick, &dx, &dy);
             for (int pi = (int)pieces->size() - 1; pi >= 0; pi--) {
-                IMG *img = doc_get_img(fdoc, (*pieces)[(size_t)pi]);
+                /* frame_docs[] records only the *first* piece's document, so a
+                   composite whose pieces span files resolved every later piece
+                   against the wrong image list -- and link mode then grabbed
+                   whatever sprite happened to sit at that index. Resolve per
+                   piece, exactly as the draw path does. */
+                Document *pdoc = (piece_docs && (size_t)pi < piece_docs->size() &&
+                                  (*piece_docs)[(size_t)pi])
+                               ? (*piece_docs)[(size_t)pi] : fdoc;
+                IMG *img = doc_get_img(pdoc, (*pieces)[(size_t)pi]);
                 if (!img) continue;
                 float left = world_layout.origin_x - ((int)(short)img->anix + dx) * world_layout.scale;
                 float top = world_layout.origin_y - ((int)(short)img->aniy + dy) * world_layout.scale;
@@ -6400,6 +6512,8 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                 float bottom = top + (float)img->h * world_layout.scale;
                 if (p.x >= left && p.x <= right && p.y >= top && p.y <= bottom) {
                     hit.img = img;
+                    hit.doc = pdoc;
+                    hit.idx = (*pieces)[(size_t)pi];
                     hit.mirror = mirror;
                     return hit;
                 }
@@ -6428,10 +6542,41 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
             if (target.img && target.img != state.anchor_link_source_img && !target.mirror) {
                 int dx = (int)lroundf((mouse.x - state.anchor_link_source.x) / world_layout.scale);
                 int dy = (int)lroundf((mouse.y - state.anchor_link_source.y) / world_layout.scale);
+                Document *tdoc = target.doc ? target.doc : g_doc;
+                /* Every other anipoint edit in the tool is undoable; this one
+                   wrote straight through. The snapshot only ever covers the
+                   active document, so take it when that is what changes. */
+                if (tdoc == g_doc) doc_undo_push();
                 target.img->anix = (unsigned short)ClampWorldMarkedAniptDelta((int)(short)target.img->anix + dx);
                 target.img->aniy = (unsigned short)ClampWorldMarkedAniptDelta((int)(short)target.img->aniy + dy);
-                mark_dirty();
-                snprintf(g_restore_msg, sizeof(g_restore_msg), "Linked anchors: target moved %d, %d px.", dx, dy);
+                /* A lane can be fed from any open file, but mark_dirty() only
+                   ever flags g_doc. Linking a piece that lived in another tab
+                   left that document clean: no asterisk, no save, and no close
+                   prompt -- the edit was simply lost. Flag the document that
+                   actually changed. */
+                if (tdoc == g_doc) {
+                    mark_dirty();
+                    InvalidateThumb(target.idx);
+                    g_img_tex_idx = -2;
+                } else {
+                    tdoc->dirty = true;
+                }
+                /* Auto-Chop/Body-Split children hold their anchor as
+                   parent - piece_offset, so moving a parent alone splits the
+                   composite. Carry its subframes by the same delta. */
+                int kids = shift_subframe_anipoints(tdoc, target.img, dx, dy);
+                /* Anipoints are subtracted from the anchor, so the sprite
+                   travels the opposite way from the delta stored in the file.
+                   Report both rather than letting one stand for the other. */
+                if (kids > 0)
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Linked anchors: target moved %d, %d px on screen "
+                             "(anipoint %+d, %+d), with %d subframe%s.",
+                             -dx, -dy, dx, dy, kids, kids == 1 ? "" : "s");
+                else
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Linked anchors: target moved %d, %d px on screen "
+                             "(anipoint %+d, %+d).", -dx, -dy, dx, dy);
                 g_restore_msg_timer = 4.0f;
             }
             state.anchor_link_active = false;
@@ -7900,6 +8045,19 @@ int WorldMarkedBakeEntryOffsets(WorldMarkedSequenceState &state,
             img->anix = signed_to_img_word((int)(short)img->anix + dx);
             img->aniy = signed_to_img_word((int)(short)img->aniy + dy);
             changed++;
+            /* Baking a parent has to bake its chopped children too, or the
+               placement you lined up only becomes real for half the sprite.
+               They join `baked` so a later entry that names a child directly
+               is reported as a conflict instead of compounding the delta. */
+            for (IMG *kid = (IMG *)doc->img_p; kid; kid = (IMG *)kid->nxt_p) {
+                std::string owner =
+                    InferSubframeParentName(img_name_string(kid).c_str());
+                if (owner.empty() ||
+                    !ascii_iequals(owner, trim_sprite_name(img_name_string(img))))
+                    continue;
+                baked.push_back(kid);
+            }
+            changed += shift_subframe_anipoints(doc, img, dx, dy);
         }
         state.local_dx[slot][e] = 0;
         state.local_dy[slot][e] = 0;
@@ -8536,21 +8694,47 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
             int dx = (int)(d.x / wscale);
             int dy = (int)(d.y / wscale);
             if (dx != 0 || dy != 0) {
-                int next_ax = (int)(short)img->anix + (mirror_active ? dx : -dx);
-                int next_ay = (int)(short)img->aniy - dy;
+                /* Subframes are not draggable from World View. A piece is
+                   authored through its parent, so aim the gesture at the
+                   parent: the whole composite moves and the pieces inherit,
+                   instead of one slice sliding out of the drawing. */
+                IMG *anchor_img = img;
+                int anchor_idx = image_idx;
+                std::string owner =
+                    InferSubframeParentName(img_name_string(img).c_str());
+                if (!owner.empty()) {
+                    int oidx = WorldFindFrameByName(g_doc, owner);
+                    IMG *owner_img = doc_get_img(g_doc, oidx);
+                    if (owner_img) { anchor_img = owner_img; anchor_idx = oidx; }
+                }
+
+                int next_ax = (int)(short)anchor_img->anix +
+                              (mirror_active ? dx : -dx);
+                int next_ay = (int)(short)anchor_img->aniy - dy;
                 /* World View is a frame-by-frame alignment workspace.  Keep a
                    drag local so stepping frames cannot rearrange anchors that
                    were already placed on name-matched sequence frames. */
-                set_primary_anipoint_local(img, next_ax, next_ay);
+                int prev_ax = (int)(short)anchor_img->anix;
+                int prev_ay = (int)(short)anchor_img->aniy;
+                if (set_primary_anipoint_local(anchor_img, next_ax, next_ay)) {
+                    /* "Local" means no sibling frames, not no subframes: a
+                       chopped child anchors off its parent, so it has to come
+                       along or the composite comes apart. Use the delta that
+                       actually landed, after clamping. */
+                    shift_subframe_anipoints(g_doc, anchor_img,
+                                             (int)(short)anchor_img->anix - prev_ax,
+                                             (int)(short)anchor_img->aniy - prev_ay);
+                    /* set_primary_anipoint_local refreshes the *selected*
+                       thumbnail, which is the piece, not the frame we moved. */
+                    if (anchor_idx != image_idx) InvalidateThumb(anchor_idx);
+                }
             }
         }
     }
 
     if (show_borders) {
         ImVec2 sprite_max(spos.x + spw, spos.y + sph);
-        int raw_aniy = (int)img->aniy;
-        bool bad_y_anchor = (short)img->aniy < 0 || raw_aniy == 0x4000 ||
-                            raw_aniy == 0xFFFF || ay < 0 || ay >= 0x4000;
+        bool bad_y_anchor = WorldBadYAnchor(img, ay);
         WorldBoundaryRect sprite_rect =
             WorldBoundaryRectFromScreen(spos, sprite_max, layout);
         WorldBoundaryClass sprite_class =
@@ -17735,21 +17919,16 @@ void DrawWorldMarkedTimelinePanel(void)
 
     std::vector<WorldMarkedAsmLaneInput> asm_lanes;
     WorldCollectActiveAsmLanes(asm_lanes);
-    bool asm_present = false;
     for (const WorldMarkedAsmLaneInput &input : asm_lanes) {
         if (!input.enabled) continue;
-        if (WorldAppendAsmLane(g_world_marked_state, input.name,
-                               input.frames, input.doc, input.doc_idx,
-                               input.slot_id, lanes))
-            asm_present = true;
+        WorldAppendAsmLane(g_world_marked_state, input.name,
+                           input.frames, input.doc, input.doc_idx,
+                           input.slot_id, lanes);
     }
 
+    /* One marked row is enough here too -- see WorldDrawMarkedTabs. */
     if (lanes.empty()) {
-        ImGui::TextDisabled("Mark sprites in at least two IMG tabs, or enable ASM lanes.");
-        return;
-    }
-    if (lanes.size() < 2 && !asm_present) {
-        ImGui::TextDisabled("World View frame sequence needs a second marked row or an ASM lane.");
+        ImGui::TextDisabled("Mark sprites in an IMG tab, or enable ASM lanes.");
         return;
     }
     if (!WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, 0.0f)) {

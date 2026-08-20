@@ -9,9 +9,11 @@
 #include "ui_timeline.h"  /* InvalidateThumb */
 #include "img_io.h"       /* doc_undo_push, g_img_tex_idx */
 #include "document.h"     /* g_doc */
+#include "subframe_align.h" /* subframe_align_from_parent */
 
 #include <imgui.h>
 #include <string>
+#include <vector>
 
 /* Undo coalescing flag: true while a drag's edits collapse into one undo step. */
 static bool g_sequence_anipoint_undo_active = false;
@@ -89,6 +91,124 @@ static int apply_anipoint_delta_to_sequence(IMG *src, int src_idx,
         }
     }
     return changed;
+}
+
+int shift_subframe_anipoints(Document *doc, const IMG *parent, int dx, int dy)
+{
+    if (!doc || !parent || (dx == 0 && dy == 0)) return 0;
+
+    std::string parent_name = trim_sprite_name(img_name_string(parent));
+    if (parent_name.empty()) return 0;
+
+    int moved = 0;
+    int idx = 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img == parent) continue;
+        std::string owner = InferSubframeParentName(img_name_string(img).c_str());
+        if (owner.empty() || !ascii_iequals(owner, parent_name)) continue;
+
+        img->anix = signed_to_img_word((int)(short)img->anix + dx);
+        img->aniy = signed_to_img_word((int)(short)img->aniy + dy);
+        /* Thumbnails are cached per active document only. */
+        if (doc == g_doc) InvalidateThumb(idx);
+        moved++;
+    }
+    return moved;
+}
+
+/* True when `img` is a direct subframe of `parent_name`. */
+static bool is_subframe_of(const IMG *img, const std::string &parent_name)
+{
+    std::string owner = InferSubframeParentName(img_name_string(img).c_str());
+    return !owner.empty() && ascii_iequals(owner, parent_name);
+}
+
+int count_subframes(Document *doc, const IMG *parent)
+{
+    if (!doc || !parent) return 0;
+    std::string parent_name = trim_sprite_name(img_name_string(parent));
+    if (parent_name.empty()) return 0;
+    int n = 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p)
+        if (img != parent && is_subframe_of(img, parent_name)) n++;
+    return n;
+}
+
+IMG *find_subframe_parent(Document *doc, const IMG *child)
+{
+    if (!doc || !child) return NULL;
+    std::string owner = InferSubframeParentName(img_name_string(child).c_str());
+    if (owner.empty()) return NULL;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (img == child) continue;
+        if (ascii_iequals(trim_sprite_name(img_name_string(img)), owner))
+            return img;
+    }
+    return NULL;
+}
+
+/* IMG bitmaps carry a 4-byte-aligned stride, same as everywhere else. */
+static StampBuf img_stamp_view(const IMG *img)
+{
+    StampBuf b;
+    b.pixels = (const unsigned char *)img->data_p;
+    b.w = (int)img->w;
+    b.h = (int)img->h;
+    b.stride = ((int)img->w + 3) & ~3;
+    return b;
+}
+
+SubframeRecalcReport recalc_subframe_anipoints_from_parent(Document *doc,
+                                                           IMG *parent)
+{
+    SubframeRecalcReport rep;
+    if (!doc || !parent || !parent->data_p || parent->w == 0 || parent->h == 0)
+        return rep;
+
+    std::string parent_name = trim_sprite_name(img_name_string(parent));
+    if (parent_name.empty()) return rep;
+
+    StampBuf pbuf = img_stamp_view(parent);
+    int parent_ax = (int)(short)parent->anix;
+    int parent_ay = (int)(short)parent->aniy;
+
+    /* Collect the work first so undo is pushed only when there is some. */
+    struct Fix { IMG *img; int idx; int ax; int ay; bool exact; };
+    std::vector<Fix> fixes;
+    int idx = 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img == parent || !is_subframe_of(img, parent_name)) continue;
+        rep.considered++;
+        if (!img->data_p || img->w == 0 || img->h == 0) { rep.unplaced++; continue; }
+
+        SubframeAlign a =
+            subframe_align_from_parent(pbuf, parent_ax, parent_ay,
+                                       img_stamp_view(img),
+                                       (int)(short)img->anix,
+                                       (int)(short)img->aniy);
+        if (!a.valid) { rep.unplaced++; continue; }
+        if (a.exact) rep.exact++; else rep.approximate++;
+
+        if (a.new_anix == (int)(short)img->anix &&
+            a.new_aniy == (int)(short)img->aniy)
+            continue;
+        Fix f; f.img = img; f.idx = idx; f.ax = a.new_anix; f.ay = a.new_aniy;
+        f.exact = a.exact;
+        fixes.push_back(f);
+    }
+
+    if (fixes.empty()) return rep;
+    if (doc == g_doc && !doc_undo_push()) return rep;
+
+    for (size_t i = 0; i < fixes.size(); i++) {
+        fixes[i].img->anix = signed_to_img_word(fixes[i].ax);
+        fixes[i].img->aniy = signed_to_img_word(fixes[i].ay);
+        if (doc == g_doc) InvalidateThumb(fixes[i].idx);
+        rep.changed++;
+    }
+    doc->dirty = true;
+    if (doc == g_doc) g_img_tex_idx = -2;
+    return rep;
 }
 
 static void mark_selected_anipoint_changed(void)

@@ -112,6 +112,13 @@ static bool g_opacity_gradient_preview = true;
 /* Feather band in pixels, measured inward from the silhouette edge. Only used
    by the Edge Feather direction, where everything deeper is left alone. */
 static int  g_opacity_gradient_edge_px = 5;
+/* Depth cap for the directional and radial ramps. Uncapped, those spread the
+   fade over the whole sprite, so "fade from the top" thins pixels all the way
+   down to the far side and an Edge-to-Center fade reaches the middle. Capped,
+   the ramp runs its full start..end range inside the first N pixels and
+   everything deeper is left exactly as it was. */
+static bool g_opacity_gradient_limit_depth = false;
+static int  g_opacity_gradient_depth_px = 8;
 /* 0 = hash noise (the original dissolve), 1 = 2x2 checker, 2 = 4x4 Bayer. */
 static int  g_opacity_gradient_dither = 0;
 
@@ -7140,22 +7147,25 @@ static bool OpacityGradientOpaqueBounds(const IMG *img,
     return true;
 }
 
-static float OpacityGradientT(int direction,
-                              int x, int y,
-                              int min_x, int min_y,
-                              int max_x, int max_y)
+/* How far this pixel sits along the gradient's axis, and how long that axis
+   is, both in pixels, measured from the side where Start opacity applies.
+   Keeping it in pixels rather than a straight 0..1 sweep is what lets the ramp
+   be confined to a band near that edge. */
+static void OpacityGradientDepth(int direction,
+                                 int x, int y,
+                                 int min_x, int min_y,
+                                 int max_x, int max_y,
+                                 float *out_depth, float *out_span)
 {
-    int w_span = max_x - min_x;
-    int h_span = max_y - min_y;
+    float w_span = (float)(max_x - min_x);
+    float h_span = (float)(max_y - min_y);
+    float depth = 0.0f;
+    float span = 0.0f;
     switch (direction) {
-    case 0:
-        return w_span > 0 ? (float)(x - min_x) / (float)w_span : 0.0f;
-    case 1:
-        return w_span > 0 ? (float)(max_x - x) / (float)w_span : 0.0f;
-    case 2:
-        return h_span > 0 ? (float)(y - min_y) / (float)h_span : 0.0f;
-    case 3:
-        return h_span > 0 ? (float)(max_y - y) / (float)h_span : 0.0f;
+    case 0: depth = (float)(x - min_x); span = w_span; break;
+    case 1: depth = (float)(max_x - x); span = w_span; break;
+    case 2: depth = (float)(y - min_y); span = h_span; break;
+    case 3: depth = (float)(max_y - y); span = h_span; break;
     case 4:
     case 5: {
         float cx = ((float)min_x + (float)max_x) * 0.5f;
@@ -7175,85 +7185,163 @@ static float OpacityGradientT(int direction,
                              corners[i][1] * corners[i][1]);
             if (cd > max_d) max_d = cd;
         }
-        float t = max_d > 0.0f ? d / max_d : 0.0f;
-        if (t < 0.0f) t = 0.0f;
-        if (t > 1.0f) t = 1.0f;
-        return direction == 4 ? t : 1.0f - t;
+        if (d > max_d) d = max_d;
+        span = max_d;
+        depth = (direction == 4) ? d : max_d - d;
+        break;
     }
     default:
-        return 0.0f;
+        break;
     }
+    if (depth < 0.0f) depth = 0.0f;
+    if (out_depth) *out_depth = depth;
+    if (out_span) *out_span = span;
+}
+
+/* Ramp position 0..1 for this pixel. cap_px > 0 squeezes the whole start..end
+   ramp into that many pixels from the edge it starts at; *beyond flags pixels
+   deeper than the cap, which the caller leaves alone rather than flooding them
+   with the End value. */
+static float OpacityGradientT(int direction,
+                              int x, int y,
+                              int min_x, int min_y,
+                              int max_x, int max_y,
+                              int cap_px, bool *beyond)
+{
+    float depth = 0.0f, span = 0.0f;
+    OpacityGradientDepth(direction, x, y, min_x, min_y, max_x, max_y,
+                         &depth, &span);
+    if (beyond) *beyond = false;
+
+    float denom = span;
+    if (cap_px > 0) {
+        denom = (float)cap_px;
+        if (depth > denom) {
+            if (beyond) *beyond = true;
+            depth = denom;
+        }
+    }
+    if (denom <= 0.0f) return 0.0f;
+
+    float t = depth / denom;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t;
+}
+
+/* Everything the per-pixel decision needs, resolved once per sprite. Apply and
+   the live preview both go through this, so the preview cannot drift from what
+   Apply actually does. */
+struct OpacityGradientPlan {
+    int direction = 0;
+    int start = 100;
+    int end = 0;
+    int dither = 0;
+    int seed = 0;
+    int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+    int w = 0;
+    bool edge_mode = false;
+    float band = 1.0f;
+    int cap_px = 0;
+    std::vector<float> edge_dist;
+};
+
+static bool OpacityGradientPlanBuild(const IMG *img, OpacityGradientPlan *plan)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0)
+        return false;
+
+    plan->direction = g_opacity_gradient_direction;
+    plan->start = OpacityGradientClamp(g_opacity_gradient_start, 0, 100);
+    plan->end = OpacityGradientClamp(g_opacity_gradient_end, 0, 100);
+    plan->dither = g_opacity_gradient_dither;
+    plan->seed = g_opacity_gradient_seed;
+    plan->w = (int)img->w;
+    plan->edge_mode = (g_opacity_gradient_direction == kOpacityDirectionEdge);
+    plan->band = (float)OpacityGradientClamp(g_opacity_gradient_edge_px, 1, 64);
+    /* Edge Feather already measures inward from the silhouette, so the cap is
+       only for the box-spanning directions. */
+    plan->cap_px = (!plan->edge_mode && g_opacity_gradient_limit_depth)
+                 ? OpacityGradientClamp(g_opacity_gradient_depth_px, 1, 512)
+                 : 0;
+
+    plan->min_x = 0;
+    plan->min_y = 0;
+    plan->max_x = (int)img->w - 1;
+    plan->max_y = (int)img->h - 1;
+    if (g_opacity_gradient_content_bounds) {
+        if (!OpacityGradientOpaqueBounds(img, &plan->min_x, &plan->min_y,
+                                         &plan->max_x, &plan->max_y))
+            return false;
+    }
+    if (plan->edge_mode)
+        OpacityGradientEdgeDistance(img, plan->edge_dist);
+    return true;
+}
+
+/* Opacity this pixel should end up with, 0..100, or -1 for "outside the band,
+   leave it alone". */
+static int OpacityGradientKeepPct(const OpacityGradientPlan &plan, int x, int y)
+{
+    if (plan.edge_mode) {
+        /* Depth 1 is the outermost opaque pixel. Past the band the sprite is
+           left exactly as it was — "just the edge" has to mean that, or
+           switching direction with a fade-out preset loaded would dissolve the
+           whole interior. */
+        float d = plan.edge_dist[(size_t)y * plan.w + x];
+        if (d > plan.band) return -1;
+        float t = (plan.band > 1.0f) ? (d - 1.0f) / (plan.band - 1.0f) : 1.0f;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        return OpacityGradientClamp((int)floorf((float)plan.start +
+                                                (100.0f - (float)plan.start) * t +
+                                                0.5f), 0, 100);
+    }
+
+    bool beyond = false;
+    float t = OpacityGradientT(plan.direction, x, y,
+                               plan.min_x, plan.min_y, plan.max_x, plan.max_y,
+                               plan.cap_px, &beyond);
+    if (beyond) return -1;
+    return OpacityGradientClamp((int)floorf((float)plan.start +
+                                            ((float)plan.end - (float)plan.start) * t +
+                                            0.5f), 0, 100);
+}
+
+static bool OpacityGradientKeepPixel(const OpacityGradientPlan &plan,
+                                     int x, int y, unsigned char ci,
+                                     int image_idx)
+{
+    int keep_pct = OpacityGradientKeepPct(plan, x, y);
+    if (keep_pct < 0) return true;      /* deeper than the band: untouched */
+    if (keep_pct >= 100) return true;
+    if (keep_pct <= 0) return false;
+    if (plan.dither == 0)
+        return (int)(OpacityGradientHash(x, y, ci, image_idx, plan.seed) % 100u)
+               < keep_pct;
+    return OpacityGradientOrderedThreshold(x, y, plan.dither) < keep_pct;
 }
 
 static int ApplyOpacityGradientOne(IMG *img, int image_idx, bool apply)
 {
-    if (!img || !img->data_p || img->w == 0 || img->h == 0)
+    OpacityGradientPlan plan;
+    if (!OpacityGradientPlanBuild(img, &plan))
         return 0;
-
-    int min_x = 0, min_y = 0, max_x = (int)img->w - 1, max_y = (int)img->h - 1;
-    if (g_opacity_gradient_content_bounds) {
-        if (!OpacityGradientOpaqueBounds(img, &min_x, &min_y, &max_x, &max_y))
-            return 0;
-    }
 
     int w = (int)img->w;
     int h = (int)img->h;
     int stride = (w + 3) & ~3;
     unsigned char *pix = (unsigned char *)img->data_p;
     int changed = 0;
-    int start = OpacityGradientClamp(g_opacity_gradient_start, 0, 100);
-    int end = OpacityGradientClamp(g_opacity_gradient_end, 0, 100);
-
-    bool edge_mode = (g_opacity_gradient_direction == kOpacityDirectionEdge);
-    std::vector<float> edge_dist;
-    float band = (float)OpacityGradientClamp(g_opacity_gradient_edge_px, 1, 64);
-    if (edge_mode)
-        OpacityGradientEdgeDistance(img, edge_dist);
 
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             unsigned char *p = pix + (size_t)y * stride + x;
             unsigned char ci = *p;
             if (ci == 0) continue;
-
-            int keep_pct;
-            if (edge_mode) {
-                /* Depth 1 is the outermost opaque pixel. Past the band the
-                   sprite is left exactly as it was — "just the edge" has to
-                   mean that, or switching direction with a fade-out preset
-                   loaded would dissolve the whole interior. */
-                float d = edge_dist[(size_t)y * w + x];
-                if (d > band) continue;
-                float t = (band > 1.0f) ? (d - 1.0f) / (band - 1.0f) : 1.0f;
-                if (t < 0.0f) t = 0.0f;
-                if (t > 1.0f) t = 1.0f;
-                keep_pct = (int)floorf((float)start +
-                                       (100.0f - (float)start) * t + 0.5f);
-            } else {
-                float t = OpacityGradientT(g_opacity_gradient_direction,
-                                           x, y, min_x, min_y, max_x, max_y);
-                keep_pct = (int)floorf((float)start +
-                                       ((float)end - (float)start) * t +
-                                       0.5f);
-            }
-            keep_pct = OpacityGradientClamp(keep_pct, 0, 100);
-
-            bool keep;
-            if (keep_pct >= 100) {
-                keep = true;
-            } else if (keep_pct <= 0) {
-                keep = false;
-            } else if (g_opacity_gradient_dither == 0) {
-                keep = (int)(OpacityGradientHash(x, y, ci, image_idx,
-                                                 g_opacity_gradient_seed) % 100u) < keep_pct;
-            } else {
-                keep = OpacityGradientOrderedThreshold(x, y,
-                                                       g_opacity_gradient_dither) < keep_pct;
-            }
-            if (!keep) {
-                changed++;
-                if (apply) *p = 0;
-            }
+            if (OpacityGradientKeepPixel(plan, x, y, ci, image_idx)) continue;
+            changed++;
+            if (apply) *p = 0;
         }
     }
     return changed;
@@ -7337,12 +7425,8 @@ static SDL_Texture *OpacityGradientBuildPreview(IMG *img, int image_idx)
         g_opacity_gradient_preview_h = h;
     }
 
-    int min_x = 0, min_y = 0, max_x = w - 1, max_y = h - 1;
-    if (g_opacity_gradient_content_bounds)
-        OpacityGradientOpaqueBounds(img, &min_x, &min_y, &max_x, &max_y);
-
-    int start = OpacityGradientClamp(g_opacity_gradient_start, 0, 100);
-    int end = OpacityGradientClamp(g_opacity_gradient_end, 0, 100);
+    OpacityGradientPlan plan;
+    bool have_plan = OpacityGradientPlanBuild(img, &plan);
     int stride = (w + 3) & ~3;
     const unsigned char *sp = (const unsigned char *)img->data_p;
     PAL *pal = get_pal(img->palnum);
@@ -7357,15 +7441,8 @@ static SDL_Texture *OpacityGradientBuildPreview(IMG *img, int image_idx)
             unsigned char ci = sp[(size_t)y * stride + x];
             Uint32 out = 0; /* transparent by default */
             if (ci != 0) {
-                float t = OpacityGradientT(g_opacity_gradient_direction,
-                                           x, y, min_x, min_y, max_x, max_y);
-                int keep_pct = (int)floorf((float)start +
-                                           ((float)end - (float)start) * t + 0.5f);
-                keep_pct = OpacityGradientClamp(keep_pct, 0, 100);
-                bool keep = keep_pct >= 100 ||
-                            (keep_pct > 0 &&
-                             (int)(OpacityGradientHash(x, y, ci, image_idx,
-                                       g_opacity_gradient_seed) % 100u) < keep_pct);
+                bool keep = !have_plan ||
+                            OpacityGradientKeepPixel(plan, x, y, ci, image_idx);
                 if (keep) {
                     Uint32 r = 200, g = 200, b = 200;
                     if (pd) {
@@ -7716,6 +7793,21 @@ void DrawOpacityGradientDialog(void)
         if (ImGui::SmallButton("Reset Fade Out")) {
             g_opacity_gradient_start = 100;
             g_opacity_gradient_end = 0;
+        }
+
+        ImGui::Checkbox("Limit fade depth", &g_opacity_gradient_limit_depth);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Keep the ramp near the edge it starts from instead of\n"
+                              "letting it run clear across the sprite to the far side\n"
+                              "or in to the center. Pixels deeper than the band are\n"
+                              "left untouched.");
+        if (g_opacity_gradient_limit_depth) {
+            ImGui::SetNextItemWidth(190.0f);
+            ImGui::SliderInt("Fade depth", &g_opacity_gradient_depth_px, 1, 128, "%d px");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("End opacity is reached this many pixels in, measured\n"
+                                  "from the start edge of the bounds. Set End to 100%% for\n"
+                                  "a seamless join with the untouched interior.");
         }
     }
 
