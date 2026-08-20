@@ -147,6 +147,23 @@ IMG *find_subframe_parent(Document *doc, const IMG *child)
     return NULL;
 }
 
+void collect_subframe_indices(Document *doc, const IMG *parent,
+                              std::vector<int> *out)
+{
+    if (!out) return;
+    out->clear();
+    if (!doc || !parent) return;
+    std::string parent_name = trim_sprite_name(img_name_string(parent));
+    if (parent_name.empty()) return;
+
+    int idx = 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img == parent || !is_subframe_of(img, parent_name)) continue;
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+        out->push_back(idx);
+    }
+}
+
 /* IMG bitmaps carry a 4-byte-aligned stride, same as everywhere else. */
 static StampBuf img_stamp_view(const IMG *img)
 {

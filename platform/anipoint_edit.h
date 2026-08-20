@@ -13,6 +13,7 @@
  *************************************************************/
 #pragma once
 #include "img_format.h"  /* IMG */
+#include <vector>
 
 struct Document;
 
@@ -57,6 +58,11 @@ int count_subframes(Document *doc, const IMG *parent);
 /* The IMG whose name `child` declares itself a piece of (UGSPARK1A -> UGSPARK1),
    or NULL when `child` is not a subframe or that parent is not in `doc`. */
 IMG *find_subframe_parent(Document *doc, const IMG *child);
+
+/* Image-list indices of `parent`'s direct subframes in `doc`, in list order.
+   Empty when `parent` has none. */
+void collect_subframe_indices(Document *doc, const IMG *parent,
+                              std::vector<int> *out);
 
 struct SubframeRecalcReport {
     int considered;    /* subframes examined */

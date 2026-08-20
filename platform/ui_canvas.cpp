@@ -6159,9 +6159,52 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             dual_table += anim_label;
             dual_table += "_dual_anipts\n";
         }
+        /* Code generation emits the pieces, never the parent.
+
+           World View poses the parent -- one thing to drag, one anipoint to
+           own the placement -- but the record the hardware draws is the chop,
+           which is the entire reason the art was chopped: the pieces skip the
+           empty space a parent's bitmap still has to store. Emitting the
+           parent would throw that away. So the parent/piece split is resolved
+           here, at the boundary between the editing model and the code. */
+        std::vector<std::vector<int> > emit_pieces((size_t)lane.frames.size());
+        std::vector<std::vector<Document*> > emit_piece_docs((size_t)lane.frames.size());
+        std::vector<bool> emit_expanded((size_t)lane.frames.size(), false);
+        for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+            Document *fdoc = (fi < (int)lane.frame_docs.size() && lane.frame_docs[fi])
+                           ? lane.frame_docs[fi] : lane.doc;
+            IMG *fimg = doc_get_img(fdoc, lane.frames[fi]);
+
+            std::vector<int> kids;
+            if (fimg) collect_subframe_indices(fdoc, fimg, &kids);
+            if (!kids.empty()) {
+                emit_pieces[(size_t)fi] = kids;
+                emit_piece_docs[(size_t)fi].assign(kids.size(), fdoc);
+                emit_expanded[(size_t)fi] = true;
+                continue;
+            }
+
+            if (fi < (int)lane.frame_pieces.size() && !lane.frame_pieces[fi].empty()) {
+                emit_pieces[(size_t)fi] = lane.frame_pieces[fi];
+                if (fi < (int)lane.frame_piece_docs.size())
+                    emit_piece_docs[(size_t)fi] = lane.frame_piece_docs[fi];
+            } else {
+                emit_pieces[(size_t)fi].push_back(lane.frames[fi]);
+            }
+            emit_piece_docs[(size_t)fi].resize(emit_pieces[(size_t)fi].size(), fdoc);
+        }
+
+        bool any_expanded = false;
+        for (size_t i = 0; i < emit_expanded.size(); i++)
+            if (emit_expanded[i]) { any_expanded = true; break; }
+        if (any_expanded) {
+            out += "; Frames with subframes are emitted as their pieces, not as the\n";
+            out += "; parent frame World View poses. Piece order below is queue order.\n";
+        }
+
         int extra_piece_cols = 0;
-        for (int fi = 0; fi < (int)lane.frame_pieces.size(); fi++) {
-            int extra = (int)lane.frame_pieces[fi].size() - 1;
+        for (size_t fi = 0; fi < emit_pieces.size(); fi++) {
+            int extra = (int)emit_pieces[fi].size() - 1;
             if (extra > extra_piece_cols) extra_piece_cols = extra;
         }
         std::vector<std::string> piece_tables((size_t)extra_piece_cols);
@@ -6185,10 +6228,19 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             IMG *frame_img = doc_get_img(frame_doc, lane.frames[fi]);
             char fallback[32];
             snprintf(fallback, sizeof(fallback), "slot%d_frame%d", slot + 1, fi + 1);
-            std::string raw_label = (fi < (int)lane.frame_labels.size() &&
-                                     !lane.frame_labels[fi].empty())
-                                  ? lane.frame_labels[fi]
-                                  : img_name_string(frame_img);
+            /* An expanded frame is named by its first piece; the parent's
+               own label describes something the code never draws. */
+            std::string raw_label;
+            if (emit_expanded[(size_t)fi]) {
+                IMG *first_piece = doc_get_img(emit_piece_docs[(size_t)fi][0],
+                                               emit_pieces[(size_t)fi][0]);
+                raw_label = img_name_string(first_piece);
+            } else {
+                raw_label = (fi < (int)lane.frame_labels.size() &&
+                             !lane.frame_labels[fi].empty())
+                          ? lane.frame_labels[fi]
+                          : img_name_string(frame_img);
+            }
             std::string sprite = WorldMarkedAsmToken(raw_label, fallback);
             int delay = ClampTimelineHold(state.frame_delays[lane.delay_slot][fi]);
             int local_dx = state.local_dx[lane.delay_slot][fi];
@@ -6206,17 +6258,15 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             int dual_dy = state.dual_dy[lane.delay_slot][fi];
             int dual_z = state.dual_z[lane.delay_slot][fi];
             std::vector<std::string> extra_sprites((size_t)extra_piece_cols, "0");
-            if (fi < (int)lane.frame_pieces.size()) {
-                const std::vector<int> &pieces = lane.frame_pieces[fi];
-                const std::vector<Document*> *piece_docs =
-                    (fi < (int)lane.frame_piece_docs.size())
-                        ? &lane.frame_piece_docs[fi] : NULL;
+            {
+                const std::vector<int> &pieces = emit_pieces[(size_t)fi];
+                const std::vector<Document*> &piece_docs =
+                    emit_piece_docs[(size_t)fi];
                 for (int c = 0; c < extra_piece_cols; c++) {
                     size_t pi = (size_t)c + 1;
                     if (pi >= pieces.size()) continue;
-                    Document *pdoc = (piece_docs && pi < piece_docs->size() &&
-                                      (*piece_docs)[pi])
-                                   ? (*piece_docs)[pi] : lane.doc;
+                    Document *pdoc = (pi < piece_docs.size() && piece_docs[pi])
+                                   ? piece_docs[pi] : lane.doc;
                     IMG *piece_img = doc_get_img(pdoc, pieces[pi]);
                     char piece_fallback[40];
                     snprintf(piece_fallback, sizeof(piece_fallback),
