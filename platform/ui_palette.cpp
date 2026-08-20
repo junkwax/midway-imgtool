@@ -3971,6 +3971,66 @@ static SDL_Texture *BuildIndexedGradientPreview(void)
     return g_indexed_gradient_preview_tex;
 }
 
+static void ReverseIndexedGradient(void)
+{
+    for (int i = 0, j = g_indexed_gradient_color_count - 1; i < j; i++, j--) {
+        float tmp[3];
+        memcpy(tmp, g_indexed_gradient_colors[i], sizeof(tmp));
+        memcpy(g_indexed_gradient_colors[i], g_indexed_gradient_colors[j], sizeof(tmp));
+        memcpy(g_indexed_gradient_colors[j], tmp, sizeof(tmp));
+        bool set = g_indexed_gradient_color_set[i];
+        g_indexed_gradient_color_set[i] = g_indexed_gradient_color_set[j];
+        g_indexed_gradient_color_set[j] = set;
+    }
+    g_indexed_gradient_applied = false;
+}
+
+struct IndexedGradientSample {
+    int   luma;
+    float rgb[3];
+};
+
+/* Seed the stops from the palette itself: sample the colors this gradient
+   targets, darkest to lightest, so the ramp starts out matching the art. */
+static int BuildIndexedGradientFromPalette(void)
+{
+    std::vector<IndexedGradientSample> samples;
+    /* Pass 0 uses the selected colors; if none were selected, pass 1 walks
+       the whole palette so the button still does something useful. */
+    for (int pass = 0; pass < 2 && samples.empty(); pass++) {
+        for (int i = 1; i < g_indexed_gradient_palette_count; i++) {
+            if (pass == 0 && !g_indexed_gradient_targets[i]) continue;
+            int r, g, b;
+            IndexedGradientRgb(g_indexed_gradient_baseline, i, &r, &g, &b);
+            IndexedGradientSample s;
+            s.luma = 30 * r + 59 * g + 11 * b;
+            s.rgb[0] = r / 255.0f;
+            s.rgb[1] = g / 255.0f;
+            s.rgb[2] = b / 255.0f;
+            samples.push_back(s);
+        }
+    }
+    if (samples.empty()) return 0;
+    std::sort(samples.begin(), samples.end(),
+              [](const IndexedGradientSample &a, const IndexedGradientSample &b) {
+                  return a.luma < b.luma;
+              });
+    int n = g_indexed_gradient_color_count;
+    if (n > (int)samples.size()) n = (int)samples.size();
+    if (n < 2) n = 2;
+    if (n > 11) n = 11;
+    for (int i = 0; i < n; i++) {
+        float t = (float)i / (float)(n - 1);
+        int si = (int)lroundf(t * (float)(samples.size() - 1));
+        if (si >= (int)samples.size()) si = (int)samples.size() - 1;
+        memcpy(g_indexed_gradient_colors[i], samples[si].rgb, sizeof(samples[si].rgb));
+        g_indexed_gradient_color_set[i] = true;
+    }
+    g_indexed_gradient_color_count = n;
+    g_indexed_gradient_applied = false;
+    return n;
+}
+
 void DrawIndexedGradientDialog(void)
 {
     if (!g_show_indexed_gradient) {
@@ -3999,15 +4059,25 @@ void DrawIndexedGradientDialog(void)
                        target_count, target_count == 1 ? "" : "s");
     if (!g_indexed_gradient_presets.empty()) {
         ImGui::SeparatorText("Saved gradients");
-        const float swatch_w = 56.0f, swatch_h = 56.0f;
+        const float swatch_w = 48.0f, swatch_h = 48.0f, swatch_pad = 4.0f;
+        /* Pack as many saved ramps per row as the window is actually wide
+           enough for, instead of a fixed five. */
+        int per_row = (int)floorf((ImGui::GetContentRegionAvail().x + swatch_pad) /
+                                  (swatch_w + swatch_pad));
+        if (per_row < 4) per_row = 4;
+        if (per_row > 12) per_row = 12;
+        int delete_idx = -1;
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(swatch_pad, swatch_pad));
         for (size_t pi = 0; pi < g_indexed_gradient_presets.size(); pi++) {
             const IndexedGradientPreset &preset = g_indexed_gradient_presets[pi];
             ImGui::PushID((int)pi);
-            if (pi > 0 && (pi % 5) != 0) ImGui::SameLine();
+            if (pi > 0 && ((int)pi % per_row) != 0) ImGui::SameLine();
             ImGui::BeginGroup();
             ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::SetNextItemAllowOverlap();
             if (ImGui::InvisibleButton("##gradient_preset", ImVec2(swatch_w, swatch_h)))
                 SelectIndexedGradientPreset(preset);
+            bool swatch_hovered = ImGui::IsItemHovered();
             ImDrawList *dl = ImGui::GetWindowDrawList();
             int n = (int)preset.colors.size();
             const int slices = 32;
@@ -4028,16 +4098,41 @@ void DrawIndexedGradientDialog(void)
                                   ImGui::ColorConvertFloat4ToU32(c));
             }
             dl->AddRect(p, ImVec2(p.x + swatch_w, p.y + swatch_h),
-                        ImGui::IsItemHovered() ? IM_COL32(255, 220, 90, 255)
-                                               : IM_COL32(150, 150, 150, 255),
-                        2.0f, 0, ImGui::IsItemHovered() ? 2.0f : 1.0f);
+                        swatch_hovered ? IM_COL32(255, 220, 90, 255)
+                                       : IM_COL32(150, 150, 150, 255),
+                        2.0f, 0, swatch_hovered ? 2.0f : 1.0f);
+            /* Delete handle, drawn over the top-right corner of the swatch. */
+            ImVec2 below = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(p.x + swatch_w - 16.0f, p.y + 2.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(25, 25, 25, 170));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 60, 60, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(240, 100, 100, 255));
+            if (ImGui::Button("x", ImVec2(14.0f, 14.0f))) delete_idx = (int)pi;
+            bool delete_hovered = ImGui::IsItemHovered();
+            ImGui::PopStyleColor(3);
+            ImGui::PopStyleVar();
+            if (delete_hovered)
+                ImGui::SetTooltip("Delete the saved gradient '%s'", preset.name.c_str());
+            ImGui::SetCursorScreenPos(below);
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + swatch_w);
             ImGui::TextUnformatted(preset.name.c_str());
             ImGui::PopTextWrapPos();
             ImGui::EndGroup();
-            if (ImGui::IsItemHovered())
+            if (swatch_hovered && !delete_hovered)
                 ImGui::SetTooltip("Use %s (%d colors)", preset.name.c_str(), n);
             ImGui::PopID();
+        }
+        ImGui::PopStyleVar();
+        if (delete_idx >= 0 && delete_idx < (int)g_indexed_gradient_presets.size()) {
+            std::string gone = g_indexed_gradient_presets[delete_idx].name;
+            g_indexed_gradient_presets.erase(g_indexed_gradient_presets.begin() + delete_idx);
+            bool saved = SaveIndexedGradientPresets();
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     saved ? "Deleted saved gradient '%s'."
+                           : "Removed '%s' but the preset file could not be updated.",
+                     gone.c_str());
+            g_restore_msg_timer = 4.0f;
         }
     }
     ImGui::Separator();
@@ -4076,6 +4171,21 @@ void DrawIndexedGradientDialog(void)
         g_indexed_gradient_color_count++;
     }
     if (g_indexed_gradient_color_count >= 11) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Reverse")) ReverseIndexedGradient();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Flip the stop order so the ramp runs the other way.");
+    ImGui::SameLine();
+    if (ImGui::Button("From Palette")) {
+        int seeded = BuildIndexedGradientFromPalette();
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 seeded ? "Seeded %d gradient stop%s from the current palette."
+                        : "No palette colors were available to sample.",
+                 seeded, seeded == 1 ? "" : "s");
+        g_restore_msg_timer = 4.0f;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sample the palette colors this gradient targets, darkest to lightest, into the current number of stops.");
     ImGui::TextDisabled("Click a swatch to open its color wheel. All colors must be chosen before Apply.");
     ImGui::SeparatorText("Preview");
     SDL_Texture *preview = all_set ? BuildIndexedGradientPreview() : NULL;

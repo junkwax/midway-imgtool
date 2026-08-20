@@ -2339,6 +2339,37 @@ static int asm_opcode_operands(const std::string &op)
     return -1;                              /* unknown opcode */
 }
 
+/* MK2 writes an opcode as a .long and its operands as the .word line under it:
+
+       .long   ani_adjustxy
+       .word   -028h,008h
+       .long   JCSTUMBLE1
+
+   In the assembled GSP stream those words simply follow the opcode in memory,
+   so the animation is one flat token stream and .long/.word is a width choice,
+   not a structure. Collecting only the .long tokens therefore made the walker
+   read the FRAME after an adjust as that adjust's operand: every ani_adjustxy
+   silently ate a frame and contributed dx=dy=0, and an animation whose frames
+   were all eaten that way vanished from the list altogether (4 of Johnny
+   Cage's 10 throw reactions did exactly that).
+
+   So .word operands go into the same ordered stream, tagged. The tag cannot
+   collide with a real symbol: frame symbols are uppercase and opcodes are
+   lowercase, and neither can start with '#'. */
+static const char kAsmWordTag[] = "#w:";
+
+static bool asm_is_word_token(const std::string &t)
+{
+    return t.compare(0, sizeof(kAsmWordTag) - 1, kAsmWordTag) == 0;
+}
+
+/* Value of a token that may be a tagged .word operand or a plain .long one. */
+static int asm_operand_value(const std::string &t)
+{
+    if (asm_is_word_token(t)) return asm_parse_int(t.substr(sizeof(kAsmWordTag) - 1));
+    return asm_parse_int(t);
+}
+
 static void asm_split_operands(const std::string &rest, std::vector<std::string> &out)
 {
     std::string cur;
@@ -2440,6 +2471,95 @@ static void AsmResolveAnimGlobal(AsmAnim &a)
     }
 }
 
+/* ---- Shared ASM frame rendering ----
+   The ASM Animations window and the React tab both need "how big is this
+   animation" and "draw frame N of it". Both questions are answered purely from
+   an AsmAnim plus the open documents, so they live here as free functions
+   rather than inside either window's state. */
+
+const char *AsmAnimPlayerPath(void)   { return g_asm_anim_file.c_str(); }
+const char *AsmAnimOpponentPath(void) { return g_asm_opp_file.c_str(); }
+
+bool AsmAnimComputeBounds(const AsmAnim &a, int *out_minx, int *out_miny,
+                          int *out_w, int *out_h)
+{
+    int minx = 0x3FFFFFFF, miny = 0x3FFFFFFF;
+    int maxx = -0x3FFFFFFF, maxy = -0x3FFFFFFF;
+    bool any = false;
+    /* Union over every frame, not just the current one: a canvas sized to one
+       frame makes the sprite jump around as the animation plays, because each
+       frame's art sits at a different offset from the shared anipoint. */
+    for (const AsmAnimFrame &fr : a.frames) {
+        for (size_t p = 0; p < fr.piece_syms.size(); p++) {
+            if (p >= fr.piece_img.size() || fr.piece_img[p] < 0) continue;
+            unsigned int uid = (p < fr.piece_doc_uid.size()) ? fr.piece_doc_uid[p] : 0u;
+            IMG *img = doc_get_img(document_from_uid(uid), fr.piece_img[p]);
+            if (!img) continue;
+            int x0 = -(int)(short)img->anix + fr.dx;
+            int y0 = -(int)(short)img->aniy + fr.dy;
+            int x1 = x0 + img->w, y1 = y0 + img->h;
+            if (x0 < minx) minx = x0; if (y0 < miny) miny = y0;
+            if (x1 > maxx) maxx = x1; if (y1 > maxy) maxy = y1;
+            any = true;
+        }
+    }
+    if (!any) return false;
+    int cw = maxx - minx, ch = maxy - miny;
+    if (cw < 1) cw = 1; if (ch < 1) ch = 1;
+    if (cw > 1024) cw = 1024; if (ch > 1024) ch = 1024;
+    if (out_minx) *out_minx = minx;
+    if (out_miny) *out_miny = miny;
+    if (out_w) *out_w = cw;
+    if (out_h) *out_h = ch;
+    return true;
+}
+
+void AsmAnimCompositeFrame(const AsmAnim &a, int frame_index,
+                           int minx, int miny, int w, int h,
+                           unsigned int fallback_doc_uid,
+                           unsigned int *dst, int dst_pitch_px)
+{
+    if (!dst || w <= 0 || h <= 0 || dst_pitch_px <= 0) return;
+    if (a.frames.empty()) return;
+    if (frame_index < 0 || frame_index >= (int)a.frames.size()) return;
+
+    const AsmAnimFrame &fr = a.frames[frame_index];
+    for (size_t p = 0; p < fr.piece_img.size(); p++) {
+        int ri = fr.piece_img[p];
+        if (ri < 0) continue;
+        Document *pdoc = (p < fr.piece_doc_uid.size() && fr.piece_doc_uid[p])
+                       ? document_from_uid(fr.piece_doc_uid[p])
+                       : document_from_uid(fallback_doc_uid);
+        IMG *img = doc_get_img(pdoc, ri);
+        if (!img || !img->data_p) continue;
+        PAL *pal = doc_get_pal(pdoc, img->palnum);
+        const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
+        int stride = (img->w + 3) & ~3;
+        const unsigned char *sp = (const unsigned char *)img->data_p;
+        int ox = -(int)(short)img->anix + fr.dx - minx;
+        int oy = -(int)(short)img->aniy + fr.dy - miny;
+        for (int y = 0; y < img->h; y++) {
+            int dy = oy + y; if (dy < 0 || dy >= h) continue;
+            int srcy = fr.mirror_v ? (img->h - 1 - y) : y;
+            for (int x = 0; x < img->w; x++) {
+                /* ani_flip mirrors horizontally; ani_flip_v mirrors vertically. */
+                int srcx = fr.mirror ? (img->w - 1 - x) : x;
+                int dx = ox + x; if (dx < 0 || dx >= w) continue;
+                unsigned char ci = sp[srcy * stride + srcx];
+                if (ci == 0) continue;
+                unsigned int r = 200, g = 200, b = 200;
+                if (pd) {
+                    unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
+                    r = ((w15 >> 10) & 0x1F) << 3;
+                    g = ((w15 >> 5) & 0x1F) << 3;
+                    b = (w15 & 0x1F) << 3;
+                }
+                dst[dy * dst_pitch_px + dx] = (0xFFu << 24) | (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+}
+
 /* Pure parse of a character/exported ASM into a list of animations (no globals,
    no IMG load, no resolution against a specific doc beyond a best-effort first
    pass against the active doc). Shared by the player and opponent loaders. */
@@ -2502,7 +2622,12 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
         } else if (directive == ".word" && !cur_label.empty()) {
             std::vector<std::string> ops;
             asm_split_operands(rest, ops);
-            for (auto &t : ops) word_body[cur_label].push_back(asm_parse_int(t));
+            for (auto &t : ops) {
+                word_body[cur_label].push_back(asm_parse_int(t));
+                /* Also into the ordered stream, tagged, so the walker can read
+                   them as the operands of the opcode they follow. */
+                body[cur_label].push_back(std::string(kAsmWordTag) + t);
+            }
         }
         /* directory tables are named "*anitab*" */
         if (has_label && !label.empty()) {
@@ -2547,7 +2672,15 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
         bool stop = false;
         for (size_t ti = 0; ti < toks.size() && !stop; ti++) {
             const std::string &tok = toks[ti];
-            if (tok == "0") break;             /* ani_end terminator */
+            /* ani_end (MKUTIL.ASM: `ani_end .set 0`) ends a SEGMENT, not always
+               the whole script. frame_a9 returns to its caller with carry set
+               when it meets one, and the throw reactions use that to stage a
+               sequence: a_jc_fb_hh is stumble, then flip, then land, each of
+               the three ending in `.long 0`. Stopping at the first one showed
+               a five-frame throw as a single frame. So skip it and keep
+               walking; the token list is one label's own body, so running off
+               the end of it ends the animation just as surely. */
+            if (tok == "0") continue;
             if (asm_is_control_token(tok)) {
                 int nops = asm_opcode_operands(tok);
                 if (tok == "ani_jump") {
@@ -2555,10 +2688,10 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
                     a.control.push_back("loops" + (tgt.empty() ? "" : " to " + tgt));
                     stop = true;               /* loop point — frames captured */
                 } else if (tok == "ani_adjustx" && ti + 1 < toks.size()) {
-                    cur_dx += asm_parse_int(toks[ti + 1]); ti += 1;
+                    cur_dx += asm_operand_value(toks[ti + 1]); ti += 1;
                 } else if (tok == "ani_adjustxy" && ti + 2 < toks.size()) {
-                    cur_dx += asm_parse_int(toks[ti + 1]);
-                    cur_dy += asm_parse_int(toks[ti + 2]); ti += 2;
+                    cur_dx += asm_operand_value(toks[ti + 1]);
+                    cur_dy += asm_operand_value(toks[ti + 2]); ti += 2;
                 } else if (tok == "ani_flip") {
                     cur_mirror = !cur_mirror;
                     if (std::find(a.control.begin(), a.control.end(), "flip") == a.control.end())
@@ -2575,6 +2708,10 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
                 }
                 continue;
             }
+            /* A tagged .word here belongs to no opcode we model (alignment
+               padding, or an opcode whose operand count we do not know). Skip
+               it rather than resolve it as a sprite symbol. */
+            if (asm_is_word_token(tok)) continue;
             /* uppercase token = a frame-group label (or lone piece symbol) */
             AsmAnimFrame fr;
             fr.dx = cur_dx; fr.dy = cur_dy;
@@ -2582,7 +2719,11 @@ static bool ParseAsmAnimFile(const char *path, std::vector<AsmAnim> &out)
             fr.mirror_v = cur_mirror_v;
             auto bit = body.find(tok);
             if (bit != body.end()) {
-                for (auto &p : bit->second) { if (p == "0") break; fr.piece_syms.push_back(p); }
+                for (auto &p : bit->second) {
+                    if (p == "0") break;
+                    if (asm_is_word_token(p)) continue;
+                    fr.piece_syms.push_back(p);
+                }
             } else {
                 fr.piece_syms.push_back(tok);  /* treat as a lone piece symbol */
             }
@@ -2836,26 +2977,12 @@ void AsmAnimSelect(int i)
 
     AsmAnim &a = g_asm_anims[i];
     AsmResolveAnimGlobal(a);                         /* resolve across all open IMGs */
-    int minx = 0x3FFFFFFF, miny = 0x3FFFFFFF, maxx = -0x3FFFFFFF, maxy = -0x3FFFFFFF;
-    bool any = false;
-    for (auto &fr : a.frames) {
-        for (size_t p = 0; p < fr.piece_syms.size(); p++) {
-            int ri = fr.piece_img[p];
-            if (ri < 0) continue;
-            IMG *img = doc_get_img(document_from_uid(fr.piece_doc_uid[p]), ri);
-            if (!img) continue;
-            int x0 = -(int)(short)img->anix + fr.dx, y0 = -(int)(short)img->aniy + fr.dy;
-            int x1 = x0 + img->w, y1 = y0 + img->h;
-            if (x0 < minx) minx = x0; if (y0 < miny) miny = y0;
-            if (x1 > maxx) maxx = x1; if (y1 > maxy) maxy = y1;
-            any = true;
-        }
+    int minx = 0, miny = 0, cw = 0, ch = 0;
+    if (!AsmAnimComputeBounds(a, &minx, &miny, &cw, &ch)) {
+        g_asm_anim_canvas_w = g_asm_anim_canvas_h = 0;
+        return;
     }
-    if (!any) { g_asm_anim_canvas_w = g_asm_anim_canvas_h = 0; return; }
     g_asm_anim_minx = minx; g_asm_anim_miny = miny;
-    int cw = maxx - minx, ch = maxy - miny;
-    if (cw < 1) cw = 1; if (ch < 1) ch = 1;
-    if (cw > 1024) cw = 1024; if (ch > 1024) ch = 1024;
     g_asm_anim_canvas_w = cw; g_asm_anim_canvas_h = ch;
 }
 
@@ -3547,39 +3674,8 @@ static void AsmAnimRefillTexture(void)
         for (int x = 0; x < w; x++)
             dst[y * (pitch / 4) + x] = 0x00000000u;   /* transparent */
 
-    AsmAnimFrame &fr = a.frames[fi];
-    for (size_t p = 0; p < fr.piece_img.size(); p++) {
-        int ri = fr.piece_img[p];
-        if (ri < 0) continue;
-        Document *pdoc = (p < fr.piece_doc_uid.size() && fr.piece_doc_uid[p])
-                       ? document_from_uid(fr.piece_doc_uid[p])
-                       : document_from_uid(g_asm_anim_doc_uid);
-        IMG *img = doc_get_img(pdoc, ri);
-        if (!img || !img->data_p) continue;
-        PAL *pal = doc_get_pal(pdoc, img->palnum);
-        const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
-        int stride = (img->w + 3) & ~3;
-        const unsigned char *sp = (const unsigned char *)img->data_p;
-        int ox = -(int)(short)img->anix + fr.dx - g_asm_anim_minx;
-        int oy = -(int)(short)img->aniy + fr.dy - g_asm_anim_miny;
-        for (int y = 0; y < img->h; y++) {
-            int dy = oy + y; if (dy < 0 || dy >= h) continue;
-            int srcy = fr.mirror_v ? (img->h - 1 - y) : y;
-            for (int x = 0; x < img->w; x++) {
-                /* ani_flip mirrors horizontally; ani_flip_v mirrors vertically. */
-                int srcx = fr.mirror ? (img->w - 1 - x) : x;
-                int dx = ox + x; if (dx < 0 || dx >= w) continue;
-                unsigned char ci = sp[srcy * stride + srcx];
-                if (ci == 0) continue;
-                Uint32 r = 200, g = 200, b = 200;
-                if (pd) {
-                    unsigned short w15 = (unsigned short)(pd[ci*2] | (pd[ci*2+1] << 8));
-                    r = ((w15 >> 10) & 0x1F) << 3; g = ((w15 >> 5) & 0x1F) << 3; b = (w15 & 0x1F) << 3;
-                }
-                dst[dy * (pitch / 4) + dx] = (0xFFu << 24) | (r << 16) | (g << 8) | b;
-            }
-        }
-    }
+    AsmAnimCompositeFrame(a, fi, g_asm_anim_minx, g_asm_anim_miny, w, h,
+                          g_asm_anim_doc_uid, (unsigned int *)dst, pitch / 4);
     SDL_UnlockTexture(g_asm_anim_tex);
     g_asm_anim_last_drawn = fi;
 }

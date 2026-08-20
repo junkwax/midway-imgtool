@@ -8,6 +8,96 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.27.0] — Every reaction an opponent has, and where its anipoints sit
+
+### React: a tab for the animations that happen TO a fighter
+
+A fifth main-view tab, beside Image / World / Anim / Link. Load a character ASM
+and it reads the anitab, sorts out the animations that fighter plays *because
+the other one did something*, and lists them grouped in fight order: **Hit**,
+**Stagger**, **Knocked down**, **Flipped by**, **Getup**, **Death / fatality
+victim**.
+
+Pick one and the right-hand pane shows its preview with the anipoint crosshair,
+plus the per-frame table this tab exists for: `# · Piece · anix · aniy · dX ·
+dY · Size · Flip`, one row per tick of the sequence. The frame on screen is
+highlighted, clicking a row scrubs to it, and playback runs at the hardware tick
+rate. **Copy anipoints** puts the whole table on the clipboard as
+tab-separated text; **World View lane** stages the reaction so an attack can be
+timed against it.
+
+Sorting reads 1993 comments and label spellings, so it explains itself: every
+row's tooltip names the rule that placed it (`label 'kdown'`, `comment 'hit
+high'`, `attacker half of a fatality pair`), and **Show all animations** adds a
+*Not a reaction* group so nothing is ever hidden by a guess.
+
+The hard part is that attacker and victim halves of a fatality are named almost
+identically and sit next to each other in the file: `a_back_breaker` breaks a
+back, `a_back_broke` is the back being broken; `a_arm_rip` rips someone's arms,
+`a_torso_ripped` is the torso that got ripped; `a_st_drain` drains a soul,
+`a_drained` is the soul being drained. Only the second of each pair belongs
+here, so the rules key on the victim-side spelling and an explicit attacker veto
+runs before anything else. Checked against all ten character ASMs.
+
+Selecting a reaction writes through to the existing ASM globals, so it also arms
+the ASM Animations window, the IMG auto-open pass, and the World View lane —
+one click sets up every view that can show it.
+
+### ASM parser: opcode operands were eating frames
+
+`ani_adjustxy` writes its operands as the `.word` line under the opcode:
+
+    .long   ani_adjustxy
+    .word   -028h,008h
+    .long   JCSTUMBLE1
+
+The parser collected only `.long` tokens, so it read the **frame** after an
+adjust as that adjust's operand. Every `ani_adjustxy` silently ate a frame and
+contributed dx=dy=0, and an animation whose frames were all eaten that way
+vanished from the list entirely. `.word` operands now join the same ordered
+token stream, tagged so they can never be mistaken for a sprite symbol.
+
+`.long 0` (`ani_end`) also ends a *segment* rather than always the whole script
+— `frame_a9` in MKUTIL.ASM returns to its caller with carry set when it meets
+one, and the throw reactions use that to stage a sequence. Stopping at the first
+one showed a five-frame throw as a single frame.
+
+For Johnny Cage, before → after: **6 → 10** throw reactions listed, knocked down
+4 → 11 frames, sweep fall 6 → 8, decapitated dude fall 3 → 13, headhole fatality
+fall 3 → 13 — and the movement offsets are real instead of zero. This also
+corrects the ASM Animations window and the World View ASM lanes, which read the
+same parse. ASM export is unaffected: its `.word` tables live under their own
+labels.
+
+Frame compositing and bounds are now shared (`AsmAnimComputeBounds` /
+`AsmAnimCompositeFrame`) instead of living inside the ASM window.
+
+### Indexed Gradient: reverse it, seed it from the art, prune the saved ones
+
+**Reverse** flips the stop order so a ramp runs the other way without retyping
+it. **From Palette** samples the colors the gradient targets — the selected
+ones, or the whole palette when nothing is selected — sorts them by luma and
+lays them into the current stop count, so the ramp starts out matching the art
+instead of from grey.
+
+Saved ramps pack as many swatches per row as the window is actually wide enough
+for, rather than a fixed five, and each one carries a small delete handle in its
+corner that also rewrites the preset file.
+
+### Canvas chrome
+
+The zoom percentage moved from the canvas window's top-left corner to the right
+end of the document tab strip. In the corner it landed underneath the "Image"
+view tab, where dim grey on tab-coloured backing was unreadable; it now sits in
+amber beside the filename, and only on the Image canvas once you are off
+fit-to-window.
+
+The sprite timeline strip is a World View instrument — it stages a frame
+sequence and plays it against the world canvas — so it is drawn while World View
+owns the canvas and nowhere else. On the Image tab it only ate a strip of
+editing height. The playback clock runs regardless of the strip, so a sequence
+started in World keeps ticking when you flip to Image to paint.
+
 ## [v3.26.1] — A chop grid that stays put
 
 ### Break into Subframes remembers the grid you set

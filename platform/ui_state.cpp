@@ -146,6 +146,7 @@ WorldMarkedSequenceState &g_world_marked_state = WorldMarkedState();
 BddBackground &g_world_bg = WorldBackground();
 bool g_world_marked_panel_docked = false;
 bool g_seqscr_workspace = false;
+bool g_reactions_workspace = false;
 bool g_seqscr_frame_nav = false;
 
 int g_canvas_backdrop = CanvasBackdrop_Checker;

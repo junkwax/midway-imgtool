@@ -1018,8 +1018,9 @@ void DrawMainLayout(void)
        flipping a mode that is not currently showing. */
     if (ImGui::Shortcut(ImGuiKey_Tab, route)) {
         AnipointLink().enabled = false;
-        if (g_seqscr_workspace) {
+        if (g_seqscr_workspace || g_reactions_workspace) {
             g_seqscr_workspace = false;
+            g_reactions_workspace = false;
             g_world_state.enabled = false;
         } else {
             g_world_state.enabled = !g_world_state.enabled;
@@ -1548,6 +1549,7 @@ void DrawMainLayout(void)
                 if (g_world_state.enabled) {
                     g_seqscr_workspace = false;
                     AnipointLink().enabled = false;
+                    g_reactions_workspace = false;
                 }
             }
             if (ImGui::MenuItem("Sequence / Script Workspace", NULL,
@@ -1555,6 +1557,7 @@ void DrawMainLayout(void)
                 if (g_seqscr_workspace) {
                     g_world_state.enabled = false;
                     AnipointLink().enabled = false;
+                    g_reactions_workspace = false;
                 }
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
@@ -1571,8 +1574,20 @@ void DrawMainLayout(void)
                 if (AnipointLink().enabled) {
                     g_world_state.enabled = false;
                     g_seqscr_workspace = false;
+                    g_reactions_workspace = false;
                 }
             }
+            if (ImGui::MenuItem("Reactions Workspace", NULL,
+                                &g_reactions_workspace)) {
+                if (g_reactions_workspace) {
+                    g_world_state.enabled = false;
+                    g_seqscr_workspace = false;
+                    AnipointLink().enabled = false;
+                }
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Every reaction in a loaded character ASM, grouped, with the\n"
+                "anipoints of each frame in the reaction's sequence.");
             if (g_world_state.enabled) {
                 if (ImGui::MenuItem("Marked Row Playback", NULL, &g_world_marked_state.marked_play)) {
                     WorldMarkedRestart(g_world_marked_state);
@@ -1657,9 +1672,32 @@ void DrawMainLayout(void)
             snprintf(label, sizeof(label), "%s%s",
                      g_dirty ? "* " : "  ",     /* ASCII asterisk — universal 'modified' convention */
                      name);
+            /* Canvas zoom rides just left of the filename. It used to be
+               drawn at the canvas window's own top-left corner, which stacked
+               a dim grey percentage on top of the "Image" view tab — neither
+               was readable. Only the Image canvas has a zoom worth reporting,
+               and only once it is off fit-to-window. */
+            char zoom_label[32];
+            zoom_label[0] = 0;
+            bool image_canvas = !g_world_state.enabled && !g_seqscr_workspace &&
+                                !g_reactions_workspace && !AnipointLink().enabled;
+            if (image_canvas && !g_zoom_fit && g_doc->ilselected >= 0)
+                snprintf(zoom_label, sizeof(zoom_label), "%.0f%%", g_zoom * 100.0f);
+
             float text_w = ImGui::CalcTextSize(label).x + 16.0f;
+            float zoom_w = zoom_label[0]
+                         ? ImGui::CalcTextSize(zoom_label).x + 16.0f : 0.0f;
             float avail_w = ImGui::GetContentRegionAvail().x;
-            if (avail_w > text_w) ImGui::SameLine(ImGui::GetCursorPosX() + (avail_w - text_w));
+            if (avail_w > text_w + zoom_w)
+                ImGui::SameLine(ImGui::GetCursorPosX() + (avail_w - text_w - zoom_w));
+            if (zoom_label[0]) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.28f, 1.0f));
+                ImGui::TextUnformatted(zoom_label);
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Canvas zoom. Ctrl+wheel over the canvas to change it.");
+                ImGui::SameLine(0.0f, 16.0f);
+            }
             if (g_dirty) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.2f, 1.0f));
             ImGui::TextUnformatted(label);
             if (g_dirty) ImGui::PopStyleColor();
@@ -1681,12 +1719,19 @@ void DrawMainLayout(void)
        entry table inside the canvas, so it wants the whole canvas rect and
        neither the palette strip nor the sprite timeline underneath it. */
     g_world_marked_panel_docked = world_sequence_timeline || g_seqscr_workspace;
-    bool hide_bottom_palette = g_world_state.enabled || g_seqscr_workspace;
+    bool hide_bottom_palette = g_world_state.enabled || g_seqscr_workspace ||
+                               g_reactions_workspace;
     float bottom_palette_h = hide_bottom_palette ? 0.0f : PALETTE_H;
     float canvas_x = TOOLBAR_W;
     float canvas_y = work_y;
     float canvas_w = sw - TOOLBAR_W - PANEL_W;
-    float timeline_h = g_seqscr_workspace ? 0.0f : TIMELINE_H;
+    /* The sprite timeline is a World View instrument: it stages a frame
+       sequence and plays it against the world canvas. On the Image tab it only
+       ate a strip of editing height, so the strip is drawn while World View
+       owns the canvas and nowhere else. The playback clock further down runs
+       regardless of the strip, so a sequence started in World keeps ticking
+       when you flip over to Image to paint. */
+    float timeline_h = g_world_state.enabled ? TIMELINE_H : 0.0f;
     float canvas_h = work_h - bottom_palette_h - timeline_h;
     if (world_sequence_timeline) {
         int guide_w = g_world_state.w > 512 ? g_world_state.w : 512;

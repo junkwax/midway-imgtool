@@ -137,6 +137,26 @@ bool LoadAsmOpponent(const char *path);
 bool LoadAsmAnimations(const char *path);
 bool AutoLoadDefaultLiuKangOpponent(void);
 
+/* Path of the loaded player / fatality-opponent character ASM, "" if none.
+   The strings themselves are file-static to ui_modals.cpp; these read them. */
+const char *AsmAnimPlayerPath(void);
+const char *AsmAnimOpponentPath(void);
+
+/* Bounding box over EVERY frame of `a`, in anipoint-relative pixels: the
+   canvas a preview needs so playback neither jumps nor clips as frames change
+   size. Returns false when no piece of `a` resolves to a loaded IMG. */
+bool AsmAnimComputeBounds(const AsmAnim &a, int *out_minx, int *out_miny,
+                          int *out_w, int *out_h);
+
+/* Composite one frame of `a` into an ARGB8888 buffer `w` x `h` whose rows are
+   `dst_pitch_px` PIXELS apart, positioned by the bounds above. Pieces whose
+   owning document has since closed fall back to `fallback_doc_uid`. Does not
+   clear `dst` first — the caller owns the background. */
+void AsmAnimCompositeFrame(const AsmAnim &a, int frame_index,
+                           int minx, int miny, int w, int h,
+                           unsigned int fallback_doc_uid,
+                           unsigned int *dst, int dst_pitch_px);
+
 /* ---- Shared overlay state & functions ---- */
 extern int g_doc_tab_select_request;
 void ResetPerDocumentUiState(bool clear_pixel_clipboard = false);
@@ -705,6 +725,9 @@ extern BddBackground &g_world_bg;
    overlay: SEQSCR records animate, get inspected, and get edited there so
    World View stays the marked-row alignment surface it was. */
 extern bool g_seqscr_workspace;
+/* React canvas tab: the opponent's reactions and their per-frame anipoints.
+   Mutually exclusive with the other canvas modes, like g_seqscr_workspace. */
+extern bool g_reactions_workspace;
 /* Set while the Anim frame browser is the list Up/Down/Space act on, cleared
    when another list takes the keyboard. Same contract as g_palette_nav. */
 extern bool g_seqscr_frame_nav;

@@ -12,6 +12,7 @@
 #include "ui_canvas.h"
 #include "palette_math.h"
 #include "ui_palette.h"
+#include "ui_reactions.h"  /* React canvas tab */
 
 #include "anipoint.h"       /* secondary_anipoint_in_use */
 #include "paint_tools.h"     /* blur / smudge / content-aware erase */
@@ -1051,15 +1052,10 @@ void DrawCanvasPixelGrid(ImDrawList *dl, ImVec2 img_pos, ImVec2 img_sz,
                     gc, 0.5f);
 }
 
-void DrawCanvasZoomIndicator(bool zoom_fit, float zoom)
-{
-    if (zoom_fit) return;
-
-    char zbuf[32];
-    snprintf(zbuf, sizeof(zbuf), "%.0f%%", zoom * 100.0f);
-    ImGui::SetCursorPos(ImVec2(8, 4));
-    ImGui::TextDisabled("%s", zbuf);
-}
+/* The zoom readout now rides the right end of the document tab strip — it is
+   drawn inline beside the filename in DrawMainLayout (ui_main.cpp). Drawn here
+   at the canvas window's top-left corner it landed underneath the "Image" view
+   tab, where a dim grey percentage was unreadable against the tab it sat on. */
 
 void DrawCanvasDmaCompressionOverlay(ImDrawList *dl, IMG *img,
                                      ImVec2 img_pos, float sx, float sy)
@@ -8954,9 +8950,11 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
         /* Main-view modes deliberately live above the canvas rather than in
            the sidebar: Image is the normal pixel editor, World is the
            animation staging view, Anim is the SEQSCR sequence/script
-           workspace, and Link is the focused two-sprite anchor matcher. */
+           workspace, Link is the focused two-sprite anchor matcher, and React
+           lists an opponent's reactions with the anipoints of each frame. */
         auto current_canvas_mode = []() {
             return AnipointLink().enabled ? 3
+                 : g_reactions_workspace ? 4
                  : g_seqscr_workspace ? 2
                  : g_world_state.enabled ? 1 : 0;
         };
@@ -8977,6 +8975,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 g_world_state.enabled = false;
                 g_seqscr_workspace = false;
                 AnipointLink().enabled = false;
+                g_reactions_workspace = false;
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("World", NULL,
@@ -8985,6 +8984,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 g_world_state.enabled = true;
                 g_seqscr_workspace = false;
                 AnipointLink().enabled = false;
+                g_reactions_workspace = false;
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Anim", NULL,
@@ -8993,6 +8993,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 g_seqscr_workspace = true;
                 g_world_state.enabled = false;
                 AnipointLink().enabled = false;
+                g_reactions_workspace = false;
                 ImGui::EndTabItem();
             }
             if (ImGui::IsItemHovered())
@@ -9003,8 +9004,22 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 AnipointLink().enabled = true;
                 g_world_state.enabled = false;
                 g_seqscr_workspace = false;
+                g_reactions_workspace = false;
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem("React", NULL,
+                                    sync_canvas_tab && requested_canvas_mode == 4
+                                        ? ImGuiTabItemFlags_SetSelected : 0)) {
+                g_reactions_workspace = true;
+                g_world_state.enabled = false;
+                g_seqscr_workspace = false;
+                AnipointLink().enabled = false;
+                ImGui::EndTabItem();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Every reaction in a character ASM — the animations that\n"
+                                  "happen TO that fighter — with the anipoints of each\n"
+                                  "frame in the reaction's sequence.");
             /* Backdrop lives here rather than in a menu: it is a per-look
                decision you make while staring at the sprite, and it only
                applies to the Image canvas. */
@@ -9103,6 +9118,9 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
          * grid-selection) is skipped. */
         if (AnipointLink().enabled) {
             DrawAnipointLinkCanvas(avail, img_pos, io);
+        }
+        else if (g_reactions_workspace) {
+            DrawReactionWorkspace(avail, img_pos, io);
         }
         else if (g_seqscr_workspace) {
             DrawSeqScrWorkspace(avail, img_pos, io);
@@ -9336,7 +9354,6 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                          img_pos, sx, sy, true);
             }
 
-            DrawCanvasZoomIndicator(g_zoom_fit, g_zoom);
         } else {
             g_zoom_pending_steps = 0;
             g_zoom_pending_fit = false;
