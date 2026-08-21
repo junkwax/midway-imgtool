@@ -10940,44 +10940,23 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
             }
         }
 
-        /* --- Hitbox overlay + corner dragging ---
-           Suppressed when the MK2 strike-table overlay is showing a move,
-           so the two hitbox systems don't pile on top of each other. */
-        bool mk2_overlay_active = g_show_mk2 && Mk2CurrentRecord() >= 0;
-        if (g_show_hitbox && !canvas_input_blocked && !mk2_overlay_active && !g_world_state.enabled && !timeline_composite_preview_active) {
-            ImDrawList *dl = ImGui::GetWindowDrawList();
-            bool hovering[4] = {false, false, false, false};
-            DrawCanvasHitboxOverlay(dl, img_pos, sx, sy,
-                                    g_hitbox_x, g_hitbox_y,
-                                    g_hitbox_w, g_hitbox_h,
-                                    mouse, hovering);
-            for (int c = 0; c < 4; c++) {
-                if (hovering[c] && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                    g_hitbox_drag_corner = c;
-                    undo_push();
-                    widget_consumed_click = true;
-                }
-            }
-            if (g_hitbox_drag_corner >= 0 && mbdn) {
-                int mx = (int)((mouse.x - img_pos.x) / sx);
-                int my = (int)((mouse.y - img_pos.y) / sy);
-                CanvasResizeRectFromCorner(g_hitbox_drag_corner, mx, my,
-                                           &g_hitbox_x, &g_hitbox_y,
-                                           &g_hitbox_w, &g_hitbox_h);
-            } else if (!mbdn && g_hitbox_drag_corner >= 0) {
-                undo_push();
-                g_hitbox_drag_corner = -1;
-            }
-        }
+        /* --- Strike-box overlay (MKSTK.ASM) ---
+           The one hitbox the game has. Draws the collision box of the move
+           the selected frame belongs to, with corner handles that write
+           straight into the MKSTK document.
 
-        /* --- MK2 strike-table overlay (separate from IMG hitbox) ---
-           Draws the currently-selected MKSTK.ASM move's collision box on
-           the sprite, with corner handles for drag-to-resize. Magenta to
-           distinguish from the cyan IMG-hitbox overlay.
-           Drawing always runs whenever a move is selected — the editor
-           panel can hold focus (which sets canvas_input_blocked) without
-           hiding the box. Only the corner-drag interaction is gated. */
-        int mk2_rec = (g_show_mk2 && !g_world_state.enabled && !timeline_composite_preview_active) ? Mk2CurrentRecord() : -1;
+           There used to be a second, cyan overlay over g_hitbox_x/y/w/h here.
+           Those were four app-wide globals attached to no sprite, loaded from
+           nothing and saved nowhere, so it drew a box that could not mean
+           anything; the Hitboxes toggle now shows this one instead.
+
+           Drawing runs whenever a move resolves -- the editor panel can hold
+           focus (which sets canvas_input_blocked) without hiding the box.
+           Only the corner-drag interaction is gated. */
+        bool strike_visible = (g_show_hitbox || g_show_mk2) &&
+                              !g_world_state.enabled &&
+                              !timeline_composite_preview_active;
+        int mk2_rec = strike_visible ? Mk2CurrentRecord() : -1;
         if (mk2_rec >= 0) {
             const mk2::StrikeRecord &rec = g_mk2_doc.records[mk2_rec];
             int hx = rec.fields[mk2::F_X_OFFSET].has_value ? (int)rec.fields[mk2::F_X_OFFSET].value : 0;

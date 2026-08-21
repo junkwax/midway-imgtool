@@ -38,6 +38,11 @@
 #include "dma_pack.h"
 #include "compat.h"
 
+/* The Sprite tab's Hitbox section, defined lower down beside the other
+   panel bodies. It edits the MKSTK.ASM strike record for the selected
+   frame's move -- see DrawStrikeBoxPanel. */
+static void DrawStrikeBoxPanel(void);
+
 extern "C" { extern struct SDL_Color g_palette[256]; }
 extern int g_img_tex_idx;
 
@@ -1565,7 +1570,11 @@ void DrawMainLayout(void)
             ImGui::EndDisabled();
             ImGui::Separator();
             ImGui::MenuItem("Anim Points",     NULL, &g_show_points);
-            ImGui::MenuItem("Hitboxes",        NULL, &g_show_hitbox);
+            ImGui::MenuItem("Strike Box",      NULL, &g_show_hitbox);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Draw the MKSTK.ASM collision box of the move the\n"
+                                  "selected frame belongs to, and drag its corners.\n"
+                                  "Edit the numbers in Sprite > Hitbox.");
             ImGui::MenuItem("Anipoint Warnings", NULL, &g_show_anipoint_warnings);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Amber ! on image-list rows whose anipoint sits outside the\n"
@@ -2914,23 +2923,15 @@ void DrawMainLayout(void)
             ImGui::TextWrapped("Stage a Reference and Target sprite from any open IMG tab in the main view. Drag from a reference feature to the matching target feature to set the target anipoint.");
         }
 
-        /* --- Hitbox Editor --- */
+        /* Defined further down, next to the other panel bodies. */
+        /* --- Hitbox Editor ---
+           This used to be four sliders over app-wide globals with a clipboard
+           button: nothing loaded them, nothing saved them, and they belonged
+           to no sprite. The box that actually exists is the MKSTK.ASM strike
+           record, so the panel edits that -- for whichever move the selected
+           frame belongs to -- and Save writes the .ASM back. */
         if (ImGui::CollapsingHeader("Hitbox")) {
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("X##hbx",  &g_hitbox_x, -1024, 1024)) undo_push();
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("Y##hby",  &g_hitbox_y, -1024, 1024)) undo_push();
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("W##hbw",  &g_hitbox_w, 1, 2048)) undo_push();
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("H##hbh",  &g_hitbox_h, 1, 2048)) undo_push();
-
-            ImGui::Spacing();
-            if (ImGui::Button("Copy ASM to Clipboard", ImVec2(-1, 0))) {
-                char buf[128];
-                snprintf(buf, sizeof(buf), "\t.word   %d,%d,%d,%d\t; Hitbox X, Y, W, H\n", g_hitbox_x, g_hitbox_y, g_hitbox_w, g_hitbox_h);
-                ImGui::SetClipboardText(buf);
-            }
+            DrawStrikeBoxPanel();
         }
 
         ImGui::EndTabItem();
@@ -4060,6 +4061,191 @@ void update_drift_texture(IMG *img)
         }
     }
     SDL_UnlockTexture(g_load2_drift_tex);
+}
+
+/* ---- Strike-box panel (Sprite tab > Hitbox) ---------------------------
+   The numeric half of the canvas overlay. Both edit one thing: the MKSTK.ASM
+   record for the move the selected frame belongs to. There is deliberately no
+   second, IMG-local hitbox any more -- one box, one place it is stored, one
+   Save that writes it where the game reads it. */
+static void DrawStrikeBoxPanel(void)
+{
+    if (g_mk2_doc.records.empty()) {
+        ImGui::TextWrapped("No strike table loaded. Open MKSTK.ASM in "
+                           "Tools > MK2 Hitboxes to edit collision boxes.");
+        return;
+    }
+
+    ImGui::Checkbox("Follow selected frame##mk2_follow", &g_mk2_follow_frame);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Point this panel at whichever move the selected sprite\\n"
+                          "belongs to, worked out from the character ASM: the\\n"
+                          "animation that draws the frame names the strike\\n"
+                          "(a_jchikick -> stk_jchikick). Off, the move stays where\\n"
+                          "you put it in the MK2 Hitboxes window.");
+
+    /* What the selected sprite resolved to, and why. */
+    Document *doc = document_get(document_active_index());
+    std::string anim;
+    bool bound = false;
+    int rec = -1;
+    if (doc)
+        rec = Mk2StrikeRecordForSprite(doc->uid, doc->ilselected, &anim, &bound);
+
+    IMG *sel = (g_doc && g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    std::string sprite = sel ? img_name_string(sel) : std::string();
+
+    /* Following puts the panel selection on the resolved record, so the
+       manual picker in the MK2 window and this panel never disagree. Not
+       following, the panel edits whatever that window has selected. */
+    int edit_rec = g_mk2_follow_frame && rec >= 0 ? rec : Mk2CurrentRecord();
+
+    if (edit_rec < 0) {
+        if (anim.empty() && !sprite.empty())
+            ImGui::TextWrapped("%s is not drawn by any animation in the loaded "
+                               "character ASM, so there is no move to find a box "
+                               "for. Load the character's MK*.ASM in the ASM "
+                               "Animations window.", sprite.c_str());
+        else if (!anim.empty())
+            ImGui::TextWrapped("%s belongs to %s, which has no strike box under "
+                               "any name imgtool recognises.",
+                               sprite.c_str(), anim.c_str());
+        else
+            ImGui::TextWrapped("Select a sprite, or pick a move in the MK2 "
+                               "Hitboxes window.");
+    }
+
+    /* Binding control: offered whenever we know the animation, so a wrong
+       guess can be corrected as easily as a missing one. */
+    if (!anim.empty()) {
+        std::string existing = Mk2BoundStrikeFor(anim.c_str());
+        ImGui::TextDisabled("%s", anim.c_str());
+        ImGui::SameLine();
+        if (bound) ImGui::TextDisabled("(bound)");
+        else if (rec >= 0) ImGui::TextDisabled("(matched by name)");
+        else ImGui::TextDisabled("(unmatched)");
+
+        const char *preview = existing.empty() ? "Bind to move..."
+                                               : existing.c_str();
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##mk2_bind", preview)) {
+            std::vector<std::string> labels;
+            if (g_mk2_char_idx >= 0 &&
+                g_mk2_char_idx < (int)g_mk2_doc.char_tables.size())
+                labels = g_mk2_doc.char_tables[g_mk2_char_idx].moves;
+            else
+                for (size_t i = 0; i < g_mk2_doc.records.size(); i++)
+                    labels.push_back(g_mk2_doc.records[i].label);
+
+            if (!existing.empty() && ImGui::Selectable("(clear binding)")) {
+                Mk2SetStrikeBinding(anim.c_str(), NULL);
+                std::string err;
+                if (!Mk2SaveStrikeBindings(&err))
+                    snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", err.c_str());
+                else
+                    snprintf(g_restore_msg, sizeof(g_restore_msg),
+                             "Cleared the binding for %s.", anim.c_str());
+                g_restore_msg_timer = 4.0f;
+            }
+            for (size_t i = 0; i < labels.size(); i++) {
+                bool is_sel = (labels[i] == existing);
+                if (ImGui::Selectable(labels[i].c_str(), is_sel)) {
+                    Mk2SetStrikeBinding(anim.c_str(), labels[i].c_str());
+                    std::string err;
+                    if (!Mk2SaveStrikeBindings(&err))
+                        snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", err.c_str());
+                    else
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 "Bound %s to %s, remembered beside MKSTK.ASM.",
+                                 anim.c_str(), labels[i].c_str());
+                    g_restore_msg_timer = 5.0f;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Pin this animation to a move when the names do not\\n"
+                              "line up (stk_jc_split has no a_jc_split). Written to\\n"
+                              "MKSTK.imgtool beside the source, so it survives a\\n"
+                              "restart and travels with the .ASM.");
+        ImGui::Separator();
+    }
+
+    if (edit_rec < 0 || edit_rec >= (int)g_mk2_doc.records.size()) return;
+
+    const mk2::StrikeRecord &r = g_mk2_doc.records[(size_t)edit_rec];
+    ImGui::Text("%s", r.label.c_str());
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("MKSTK.ASM line %d", r.label_line);
+
+    /* x/y are signed offsets from the fighter's own origin, w/h a size, which
+       is why they are not clamped to the sprite's box: a strike legitimately
+       reaches outside the art. */
+    struct { int field; const char *label; } rows[4] = {
+        { mk2::F_X_OFFSET, "X##stk_x" },
+        { mk2::F_Y_OFFSET, "Y##stk_y" },
+        { mk2::F_X_SIZE,   "W##stk_w" },
+        { mk2::F_Y_SIZE,   "H##stk_h" },
+    };
+    for (int i = 0; i < 4; i++) {
+        const mk2::StrikeField &f = r.fields[rows[i].field];
+        int v = f.has_value ? (int)f.value : 0;
+        ImGui::SetNextItemWidth(-1);
+        ImGui::BeginDisabled(!f.has_value);
+        if (ImGui::InputInt(rows[i].label, &v, 1, 8)) {
+            mk2::undo_push(&g_mk2_doc, edit_rec, true);
+            mk2::set_value(&g_mk2_doc, edit_rec, rows[i].field, v);
+        }
+        ImGui::EndDisabled();
+        if (!f.has_value && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("This field is a symbol (%s), not a number -- edit it\\n"
+                              "in the MK2 Hitboxes window.", f.raw.c_str());
+    }
+
+    /* Damage is one word, two bytes: hit in the high half, block in the low. */
+    const mk2::StrikeField &dmg = r.fields[mk2::F_DAMAGE];
+    if (dmg.has_value) {
+        int hit = mk2::damage_hit((int)dmg.value);
+        int blk = mk2::damage_block((int)dmg.value);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputInt("Hit dmg##stk_hit", &hit, 1, 8)) {
+            if (hit < 0) hit = 0;
+            if (hit > 255) hit = 255;
+            mk2::undo_push(&g_mk2_doc, edit_rec, true);
+            mk2::set_value(&g_mk2_doc, edit_rec, mk2::F_DAMAGE,
+                           mk2::pack_damage(hit, blk));
+        }
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputInt("Block dmg##stk_blk", &blk, 1, 8)) {
+            if (blk < 0) blk = 0;
+            if (blk > 255) blk = 255;
+            mk2::undo_push(&g_mk2_doc, edit_rec, true);
+            mk2::set_value(&g_mk2_doc, edit_rec, mk2::F_DAMAGE,
+                           mk2::pack_damage(hit, blk));
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(!g_mk2_doc.dirty);
+    if (ImGui::Button("Save MKSTK.ASM", ImVec2(-1, 0))) {
+        std::string err;
+        if (mk2::save(&g_mk2_doc, &err)) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "Saved MKSTK.ASM.");
+        } else {
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Save failed: %s", err.c_str());
+        }
+        g_restore_msg_timer = 5.0f;
+    }
+    ImGui::EndDisabled();
+    if (g_mk2_doc.dirty) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.2f, 1.0f), "*");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Writes every edited record back into MKSTK.ASM,\\n"
+                          "leaving untouched lines, comments and symbolic\\n"
+                          "literals exactly as they were.");
 }
 
 /* ---- Document tab bar ---- */

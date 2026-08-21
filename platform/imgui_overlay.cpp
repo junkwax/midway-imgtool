@@ -41,6 +41,7 @@
 #include "ui_tools.h"
 #include "world_render.h"
 #include "anipoint.h"
+#include "strike_bind.h"   /* sprite -> strike-box name matching */
 #include "anipoint_edit.h"
 #include "img_util.h"
 #include "sprite_resize_ops.h"
@@ -511,6 +512,155 @@ static char                 g_mk2_fatality_insert_combo[256] = "\t.word\tsw_righ
 
 
 
+
+/* ---- Sprite -> strike box ------------------------------------------------
+   See ui_internal.h. The chain is sprite -> the animation that draws it (from
+   the character ASM imgtool already parses) -> the strike spelled after that
+   animation. */
+bool g_mk2_follow_frame = true;
+static std::vector<strike_bind::Binding> g_mk2_bindings;
+static std::vector<std::string>          g_mk2_binding_comments;
+
+std::string Mk2AnimLabelForSprite(unsigned int doc_uid, int img_idx,
+                                  bool *out_opponent)
+{
+    if (out_opponent) *out_opponent = false;
+    if (!doc_uid || img_idx < 0) return std::string();
+
+    const std::vector<AsmAnim> *sets[2] = { &g_asm_anims, &g_asm_opp_anims };
+    for (int s = 0; s < 2; s++) {
+        const std::vector<AsmAnim> &anims = *sets[s];
+        for (size_t a = 0; a < anims.size(); a++) {
+            for (size_t f = 0; f < anims[a].frames.size(); f++) {
+                const AsmAnimFrame &fr = anims[a].frames[f];
+                for (size_t p = 0; p < fr.piece_img.size(); p++) {
+                    if (fr.piece_img[p] != img_idx) continue;
+                    if (p >= fr.piece_doc_uid.size()) continue;
+                    if (fr.piece_doc_uid[p] != doc_uid) continue;
+                    if (out_opponent) *out_opponent = (s == 1);
+                    return anims[a].label;
+                }
+            }
+        }
+    }
+    return std::string();
+}
+
+std::string Mk2BoundStrikeFor(const char *anim_label)
+{
+    if (!anim_label || !anim_label[0]) return std::string();
+    for (size_t i = 0; i < g_mk2_bindings.size(); i++)
+        if (ascii_iequals(g_mk2_bindings[i].anim, anim_label))
+            return g_mk2_bindings[i].strike;
+    return std::string();
+}
+
+int Mk2StrikeRecordForSprite(unsigned int doc_uid, int img_idx,
+                             std::string *out_anim, bool *out_bound)
+{
+    if (out_anim) out_anim->clear();
+    if (out_bound) *out_bound = false;
+    if (g_mk2_doc.records.empty()) return -1;
+
+    std::string anim = Mk2AnimLabelForSprite(doc_uid, img_idx, NULL);
+    if (anim.empty()) return -1;
+    if (out_anim) *out_anim = anim;
+
+    /* A binding the user made outranks anything a rule can infer. */
+    std::string bound = Mk2BoundStrikeFor(anim.c_str());
+    if (!bound.empty()) {
+        if (out_bound) *out_bound = true;
+        return mk2::find_record(&g_mk2_doc, bound.c_str());
+    }
+
+    /* Match within this character's own table. Across the whole file the
+       two-letter code is the only thing separating stk_jchikick from
+       stk_lkhikick, and one of the name rules is allowed to drop it. */
+    std::vector<std::string> labels;
+    if (g_mk2_char_idx >= 0 && g_mk2_char_idx < (int)g_mk2_doc.char_tables.size())
+        labels = g_mk2_doc.char_tables[g_mk2_char_idx].moves;
+    else
+        for (size_t i = 0; i < g_mk2_doc.records.size(); i++)
+            labels.push_back(g_mk2_doc.records[i].label);
+
+    int idx = strike_bind::MatchStrikeForAnim(anim, labels);
+    if (idx < 0) return -1;
+    return mk2::find_record(&g_mk2_doc, labels[(size_t)idx].c_str());
+}
+
+void Mk2FollowSelectedSprite(void)
+{
+    if (!g_mk2_follow_frame || g_mk2_doc.records.empty()) return;
+
+    /* Only on a real change of selection, so the panel's own move picker is
+       not fought over every frame. */
+    static int s_last_doc = -2;
+    static int s_last_img = -2;
+    int doc_idx = document_active_index();
+    int img_idx = g_doc ? g_doc->ilselected : -1;
+    if (doc_idx == s_last_doc && img_idx == s_last_img) return;
+    s_last_doc = doc_idx;
+    s_last_img = img_idx;
+
+    Document *doc = document_get(doc_idx);
+    if (!doc) return;
+    int rec = Mk2StrikeRecordForSprite(doc->uid, img_idx, NULL, NULL);
+    if (rec >= 0) Mk2SelectRecord(rec);
+}
+
+void Mk2LoadStrikeBindings(void)
+{
+    g_mk2_bindings.clear();
+    g_mk2_binding_comments.clear();
+    std::string path = strike_bind::SidecarPathFor(g_mk2_doc.source_path);
+    if (path.empty()) return;
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return;                 /* no sidecar yet is the normal case */
+    std::string text;
+    char buf[1024];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
+    fclose(f);
+    g_mk2_bindings = strike_bind::ParseSidecar(text);
+    g_mk2_binding_comments = strike_bind::SidecarComments(text);
+}
+
+bool Mk2SaveStrikeBindings(std::string *err)
+{
+    std::string path = strike_bind::SidecarPathFor(g_mk2_doc.source_path);
+    if (path.empty()) {
+        if (err) *err = "No MKSTK.ASM is loaded.";
+        return false;
+    }
+    std::string text = strike_bind::WriteSidecar(g_mk2_bindings,
+                                                 g_mk2_binding_comments);
+    FILE *f = fopen(path.c_str(), "wb");
+    if (!f) {
+        if (err) *err = "Could not write " + path;
+        return false;
+    }
+    fwrite(text.data(), 1, text.size(), f);
+    fclose(f);
+    return true;
+}
+
+void Mk2SetStrikeBinding(const char *anim_label, const char *strike_label)
+{
+    if (!anim_label || !anim_label[0]) return;
+    for (size_t i = 0; i < g_mk2_bindings.size(); i++) {
+        if (!ascii_iequals(g_mk2_bindings[i].anim, anim_label)) continue;
+        if (!strike_label || !strike_label[0])
+            g_mk2_bindings.erase(g_mk2_bindings.begin() + (long)i);
+        else
+            g_mk2_bindings[i].strike = strike_label;
+        return;
+    }
+    if (!strike_label || !strike_label[0]) return;
+    strike_bind::Binding b;
+    b.anim = anim_label;
+    b.strike = strike_label;
+    g_mk2_bindings.push_back(b);
+}
 
 /* Resolve the current MK2 record index, or -1 if no valid selection. */
 int Mk2CurrentRecord(void) {
@@ -1233,6 +1383,7 @@ static bool HasDirtyDocuments(void)
 void imgui_overlay_render(void)
 {
     ClearWorldTempTextures();
+    Mk2FollowSelectedSprite();
     DrawMainLayout();
     
     /* Flush to renderer */

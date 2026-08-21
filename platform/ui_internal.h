@@ -690,6 +690,35 @@ extern int  g_snap_guide_x;
 extern int  g_snap_guide_y;
 
 int Mk2CurrentRecord(void);
+
+/* ---- Which strike box belongs to the sprite on screen -------------------
+   MKSTK.ASM records the boxes; nothing in it says which frames they are armed
+   for, because the move's own code passes a slot number at runtime. The link
+   is in the names (stk_jchikick / a_jchikick), so it needs the character ASM
+   loaded to resolve; see platform/strike_bind.h for the matching rules and
+   the sidecar that carries the pairs no rule can reach. */
+
+/* The animation drawing this sprite, "" when none does. `out_opponent` says
+   which ASM it came from. */
+std::string Mk2AnimLabelForSprite(unsigned int doc_uid, int img_idx,
+                                  bool *out_opponent);
+/* Record index in g_mk2_doc for the sprite, or -1. `out_anim` receives the
+   animation it went through, `out_bound` whether a sidecar binding (rather
+   than the name matcher) decided it. */
+int Mk2StrikeRecordForSprite(unsigned int doc_uid, int img_idx,
+                             std::string *out_anim, bool *out_bound);
+/* Move the panel selection onto the strike for the selected sprite. Cheap to
+   call every frame: it only acts when the selection actually changed. */
+void Mk2FollowSelectedSprite(void);
+extern bool g_mk2_follow_frame;
+
+/* Sidecar bindings, beside MKSTK.ASM. Loaded with the .ASM, written when a
+   binding is set. */
+void Mk2LoadStrikeBindings(void);
+bool Mk2SaveStrikeBindings(std::string *err);
+void Mk2SetStrikeBinding(const char *anim_label, const char *strike_label);
+/* The strike currently bound to `anim_label` by the sidecar, or "". */
+std::string Mk2BoundStrikeFor(const char *anim_label);
 void selection_begin_add_drag(int sw, int sh, bool add);
 void selection_finish_add_drag(int sw, int sh);
 bool BuildClipboardPaletteMap(const PAL *target_pal, unsigned char map[256]);

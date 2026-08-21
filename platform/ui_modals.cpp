@@ -3977,6 +3977,9 @@ void DrawMk2HitboxWindow(void)
             g_mk2_char_idx = 0;
             g_mk2_move_idx = 0;
             g_mk2_search[0] = '\0';
+            /* The sidecar rides with the .ASM -- its bindings name records in
+               this file and mean nothing without them. */
+            Mk2LoadStrikeBindings();
             /* Fresh load wipes any prior undo/redo history — those entries
                referenced records that may no longer match the new doc. */
             g_mk2_doc.undo_stack.clear();
@@ -4014,6 +4017,7 @@ void DrawMk2HitboxWindow(void)
                      (int)g_mk2_doc.records.size(), (int)g_mk2_doc.char_tables.size());
             g_mk2_status = buf;
             g_mk2_status_sticky = false;
+            Mk2LoadStrikeBindings();
             /* Keep the selection if the labels still resolve, otherwise
                fall back to the first move. */
             int new_char = g_mk2_char_idx;

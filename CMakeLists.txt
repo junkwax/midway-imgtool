@@ -105,6 +105,7 @@ set(IMGTOOL_SOURCES
     platform/ui_autochop.cpp
     platform/ui_reactions.cpp
     platform/reaction_class.cpp
+    platform/strike_bind.cpp
     platform/ui_bodysplit.cpp
     platform/body_split.cpp
     platform/world_render.cpp
@@ -285,7 +286,7 @@ add_test(NAME world_blit COMMAND world_blit_test)
 # overlay split proceeds.
 foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_level
                   anipoint_mirror tbl_diff img_util body_split gif_trim dma_pack
-                  stamp_erase bdd_bg document reaction_class)
+                  stamp_erase bdd_bg document reaction_class strike_bind)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp

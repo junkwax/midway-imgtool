@@ -135,7 +135,7 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
         action_button(ICON_POINTS, ICON_POINTS_TXT, "Toggle Anim Points", false, g_show_points, [&]() {
             g_show_points = !g_show_points;
         });
-        action_button(ICON_HITBOX, ICON_HITBOX_TXT, "Toggle Hitbox", false, g_show_hitbox, [&]() {
+        action_button(ICON_HITBOX, ICON_HITBOX_TXT, "Toggle Strike Box", false, g_show_hitbox, [&]() {
             g_show_hitbox = !g_show_hitbox;
         });
         action_button(ICON_FLIP_PREVIEW, ICON_FLIP_PREVIEW_TXT,
