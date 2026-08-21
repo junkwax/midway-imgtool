@@ -1225,24 +1225,10 @@ static bool HasDirtyDocuments(void)
     return FindDirtyDocumentIndex() >= 0;
 }
 
-static void RequestCloseDocumentTab(int idx)
-{
-    Document *doc = document_get(idx);
-    if (!doc) return;
-    if (doc->dirty) {
-        ActivateDocumentTab(idx);
-        g_pending_action = PendingAction::CloseTab;
-        g_pending_tab_index = idx;
-        g_show_unsaved_confirm = true;
-        return;
-    }
-    bool closing_active = (idx == document_active_index());
-    document_close_tab(idx);
-    ResetPerDocumentUiState(false);
-    if (closing_active) g_doc_tab_select_request = document_active_index();
-}
-
-/* now lives in ui_main.cpp: float DrawDocumentTabBar */
+/* now lives in ui_main.cpp: RequestCloseDocumentTab, DrawDocumentTabBar. The
+   copy that used to sit here armed a CloseTab without recording which
+   document it targeted, so it would have inherited the stale-target bug the
+   uid rework fixed. */
 
 void imgui_overlay_render(void)
 {

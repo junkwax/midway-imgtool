@@ -3262,6 +3262,10 @@ static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
 
     snprintf(key, sizeof(key), "slot.%d.visible", slot);
     WvpWriteBool(f, key, state.lane_visible[slot]);
+    /* Row order rank. Absent in projects saved before rows could be moved,
+       which read back as -1 and are re-ranked in build order on first draw. */
+    snprintf(key, sizeof(key), "slot.%d.order", slot);
+    WvpWriteInt(f, key, state.lane_order[slot]);
     snprintf(key, sizeof(key), "slot.%d.hold_end", slot);
     WvpWriteBool(f, key, state.hold_end[slot]);
     snprintf(key, sizeof(key), "slot.%d.mirror", slot);
@@ -3335,6 +3339,7 @@ static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
 {
     std::string prefix = "slot." + std::to_string(slot) + ".";
     state.lane_visible[slot] = WvpGetBool(kv, prefix + "visible", state.lane_visible[slot]);
+    state.lane_order[slot] = WvpGetInt(kv, prefix + "order", -1);
     state.hold_end[slot] = WvpGetBool(kv, prefix + "hold_end", state.hold_end[slot]);
     bool *mirror = WorldMarkedMirrorFlag(state, slot);
     if (mirror) *mirror = WvpGetBool(kv, prefix + "mirror", *mirror);
@@ -8043,6 +8048,17 @@ void DrawNewBlankImageDialog(void)
     ImGui::EndPopup();
 }
 
+/* Disarm whatever the unsaved-changes confirm had queued. Every exit that is
+   not "go do the thing" runs through here, so no half-cleared pending state
+   survives to aim the next prompt at a document that is no longer there. */
+static void ClearPendingUnsavedAction(void)
+{
+    g_pending_action = PendingAction::None;
+    g_pending_action_path.clear();
+    g_pending_tab_index = -1;
+    g_pending_tab_uid = 0;
+}
+
 /* Run whatever action queued the unsaved-changes confirm. Called once the
    user has chosen Save or Discard. After running, g_pending_action is reset
    to None so the dialog never re-fires. */
@@ -8051,11 +8067,8 @@ static void RunPendingAction(void)
     PendingAction act = g_pending_action;
     std::string   path = g_pending_action_path;
     int           tab_idx = g_pending_tab_index;
-    Document     *tab_doc = g_pending_tab_doc;
-    g_pending_action = PendingAction::None;
-    g_pending_action_path.clear();
-    g_pending_tab_index = -1;
-    g_pending_tab_doc = NULL;
+    unsigned int  tab_uid = g_pending_tab_uid;
+    ClearPendingUnsavedAction();
     switch (act) {
         case PendingAction::Quit: {
             int dirty_idx = FindDirtyDocumentIndex();
@@ -8070,15 +8083,14 @@ static void RunPendingAction(void)
         case PendingAction::OpenPath:       OpenImgFile(path); break;
         case PendingAction::OpenLodDialog:  OpenFileDialog(FileDialogMode::OpenLod); break;
         case PendingAction::CloseTab: {
-            /* Resolve by document pointer, not by the index captured when the
+            /* Resolve by document uid, not by the index captured when the
                prompt opened. Anything that opens or reorders tabs while the
                modal is up (the Anim tab's sibling-IMG auto-open does exactly
                that) shifts indices, and closing a stale index closes somebody
                else's file. */
             int resolved = -1;
-            if (tab_doc) {
-                for (int i = 0; i < document_tab_count(); i++)
-                    if (document_get(i) == tab_doc) { resolved = i; break; }
+            if (tab_uid) {
+                resolved = document_index_of_uid(tab_uid);
                 if (resolved < 0) break;   /* already gone; nothing to close */
             } else {
                 resolved = (tab_idx >= 0) ? tab_idx : document_active_index();
@@ -8136,10 +8148,7 @@ void ModalWatchdog(bool &flag, const char *name)
        deliberately: silently closing a tab or quitting after a prompt the user
        never saw would be worse than doing nothing. */
     flag = false;
-    g_pending_action = PendingAction::None;
-    g_pending_action_path.clear();
-    g_pending_tab_index = -1;
-    g_pending_tab_doc = NULL;
+    ClearPendingUnsavedAction();
     g_pending_quit = false;
     snprintf(g_restore_msg, sizeof(g_restore_msg),
              "Recovered from a '%s' dialog that could not be displayed; the action was cancelled.",
@@ -8151,6 +8160,16 @@ void ModalWatchdog(bool &flag, const char *name)
 void DrawUnsavedChangesConfirm(void)
 
 {
+    /* Esc and the popup's own title-bar X clear the flag without running any
+       of the buttons. That used to leave the action armed and the target uid
+       set, so the next prompt reused stale aim. Treat a dismiss as Cancel. */
+    static bool s_prompt_was_open = false;
+    if (s_prompt_was_open && !g_show_unsaved_confirm &&
+        g_pending_action != PendingAction::None) {
+        if (g_pending_action == PendingAction::Quit) g_pending_quit = false;
+        ClearPendingUnsavedAction();
+    }
+
     /* Legacy: g_pending_quit is set by Esc/window-close; treat it as the
        Quit pending action if nothing else queued. */
     if (g_pending_quit && g_pending_action == PendingAction::None && !g_show_unsaved_confirm) {
@@ -8161,6 +8180,7 @@ void DrawUnsavedChangesConfirm(void)
             g_show_unsaved_confirm = true;
         }
     }
+    s_prompt_was_open = g_show_unsaved_confirm;
     if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
     /* Always (re)centre on appearing. ImGui persists window positions in
        imgui.ini, so a modal that was once dragged off-screen — or that was
@@ -8185,8 +8205,9 @@ void DrawUnsavedChangesConfirm(void)
        this the prompt looks like it is asking about whatever tab you were
        just looking at. */
     {
-        Document *target = (g_pending_action == PendingAction::CloseTab && g_pending_tab_doc)
-                         ? g_pending_tab_doc : g_doc;
+        Document *target = (g_pending_action == PendingAction::CloseTab && g_pending_tab_uid)
+                         ? document_from_uid(g_pending_tab_uid) : g_doc;
+        if (!target) target = g_doc;   /* closed underneath us; name the active file */
         if (target && target->fname_s[0])
             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "%s", target->fname_s);
         else
@@ -8206,9 +8227,7 @@ void DrawUnsavedChangesConfirm(void)
                pending action since the user needs to drive that flow manually.
                (Avoids racing a fresh Save dialog against an Open dialog.) */
             g_pending_quit = false;
-            g_pending_action = PendingAction::None;
-            g_pending_action_path.clear();
-            g_pending_tab_index = -1;
+            ClearPendingUnsavedAction();
             OpenFileDialog(FileDialogMode::SaveImg);
         }
     }
@@ -8223,9 +8242,7 @@ void DrawUnsavedChangesConfirm(void)
     if (ImGui::Button("Cancel", ImVec2(80, 0))) {
         g_show_unsaved_confirm = false;
         if (g_pending_action == PendingAction::Quit) g_pending_quit = false;
-        g_pending_action = PendingAction::None;
-        g_pending_action_path.clear();
-        g_pending_tab_index = -1;
+        ClearPendingUnsavedAction();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

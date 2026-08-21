@@ -1659,12 +1659,19 @@ WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
 
 WorldMarkedPanelLayout ComputeWorldMarkedPanelLayout(ImVec2 avail,
                                                      ImVec2 img_pos,
-                                                     int lane_count)
+                                                     int lane_count,
+                                                     int hidden_lane_count)
 {
     WorldMarkedPanelLayout layout;
     layout.width = avail.x - 16.0f;
     if (layout.width < 240.0f) layout.width = 240.0f;
-    layout.height = 54.0f + (float)lane_count * 104.0f;
+    if (hidden_lane_count < 0) hidden_lane_count = 0;
+    if (hidden_lane_count > lane_count) hidden_lane_count = lane_count;
+    int drawn = lane_count - hidden_lane_count;
+    /* A hidden row is its own header line and nothing else, so it should not
+       reserve the 104px a row with controls and a thumbnail strip needs. */
+    layout.height = 54.0f + (float)drawn * 104.0f +
+                    (float)hidden_lane_count * 26.0f;
     float max_h = avail.y - 24.0f;
     if (max_h > 380.0f) max_h = 380.0f;
     if (layout.height > max_h) layout.height = max_h;
@@ -2995,6 +3002,8 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
                            input.doc_idx, input.slot_id, lanes);
     }
 
+    WorldMarkedApplyLaneOrder(state, lanes);
+
     /* One marked row is enough.
 
        This used to require a second row (or an ASM lane) before it would draw
@@ -3883,8 +3892,15 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
     WorldDrawBoundaryStatus(dl, state, lanes, result.render_info,
                             result.layout, world_pos, world_width);
 
+    int hidden_lanes = 0;
+    for (size_t i = 0; i < lanes.size(); i++) {
+        int s = lanes[i].delay_slot;
+        if (s >= 0 && s < kWorldMarkedMaxTabs && !state.lane_visible[s])
+            hidden_lanes++;
+    }
     result.panel_layout =
-        ComputeWorldMarkedPanelLayout(avail, img_pos, (int)lanes.size());
+        ComputeWorldMarkedPanelLayout(avail, img_pos, (int)lanes.size(),
+                                      hidden_lanes);
     if (g_world_marked_panel_docked) {
         result.panel_layout.pos = ImVec2(-10000.0f, -10000.0f);
         result.panel_layout.width = 0.0f;
@@ -3928,6 +3944,146 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
     }
 }
 
+/* One grouped popup, opened from a SmallButton. The header used to run two
+   dozen widgets down a single SameLine chain -- transport, five overlays,
+   four ASM buttons, four file buttons, the dummy body -- and picking anything
+   out of it meant reading the whole line. Playback stays on the strip because
+   it is touched every few seconds; everything else groups by what it acts
+   on. */
+static bool WorldHeaderMenu(const char *label, const char *popup_id,
+                            const char *tooltip)
+{
+    if (ImGui::SmallButton(label))
+        ImGui::OpenPopup(popup_id);
+    if (tooltip && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tooltip);
+    return ImGui::BeginPopup(popup_id);
+}
+
+/* Vertical rule between header groups. */
+static void WorldHeaderDivider(void)
+{
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+}
+
+/* The reference figure's placement fields. Lives in its own menu now; it used
+   to be a right-click popup on the checkbox, which nothing advertised. */
+static void WorldDrawReferenceConfig(void)
+{
+    ImGui::TextDisabled("Reference figure (proportioned outline, not art)");
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("Width##ref_w", &g_world_state.ref_w);
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("Height##ref_h", &g_world_state.ref_h);
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("Feet dX##ref_dx", &g_world_state.ref_dx);
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("Feet dY##ref_dy", &g_world_state.ref_dy);
+    ImGui::Checkbox("Mirror##ref_mirror", &g_world_state.ref_mirror);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Flip the figure so both facings are checkable\n"
+                          "against the same effect placement.");
+    if (ImGui::Button("Feet to Floor##ref_floor")) {
+        g_world_state.ref_dx = 0;
+        g_world_state.ref_dy = g_world_state.h - g_world_state.origin_y;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Stand the figure on the bottom of the playfield.\n"
+                          "Use after moving the World origin.");
+    if (g_world_state.ref_w < 4) g_world_state.ref_w = 4;
+    if (g_world_state.ref_h < 8) g_world_state.ref_h = 8;
+    if (g_world_state.ref_w > 400) g_world_state.ref_w = 400;
+    if (g_world_state.ref_h > 254) g_world_state.ref_h = 254;
+    ImGui::TextDisabled("Feet dX/dY place the figure's feet centre relative\n"
+                        "to the shared anchor, in world pixels.");
+}
+
+/* Stage-background placement. `action` carries the load request back out: the
+   file dialog must not open while this popup still owns the ID stack. */
+static void WorldDrawBackgroundConfig(WorldMarkedPanelAction &action)
+{
+    BddBackground &bg = WorldBackground();
+    WorldViewState &world = g_world_state;
+
+    ImGui::TextDisabled("Reference background (view only -- never saved)");
+    if (ImGui::Button("Load BDD...##world_bg_load")) {
+        action.request_load_bg = true;
+        /* Dismiss this popup before the file dialog opens. Leaving it up means
+           a modal is opened while a popup still owns the ID stack, which is how
+           a modal ends up open-but-never-drawn -- invisible and blocking. From
+           a submenu this closes the whole chain. */
+        ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Pick a stage .BDD. Its .BDB sibling is loaded with it --\n"
+                          "the BDD holds the pixels, the BDB every placement.");
+    if (bg.loaded) {
+        ImGui::SameLine();
+        if (ImGui::Button("Clear##world_bg_clear")) {
+            BddBgFree(&bg);
+            world.bg_enabled = false;
+            world.bg_module = -1;
+        }
+
+        ImGui::Separator();
+        ImGui::Text("%s  %dx%d world, %d objects",
+                    bg.stage_name.c_str(), bg.world_w, bg.world_h,
+                    bg.object_count);
+        if (bg.skipped_objects > 0)
+            ImGui::TextDisabled("%d placement(s) skipped -- missing image or palette",
+                                bg.skipped_objects);
+
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputInt("X##world_bg_x", &world.bg_x);
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputInt("Y##world_bg_y", &world.bg_y);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("World coordinates drawn at the canvas's top-left.\n"
+                              "The stage is far bigger than the playfield, so this\n"
+                              "is a camera onto it.");
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::SliderInt("Alpha##world_bg_alpha", &world.bg_alpha, 32, 255);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Fade the stage back when it competes with the sprites.");
+
+        /* Planes, not layers: each BDB module is one parallax plane, and
+           jumping between them is how you find the band you want behind the
+           animation without hunting with the X/Y fields. */
+        if (!bg.modules.empty()) {
+            ImGui::Separator();
+            ImGui::TextDisabled("Planes (BDB modules)");
+            for (size_t m = 0; m < bg.modules.size(); m++) {
+                const BddBgModule &mod = bg.modules[m];
+                char label[128];
+                snprintf(label, sizeof(label), "%s  (%d obj)##world_bg_mod%d",
+                         mod.name.c_str(), mod.object_count, (int)m);
+                bool selected = (world.bg_module == (int)m);
+                if (ImGui::RadioButton(label, selected))
+                    WorldBgSnapToModule(world, bg, (int)m);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Centre this plane in the playfield with its\n"
+                                      "bottom edge on the floor line (y=%d).\n"
+                                      "World rect %d,%d .. %d,%d",
+                                      world.floor_y, mod.x1, mod.y1,
+                                      mod.x2, mod.y2);
+            }
+        }
+
+        ImGui::Separator();
+        ImGui::TextDisabled(
+            "Placement is manual on purpose: real parallax rates,\n"
+            "per-plane offsets and draw order live in BGND.ASM, not\n"
+            "in the BDD/BDB, so this cannot reproduce the game camera.\n"
+            "A stage's floor is a runtime layer and is not in these\n"
+            "files either -- expect bare canvas under the scenery.");
+    } else if (!bg.error.empty()) {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", bg.error.c_str());
+    }
+}
+
 WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &state,
                                                   const std::vector<WorldMarkedLane> &lanes,
                                                   bool dummy_decap_missing,
@@ -3936,6 +4092,7 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
 {
     WorldMarkedPanelAction action = {};
 
+    /* ---- Transport: the only controls that stay on the strip ---- */
     ImGui::Text("Frame Sequence");
     ImGui::SameLine();
     if (ImGui::SmallButton(state.paused ? "Play##world_marked_pause"
@@ -3948,6 +4105,15 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Restart every marked tab sequence from frame 1.");
     ImGui::SameLine();
+    ImGui::TextDisabled("Tick");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70.0f);
+    int goto_tick = state.frame;
+    if (ImGui::InputInt("##world_marked_goto_tick", &goto_tick, 0, 0))
+        WorldMarkedSetTick(state, goto_tick);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Jump straight to this exact tick (pauses playback).");
+    ImGui::SameLine();
     WorldDrawTickHoldControl(state, "world_marked_panel");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(105.0f);
@@ -3959,254 +4125,177 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     if (ImGui::SmallButton("Game##world_marked_game_fps")) state.fps = kMk2TickHz;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Reset to the real MK2 tick rate (%.1f Hz).", kMk2TickHz);
-    ImGui::SameLine();
-    ImGui::TextDisabled("Tick");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(70.0f);
-    int goto_tick = state.frame;
-    if (ImGui::InputInt("##world_marked_goto_tick", &goto_tick, 0, 0))
-        WorldMarkedSetTick(state, goto_tick);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Jump straight to this exact tick (pauses playback).");
-    ImGui::SameLine();
-    ImGui::Checkbox("Borders##world_marked_borders", &state.draw_sprite_borders);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Draw colored sprite bounds in World View.");
-    ImGui::SameLine();
-    ImGui::Checkbox("Bounds##world_marked_bounds", &state.show_boundary_overlay);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Draw TV-safe World View guides: green is 0..399 x 0..253,\n"
-                          "yellow extends to DMA X 511 while vertically safe,\n"
-                          "red is outside those limits.");
-    ImGui::SameLine();
-    ImGui::Checkbox("Reference##world_reference", &g_world_state.show_reference);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Draw a standing-fighter reference figure at the shared\n"
-                          "anchor, so \"will this effect land on the victim?\" is a\n"
-                          "look instead of a calculation. Right-click to size and\n"
-                          "place it.");
-    if (ImGui::BeginPopupContextItem("##world_reference_cfg")) {
-        ImGui::TextDisabled("Reference figure (proportioned outline, not art)");
-        ImGui::SetNextItemWidth(110.0f);
-        ImGui::InputInt("Width##ref_w", &g_world_state.ref_w);
-        ImGui::SetNextItemWidth(110.0f);
-        ImGui::InputInt("Height##ref_h", &g_world_state.ref_h);
-        ImGui::SetNextItemWidth(110.0f);
-        ImGui::InputInt("Feet dX##ref_dx", &g_world_state.ref_dx);
-        ImGui::SetNextItemWidth(110.0f);
-        ImGui::InputInt("Feet dY##ref_dy", &g_world_state.ref_dy);
-        ImGui::Checkbox("Mirror##ref_mirror", &g_world_state.ref_mirror);
+
+    WorldHeaderDivider();
+
+    /* ---- Overlays: everything drawn over or behind the playfield ---- */
+    if (WorldHeaderMenu("Overlays...##world_menu_overlays", "##world_overlays_popup",
+                        "Sprite borders, TV-safe bounds, the reference figure,\n"
+                        "the stage background, and anchor linking.")) {
+        ImGui::Checkbox("Borders##world_marked_borders", &state.draw_sprite_borders);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Flip the figure so both facings are checkable\n"
-                              "against the same effect placement.");
-        if (ImGui::Button("Feet to Floor##ref_floor")) {
-            g_world_state.ref_dx = 0;
-            g_world_state.ref_dy = g_world_state.h - g_world_state.origin_y;
+            ImGui::SetTooltip("Draw colored sprite bounds in World View.");
+        ImGui::Checkbox("Bounds##world_marked_bounds", &state.show_boundary_overlay);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw TV-safe World View guides: green is 0..399 x 0..253,\n"
+                              "yellow extends to DMA X 511 while vertically safe,\n"
+                              "red is outside those limits.");
+
+        ImGui::Separator();
+        ImGui::Checkbox("Reference##world_reference", &g_world_state.show_reference);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw a standing-fighter reference figure at the shared\n"
+                              "anchor, so \"will this effect land on the victim?\" is a\n"
+                              "look instead of a calculation.");
+        if (ImGui::BeginMenu("Reference figure...##world_reference_cfg")) {
+            WorldDrawReferenceConfig();
+            ImGui::EndMenu();
         }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Stand the figure on the bottom of the playfield.\n"
-                              "Use after moving the World origin.");
-        if (g_world_state.ref_w < 4) g_world_state.ref_w = 4;
-        if (g_world_state.ref_h < 8) g_world_state.ref_h = 8;
-        if (g_world_state.ref_w > 400) g_world_state.ref_w = 400;
-        if (g_world_state.ref_h > 254) g_world_state.ref_h = 254;
-        ImGui::TextDisabled("Feet dX/dY place the figure's feet centre relative\n"
-                            "to the shared anchor, in world pixels.");
-        ImGui::EndPopup();
-    }
-    ImGui::SameLine();
-    {
+
+        /* Deliberately never disabled: the submenu is the only door to the
+           load dialog, and a disabled item takes no clicks at all. */
         BddBackground &bg = WorldBackground();
-        WorldViewState &world = g_world_state;
-        /* Deliberately never disabled: the right-click popup is the only door
-           to the load dialog, and a disabled item takes no clicks at all. */
-        if (ImGui::Checkbox("BG##world_bg_enable", &world.bg_enabled) &&
-            world.bg_enabled && !bg.loaded)
+        if (ImGui::Checkbox("BG##world_bg_enable", &g_world_state.bg_enabled) &&
+            g_world_state.bg_enabled && !bg.loaded)
             action.request_load_bg = true;   /* ticked with nothing to show */
         if (ImGui::IsItemHovered()) {
             if (bg.loaded)
                 ImGui::SetTooltip("Draw %s behind the playfield as an alignment\n"
-                                  "reference. Right-click to place it or load another.",
-                                  bg.stage_name.c_str());
+                                  "reference.", bg.stage_name.c_str());
             else
                 ImGui::SetTooltip("Draw an MK2 stage behind the playfield as an\n"
-                                  "alignment reference. Nothing is loaded — tick or\n"
-                                  "right-click to pick a stage .BDD.");
+                                  "alignment reference. Nothing is loaded yet.");
         }
-        if (ImGui::BeginPopupContextItem("##world_bg_cfg")) {
-            ImGui::TextDisabled("Reference background (view only — never saved)");
-            if (ImGui::Button("Load BDD...##world_bg_load")) {
-                action.request_load_bg = true;
-                /* Dismiss this popup before the file dialog opens. Leaving it
-                   up means a modal is opened while a popup still owns the ID
-                   stack, which is how a modal ends up open-but-never-drawn —
-                   invisible and blocking. */
-                ImGui::CloseCurrentPopup();
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Pick a stage .BDD. Its .BDB sibling is loaded with it —\n"
-                                  "the BDD holds the pixels, the BDB every placement.");
-            if (bg.loaded) {
-                ImGui::SameLine();
-                if (ImGui::Button("Clear##world_bg_clear")) {
-                    BddBgFree(&bg);
-                    world.bg_enabled = false;
-                    world.bg_module = -1;
-                }
-
-                ImGui::Separator();
-                ImGui::Text("%s  %dx%d world, %d objects",
-                            bg.stage_name.c_str(), bg.world_w, bg.world_h,
-                            bg.object_count);
-                if (bg.skipped_objects > 0)
-                    ImGui::TextDisabled("%d placement(s) skipped — missing image or palette",
-                                        bg.skipped_objects);
-
-                ImGui::SetNextItemWidth(110.0f);
-                ImGui::InputInt("X##world_bg_x", &world.bg_x);
-                ImGui::SetNextItemWidth(110.0f);
-                ImGui::InputInt("Y##world_bg_y", &world.bg_y);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("World coordinates drawn at the canvas's top-left.\n"
-                                      "The stage is far bigger than the playfield, so this\n"
-                                      "is a camera onto it.");
-                ImGui::SetNextItemWidth(110.0f);
-                ImGui::SliderInt("Alpha##world_bg_alpha", &world.bg_alpha, 32, 255);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Fade the stage back when it competes with the sprites.");
-
-                /* Planes, not layers: each BDB module is one parallax plane, and
-                   jumping between them is how you find the band you want behind
-                   the animation without hunting with the X/Y fields. */
-                if (!bg.modules.empty()) {
-                    ImGui::Separator();
-                    ImGui::TextDisabled("Planes (BDB modules)");
-                    for (size_t m = 0; m < bg.modules.size(); m++) {
-                        const BddBgModule &mod = bg.modules[m];
-                        char label[128];
-                        snprintf(label, sizeof(label), "%s  (%d obj)##world_bg_mod%d",
-                                 mod.name.c_str(), mod.object_count, (int)m);
-                        bool selected = (world.bg_module == (int)m);
-                        if (ImGui::RadioButton(label, selected))
-                            WorldBgSnapToModule(world, bg, (int)m);
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip("Centre this plane in the playfield with its\n"
-                                              "bottom edge on the floor line (y=%d).\n"
-                                              "World rect %d,%d .. %d,%d",
-                                              world.floor_y, mod.x1, mod.y1,
-                                              mod.x2, mod.y2);
-                    }
-                }
-
-                ImGui::Separator();
-                ImGui::TextDisabled(
-                    "Placement is manual on purpose: real parallax rates,\n"
-                    "per-plane offsets and draw order live in BGND.ASM, not\n"
-                    "in the BDD/BDB, so this cannot reproduce the game camera.\n"
-                    "A stage's floor is a runtime layer and is not in these\n"
-                    "files either — expect bare canvas under the scenery.");
-            } else if (!bg.error.empty()) {
-                ImGui::Separator();
-                ImGui::TextWrapped("%s", bg.error.c_str());
-            }
-            ImGui::EndPopup();
+        if (ImGui::BeginMenu("Background...##world_bg_cfg")) {
+            WorldDrawBackgroundConfig(action);
+            ImGui::EndMenu();
         }
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Link Anchors##world_anchor_link", &state.anchor_link_mode))
-        state.anchor_link_active = false;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Drag from a feature on one World View sprite to its matching feature on another. On release, the target sprite's anipoint is moved so the two points meet.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Copy ASM##world_marked_copy_asm")) {
-        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
-        ImGui::SetClipboardText(state.generated_asm.c_str());
-        action.copied_asm = true;
-        action.copied_lane_count = (int)lanes.size();
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned local-anipoint tables.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("View ASM##world_marked_view_asm")) {
-        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
-        state.show_asm = true;
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Preview the generated animation-table source.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Save ASM##world_marked_save_asm")) {
-        state.generated_asm = WorldBuildMarkedAsm(state, lanes);
-        action.request_save_asm = true;
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Save the generated animation tables to a .ASM file.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Load ASM##world_marked_load_asm"))
-        action.request_load_asm = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
-                          "The sprite IMGs it references are opened automatically.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Save PNG##world_marked_save_png"))
-        action.request_save_png = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Write the composited scene at this tick — every visible lane,\n"
-                          "in draw order — to a PNG.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Save PNG Seq##world_marked_save_png_seq"))
-        action.request_save_png_seq = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Write one PNG per tick across the whole sequence,\n"
-                          "numbered <name>_0000.PNG onward.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Save Project##world_marked_save_project"))
-        action.request_save_project = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Save the World View layout, slots, timing, offsets, marks, and source file links.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Load Project##world_marked_load_project"))
-        action.request_load_project = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Restore a World View project exactly as it was saved.");
-    if (!state.split_lanes.empty()) {
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Clear Splits##world_marked_clear_splits"))
-            WorldMarkedClearSplitLanes(state);
+
+        ImGui::Separator();
+        if (ImGui::Checkbox("Link Anchors##world_anchor_link", &state.anchor_link_mode))
+            state.anchor_link_active = false;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Remove split rows and restore each source row to its marked-frame sequence.");
+            ImGui::SetTooltip("Drag from a feature on one World View sprite to its matching\n"
+                              "feature on another. On release, the target sprite's anipoint\n"
+                              "is moved so the two points meet.");
+        ImGui::EndPopup();
     }
+
     ImGui::SameLine();
-    if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body",
-                        &state.dummy_decap_body)) {
-        state.dummy_decap_reset = true;
-        state.hold_end[kWorldDummyDecapSlot] = true;
-        WorldMarkedRestart(state);
+
+    /* ---- ASM: the generated animation tables ---- */
+    if (WorldHeaderMenu("ASM...##world_menu_asm", "##world_asm_popup",
+                        "Copy, preview, save or load animation-table source.")) {
+        if (ImGui::MenuItem("Copy ASM to Clipboard##world_marked_copy_asm")) {
+            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+            ImGui::SetClipboardText(state.generated_asm.c_str());
+            action.copied_asm = true;
+            action.copied_lane_count = (int)lanes.size();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned\n"
+                              "local-anipoint tables.");
+        if (ImGui::MenuItem("View ASM##world_marked_view_asm")) {
+            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+            state.show_asm = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Preview the generated animation-table source.");
+        if (ImGui::MenuItem("Save ASM...##world_marked_save_asm")) {
+            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+            action.request_save_asm = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save the generated animation tables to a .ASM file.");
+        if (ImGui::MenuItem("Load ASM...##world_marked_load_asm"))
+            action.request_load_asm = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
+                              "The sprite IMGs it references are opened automatically.");
+        ImGui::EndPopup();
     }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Adds the stock fatality decap body as its own sync lane using *DECAP1-7 frames from open tabs.");
+
     ImGui::SameLine();
-    if (ImGui::SmallButton("Use Selected##world_dummy_assign")) {
-        if (WorldAssignSelectedDummyDecap(state, selected_img, active_doc_idx))
-            action.dummy_assigned = true;
-        else
-            action.dummy_assign_failed = true;
+
+    /* ---- Export: pixels out, and the whole scene in and out ---- */
+    if (WorldHeaderMenu("Export...##world_menu_export", "##world_export_popup",
+                        "PNG stills and sequences, and the World View project file.")) {
+        if (ImGui::MenuItem("Save PNG...##world_marked_save_png"))
+            action.request_save_png = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Write the composited scene at this tick -- every visible lane,\n"
+                              "in draw order -- to a PNG.");
+        if (ImGui::MenuItem("Save PNG Sequence...##world_marked_save_png_seq"))
+            action.request_save_png_seq = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Write one PNG per tick across the whole sequence,\n"
+                              "numbered <name>_0000.PNG onward.");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Save Project...##world_marked_save_project"))
+            action.request_save_project = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save the World View layout, slots, timing, offsets, marks,\n"
+                              "and source file links.");
+        if (ImGui::MenuItem("Load Project...##world_marked_load_project"))
+            action.request_load_project = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Restore a World View project exactly as it was saved.");
+        ImGui::EndPopup();
     }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Assign the dummy body from the selected *DECAP frame, *DECAPLEG piece, or *DECAPTORSO piece.");
-    if (state.dummy_decap_manual) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("[%d] %sDECAP",
-                            state.dummy_decap_doc_idx,
-                            state.dummy_decap_prefix.c_str());
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Auto##world_dummy_auto")) {
-            state.dummy_decap_manual = false;
+
+    ImGui::SameLine();
+
+    /* ---- Lanes: which rows exist, rather than what any one row does ---- */
+    bool lanes_marked = state.dummy_decap_body || !state.split_lanes.empty();
+    if (WorldHeaderMenu(lanes_marked ? "Lanes *##world_menu_lanes"
+                                     : "Lanes...##world_menu_lanes",
+                        "##world_lanes_popup",
+                        "The dummy fatality body, and the split rows.\n"
+                        "Row order and deletion live on each row.")) {
+        if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body",
+                            &state.dummy_decap_body)) {
             state.dummy_decap_reset = true;
+            state.hold_end[kWorldDummyDecapSlot] = true;
             WorldMarkedRestart(state);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Return to automatic dummy body selection.");
+            ImGui::SetTooltip("Adds the stock fatality decap body as its own sync lane\n"
+                              "using *DECAP1-7 frames from open tabs.");
+        if (ImGui::MenuItem("Use Selected as Body##world_dummy_assign")) {
+            if (WorldAssignSelectedDummyDecap(state, selected_img, active_doc_idx))
+                action.dummy_assigned = true;
+            else
+                action.dummy_assign_failed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Assign the dummy body from the selected *DECAP frame,\n"
+                              "*DECAPLEG piece, or *DECAPTORSO piece.");
+        if (state.dummy_decap_manual) {
+            ImGui::TextDisabled("Body: [%d] %sDECAP",
+                                state.dummy_decap_doc_idx,
+                                state.dummy_decap_prefix.c_str());
+            if (ImGui::MenuItem("Back to Automatic Body##world_dummy_auto")) {
+                state.dummy_decap_manual = false;
+                state.dummy_decap_reset = true;
+                WorldMarkedRestart(state);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Return to automatic dummy body selection.");
+        }
+
+        ImGui::Separator();
+        if (ImGui::MenuItem("Clear Split Rows##world_marked_clear_splits", NULL, false,
+                            !state.split_lanes.empty()))
+            WorldMarkedClearSplitLanes(state);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Remove split rows and restore each source row to its\n"
+                              "marked-frame sequence.");
+        ImGui::EndPopup();
     }
+
+    /* The one status that stays on the strip: it only appears when the scene
+       is asking for a body it cannot find, which is a broken preview rather
+       than a setting. */
     if (state.dummy_decap_body && dummy_decap_missing) {
         ImGui::SameLine();
         ImGui::TextDisabled("No assigned *DECAP body found");
@@ -4984,9 +5073,18 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.03f, 0.03f, 0.035f, 0.90f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+    /* AlwaysHorizontalScrollbar, not HorizontalScrollbar. A row's content
+       width changes as playback moves the current entry, and at a window
+       width near that content width the scrollbar was appearing and
+       disappearing frame to frame -- each toggle takes ~12px off the child's
+       height, which shoves every row up and down. Reserving the bar costs one
+       strip of pixels and makes the panel hold still. The widths below are
+       padded for the same reason: nothing on a row may change size as the
+       tick advances. */
     if (ImGui::BeginChild("##world_marked_sequence",
                           ImVec2(layout.width, layout.height), true,
-                          ImGuiWindowFlags_HorizontalScrollbar)) {
+                          ImGuiWindowFlags_HorizontalScrollbar |
+                          ImGuiWindowFlags_AlwaysHorizontalScrollbar)) {
         result.header =
             WorldDrawMarkedPanelHeader(state, lanes, dummy_decap_missing,
                                        selected_img, active_doc_idx);
@@ -5014,13 +5112,22 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
         for (int slot = 0; slot < (int)lanes.size(); slot++) {
             WorldMarkedLane &lane = lanes[slot];
             ImGui::PushID(slot);
-            WorldDrawMarkedLaneControls(state, lane, lanes, slot);
+            if (WorldDrawMarkedLaneControls(state, lane, lanes, slot)) {
+                /* The row is gone and `lanes` still describes the old set;
+                   rebuild happens next frame. */
+                ImGui::PopID();
+                break;
+            }
 
-            WorldMarkedLaneThumbClick thumb_click =
-                WorldDrawMarkedLaneThumbnails(state, lane);
-            if (thumb_click.clicked) {
-                state.active_slot = lane.delay_slot;
-                result.thumb_click = thumb_click;
+            /* Hidden rows never reach the thumbnail strip: see the early
+               return in WorldDrawMarkedLaneControls for why that matters. */
+            if (state.lane_visible[lane.delay_slot]) {
+                WorldMarkedLaneThumbClick thumb_click =
+                    WorldDrawMarkedLaneThumbnails(state, lane, lanes);
+                if (thumb_click.clicked) {
+                    state.active_slot = lane.delay_slot;
+                    result.thumb_click = thumb_click;
+                }
             }
             ImGui::PopID();
         }
@@ -5310,11 +5417,56 @@ static int WorldGroundAlignLaneAnipoints(const WorldMarkedLane &lane)
     return changed > 0 ? changed : (preview_offsets_changed ? 1 : 0);
 }
 
-void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
+/* The row's removal confirm, factored out because a hidden row returns early
+   and still has to be deletable. Opened at the caller's own ID-stack level:
+   an OpenPopup issued from inside the Row... menu would register against that
+   popup's stack and never draw. Returns true when the row went away. */
+static bool WorldDrawRowDeleteConfirm(WorldMarkedSequenceState &state,
+                                      const WorldMarkedLane &lane,
+                                      int display_slot, bool want_open)
+{
+    if (want_open)
+        ImGui::OpenPopup("##world_row_delete_confirm");
+    if (!ImGui::BeginPopup("##world_row_delete_confirm"))
+        return false;
+
+    ImGui::Text("Remove row %d: %s", display_slot + 1,
+                !lane.label.empty() ? lane.label.c_str()
+                : (lane.doc && lane.doc->fname_s[0] ? lane.doc->fname_s
+                                                    : "Untitled"));
+    ImGui::Separator();
+    ImGui::TextUnformatted(WorldMarkedRemoveLaneDescription(state, lane).c_str());
+    ImGui::Separator();
+    if (ImGui::Button("Delete##world_row_delete_go", ImVec2(90, 0))) {
+        std::string msg;
+        bool removed = WorldMarkedRemoveLane(state, lane, &msg);
+        if (removed) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", msg.c_str());
+            g_restore_msg_timer = 4.0f;
+        }
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return removed;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel##world_row_delete_no", ImVec2(90, 0)))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return false;
+}
+
+bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                                  WorldMarkedLane &lane,
                                  const std::vector<WorldMarkedLane> &lanes,
                                  int display_slot)
 {
+    /* Set by the strip's Del button and by Row... > Delete Row; the confirm
+       popup is opened at the bottom of this function, where it is at the same
+       ID-stack level as the OpenPopup call. Opening it from inside the Row
+       menu would register it against that popup's stack instead, and it would
+       never draw. */
+    bool want_delete_popup = false;
+
     ImGui::Separator();
     const char *doc_name = !lane.label.empty()
                          ? lane.label.c_str()
@@ -5332,8 +5484,56 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         ImGui::SetTooltip(row_visible
             ? "Hide this World View row while testing other animations."
             : "Show this World View row.");
+
+    /* Order and removal. Rows are rebuilt every frame from tab order plus the
+       split list, so "move up" swaps the rank the slot carries rather than
+       anything in the vector -- and that rank is display order, draw order
+       for equal Z, and ASM export order all at once. */
+    ImGui::SameLine();
+    ImGui::BeginDisabled(display_slot <= 0);
+    if (ImGui::SmallButton("Up##world_lane_up"))
+        WorldMarkedMoveLane(state, lanes, display_slot, -1);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Move this row up. Row order is the draw order for lanes\n"
+                          "sharing a Z, and the order the ASM tables come out in.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(display_slot >= (int)lanes.size() - 1);
+    if (ImGui::SmallButton("Dn##world_lane_down"))
+        WorldMarkedMoveLane(state, lanes, display_slot, +1);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Move this row down.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Del##world_lane_del"))
+        want_delete_popup = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Remove this row. Asks first and spells out what it will do --\n"
+                          "a marked row leaves by unmarking its frames in that IMG.");
+
     ImGui::SameLine();
     ImGui::Text("Slot %d  [%d] %s", display_slot + 1, lane.doc_idx, doc_name);
+
+    /* A hidden row stops here. Everything below this point -- three lines of
+       controls and a thumbnail strip -- was still being submitted every frame
+       for a row that draws nothing, and the strip is the expensive half:
+       BuildWorldSpriteTexture creates an SDL texture and converts every pixel
+       through the palette, per frame, per thumbnail. A hidden 20-frame row was
+       paying for 20 texture builds a frame to render a strip nobody is looking
+       at. The eye, the order buttons and Del stay live so it can be brought
+       back, moved or dropped while collapsed. */
+    if (!row_visible) {
+        int n = (int)lane.frames.size();
+        ImGui::SameLine();
+        ImGui::TextDisabled("hidden -- %d frame%s, not drawn", n, n == 1 ? "" : "s");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Collapsed while hidden: no controls, no thumbnails,\n"
+                              "no sprite textures built, and nothing drawn in the\n"
+                              "world. Click the eye to bring it back.");
+        return WorldDrawRowDeleteConfirm(state, lane, display_slot,
+                                         want_delete_popup);
+    }
+
     if (state.active_slot == lane.delay_slot) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.2f, 1.0f), "[KEYS]");
@@ -5368,7 +5568,7 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         if (anchor_fi < 0) anchor_fi = 0;
         if (anchor_fi >= (int)lane.frames.size()) anchor_fi = (int)lane.frames.size() - 1;
         ImGui::SameLine();
-        ImGui::TextDisabled("reverses @ tick %d",
+        ImGui::TextDisabled("reverses @ tick %-4d",
             WorldMarkedChainReverseStartTick(state, lane, anchor_fi,
                                              state.chain_count[lane.delay_slot],
                                              state.chain_gap[lane.delay_slot],
@@ -5451,7 +5651,10 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
 
     if (edit_fi >= 0) {
         ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("Entry %d/%d", edit_fi + 1, (int)lane.frames.size());
+        /* Padded: the font is fixed-advance, so %2d keeps this label one width
+           from entry 1 to entry 99 and the buttons after it stop sliding
+           sideways every tick. */
+        ImGui::TextDisabled("Entry %2d/%2d", edit_fi + 1, (int)lane.frames.size());
         if (!lane.dummy_decap) {
             ImGui::SameLine();
             ImGui::TextDisabled("Order");
@@ -5519,6 +5722,30 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                used once in a while and are the most destructive things here,
                so they should not sit a stray click away from "move entry
                later". */
+            /* Promote lives on the strip rather than in the menu because it
+               is the end of the job: the row has been staged, and this is
+               what turns it into something the IMG can hold. */
+            bool can_promote = lane.doc && lane.doc == g_doc && !lane.frames.empty();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!can_promote);
+            if (ImGui::SmallButton("To Seq##world_seq_promote")) {
+                std::string msg;
+                WorldMarkedPromoteLaneToSequence(state, lane, &msg);
+                if (!msg.empty()) {
+                    snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", msg.c_str());
+                    g_restore_msg_timer = 6.0f;
+                }
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip(can_promote
+                    ? "Write this row into the IMG as a new SEQSCR sequence:\n"
+                      "one entry per row entry, carrying sprite, ticks, dX and dY.\n"
+                      "Flips, Z, motion, Show@/Hide@ and dual are preview-only and\n"
+                      "cannot be stored in an entry -- the toast names what was left.\n"
+                      "Open it afterwards from the Anim tab."
+                    : "Select a frame from this row first so its IMG tab is active.");
+
             ImGui::SameLine();
             if (ImGui::SmallButton("Row...##world_seq_row_menu"))
                 ImGui::OpenPopup("##world_seq_row_popup");
@@ -5550,17 +5777,13 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Rebuild this lane from the currently marked sprites and clear local sequence offsets.");
 
-                bool can_delete_slot = WorldMarkedSlotReservedForSplit(state, lane.delay_slot);
-                if (ImGui::MenuItem("Delete Row", NULL, false, can_delete_slot)) {
-                    if (WorldMarkedDeleteSplitSlot(state, lane.delay_slot)) {
-                        ImGui::EndPopup();
-                        return; /* row is gone; nothing below is safe to draw this frame */
-                    }
-                }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip(can_delete_slot
-                        ? "Remove this split/duplicated row entirely so it's excluded from the ASM export."
-                        : "Only split or duplicated rows can be deleted; base marked-sprite rows can't.");
+                /* Every row type can go now, not just split ones -- the
+                   confirm below names what removing this particular row
+                   means before anything happens. */
+                if (ImGui::MenuItem("Delete Row..."))
+                    want_delete_popup = true;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Remove this row from World View and the ASM export.");
                 ImGui::EndPopup();
             }
         }
@@ -5627,8 +5850,15 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         bool has_extras = show_at || hide_at || motion_dx || motion_dy ||
                           motion_cap_x || motion_cap_y || dual;
         ImGui::SameLine();
-        if (ImGui::SmallButton(has_extras ? "Timing/FX *##world_edit_more"
-                                          : "Timing/FX##world_edit_more"))
+        /* The marker is a colour, not an extra character: a label that grew by
+           a "*" as playback stepped onto an entry with extras moved every
+           control to its right. */
+        if (has_extras)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.20f, 1.0f));
+        bool more_clicked = ImGui::SmallButton("Timing/FX##world_edit_more");
+        if (has_extras)
+            ImGui::PopStyleColor();
+        if (more_clicked)
             ImGui::OpenPopup("##world_edit_more_popup");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(has_extras
@@ -5832,7 +6062,7 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                 ImGui::SetTooltip("Extra ticks to hold the fully extended chain before the reverse pass starts.");
             if (chain_pingpong) {
                 ImGui::SameLine();
-                ImGui::TextDisabled("reverses @ tick %d",
+                ImGui::TextDisabled("reverses @ tick %-4d",
                     WorldMarkedChainReverseStartTick(state, lane, edit_fi, chain_count,
                                                      chain_gap, chain_delay, chain_vy,
                                                      pingpong_delay));
@@ -5853,6 +6083,8 @@ void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                 WorldRefreshMarkedLaneAfterSequenceEdit(state, lane, edit_fi);
         }
     }
+
+    return WorldDrawRowDeleteConfirm(state, lane, display_slot, want_delete_popup);
 }
 
 struct WorldLaneFramePayload {
@@ -5862,8 +6094,150 @@ struct WorldLaneFramePayload {
 
 static const char *kWorldLaneFramePayloadType = "WORLD_LANE_FRAME";
 
+static bool WorldNameLooksBloody(const std::string &upper)
+{
+    static const char *kWords[] = {
+        "BLOOD", "SPILL", "SPURT", "DRIP", "SPRAY", "SPLAT", "GUTS", "GORE"
+    };
+    for (size_t i = 0; i < sizeof(kWords) / sizeof(kWords[0]); i++)
+        if (upper.find(kWords[i]) != std::string::npos) return true;
+    return false;
+}
+
+void WorldCollectBloodRuns(std::vector<WorldBloodRun> &out)
+{
+    out.clear();
+    for (int di = 0; di < document_tab_count(); di++) {
+        Document *doc = document_get(di);
+        if (!doc) continue;
+        const char *doc_name = doc->fname_s[0] ? doc->fname_s : "Untitled";
+
+        int idx = 0;
+        for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+            if (!img->data_p || img->w <= 0 || img->h <= 0) continue;
+            std::string name = trim_sprite_name(img_name_string(img));
+            if (name.empty()) continue;
+            std::string upper = name;
+            for (size_t i = 0; i < upper.size(); i++)
+                upper[i] = (char)toupper((unsigned char)upper[i]);
+            if (!WorldNameLooksBloody(upper)) continue;
+
+            /* SPILL1..SPILL13 is one run; a lone SPLAT is a run of one. */
+            std::string stem;
+            if (!strip_trailing_sequence_digits(upper, &stem) || stem.empty())
+                stem = upper;
+
+            WorldBloodRun *run = NULL;
+            for (size_t r = 0; r < out.size(); r++) {
+                if (out[r].doc_idx == di && out[r].stem == stem) {
+                    run = &out[r];
+                    break;
+                }
+            }
+            if (!run) {
+                WorldBloodRun fresh;
+                fresh.doc_idx = di;
+                fresh.doc_name = doc_name;
+                fresh.stem = stem;
+                out.push_back(fresh);
+                run = &out.back();
+            }
+            run->frames.push_back(idx);
+        }
+    }
+}
+
+bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
+                                const std::vector<WorldMarkedLane> &lanes,
+                                const WorldMarkedLane &src_lane,
+                                int src_entry,
+                                const WorldBloodRun &run,
+                                std::string *out_msg)
+{
+    char msg[256];
+    int src_slot = src_lane.delay_slot;
+    if (src_slot < 0 || src_slot >= kWorldMarkedMaxTabs || run.frames.empty() ||
+        src_entry < 0 || src_entry >= (int)src_lane.frames.size()) {
+        if (out_msg) *out_msg = "Could not add a blood row here.";
+        return false;
+    }
+    if (!document_get(run.doc_idx)) {
+        if (out_msg) *out_msg = "That blood IMG is no longer open.";
+        return false;
+    }
+
+    int slot = WorldMarkedFindFreeSplitSlot(lanes);
+    if (slot < 0) {
+        snprintf(msg, sizeof(msg),
+                 "No free World View row -- all %d are in use.",
+                 kWorldMarkedSourceTabs);
+        if (out_msg) *out_msg = msg;
+        return false;
+    }
+
+    /* When the spray starts, and where. The tick is the one clicking that
+       thumbnail would jump to; the offset is the entry's effective local
+       delta at that tick, so the blood sits on the same anipoint the frame
+       is drawn from -- motion and all. */
+    int n_src = (int)src_lane.frames.size();
+    int start_tick = WorldMarkedTickForFrame(state, src_slot, n_src, src_entry);
+    int anchor_dx = 0, anchor_dy = 0;
+    WorldMarkedEffectiveLocalDelta(state, src_slot, n_src, src_entry, false,
+                                   start_tick, &anchor_dx, &anchor_dy);
+
+    WorldMarkedClearSequenceState(state, slot);
+    state.sequence_frames[slot] = run.frames;
+    state.default_frames[slot] = run.frames;
+    state.entry_pieces[slot].clear();
+    WorldMarkedSetRowDoc(state, slot, run.doc_idx);
+    state.lane_visible[slot] = true;
+    state.hold_end[slot] = true;      /* a spray plays once */
+    state.stop_tick[slot] = 0;
+
+    int n = (int)run.frames.size();
+    EnsureWorldMarkedFrameDelays(state, slot, n);
+
+    /* Scheduled, not looped: consecutive Show@/Hide@ windows are how this
+       panel already draws a timed subframe (it is what Build Chain emits), so
+       the run fires once at start_tick and then stops, whatever the rest of
+       the scene is doing on its own clocks. */
+    int hold = ClampTimelineHold(state.default_hold);
+    int t = start_tick;
+    for (int i = 0; i < n; i++) {
+        state.frame_delays[slot][i] = hold;
+        state.local_dx[slot][i] = ClampWorldMarkedAniptDelta(anchor_dx);
+        state.local_dy[slot][i] = ClampWorldMarkedAniptDelta(anchor_dy);
+        state.visible_from[slot][i] = ClampWorldMarkedVisibleFrom(t);
+        state.visible_until[slot][i] = ClampWorldMarkedVisibleUntil(t + hold);
+        t += hold;
+    }
+
+    state.split_lanes.push_back(WorldMarkedSplitLane{slot, run.doc_idx});
+
+    /* Sit directly under the row that spawned it rather than at the bottom of
+       the panel -- the two are read together. */
+    int src_rank = state.lane_order[src_slot];
+    if (src_rank >= 0) {
+        for (int s = 0; s < kWorldMarkedMaxTabs; s++)
+            if (s != slot && state.lane_order[s] > src_rank) state.lane_order[s]++;
+        state.lane_order[slot] = src_rank + 1;
+    } else {
+        state.lane_order[slot] = -1;
+    }
+
+    state.paused = true;
+    WorldMarkedSetTick(state, start_tick);
+
+    snprintf(msg, sizeof(msg),
+             "Blood row: %s x%d from %s, starting at tick %d on this frame's anipoint.",
+             run.stem.c_str(), n, run.doc_name.c_str(), start_tick);
+    if (out_msg) *out_msg = msg;
+    return true;
+}
+
 WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState &state,
-                                                        WorldMarkedLane &lane)
+                                                        WorldMarkedLane &lane,
+                                                        const std::vector<WorldMarkedLane> &lanes)
 {
     WorldMarkedLaneThumbClick action = {};
     bool draggable = !lane.dummy_decap;
@@ -5970,6 +6344,47 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
             action.doc_idx = lane.doc_idx;
             action.img_idx = img_idx;
         }
+        /* Right-click a frame: the spray has to start somewhere, and "this
+           frame, where it is" is the only anchor an authoring tool can offer
+           that matches what create_blood_proc takes. */
+        if (ImGui::BeginPopupContextItem("##world_thumb_ctx")) {
+            ImGui::TextDisabled("Entry %d, tick %d", fi + 1,
+                                WorldMarkedTickForFrame(state, lane.delay_slot,
+                                                        (int)lane.frames.size(), fi));
+            ImGui::Separator();
+            if (ImGui::BeginMenu("Start Blood Here")) {
+                std::vector<WorldBloodRun> runs;
+                WorldCollectBloodRuns(runs);
+                if (runs.empty()) {
+                    ImGui::TextDisabled("No blood frames in the open tabs.");
+                    ImGui::TextDisabled("Open BLOOD.IMG (SPILL1-13) or any IMG whose");
+                    ImGui::TextDisabled("sprites read as BLOOD/SPURT/DRIP/SPRAY/GUTS.");
+                } else {
+                    for (size_t r = 0; r < runs.size(); r++) {
+                        char item[160];
+                        snprintf(item, sizeof(item), "%s  %s x%d##blood%d",
+                                 runs[r].doc_name.c_str(), runs[r].stem.c_str(),
+                                 (int)runs[r].frames.size(), (int)r);
+                        if (ImGui::MenuItem(item)) {
+                            std::string msg;
+                            WorldMarkedCreateBloodLane(state, lanes, lane, fi,
+                                                       runs[r], &msg);
+                            if (!msg.empty()) {
+                                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                         "%s", msg.c_str());
+                                g_restore_msg_timer = 5.0f;
+                            }
+                        }
+                    }
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Add a row playing a blood run once, from this frame's\n"
+                                  "tick and on its anipoint -- the authoring twin of\n"
+                                  "create_blood_proc's [y,x] offset from the victim.");
+            ImGui::EndPopup();
+        }
         if (!dragging_frame && ImGui::IsItemHovered()) {
             std::string sprite_name = (fi < (int)lane.frame_labels.size() &&
                                        !lane.frame_labels[fi].empty())
@@ -6055,8 +6470,27 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out.reserve(4096);
     out += "; IMGTOOL World View fatality sequence draft\n";
     out += "; One lane is one actor/object animation table.\n";
-    out += "; Export contract: dAX/dAY are local offsets from the shared World View anchor.\n";
-    out += "; Mirroring is draw-only; apply dAX/dAY once after mirroring the sprite.\n";
+    /* This used to read "mirroring is draw-only; apply dAX/dAY once after
+       mirroring the sprite", which is not what the preview does and would put
+       every flipped entry 2*dAX out. The offsets go onto the art anipoint
+       BEFORE the flip, which is also how MK2 spells its own spawn offsets --
+       MKREACT.ASM calls them "measured in FACING space because multi_adjust_xy
+       mirrors it for a flipped object". Spell the formula out rather than
+       describe it. */
+    out += "; Export contract: dAX/dAY are added to the sprite's own art anipoint\n";
+    out += ";   BEFORE the flip transform, which is exactly how World View draws it:\n";
+    out += ";     left = anchor_x - anieff(anix + dAX, sizex, fliph)\n";
+    out += ";     top  = anchor_y - anieff(aniy + dAY, sizey, flipv)\n";
+    char conv_line[160];
+    snprintf(conv_line, sizeof(conv_line),
+             ";   anieff = %s, %s.\n",
+             mirror_convention_label(g_mirror_convention),
+             mirror_convention_source(g_mirror_convention));
+    out += conv_line;
+    out += ";   So dAX is in FACING space, not screen space: +dAX moves the sprite\n";
+    out += ";   left unflipped and right flipped, the same way MK2's own blood and\n";
+    out += ";   prop spawn offsets mirror with facing. Applying dAX as a screen\n";
+    out += ";   offset after mirroring lands every flipped entry 2*dAX away.\n";
     out += "; The runtime must substitute its body/victim object for the shared anchor.\n";
     char world_meta[192];
     snprintf(world_meta, sizeof(world_meta),
@@ -6070,8 +6504,12 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; vX/vY motion is baked into the per-tick local anipoint rows;\n";
     out += "; StopX/StopY caps clamp that baked preview motion.\n";
     out += "; Each *_local_anipts table is aligned 1:1 with the .long rows.\n";
+    out += "; Flip X/Y IS emitted as code: ani_flip / ani_flip_v toggles, only where\n";
+    out += "; the orientation changes, so the table's image state matches the preview.\n";
+    out += "; Z is NOT code and cannot be -- MK2 has no per-frame draw-priority opcode.\n";
     out += "; Entries with z= / dual annotations need routine code: z orders the\n";
-    out += "; object's draw priority, dual draws the same sprite a second time.\n";
+    out += "; object's draw priority (set it on the object, once, from the lane's Z),\n";
+    out += "; dual draws the same sprite a second time.\n";
     out += "; Lanes with dual entries also emit a *_dual_anipts table aligned\n";
     out += "; 1:1 with the rows; -32768,-32768 means no second copy that tick.\n";
     out += "; Entries built from Use Subframe are a single composite of several\n";
@@ -6531,6 +6969,9 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
             if (fi < 0 || fi >= (int)lane.frames.size()) continue;
             int ss = lane.delay_slot;
             if (!state.lane_visible[ss]) continue;
+            /* render_info is keyed by row position, like every other
+               reader of it (hover_slot indexes lanes[] too) -- not by
+               delay_slot. */
             bool mirror = render_info.lane_mirror_x[li] ||
                           render_info.lane_mirror_y[li];
             const std::vector<int> *pieces =
@@ -8376,6 +8817,304 @@ bool WorldMarkedReverseSlot(WorldMarkedSequenceState &state, WorldMarkedLane &la
 
     state.paused = true;
     WorldMarkedRestart(state);
+    return true;
+}
+
+/* Rank lookup that tolerates the odd out-of-range slot by sorting it last. */
+static int WorldMarkedLaneRank(const WorldMarkedSequenceState &state,
+                               const WorldMarkedLane &lane)
+{
+    int slot = lane.delay_slot;
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return 1 << 20;
+    return state.lane_order[slot];
+}
+
+void WorldMarkedApplyLaneOrder(WorldMarkedSequenceState &state,
+                               std::vector<WorldMarkedLane> &lanes)
+{
+    int next = 0;
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++)
+        if (state.lane_order[slot] >= next) next = state.lane_order[slot] + 1;
+
+    /* Anything appearing for the first time goes on the end, in build order.
+       A slot keeps its rank while it is away, so a row that comes back -- a
+       tab reopened, the dummy body re-ticked -- lands where it was left. */
+    for (size_t i = 0; i < lanes.size(); i++) {
+        int slot = lanes[i].delay_slot;
+        if (slot < 0 || slot >= kWorldMarkedMaxTabs) continue;
+        if (state.lane_order[slot] < 0) state.lane_order[slot] = next++;
+    }
+
+    std::stable_sort(lanes.begin(), lanes.end(),
+                     [&state](const WorldMarkedLane &a, const WorldMarkedLane &b) {
+                         return WorldMarkedLaneRank(state, a) <
+                                WorldMarkedLaneRank(state, b);
+                     });
+}
+
+bool WorldMarkedMoveLane(WorldMarkedSequenceState &state,
+                         const std::vector<WorldMarkedLane> &lanes,
+                         int display_index, int dir)
+{
+    int other = display_index + dir;
+    if (display_index < 0 || display_index >= (int)lanes.size()) return false;
+    if (other < 0 || other >= (int)lanes.size()) return false;
+
+    int a = lanes[(size_t)display_index].delay_slot;
+    int b = lanes[(size_t)other].delay_slot;
+    if (a < 0 || a >= kWorldMarkedMaxTabs) return false;
+    if (b < 0 || b >= kWorldMarkedMaxTabs) return false;
+
+    int tmp = state.lane_order[a];
+    state.lane_order[a] = state.lane_order[b];
+    state.lane_order[b] = tmp;
+    return true;
+}
+
+/* Clear every mark in a document. This is what created a base row, so it is
+   what has to go for the row to leave; the sprites themselves are untouched
+   and re-marking brings the row straight back. */
+static int WorldUnmarkAllFrames(Document *doc)
+{
+    int n = 0;
+    if (!doc) return 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (!(img->flags & 1)) continue;
+        img->flags &= ~1u;
+        n++;
+    }
+    if (n > 0) doc->dirty = 1;
+    return n;
+}
+
+static int WorldMarkedCountMarkedFrames(Document *doc)
+{
+    int n = 0;
+    if (!doc) return 0;
+    for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p)
+        if (img->flags & 1) n++;
+    return n;
+}
+
+std::string WorldMarkedRemoveLaneDescription(const WorldMarkedSequenceState &state,
+                                             const WorldMarkedLane &lane)
+{
+    char buf[256];
+    int slot = lane.delay_slot;
+    if (lane.dummy_decap)
+        return "Turn off the dummy fatality body lane.";
+    if (slot == kWorldAsmSlot)
+        return "Switch off the ASM player lane. The .ASM file is untouched.";
+    if (slot == kWorldAsmOpponentSlot)
+        return "Switch off the ASM opponent lane. The .ASM file is untouched.";
+    if (slot == kWorldEmbeddedSeqScrSlot)
+        return "Close the embedded sequence/script lane. The record in\n"
+               "the IMG is left exactly as it is.";
+    if (WorldMarkedSlotReservedForSplit(state, slot)) {
+        snprintf(buf, sizeof(buf),
+                 "Delete this split row and its hand-edited sequence.\n"
+                 "There is no undo for it.");
+        return buf;
+    }
+
+    Document *doc = lane.doc;
+    const char *name = (doc && doc->fname_s[0]) ? doc->fname_s : "this IMG";
+    int marked = WorldMarkedCountMarkedFrames(doc);
+    snprintf(buf, sizeof(buf),
+             "Unmark %d frame%s in %s.\n\n"
+             "That is what puts this row in World View, so the row goes with\n"
+             "them. The sprites are not touched, and re-marking brings the row\n"
+             "back -- but this row's timing and offsets are cleared.",
+             marked, marked == 1 ? "" : "s", name);
+    return buf;
+}
+
+bool WorldMarkedRemoveLane(WorldMarkedSequenceState &state,
+                           const WorldMarkedLane &lane,
+                           std::string *out_msg)
+{
+    char msg[256];
+    int slot = lane.delay_slot;
+
+    if (lane.dummy_decap) {
+        state.dummy_decap_body = false;
+        WorldMarkedRestart(state);
+        snprintf(msg, sizeof(msg), "Removed the dummy body row.");
+    } else if (slot == kWorldAsmSlot) {
+        g_asm_lane_enabled = false;
+        snprintf(msg, sizeof(msg),
+                 "Removed the ASM player lane. Re-enable it in ASM Animations.");
+    } else if (slot == kWorldAsmOpponentSlot) {
+        g_asm_opp_enabled = false;
+        snprintf(msg, sizeof(msg),
+                 "Removed the ASM opponent lane. Re-enable it in ASM Animations.");
+    } else if (slot == kWorldEmbeddedSeqScrSlot) {
+        WorldExitEmbeddedSeqScr(state);
+        snprintf(msg, sizeof(msg), "Closed the embedded sequence/script lane.");
+    } else if (WorldMarkedSlotReservedForSplit(state, slot)) {
+        if (!WorldMarkedDeleteSplitSlot(state, slot)) return false;
+        snprintf(msg, sizeof(msg), "Deleted the split row.");
+    } else {
+        Document *doc = lane.doc;
+        if (!doc || slot < 0 || slot >= kWorldMarkedMaxTabs) return false;
+        const char *name = doc->fname_s[0] ? doc->fname_s : "Untitled";
+        int n = WorldUnmarkAllFrames(doc);
+
+        /* Same clear-down a deleted split row gets: leaving the sequence
+           override behind would resurrect the old frame list the moment
+           anything in that file is marked again. */
+        state.sequence_frames[slot].clear();
+        state.default_frames[slot].clear();
+        state.entry_pieces[slot].clear();
+        WorldMarkedClearRowDoc(state, slot);
+        state.lane_visible[slot] = true;
+        state.hold_end[slot] = false;
+        bool *mirror = WorldMarkedMirrorFlag(state, slot);
+        if (mirror) *mirror = false;
+        WorldMarkedClearSequenceState(state, slot);
+        state.paused = true;
+        WorldMarkedRestart(state);
+        snprintf(msg, sizeof(msg), "Removed row -- unmarked %d frame%s in %s.",
+                 n, n == 1 ? "" : "s", name);
+    }
+
+    if (out_msg) *out_msg = msg;
+    return true;
+}
+
+/* 16 chars of uppercase, the shape a SEQSCR name has to be. Derived from the
+   row's first sprite with its frame number stripped, so a row of UGSTAB1..6
+   arrives as UGSTAB rather than a wall of NEWSEQs. */
+static std::string WorldMarkedSequenceNameForLane(const WorldMarkedLane &lane)
+{
+    std::string base;
+    if (!lane.frames.empty()) {
+        Document *doc = (!lane.frame_docs.empty() && lane.frame_docs[0])
+                      ? lane.frame_docs[0] : lane.doc;
+        IMG *img = doc_get_img(doc, lane.frames[0]);
+        if (img) base = trim_sprite_name(img_name_string(img));
+    }
+    std::string stem;
+    if (!base.empty() && strip_trailing_sequence_digits(base, &stem) && !stem.empty())
+        base = stem;
+    if (base.empty()) base = "NEWSEQ";
+    if (base.size() > 16) base.resize(16);
+    for (size_t i = 0; i < base.size(); i++)
+        base[i] = (char)toupper((unsigned char)base[i]);
+    return base;
+}
+
+bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
+                                      const WorldMarkedLane &lane,
+                                      std::string *out_msg)
+{
+    int slot = lane.delay_slot;
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return false;
+    if (lane.frames.empty()) return false;
+    /* SeqScrAddRecord and friends all write g_doc's blob. */
+    if (!lane.doc || lane.doc != g_doc) return false;
+
+    EnsureWorldMarkedFrameDelays(state, slot, (int)lane.frames.size());
+
+    std::vector<SeqScrEntryValues> entries;
+    entries.reserve(lane.frames.size());
+    int foreign = 0;
+    bool lost_flip = false, lost_z = false, lost_motion = false;
+    bool lost_schedule = false, lost_dual = false, lost_pieces = false;
+
+    bool *mirror_flag = WorldMarkedMirrorFlag(state, slot);
+    if (mirror_flag && *mirror_flag) lost_flip = true;
+
+    for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+        if (state.frame_mirror[slot][fi]) lost_flip = true;
+        if (state.frame_z[slot][fi]) lost_z = true;
+        if (state.motion_dx[slot][fi] || state.motion_dy[slot][fi] ||
+            state.motion_cap_x[slot][fi] || state.motion_cap_y[slot][fi])
+            lost_motion = true;
+        if (state.visible_from[slot][fi] || state.visible_until[slot][fi])
+            lost_schedule = true;
+        if (state.dual_on[slot][fi]) lost_dual = true;
+        if (fi < (int)lane.frame_pieces.size() && lane.frame_pieces[fi].size() > 1)
+            lost_pieces = true;
+
+        /* An ENTRY names an image index inside this record's own IMG, so a
+           frame dragged in from another tab has no index to write. */
+        int fdoc = fi < (int)state.frame_doc[slot].size()
+                 ? state.frame_doc[slot][fi] : -1;
+        int img_idx = lane.frames[fi];
+        if ((fdoc >= 0 && fdoc != lane.doc_idx) ||
+            img_idx < 0 || img_idx >= (int)g_doc->imgcnt) {
+            foreign++;
+            continue;
+        }
+
+        SeqScrEntryValues v;
+        v.index = img_idx;
+        /* Holds are already 1..120 and offsets already fit a signed word, so
+           both land inside what SeqScrReplaceEntries accepts. */
+        v.ticks = ClampTimelineHold(state.frame_delays[slot][fi]);
+        v.dx = ClampWorldMarkedAniptDelta(state.local_dx[slot][fi]);
+        v.dy = ClampWorldMarkedAniptDelta(state.local_dy[slot][fi]);
+        entries.push_back(v);
+    }
+
+    char msg[320];
+    if (entries.empty()) {
+        snprintf(msg, sizeof(msg),
+                 "Nothing to promote: every entry in this row comes from another IMG.");
+        if (out_msg) *out_msg = msg;
+        return false;
+    }
+
+    if (!SeqScrAddRecord(false)) {
+        snprintf(msg, sizeof(msg),
+                 "Could not add a sequence (anim blob is truncated or out of memory).");
+        if (out_msg) *out_msg = msg;
+        return false;
+    }
+    int new_idx = (int)g_doc->seqcnt - 1;
+    if (!SeqScrReplaceEntries(new_idx, entries)) {
+        snprintf(msg, sizeof(msg),
+                 "Added sequence %d but could not write its entries; it is empty.",
+                 new_idx);
+        if (out_msg) *out_msg = msg;
+        return false;
+    }
+    std::string name = WorldMarkedSequenceNameForLane(lane);
+    SeqScrSetName(new_idx, name.c_str());
+
+    /* Say what did not come across. Silence here would be the worst outcome:
+       the row keeps playing with its flips and Z while the record it just
+       produced has neither. */
+    std::string lost;
+    auto add_lost = [&lost](const char *what) {
+        if (!lost.empty()) lost += ", ";
+        lost += what;
+    };
+    if (lost_flip) add_lost("flip X/Y");
+    if (lost_z) add_lost("Z");
+    if (lost_motion) add_lost("motion");
+    if (lost_schedule) add_lost("Show@/Hide@");
+    if (lost_dual) add_lost("the dual copy");
+    if (lost_pieces) add_lost("extra composite pieces");
+
+    char tail[192];
+    tail[0] = 0;
+    if (!lost.empty())
+        snprintf(tail, sizeof(tail),
+                 " A sequence entry holds only sprite/ticks/dX/dY, so %s stayed behind.",
+                 lost.c_str());
+    char foreign_tail[96];
+    foreign_tail[0] = 0;
+    if (foreign > 0)
+        snprintf(foreign_tail, sizeof(foreign_tail),
+                 " %d entr%s from another IMG skipped.",
+                 foreign, foreign == 1 ? "y" : "ies");
+
+    snprintf(msg, sizeof(msg), "Promoted to sequence %d '%s' (%d entr%s).%s%s",
+             new_idx, name.c_str(), (int)entries.size(),
+             entries.size() == 1 ? "y" : "ies", tail, foreign_tail);
+    if (out_msg) *out_msg = msg;
     return true;
 }
 
@@ -17621,7 +18360,7 @@ bool DrawSeqScrWorkspace(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io)
                 } else {
                     SeqScrDrawEntryTable(state, lane, rows_h);
                     WorldMarkedLaneThumbClick thumb_click =
-                        WorldDrawMarkedLaneThumbnails(state, lane);
+                        WorldDrawMarkedLaneThumbnails(state, lane, lanes);
                     if (thumb_click.clicked) {
                         state.active_slot = lane.delay_slot;
                         Document *doc = document_get(thumb_click.doc_idx);
@@ -17697,6 +18436,9 @@ static bool WorldBuildExportLanes(std::vector<WorldMarkedLane> &lanes)
                                input.doc_idx, input.slot_id, lanes);
         }
     }
+    /* Export in the order the panel shows, so a PNG composite and the row
+       list cannot disagree about which lane is in front. */
+    WorldMarkedApplyLaneOrder(state, lanes);
     return !lanes.empty();
 }
 
@@ -17975,6 +18717,8 @@ void DrawWorldMarkedTimelinePanel(void)
                            input.frames, input.doc, input.doc_idx,
                            input.slot_id, lanes);
     }
+
+    WorldMarkedApplyLaneOrder(g_world_marked_state, lanes);
 
     /* One marked row is enough here too -- see WorldDrawMarkedTabs. */
     if (lanes.empty()) {

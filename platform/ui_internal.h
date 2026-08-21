@@ -910,12 +910,14 @@ extern bool          g_show_unsaved_confirm;
 extern PendingAction g_pending_action;
 extern std::string   g_pending_action_path;
 extern int           g_pending_tab_index;
-/* The document the pending close targets, held as a pointer so an index shift
-   (a tab opened or reordered while the prompt is up) cannot retarget it. */
-extern Document     *g_pending_tab_doc;
-/* The document the pending close targets, held as a pointer so an index shift
-   (a tab opened or reordered while the prompt is up) cannot retarget it. */
-extern Document     *g_pending_tab_doc;
+/* The document the pending close targets, held as a uid so an index shift (a
+   tab opened or reordered while the prompt is up) cannot retarget it. Never a
+   Document*: the tab store is a deque whose elements are far too big to share
+   a node, so closing any tab both shuffles contents between slots and frees a
+   node. A pointer held across that lands on another document, or on memory an
+   IMG load has since recycled -- which is how the prompt ended up naming the
+   file with a screenful of palette bytes. */
+extern unsigned int  g_pending_tab_uid;
 extern bool          g_show_delete_images_confirm;
 extern char          g_pending_delete_parent_name[16];
 extern std::vector<int> g_pending_delete_base_indices;

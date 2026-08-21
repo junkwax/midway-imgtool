@@ -218,7 +218,7 @@ bool          g_show_unsaved_confirm = false;
 PendingAction g_pending_action = PendingAction::None;
 std::string   g_pending_action_path;
 int           g_pending_tab_index = -1;
-Document     *g_pending_tab_doc = NULL;
+unsigned int  g_pending_tab_uid = 0;
 bool          g_show_delete_images_confirm = false;
 char          g_pending_delete_parent_name[16] = {0};
 std::vector<int> g_pending_delete_base_indices;

@@ -471,6 +471,7 @@ struct WorldMarkedSequenceState {
         for (int i = 0; i < kWorldMarkedMaxTabs; i++) {
             sequence_doc_uid[i] = 0;
             lane_visible[i] = true;
+            lane_order[i] = -1;
             auto_step[i] = 3;
             auto_life[i] = 32;
             auto_vx[i] = 0;
@@ -504,7 +505,11 @@ struct WorldMarkedSequenceState {
     int default_hold = kDefaultTimelineHold;
     float timer = 0.0f;
     int frame = 0;
-    bool paused = false;
+    /* Starts paused. World View opening straight into a running animation
+       meant every layout read, every anipoint check and every drag started
+       against a moving target; Play is one click when you actually want
+       motion. Saved projects restore whatever they were saved with. */
+    bool paused = true;
     bool mirror_active = false;
     bool mirror_other = false;
     bool mirror_extra[kWorldMarkedMaxTabs - 2] = {};
@@ -544,6 +549,13 @@ struct WorldMarkedSequenceState {
     std::vector<int> embedded_targets;
     std::vector<WorldMarkedSplitLane> split_lanes;
     bool lane_visible[kWorldMarkedMaxTabs] = {};
+    /* Row order, as a rank per slot. Lanes are rebuilt from scratch every
+       frame out of tab order plus the split list, so a user-chosen order
+       cannot live in the vector -- it has to hang off the slot. -1 means "not
+       placed yet"; WorldMarkedApplyLaneOrder hands those the next rank in
+       build order, which is why an untouched session keeps exactly the order
+       it always had. */
+    int lane_order[kWorldMarkedMaxTabs];
     bool hold_end[kWorldMarkedMaxTabs] = {};
     std::vector<int> frame_delays[kWorldMarkedMaxTabs];
     std::vector<int> local_dx[kWorldMarkedMaxTabs];
@@ -706,9 +718,13 @@ WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
                                            int world_w, int world_h,
                                            int world_origin_x,
                                            int world_origin_y);
+/* `hidden_lane_count` of the `lane_count` rows are collapsed to a single line
+   (see WorldDrawMarkedLaneControls), so they ask for a fraction of the
+   height a drawn row does. */
 WorldMarkedPanelLayout ComputeWorldMarkedPanelLayout(ImVec2 avail,
                                                      ImVec2 img_pos,
-                                                     int lane_count);
+                                                     int lane_count,
+                                                     int hidden_lane_count = 0);
 WorldMarkedSequenceState &WorldMarkedState(void);
 bool *WorldMarkedMirrorFlag(WorldMarkedSequenceState &state, int slot);
 
@@ -810,12 +826,45 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
                                             bool dummy_decap_missing,
                                             IMG *selected_img,
                                             int active_doc_idx);
-void WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
+/* Returns true when the row was removed during the call, in which case the
+   lane is stale and nothing else may be drawn from it this frame. */
+bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                                  WorldMarkedLane &lane,
                                  const std::vector<WorldMarkedLane> &lanes,
                                  int display_slot);
+/* `lanes` is needed for the frame right-click menu, which can spawn a new row
+   and therefore has to know which slots are taken. */
 WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState &state,
-                                                        WorldMarkedLane &lane);
+                                                        WorldMarkedLane &lane,
+                                                        const std::vector<WorldMarkedLane> &lanes);
+
+/* ---- Blood lanes -------------------------------------------------------
+   MK2 does not animate blood inside the move that caused it: MKREACT.ASM
+   calls create_blood_proc with a blood_procs[] index and a packed [y,x]
+   offset from the victim's origin, and the spray runs as its own process
+   from that point. A blood row here is the authoring twin of that -- its own
+   row, its own art, scheduled to start at one entry's tick and anchored on
+   that entry's anipoint, which is the same offset the engine takes (and in
+   the same facing space, since multi_adjust_xy mirrors it for a flipped
+   object).
+
+   The art is whatever is open: any numbered run of sprites whose names read
+   as blood (BLOOD/SPILL/SPURT/DRIP/SPRAY/SPLAT/GUTS/GORE) in any tab. */
+struct WorldBloodRun {
+    int doc_idx = -1;
+    std::string doc_name;
+    std::string stem;            /* SPILL, from SPILL1..SPILL13 */
+    std::vector<int> frames;     /* image indices, in image-list order */
+};
+void WorldCollectBloodRuns(std::vector<WorldBloodRun> &out);
+/* Add a row playing `run` once, starting at the tick `src_entry` of `src_lane`
+   begins and sitting on that entry's anipoint. */
+bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
+                                const std::vector<WorldMarkedLane> &lanes,
+                                const WorldMarkedLane &src_lane,
+                                int src_entry,
+                                const WorldBloodRun &run,
+                                std::string *out_msg);
 std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes);
 bool WorldDrawMarkedAsmPopup(WorldMarkedSequenceState &state);
@@ -898,6 +947,40 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
 void WorldMarkedClearSplitLanes(WorldMarkedSequenceState &state);
 bool WorldMarkedReverseSlot(WorldMarkedSequenceState &state, WorldMarkedLane &lane);
 bool WorldMarkedDeleteSplitSlot(WorldMarkedSequenceState &state, int slot);
+
+/* ---- Row order and removal ---------------------------------------------
+   Apply the stored order once per build, after the last lane has been
+   appended, so the panel, the canvas draw order (equal Z falls back to row
+   order) and the ASM export all agree on what "row 1" means. */
+void WorldMarkedApplyLaneOrder(WorldMarkedSequenceState &state,
+                               std::vector<WorldMarkedLane> &lanes);
+/* Swap the displayed row at `display_index` with the neighbour `dir` away
+   (-1 up, +1 down). False at the ends, or for an unrecognised row. */
+bool WorldMarkedMoveLane(WorldMarkedSequenceState &state,
+                         const std::vector<WorldMarkedLane> &lanes,
+                         int display_index, int dir);
+/* What removing this row would actually do, in words, for the confirmation. */
+std::string WorldMarkedRemoveLaneDescription(const WorldMarkedSequenceState &state,
+                                             const WorldMarkedLane &lane);
+/* Remove a row at its source: split rows are dropped, the dummy body, ASM and
+   embedded lanes are switched off, and a base marked row goes away by
+   unmarking the frames in its document that created it. `out_msg` receives a
+   sentence describing what happened. */
+bool WorldMarkedRemoveLane(WorldMarkedSequenceState &state,
+                           const WorldMarkedLane &lane,
+                           std::string *out_msg);
+
+/* ---- Promote a row into the document's own sequence block --------------
+   A row is preview state; a SEQSCR record is the file. An ENTRY holds four
+   things -- target sprite, ticks, dX, dY -- and that is the whole overlap.
+   Everything else a row carries (per-entry flips, Z, motion, show/hide
+   ticks, the dual copy, composite pieces beyond the primary) has nowhere to
+   go in the IMG, so it is counted and named in `out_msg` rather than
+   silently dropped. Writes through g_doc, so the row's document must be the
+   active tab; callers gate on lane.doc == g_doc. */
+bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
+                                      const WorldMarkedLane &lane,
+                                      std::string *out_msg);
 void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
 void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx, int dir);
 void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);

@@ -4071,7 +4071,7 @@ static void RequestCloseDocumentTab(int idx)
         ActivateDocumentTab(idx);
         g_pending_action = PendingAction::CloseTab;
         g_pending_tab_index = idx;
-        g_pending_tab_doc = doc;
+        g_pending_tab_uid = doc->uid;
         g_show_unsaved_confirm = true;
         return;
     }

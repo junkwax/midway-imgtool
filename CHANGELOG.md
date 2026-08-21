@@ -8,6 +8,120 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.29.0] — The row is the unit of work
+
+### The Frame Sequence header stops being a wall
+
+Two dozen widgets ran down a single `SameLine` chain — transport, five
+overlays, four ASM buttons, four file buttons, the dummy body — and finding
+anything in it meant reading the whole line.
+
+- **Playback stays out; everything else groups by what it acts on.** Play,
+  Refresh, Tick, Ticks/frame, FPS and Game keep their place on the strip.
+  `Overlays…` holds borders, bounds, the reference figure, the stage
+  background and Link Anchors; `ASM…` the four table actions; `Export…` PNG,
+  PNG sequence and the project file; `Lanes…` the dummy body and the split
+  rows. Ten items where there were twenty-four.
+- **The reference figure and the background got discoverable.** Both configs
+  were right-click popups on their own checkbox, advertised nowhere. They are
+  named submenus now. Loading a `.BDD` still closes the whole menu chain
+  before the file dialog opens, for the reason it always did: a modal opened
+  while a popup owns the ID stack draws nowhere and blocks everything.
+- The one status left on the strip is `No assigned *DECAP body found`, which
+  reports a broken preview rather than a setting.
+
+### Rows reorder, and every row can go
+
+- **Up / Dn on each row.** Order is display order, draw order for lanes
+  sharing a Z, and the order the ASM tables are written in — one control for
+  all three. Lanes are rebuilt from scratch every frame out of tab order plus
+  the split list, so the order lives on the slot as a rank, not in the vector.
+  Unranked slots take the next rank in build order, so an existing session
+  looks exactly as it did, and a slot keeps its rank while its row is away —
+  a reopened tab lands back where it was left. Saved in `.WVP` as
+  `slot.N.order`; older projects read `-1` and re-rank on first draw.
+- **Del works on every row type, not just split ones.** It asks first, and the
+  confirm says what removing *this* row means: a split row is dropped, the
+  dummy body and the ASM lanes are switched off, the embedded lane is closed,
+  and a base marked row goes away by unmarking the frames in its document that
+  created it — named, with a count. Same path from `Row… ▸ Delete Row…`.
+
+### Hidden rows cost nothing
+
+- **A hidden row collapses to its header line.** It kept drawing in full:
+  three lines of controls and a thumbnail strip. The strip is the expensive
+  half — `BuildWorldSpriteTexture` creates an SDL texture and converts every
+  pixel through the palette on every call, and they are all destroyed at end
+  of frame, so a hidden 20-frame row was building and discarding 20 textures
+  per frame for thumbnails nobody was looking at. Now: no strip, no textures,
+  no controls, and 26px instead of 104. The eye, the order buttons and Del
+  stay live so it can be restored, moved or dropped while collapsed.
+
+### Promote a row into the IMG
+
+- **`To Seq`** writes the row into its document's SEQSCR block as a new
+  record — one ENTRY per entry, carrying sprite, ticks, dX and dY, named from
+  the first sprite's stem (`UGSTAB1..6` → `UGSTAB`). An ENTRY holds those four
+  fields and nothing else, so flips, Z, motion, Show@/Hide@, the dual copy and
+  extra composite pieces cannot come across; the toast names exactly what
+  stayed behind rather than dropping it quietly. Entries dragged in from
+  another tab are skipped and counted — an ENTRY indexes its own IMG.
+
+### Blood rows
+
+- **Right-click a frame ▸ Start Blood Here.** Lists every numbered blood run
+  found across the open tabs (`BLOOD.IMG · SPILL x13`), grouped by stem.
+  Picking one adds a row that plays once at that frame's tick, anchored on
+  that frame's anipoint, and lands directly under the row that spawned it.
+  Scheduled through consecutive Show@/Hide@ windows — the same timed-subframe
+  mechanism Build Chain already uses — so it fires on time whatever the other
+  lanes are doing. This is the authoring twin of what the game does:
+  `MKREACT.ASM` calls `create_blood_proc` with a `blood_procs[]` index and a
+  packed `[y,x]` offset from the victim's origin, in facing space. The export
+  does not name a blood-proc index; imgtool cannot map art back to a routine.
+
+### The panel holds still during playback
+
+- **The scrollbar was the jump.** Row content width changed as playback
+  stepped the current entry (`Entry 9/12` → `Entry 10/12`, `Timing/FX` →
+  `Timing/FX *`), and at a window width near the content width the horizontal
+  scrollbar appeared and vanished frame to frame, taking ~12px off the child's
+  height each time and shoving every row up and down — which is why it
+  depended on the window size. The bar is now always reserved, the varying
+  readouts are padded to a fixed width, and the Timing/FX marker is a colour
+  instead of an extra character.
+- **World View opens paused.** Every layout read, anipoint check and drag used
+  to start against a moving target. Saved projects still restore whatever they
+  were saved with.
+
+### Fixes
+
+- **The Unsaved Changes prompt printed heap garbage instead of a filename.**
+  It named the file through a raw `Document *` held across frames. Documents
+  live in a `std::deque<Document>` whose elements are far too large to share a
+  node, so closing any tab both shuffles contents between slots and frees a
+  node — and the next IMG or palette allocation reuses that memory. The prompt
+  was `%s`-ing whatever landed there. Now keyed on the document uid, resolved
+  through `document_from_uid`, with a fallback to the active file if the target
+  has gone. The dead second copy of `RequestCloseDocumentTab`, which armed a
+  close without recording *which* document, is deleted.
+- **Esc left the close armed.** Dismissing the prompt with Esc or its title-bar
+  X ran none of the buttons, so the pending action stayed set and aimed at a
+  stale target — and Esc-to-quit went dead afterwards. A dismiss is now treated
+  as Cancel, and every exit clears through one `ClearPendingUnsavedAction`.
+- **The ASM export told you to apply dAX/dAY the wrong way round.** The header
+  read "mirroring is draw-only; apply dAX/dAY once after mirroring the sprite",
+  but World View adds them to the art anipoint *before* the flip:
+  `left = anchor - anieff(anix + dAX, sizex, fliph)`. Following the comment put
+  every flipped entry `2*dAX` out — the MK1FIRE1 failure mode
+  `doc/ANIPOINT_MIRROR_TODO.md` was written about. The drag code already knew
+  (`drag_mirror_x ? px : -px`); only the exported contract was wrong. It now
+  prints the formula, names the active mirror convention and its source
+  listing, and says dAX is in facing space — the same space `MKREACT.ASM` uses
+  for its own spawn offsets. The header is also explicit that flip X/Y *is*
+  emitted as `ani_flip`/`ani_flip_v` code while Z is a comment and cannot be
+  anything else: MK2 has no per-frame draw-priority opcode.
+
 ## [v3.28.0] — The parent frame is the authority
 
 ### Subframes answer to their parent
