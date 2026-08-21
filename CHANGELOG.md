@@ -8,6 +8,86 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.30.0] — A row is a step, not a tick
+
+### The exported timing was several times too slow
+
+`MKUTIL.ASM`'s `animate_a9` says it plainly — *"a0 = sleep time between each
+frame"*. One `.long` row in an anitab is one **animation step**, held for
+however many ticks the caller passes; nothing in the table itself says how
+long. `a_jcstance` is seven bare `.long`s.
+
+imgtool encoded a hold of 4 as four repeated rows. Run that at the customary
+sleep of 5 and one authored frame lasts 20 game ticks — four times what the
+preview showed. The evidence is in the shipped game: `MKDEATH.ASM` annotates
+its SPILL lane *"IMGTOOL Slot 7 BLOOD.IMG lane: SPILL1..13 once at the authored
+12 FPS (x5 game ticks per step)"* — 12 × 5 = 60, so the author was reckoning in
+60 Hz, not the hardware's 54.7.
+
+- **Rows are steps now.** Each lane collapses to the largest sleep that still
+  expresses every entry exactly — the gcd of its holds — so a uniform lane
+  emits one row per authored frame, which is how MK2 writes them. Mixed holds
+  keep whole-number repeats over a smaller sleep instead of one row per tick.
+- **Every lane prints what to run it with**: `; Run this lane with
+  a9 = [5,ani_offset]: 5 ticks per row, i.e. 10.9 fps at MK2's 54.7 Hz.`
+  Pass that value; a house default is what caused the drift.
+- **Per-tick motion is flagged.** A row only lands every `sleep` ticks, so
+  vX/vY offsets are sampled at each row's first tick and step in jumps of
+  `sleep * v`. Lanes that use it now say so.
+
+### FPS meant ticks per second
+
+The transport's slider was labelled **FPS** and set the tick clock. Type 12
+into it — reading it as frames per second, as everyone did — and a 4-tick hold
+plays at three frames a second.
+
+- **Relabelled `Tick Hz`**, with the hardware rate as its home and a tooltip
+  that says to leave it there.
+- **A real frame-rate box** sits next to Ticks/frame, showing the derived rate.
+  Type one and the hold snaps to the nearest whole tick, because a frame cannot
+  last part of a tick: at 54.7 Hz the reachable rates are 54.7, 27.4, 18.2,
+  13.7, 10.9, 9.1, 7.8… Ask for 12, get a hold of 4, and see 13.7 — which is
+  the number the game will run.
+- Blood rows are authored at **5 ticks a frame**, the speed MK2 plays them:
+  every spray in `MKBLOOD.ASM` runs `movk 5,a3`, and the shipped SPILL lane is
+  annotated x5. They were inheriting whatever the panel's default hold was.
+
+### Sideloaded files are part of the character
+
+Both of these bit specifically when a character is assembled from scraps —
+pieces in `UGM09SP.IMG`, their parent in `UGM09.IMG`.
+
+- **Chop pieces were being listed as whole frames.** The subframe test looked
+  for the parent only inside the owning document, so a piece whose parent sat
+  in another file looked top-level — the frame library listed them and
+  sequences built from it filled up with chop pieces. It now looks across every
+  open tab, and so does the piece count.
+- **The frame library was one file.** It is built from `stem + trailing
+  number`, and `UGM09SP.IMG` has no trailing digits, so the split failed
+  outright and the set fell back to just that file. Every open tab now joins
+  the library, unioned with the numbered siblings it already auto-opens from
+  disk. An open tab is an explicit statement that the file belongs to this
+  character; by the time LOAD2 packs it, they are one library anyway.
+
+### Promote writes every entry, wherever the sprite lives
+
+`To Seq` used to skip frames pulled in from other tabs, because a SEQSCR entry
+names an image by index inside its own IMG — a sequence wrong in a quieter way
+than a missing sprite. Those entries are now given an index to name:
+
+- **Matched by name** when this IMG already has that sprite, since the compiled
+  library has only one of each name.
+- **Copied in** when it does not — pixels, point table, alt-palette table, both
+  anipoints, dimensions, and the palette (reused if same-named, otherwise
+  copied, two bytes a colour).
+- The name travels **verbatim, raw 16 bytes included**: LOAD2 hashes those
+  bytes for sprite allocation, so this has to stay the same sprite it was in
+  the file it came from — no `DUP` suffix. The mark bit is cleared, so a copy
+  cannot hand the document a World View row nobody asked for, and
+  `src_filename` still records where it came from.
+- One undo step covers all the imports. The toast names how many were copied,
+  how many matched by name, and anything that could not be resolved.
+
 ## [v3.29.0] — The row is the unit of work
 
 ### The Frame Sequence header stops being a wall

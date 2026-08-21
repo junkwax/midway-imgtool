@@ -3935,13 +3935,47 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
     if (ImGui::IsItemHovered()) {
         int shown = ClampTimelineHold(state.default_hold);
         ImGui::SetTooltip(
-            "Hold every frame this many ticks. This is the number you write\n"
-            "into the ASM, not a preview-only speed.\n\n"
+            "Hold every frame this many ticks. This is the sleep value the\n"
+            "animation runner is given -- MKUTIL.ASM animate_a9 holds one\n"
+            ".long row for this many ticks -- not a preview-only speed.\n\n"
             "MK2 runs %.1f ticks a second, so a hold of %d plays at %.1f fps.\n"
             "Changing it rewrites every lane's per-frame hold; the dummy body\n"
             "keeps its own canned timing.",
             kMk2TickHz, shown, kMk2TickHz / (float)shown);
     }
+
+    /* The same number from the other end. Ticks are what the game holds and
+       what the export writes, but nobody authors in 54.7ths of a second, and
+       guessing the rate is how a lane authored "at 12 fps" shipped running at
+       5 game ticks a frame -- 10.9 fps -- with the mismatch baked in. Type the
+       rate, get the nearest whole tick count, and see what it actually is. */
+    int hold_now = ClampTimelineHold(state.default_hold);
+    float derived = state.fps / (float)hold_now;
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::TextDisabled("fps");
+    ImGui::SameLine(0.0f, 4.0f);
+    char fps_id[64];
+    snprintf(fps_id, sizeof(fps_id), "##%s_animfps", id_suffix);
+    ImGui::SetNextItemWidth(58.0f);
+    float want_fps = derived;
+    if (ImGui::InputFloat(fps_id, &want_fps, 0.0f, 0.0f, "%.1f",
+                          ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (want_fps > 0.05f) {
+            int want_hold = (int)(state.fps / want_fps + 0.5f);
+            state.default_hold = ClampTimelineHold(want_hold);
+            WorldMarkedApplyUniformHold(state, state.default_hold);
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Frame rate, derived: tick rate / ticks-per-frame. Type one and the\n"
+            "hold snaps to the nearest whole tick, because a frame cannot last\n"
+            "part of a tick -- at %.1f Hz the reachable rates are %.1f, %.1f,\n"
+            "%.1f, %.1f, %.1f, %.1f... Asking for 12 gives a hold of 4, which is\n"
+            "%.1f fps. That is the number the game will run.",
+            state.fps, state.fps, state.fps / 2.0f, state.fps / 3.0f,
+            state.fps / 4.0f, state.fps / 5.0f, state.fps / 6.0f,
+            state.fps / 4.0f);
 }
 
 /* One grouped popup, opened from a SmallButton. The header used to run two
@@ -4117,10 +4151,15 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     WorldDrawTickHoldControl(state, "world_marked_panel");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(105.0f);
-    ImGui::SliderFloat("FPS##world_marked_panel_fps", &state.fps, 1.0f, 60.0f, "%.1f");
+    /* Labelled "FPS" for a long time, which is how a 12 in this box came to
+       mean "12 frames a second" to everyone who used it. It is the tick
+       clock: at 12 here a 4-tick hold plays at 3 frames a second. */
+    ImGui::SliderFloat("Tick Hz##world_marked_panel_fps", &state.fps, 1.0f, 60.0f, "%.1f");
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Ticks per second. MK2 runs at %.1f, so that is\n"
-                          "what a hold of N ticks looks like in game.", kMk2TickHz);
+        ImGui::SetTooltip("Preview tick rate -- ticks per second, not frames.\n"
+                          "MK2's hardware runs at %.1f and does not move, so leave\n"
+                          "it there and set the speed with Ticks/frame; the fps box\n"
+                          "next to it shows what the two come to.", kMk2TickHz);
     ImGui::SameLine();
     if (ImGui::SmallButton("Game##world_marked_game_fps")) state.fps = kMk2TickHz;
     if (ImGui::IsItemHovered())
@@ -5741,6 +5780,9 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                 ImGui::SetTooltip(can_promote
                     ? "Write this row into the IMG as a new SEQSCR sequence:\n"
                       "one entry per row entry, carrying sprite, ticks, dX and dY.\n"
+                      "Frames living in other tabs are brought into this IMG so the\n"
+                      "entry can name them -- reused if a sprite of that name is\n"
+                      "already here, copied in with its palette if not.\n"
                       "Flips, Z, motion, Show@/Hide@ and dual are preview-only and\n"
                       "cannot be stored in an entry -- the toast names what was left.\n"
                       "Open it afterwards from the Anim tab."
@@ -6200,8 +6242,14 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
     /* Scheduled, not looped: consecutive Show@/Hide@ windows are how this
        panel already draws a timed subframe (it is what Build Chain emits), so
        the run fires once at start_tick and then stops, whatever the rest of
-       the scene is doing on its own clocks. */
-    int hold = ClampTimelineHold(state.default_hold);
+       the scene is doing on its own clocks.
+
+       Blood gets MK2's own blood speed rather than the panel's default hold:
+       every spray in MKBLOOD.ASM runs at an ani speed of 5 (`movk 5,a3`), and
+       the shipped SPILL lane in MKDEATH.ASM is annotated "x5 game ticks per
+       step". Inheriting a default hold of 4 -- or whatever the last lane was
+       set to -- is what makes a spray crawl. */
+    int hold = ClampTimelineHold(kWorldBloodTicksPerFrame);
     int t = start_tick;
     for (int i = 0; i < n; i++) {
         state.frame_delays[slot][i] = hold;
@@ -6494,11 +6542,18 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; The runtime must substitute its body/victim object for the shared anchor.\n";
     char world_meta[192];
     snprintf(world_meta, sizeof(world_meta),
-             "; World View: W=%d H=%d Origin=(%d,%d) FPS=%.2f\n",
+             "; World View: W=%d H=%d Origin=(%d,%d) TickHz=%.2f\n",
              g_world_state.w, g_world_state.h,
              g_world_state.origin_x, g_world_state.origin_y, state.fps);
     out += world_meta;
-    out += "; Delay ticks are encoded by repeating that frame label.\n";
+    out += "; TIMING. One .long row is one ANIMATION STEP, not one tick.\n";
+    out += ";   MKUTIL.ASM animate_a9 takes a9 = [sleep,ani_offset] and holds each\n";
+    out += ";   row for `sleep` ticks -- \"a0 = sleep time between each frame\".\n";
+    out += ";   So a lane exported as N repeated rows and then run at the customary\n";
+    out += ";   sleep of 5 plays N*5 game ticks per authored frame, which is where a\n";
+    out += ";   preview that looked right ends up several times too slow in game.\n";
+    out += ";   Each lane below prints the sleep its rows were built for. Pass that\n";
+    out += ";   value; do not substitute a house default.\n";
     out += "; Show@/Hide@ entries act as timed held subframes in preview;\n";
     out += "; export emits 0 outside that tick window.\n";
     out += "; vX/vY motion is baked into the per-tick local anipoint rows;\n";
@@ -6582,9 +6637,44 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
         else
             out += "; Mirror mode: OFF; spawn/draw this object without mirroring.\n";
 
+        EnsureWorldMarkedFrameDelays(state, lane.delay_slot, (int)lane.frames.size());
+
+        /* Rows are animation steps, so the hold has to leave the table and
+           become the runner's sleep. The gcd of the lane's holds is the
+           largest sleep that still expresses every entry exactly: a uniform
+           lane collapses to one row per frame (the idiomatic MK2 encoding),
+           and a mixed one keeps whole-number repeats on top of a smaller
+           sleep instead of one row per tick. */
+        int lane_sleep = 0;
+        for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+            int h = ClampTimelineHold(state.frame_delays[lane.delay_slot][fi]);
+            int a = lane_sleep, b = h;
+            while (b) { int t = a % b; a = b; b = t; }
+            lane_sleep = a;
+        }
+        if (lane_sleep < 1) lane_sleep = 1;
+
+        char sleep_line[224];
+        snprintf(sleep_line, sizeof(sleep_line),
+                 "; Run this lane with a9 = [%d,ani_offset]: %d tick%s per row,\n"
+                 ";   i.e. %.1f fps at MK2's %.1f Hz. Rows below are steps, not ticks.\n",
+                 lane_sleep, lane_sleep, lane_sleep == 1 ? "" : "s",
+                 kMk2TickHz / (float)lane_sleep, kMk2TickHz);
+        out += sleep_line;
+        {
+            bool lane_has_motion = false;
+            for (int fi = 0; fi < (int)lane.frames.size() && !lane_has_motion; fi++)
+                lane_has_motion = state.motion_dx[lane.delay_slot][fi] ||
+                                  state.motion_dy[lane.delay_slot][fi];
+            if (lane_has_motion && lane_sleep > 1)
+                out += "; NOTE: this lane uses per-tick motion, but a row only lands "
+                       "every\n;   sleep ticks -- the offsets below are sampled at each "
+                       "row's first\n;   tick, so the motion steps in jumps of "
+                       "sleep*v rather than smoothly.\n";
+        }
+
         out += anim_label;
         out += "\n";
-        EnsureWorldMarkedFrameDelays(state, lane.delay_slot, (int)lane.frames.size());
         std::string local_table;
         local_table += anim_label;
         local_table += "_local_anipts\n";
@@ -6713,7 +6803,11 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                         img_name_string(piece_img), piece_fallback);
                 }
             }
-            for (int repeat = 0; repeat < delay; repeat++) {
+            /* delay is a multiple of lane_sleep by construction (gcd), so a
+               uniform lane emits exactly one row per authored frame. */
+            int rows = delay / lane_sleep;
+            if (rows < 1) rows = 1;
+            for (int repeat = 0; repeat < rows; repeat++) {
                 if (slot_stop_tick > 0 && tick > slot_stop_tick) {
                     reached_stop_tick = true;
                     break;
@@ -6742,8 +6836,15 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 if (repeat == 0) {
                     out += "\t; ";
                     out += sprite;
-                    out += " delay x";
+                    out += " hold ";
                     out += std::to_string(delay);
+                    out += "t = ";
+                    out += std::to_string(rows);
+                    out += " row";
+                    out += rows == 1 ? "" : "s";
+                    out += " x ";
+                    out += std::to_string(lane_sleep);
+                    out += "t";
                     if (local_dx || local_dy) {
                         out += " dAX=";
                         out += std::to_string(local_dx);
@@ -6830,7 +6931,7 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                     piece_tables[(size_t)c] += std::to_string(tick);
                     piece_tables[(size_t)c] += "\n";
                 }
-                tick++;
+                tick += lane_sleep;
             }
             if (reached_stop_tick)
                 break;
@@ -8982,6 +9083,123 @@ bool WorldMarkedRemoveLane(WorldMarkedSequenceState &state,
     return true;
 }
 
+/* ---- Bringing a sideloaded sprite into the record's own file -----------
+   A SEQSCR entry names an image by index inside its own IMG, so a row built
+   from frames pulled out of other tabs has nothing it can write for them. But
+   those files are one library by the time LOAD2 packs the character, and the
+   sequence is meant to reference them, so dropping the entries produces a
+   sequence that is wrong in a quieter way than a missing sprite.
+
+   The sprite is brought into this document instead: matched by name when it
+   is already here (the compiled library has one sprite of that name, so a
+   second copy would be waste), copied in when it is not. */
+static std::string WorldPalNameString(const PAL *pal)
+{
+    if (!pal) return std::string();
+    size_t n = 0;
+    while (n < sizeof(pal->n_s) && pal->n_s[n] != '\0') n++;
+    return std::string(pal->n_s, pal->n_s + n);
+}
+
+/* The palette index in g_doc that `src_palnum` of `src_doc` should become:
+   the same-named palette if this file already has one, otherwise a copy.
+   Returns -1 when the source palette cannot be resolved at all. */
+static int WorldMarkedImportPaletteInto(Document *src_doc, int src_palnum)
+{
+    PAL *src = doc_get_pal(src_doc, src_palnum);
+    if (!src) return -1;
+
+    std::string name = WorldPalNameString(src);
+    if (!name.empty()) {
+        int idx = 0;
+        for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p, idx++)
+            if (WorldPalNameString(pal) == name) return idx;
+    }
+
+    PAL *dst = AllocPal();          /* appends to g_doc */
+    if (!dst) return -1;
+    memcpy(dst->n_s, src->n_s, sizeof(dst->n_s));
+    dst->flags = src->flags;
+    dst->bitspix = src->bitspix;
+    dst->numc = src->numc;
+    /* Two bytes a colour, 15-bit packed -- not RGB triplets. */
+    if (src->data_p && src->numc > 0) {
+        size_t bytes = (size_t)src->numc * 2u;
+        dst->data_p = malloc(bytes);
+        if (!dst->data_p) return -1;
+        memcpy(dst->data_p, src->data_p, bytes);
+    }
+    memcpy(dst->file_name_raw, src->file_name_raw, sizeof(dst->file_name_raw));
+    dst->file_colind = src->file_colind;
+    dst->file_cmap = src->file_cmap;
+    return (int)g_doc->palcnt - 1;
+}
+
+/* The image index in g_doc for `src_idx` of `src_doc`. `out_copied` reports
+   whether a copy was made rather than an existing sprite reused. */
+static int WorldMarkedImportSpriteInto(Document *src_doc, int src_idx,
+                                       bool *out_copied)
+{
+    if (out_copied) *out_copied = false;
+    IMG *src = doc_get_img(src_doc, src_idx);
+    if (!src) return -1;
+
+    std::string name = img_name_string(src);
+    if (!name.empty()) {
+        int idx = 0;
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++)
+            if (img_name_string(img) == name) return idx;
+    }
+
+    int palnum = WorldMarkedImportPaletteInto(src_doc, src->palnum);
+
+    IMG *dst = AllocImg();          /* appends to g_doc */
+    if (!dst) return -1;
+    if (src->data_p) {
+        size_t stride = ((size_t)src->w + 3u) & ~(size_t)3u;
+        size_t bytes = stride * (size_t)src->h;
+        dst->data_p = malloc(bytes);
+        if (!dst->data_p) return -1;
+        memcpy(dst->data_p, src->data_p, bytes);
+    }
+    if (src->pttbl_p) {
+        dst->pttbl_p = malloc(40);
+        if (!dst->pttbl_p) return -1;
+        memcpy(dst->pttbl_p, src->pttbl_p, 40);
+    }
+    if (src->opaltbl_p) {
+        dst->opaltbl_p = malloc(16);
+        if (!dst->opaltbl_p) return -1;
+        memcpy(dst->opaltbl_p, src->opaltbl_p, 16);
+    }
+
+    /* The name travels verbatim, raw 16 bytes included: LOAD2 hashes those
+       bytes for sprite allocation, and this sprite has to be the same sprite
+       it was in the file it came from -- no DUP suffix. */
+    memcpy(dst->n_s, src->n_s, sizeof(dst->n_s));
+    memcpy(dst->file_name_raw, src->file_name_raw, sizeof(dst->file_name_raw));
+    /* Everything but the mark: inheriting it would add this sprite to the
+       marked set and hand the document a World View row nobody asked for. */
+    dst->flags = (unsigned short)(src->flags & ~1u);
+    dst->anix = src->anix;
+    dst->aniy = src->aniy;
+    dst->w = src->w;
+    dst->h = src->h;
+    dst->palnum = (palnum >= 0) ? (unsigned short)palnum : src->palnum;
+    dst->anix2 = src->anix2;
+    dst->aniy2 = src->aniy2;
+    dst->aniz2 = src->aniz2;
+    dst->opals = src->opals;
+    /* Where it came from, so the Assets tree groups it with its own file. */
+    const char *origin = (src_doc && src_doc->fname_s[0]) ? src_doc->fname_s
+                                                          : src->src_filename;
+    strncpy(dst->src_filename, origin, sizeof(dst->src_filename) - 1);
+    dst->src_filename[sizeof(dst->src_filename) - 1] = '\0';
+
+    if (out_copied) *out_copied = true;
+    return (int)g_doc->imgcnt - 1;
+}
+
 /* 16 chars of uppercase, the shape a SEQSCR name has to be. Derived from the
    row's first sprite with its frame number stripped, so a row of UGSTAB1..6
    arrives as UGSTAB rather than a wall of NEWSEQs. */
@@ -9018,7 +9236,8 @@ bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
 
     std::vector<SeqScrEntryValues> entries;
     entries.reserve(lane.frames.size());
-    int foreign = 0;
+    int imported = 0, reused = 0, unresolved = 0;
+    bool undo_pushed = false;
     bool lost_flip = false, lost_z = false, lost_motion = false;
     bool lost_schedule = false, lost_dual = false, lost_pieces = false;
 
@@ -9037,14 +9256,23 @@ bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
         if (fi < (int)lane.frame_pieces.size() && lane.frame_pieces[fi].size() > 1)
             lost_pieces = true;
 
-        /* An ENTRY names an image index inside this record's own IMG, so a
-           frame dragged in from another tab has no index to write. */
+        /* An ENTRY names an image index inside this record's own IMG. A frame
+           dragged in from another tab has no such index yet, so give it one --
+           the sequence is supposed to reference that sprite, and LOAD2 will
+           have both files in one library by the time it matters. */
         int fdoc = fi < (int)state.frame_doc[slot].size()
                  ? state.frame_doc[slot][fi] : -1;
+        Document *entry_doc = WorldMarkedResolveEntryDoc(lane.doc, fdoc);
         int img_idx = lane.frames[fi];
-        if ((fdoc >= 0 && fdoc != lane.doc_idx) ||
-            img_idx < 0 || img_idx >= (int)g_doc->imgcnt) {
-            foreign++;
+        if (entry_doc && entry_doc != g_doc) {
+            if (!undo_pushed) { doc_undo_push(); undo_pushed = true; }
+            bool copied = false;
+            int local = WorldMarkedImportSpriteInto(entry_doc, img_idx, &copied);
+            if (local < 0) { unresolved++; continue; }
+            if (copied) imported++; else reused++;
+            img_idx = local;
+        } else if (img_idx < 0 || img_idx >= (int)g_doc->imgcnt) {
+            unresolved++;
             continue;
         }
 
@@ -9058,10 +9286,10 @@ bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
         entries.push_back(v);
     }
 
-    char msg[320];
+    char msg[384];
     if (entries.empty()) {
         snprintf(msg, sizeof(msg),
-                 "Nothing to promote: every entry in this row comes from another IMG.");
+                 "Nothing to promote: none of this row's entries resolve to a sprite.");
         if (out_msg) *out_msg = msg;
         return false;
     }
@@ -9104,12 +9332,29 @@ bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
         snprintf(tail, sizeof(tail),
                  " A sequence entry holds only sprite/ticks/dX/dY, so %s stayed behind.",
                  lost.c_str());
-    char foreign_tail[96];
+    char foreign_tail[160];
     foreign_tail[0] = 0;
-    if (foreign > 0)
-        snprintf(foreign_tail, sizeof(foreign_tail),
-                 " %d entr%s from another IMG skipped.",
-                 foreign, foreign == 1 ? "y" : "ies");
+    {
+        char parts[128];
+        parts[0] = 0;
+        if (imported > 0)
+            snprintf(parts, sizeof(parts), " Imported %d sprite%s from other files",
+                     imported, imported == 1 ? "" : "s");
+        if (reused > 0) {
+            char more[64];
+            snprintf(more, sizeof(more), "%s%d already here by name",
+                     parts[0] ? ", " : " Matched ", reused);
+            strncat(parts, more, sizeof(parts) - strlen(parts) - 1);
+        }
+        if (parts[0])
+            snprintf(foreign_tail, sizeof(foreign_tail), "%s.", parts);
+        if (unresolved > 0) {
+            char bad[80];
+            snprintf(bad, sizeof(bad), " %d entr%s could not be resolved at all.",
+                     unresolved, unresolved == 1 ? "y" : "ies");
+            strncat(foreign_tail, bad, sizeof(foreign_tail) - strlen(foreign_tail) - 1);
+        }
+    }
 
     snprintf(msg, sizeof(msg), "Promoted to sequence %d '%s' (%d entr%s).%s%s",
              new_idx, name.c_str(), (int)entries.size(),
@@ -17421,27 +17666,51 @@ static bool SeqScrSplitNumberedName(const std::string &file,
     return true;
 }
 
-/* True when `name` is a chopped piece of another sprite present in the same
-   document — the same parent/child rule the Assets image list folds by. */
+/* True when `name` is a chopped piece of another sprite -- the same
+   parent/child rule the Assets image list folds by.
+
+   The parent is looked for in `doc` first and then in every other open tab.
+   Restricting it to the owning document was fine while a character was one
+   file, but sprites get sideloaded: keep the pieces in UGM09SP.IMG and their
+   parent in UGM09.IMG and every piece looked like a top-level frame, so the
+   library listed them and sequences built from it were full of chop pieces.
+   The pieces are pieces wherever they were parked; LOAD2 sees one library at
+   compile time and so should this. */
+static bool SeqScrDocHasSprite(Document *doc, const std::string &name)
+{
+    for (IMG *img = doc ? (IMG *)doc->img_p : NULL; img; img = (IMG *)img->nxt_p)
+        if (img_name_string(img) == name) return true;
+    return false;
+}
+
 static bool SeqScrIsSubframe(Document *doc, const char *name)
 {
     std::string parent = InferSubframeParentName(name);
     if (parent.empty()) return false;
-    int idx = 0;
-    for (IMG *img = doc ? (IMG *)doc->img_p : NULL;
-         img; img = (IMG *)img->nxt_p, idx++) {
-        if (img_name_string(img) == parent) return true;
+    if (SeqScrDocHasSprite(doc, parent)) return true;
+    for (int i = 0; i < document_tab_count(); i++) {
+        Document *other = document_get(i);
+        if (!other || other == doc) continue;
+        if (SeqScrDocHasSprite(other, parent)) return true;
     }
     return false;
 }
 
+/* Pieces of `parent_name`, counted across every open tab for the same
+   reason -- a chop split over two files still has all its pieces. */
 static int SeqScrCountSubframes(Document *doc, const std::string &parent_name)
 {
     int count = 0;
-    for (IMG *img = doc ? (IMG *)doc->img_p : NULL; img; img = (IMG *)img->nxt_p) {
-        std::string nm = img_name_string(img);
-        if (nm != parent_name && InferSubframeParentName(nm.c_str()) == parent_name)
-            count++;
+    for (int i = -1; i < document_tab_count(); i++) {
+        Document *scan = (i < 0) ? doc : document_get(i);
+        if (!scan) continue;
+        if (i >= 0 && scan == doc) continue;   /* already counted */
+        for (IMG *img = (IMG *)scan->img_p; img; img = (IMG *)img->nxt_p) {
+            std::string nm = img_name_string(img);
+            if (nm != parent_name &&
+                InferSubframeParentName(nm.c_str()) == parent_name)
+                count++;
+        }
     }
     return count;
 }
@@ -17515,6 +17784,24 @@ void SeqScrRebuildFrameLibrary(bool open_missing)
                 g_doc_tab_select_request = back;
             }
         }
+    }
+
+    /* Anything else the user has open joins the set, whether or not its name
+       fits the numbered-sibling pattern. Sideloaded scrap files are the point:
+       UGM09SP.IMG does not split into stem+number at all (the digits are not
+       at the end), so the pattern search found nothing but itself and every
+       sprite the user had deliberately opened alongside it was invisible here.
+       An open tab is an explicit statement that the file belongs to this
+       character, and by the time LOAD2 packs it they are one library anyway. */
+    for (int di = 0; di < document_tab_count(); di++) {
+        Document *doc = document_get(di);
+        if (!doc || !doc->fname_s[0] || doc->imgcnt == 0) continue;
+        bool already = false;
+        for (size_t i = 0; i < lib.file_docs.size() && !already; i++)
+            already = (lib.file_docs[i] == di);
+        if (already) continue;
+        lib.files.push_back(doc->fname_s);
+        lib.file_docs.push_back(di);
     }
 
     for (size_t i = 0; i < lib.files.size(); i++) {

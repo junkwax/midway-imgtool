@@ -30,6 +30,12 @@ enum {
    visible-until value can't spray tens of thousands of files. */
 enum { kWorldPngSequenceMaxFrames = 600 };
 
+/* Ticks a blood frame holds. MKBLOOD.ASM runs every spray at an ani speed of
+   5 (`movk 5,a3`), and MKDEATH.ASM's shipped SPILL lane is annotated "x5 game
+   ticks per step", so a blood row is authored at the speed the game plays it
+   rather than at whatever the panel's default hold happens to be. */
+enum { kWorldBloodTicksPerFrame = 5 };
+
 /* MK2 runs its game logic once per video field on the TMS34010 hardware, about
    54.7 times a second. A SEQSCR "tick" is exactly one of those, so a hold of 2
    is 2/54.7s on the real machine. Previewing at anything else makes timing
