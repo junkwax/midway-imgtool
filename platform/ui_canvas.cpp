@@ -2424,10 +2424,20 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
            frame label, so the repeats already carry the timing. Applying the
            default hold here would multiply it. */
         state.frame_delays[slot_id][k] = 1;
+        /* fr.dx/dy is an ASM POSITION offset -- the running total of the
+           animation's own ani_adjustxy rows, or a *_local_anipts row, which
+           the exporter writes in that same sign. local_dx/dy is an ANIPOINT
+           offset. Converting between them is the exporter's rule read
+           backwards, and it is flip-dependent: X always negates (the engine's
+           own b_fliph negation cancels the preview's X mirror), Y negates
+           only when the frame is not V-flipped. Copied straight across, every
+           hand-written ani_adjustxy lane drew mirrored about the anchor in
+           this row while the ASM Animations window drew the same numbers
+           correctly. */
         state.local_dx[slot_id][k] = ClampWorldMarkedAniptDelta(
-            fr.dx + state.lane_base_dx[slot_id]);
+            -fr.dx + state.lane_base_dx[slot_id]);
         state.local_dy[slot_id][k] = ClampWorldMarkedAniptDelta(
-            fr.dy + state.lane_base_dy[slot_id]);
+            (fr.mirror_v ? fr.dy : -fr.dy) + state.lane_base_dy[slot_id]);
         state.visible_from[slot_id][k] = 0;
         state.visible_until[slot_id][k] = 0;
         state.motion_dx[slot_id][k] = 0;
@@ -2666,17 +2676,25 @@ static void WorldAppendSeqScrSequenceAsm(std::string &out,
         snprintf(fallback, sizeof(fallback), "img%d", target);
         std::string sprite = WorldMarkedAsmToken(img ? img_name_string(img) : "",
                                                  fallback);
+        /* Emitted in MK2's position sign, not the editor's anipoint sign.
+           Not a constant negation: X always flips (multi_adjust_xy's own
+           b_fliph negation cancels the preview's X mirror), Y flips only for
+           frames that are not V-flipped. See the contract at the head of this
+           export. */
+        int out_dx = -dx;
+        int out_dy = (frame_mirror & kWorldFrameMirrorY) ? dy : -dy;
         for (int t = 0; t < hold; t++) {
             WorldAppendFrameFlipOps(out, &emitted_mirror, frame_mirror);
             snprintf(line, sizeof(line),
                      "\t.long\t%s\t; entry %d visual %d tick %d/%d img=%d dX=%d dY=%d%s%s\n",
-                     sprite.c_str(), e, display_e, t + 1, hold, target, dx, dy,
+                     sprite.c_str(), e, display_e, t + 1, hold, target,
+                     out_dx, out_dy,
                      (frame_mirror & kWorldFrameMirrorX) ? " flipX" : "",
                      (frame_mirror & kWorldFrameMirrorY) ? " flipY" : "");
             out += line;
             snprintf(line, sizeof(line),
                      "\t.word\t%d,%d\t; entry %d visual %d tick %d\n",
-                     dx, dy, e, display_e, expanded_ticks);
+                     out_dx, out_dy, e, display_e, expanded_ticks);
             anipts += line;
             expanded_ticks++;
         }
@@ -2743,9 +2761,21 @@ static void WorldAppendSeqScrScriptAsm(std::string &out,
                  seq_label.c_str(), seq_label.c_str(), e, target, seq_name,
                  ticks);
         out += line;
+        /* Same anipoint->position conversion as the sequence table. A script
+           entry carries no flip of its own, so the V-flip comes from the
+           live lane when there is one; a stored script falls back to the
+           unflipped rule, which is all its ENTRY words can tell us. */
+        bool entry_flipv = false;
+        if (live) {
+            const WorldMarkedSequenceState &state = g_world_marked_state;
+            int slot = kWorldEmbeddedSeqScrSlot;
+            entry_flipv = e < (int)state.frame_mirror[slot].size() &&
+                          (state.frame_mirror[slot][(size_t)e] &
+                           kWorldFrameMirrorY) != 0;
+        }
         snprintf(line, sizeof(line),
                  "\t.word\t%d,%d,%d\t; ticks,dX,dY for script entry %d\n",
-                 ticks, dx, dy, e);
+                 ticks, -dx, entry_flipv ? dy : -dy, e);
         anipts += line;
     }
     out += "\n";
@@ -2760,7 +2790,21 @@ std::string WorldBuildSeqScrAsmExport(int record_index)
     out += "; IMGTOOL embedded WIMP SEQSCR export\n";
     out += "; Image records: export marked sprites with File > Export > Write TBL.\n";
     out += "; Sequences below emit *_frames tables and matching *_anipts tables.\n";
-    out += "; Scripts below emit higher-level tables that point at sequence tables.\n\n";
+    out += "; Scripts below emit higher-level tables that point at sequence tables.\n";
+    out += "; dX/dY in the *_anipts tables are MK2 POSITION offsets, the same sign\n";
+    out += ";   and space as ani_adjustxy: +dY moves the object DOWN the screen\n";
+    out += ";   (multi_adjust_xy does oypos += dY), +dX moves it forward in FACING\n";
+    out += ";   space (oxpos += dX, negated by the engine when flipped). Use them\n";
+    out += ";   as printed; do not negate them again when transcribing.\n";
+    out += ";   The editor holds the same placement as an ANIPOINT offset, drawing\n";
+    out += ";   at anchor - anieff(ani + offset). Converting is NOT a flat sign\n";
+    out += ";   flip: X always inverts, but Y inverts only for frames that are not\n";
+    out += ";   V-flipped, because anieff already mirrors Y on the ones that are\n";
+    out += ";   and the engine never mirrors dY itself. That is why a lane of\n";
+    out += ";   V-flipped frames reads through unchanged and an unflipped one does\n";
+    out += ";   not, and why a constant rule inverts one or the other.\n";
+    out += "; They are ABSOLUTE offsets from the anchor. ani_adjustxy is cumulative,\n";
+    out += ";   so it wants the difference between consecutive rows, not the rows.\n\n";
 
     std::vector<SeqScrRecordView> records;
     bool truncated = false;
@@ -5624,6 +5668,14 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Restore stock decap timing: 48, 6/6, 10-tick wobble, 6-tick fall.");
     }
+    ImGui::SameLine();
+    ImGui::Checkbox("Together##world_lane_rigid", &state.lane_rigid[lane.delay_slot]);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Drag any frame of this row in the world and the whole run\n"
+                          "moves with it, keeping the frames' relative positions.\n"
+                          "Off, a drag moves only the frame on screen at that tick --\n"
+                          "and the others are not visible to show they stayed behind.\n"
+                          "Ctrl-drag does this on any row; blood rows start with it on.");
     bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
     if (mirror_flag) {
         ImGui::SameLine();
@@ -6146,13 +6198,50 @@ static bool WorldNameLooksBloody(const std::string &upper)
     return false;
 }
 
-void WorldCollectBloodRuns(std::vector<WorldBloodRun> &out)
+/* A file name, not a sprite name: BLOOD.IMG and MK1BLOOD.IMG qualify every
+   sprite they hold, however it is named. */
+static bool WorldFileLooksBloody(const char *fname)
+{
+    if (!fname) return false;
+    std::string upper(fname);
+    for (size_t i = 0; i < upper.size(); i++)
+        upper[i] = (char)toupper((unsigned char)upper[i]);
+    return upper.find("BLOOD") != std::string::npos;
+}
+
+/* Uppercased, trimmed names of every sprite in every open tab, sorted. A
+   subframe is then told from a lone sprite by whether its inferred parent is
+   really open -- across tabs, because a chop split over two files still has
+   all its pieces -- with a binary search instead of a walk of every image
+   list per sprite. */
+static void WorldCollectOpenSpriteNames(std::vector<std::string> &out)
 {
     out.clear();
     for (int di = 0; di < document_tab_count(); di++) {
         Document *doc = document_get(di);
         if (!doc) continue;
+        for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p) {
+            std::string name = trim_sprite_name(img_name_string(img));
+            if (name.empty()) continue;
+            for (size_t i = 0; i < name.size(); i++)
+                name[i] = (char)toupper((unsigned char)name[i]);
+            out.push_back(name);
+        }
+    }
+    std::sort(out.begin(), out.end());
+}
+
+void WorldCollectBloodRuns(std::vector<WorldBloodRun> &out)
+{
+    out.clear();
+    std::vector<std::string> open_names;
+    WorldCollectOpenSpriteNames(open_names);
+
+    for (int di = 0; di < document_tab_count(); di++) {
+        Document *doc = document_get(di);
+        if (!doc) continue;
         const char *doc_name = doc->fname_s[0] ? doc->fname_s : "Untitled";
+        bool doc_is_blood = WorldFileLooksBloody(doc->fname_s);
 
         int idx = 0;
         for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
@@ -6162,7 +6251,17 @@ void WorldCollectBloodRuns(std::vector<WorldBloodRun> &out)
             std::string upper = name;
             for (size_t i = 0; i < upper.size(); i++)
                 upper[i] = (char)toupper((unsigned char)upper[i]);
-            if (!WorldNameLooksBloody(upper)) continue;
+            if (!doc_is_blood && !WorldNameLooksBloody(upper)) continue;
+
+            /* No subframes, ever. SPILL1A/SPILL1B are pieces of SPILL1, not
+               steps of the spray: imported as frames they double the run's
+               length and play its halves as separate images. The parent is
+               the frame; a row that wants the pieces gets them from the
+               parent, the way every other World View row does. */
+            std::string parent = InferSubframeParentName(upper.c_str());
+            if (!parent.empty() &&
+                std::binary_search(open_names.begin(), open_names.end(), parent))
+                continue;
 
             /* SPILL1..SPILL13 is one run; a lone SPLAT is a run of one. */
             std::string stem;
@@ -6187,6 +6286,188 @@ void WorldCollectBloodRuns(std::vector<WorldBloodRun> &out)
             run->frames.push_back(idx);
         }
     }
+}
+
+/* ---- Finding the blood art on disk -------------------------------------
+   The picker can only offer what is open, and nobody opens BLOOD.IMG before
+   they need it -- the request is always "start blood here", never "go and
+   open the blood file first". So look for it: the IMGs already open say which
+   folders this project keeps its art in, and a file whose name says BLOOD is
+   the art. */
+/* Collapse "a\b\..\c" to "a\c" and drop "." segments. The scan builds
+   candidate folders by appending "data" and "..\data" to each open tab's
+   path, so one folder arrives spelled three ways -- src\..\data,
+   data\..\data, src\..\data\..\data. A raw string compare calls those
+   distinct, and BLOOD.IMG got opened once per spelling: six tabs for two
+   files. Normalise before deduping. */
+static std::string WorldNormalizeDir(const std::string &dir)
+{
+    std::vector<std::string> parts;
+    std::string seg;
+    bool unc = dir.size() >= 2 && (dir[0] == '\\' || dir[0] == '/') &&
+                                  (dir[1] == '\\' || dir[1] == '/');
+    for (size_t i = 0; i <= dir.size(); i++) {
+        char c = (i < dir.size()) ? dir[i] : '\\';
+        if (c != '\\' && c != '/') { seg += c; continue; }
+        if (seg.empty() || seg == ".") { seg.clear(); continue; }
+        if (seg == ".." && !parts.empty() && parts.back() != ".." &&
+            !(parts.size() == 1 && parts[0].size() >= 2 && parts[0][1] == ':')) {
+            parts.pop_back();
+            seg.clear();
+            continue;
+        }
+        parts.push_back(seg);
+        seg.clear();
+    }
+    std::string out;
+    if (unc) out = "\\\\";
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (i) out += "\\";
+        out += parts[i];
+    }
+    return out.empty() ? dir : out;
+}
+
+static void WorldAddBloodScanDir(std::vector<std::string> &dirs,
+                                 const std::string &raw_dir)
+{
+    std::string dir = WorldNormalizeDir(raw_dir);
+    if (dir.empty()) return;
+    std::string low = dir;
+    for (size_t i = 0; i < low.size(); i++)
+        low[i] = (char)tolower((unsigned char)low[i]);
+    for (size_t i = 0; i < dirs.size(); i++) {
+        std::string ex = dirs[i];
+        for (size_t c = 0; c < ex.size(); c++)
+            ex[c] = (char)tolower((unsigned char)ex[c]);
+        if (ex == low) return;
+    }
+    dirs.push_back(dir);
+}
+
+/* Shared with the SEQSCR frame browser further down: both ask "is this file
+   already open?", and both have to answer it the way Windows would. */
+static bool WorldPathsEqual(const std::string &a, const std::string &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        char ca = (char)tolower((unsigned char)a[i]);
+        char cb = (char)tolower((unsigned char)b[i]);
+        if (ca == '/') ca = '\\';
+        if (cb == '/') cb = '\\';
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+static std::string WorldDocFullPath(const Document *doc)
+{
+    if (!doc || !doc->fname_s[0]) return std::string();
+    return PathCombine(doc->fpath_s, doc->fname_s);
+}
+
+void WorldFindBloodImgFiles(std::vector<WorldBloodFile> &out, bool force_rescan)
+{
+    /* The scan hits the filesystem, and the picker asks for this list every
+       frame it is open. Cache it, and re-run only when the set of open tabs
+       changed -- which is also the only thing that can change where we look. */
+    static std::vector<WorldBloodFile> s_found;
+    static int s_scanned_tabs = -1;
+    static std::string s_scanned_active;
+
+    std::string active_dir = g_doc ? std::string(g_doc->fpath_s) : std::string();
+    if (force_rescan || s_scanned_tabs != document_tab_count() ||
+        s_scanned_active != active_dir) {
+        s_scanned_tabs = document_tab_count();
+        s_scanned_active = active_dir;
+        s_found.clear();
+
+        std::vector<std::string> dirs;
+        for (int t = 0; t < document_tab_count(); t++) {
+            Document *doc = document_get(t);
+            if (doc && doc->fpath_s[0]) WorldAddBloodScanDir(dirs, doc->fpath_s);
+        }
+        if (g_doc && g_doc->fpath_s[0]) WorldAddBloodScanDir(dirs, g_doc->fpath_s);
+        const char *imgdir = getenv("IMGDIR");
+        if (imgdir && imgdir[0]) WorldAddBloodScanDir(dirs, imgdir);
+        /* MK2's tree keeps sprites in data/ beside the sources, so a tab
+           opened from src/ still finds the blood next door. */
+        size_t roots = dirs.size();
+        for (size_t i = 0; i < roots; i++) {
+            std::string root = dirs[i];
+            WorldAddBloodScanDir(dirs, PathCombine(root, "data"));
+            WorldAddBloodScanDir(dirs, PathCombine(PathCombine(root, ".."), "data"));
+        }
+
+        for (size_t i = 0; i < dirs.size(); i++) {
+            std::vector<FileEntry> entries;
+            GetDirectoryFiles(dirs[i], entries, "IMG");
+            for (size_t e = 0; e < entries.size(); e++) {
+                if (entries[e].is_dir) continue;
+                if (!WorldFileLooksBloody(entries[e].name.c_str())) continue;
+                WorldBloodFile f;
+                f.path = PathCombine(dirs[i], entries[e].name);
+                f.name = entries[e].name;
+                bool dup = false;
+                for (size_t k = 0; k < s_found.size() && !dup; k++)
+                    dup = WorldPathsEqual(s_found[k].path, f.path);
+                if (!dup) s_found.push_back(f);
+            }
+        }
+    }
+
+    /* Which of them are open changes without the scan needing to: recompute
+       it every call rather than caching a flag that goes stale on a tab. */
+    for (size_t i = 0; i < s_found.size(); i++) {
+        s_found[i].open = false;
+        for (int t = 0; t < document_tab_count() && !s_found[i].open; t++) {
+            std::string open_path = WorldDocFullPath(document_get(t));
+            if (!open_path.empty() && WorldPathsEqual(open_path, s_found[i].path))
+                s_found[i].open = true;
+        }
+    }
+    out = s_found;
+}
+
+int WorldOpenBloodImgFiles(void)
+{
+    std::vector<WorldBloodFile> files;
+    WorldFindBloodImgFiles(files, true);
+
+    /* Opening a tab makes it active. The user asked for blood on the row they
+       were looking at, not for the blood file to take over the editor, so put
+       the tab back afterwards. Identify it by uid: indices shift. */
+    unsigned int was_active = document_uid(document_active_index());
+
+    /* A data folder can hold more blood IMGs than anyone wants tabs for. */
+    const int kMaxOpen = 8;
+    int opened = 0;
+    std::string last;
+    for (size_t i = 0; i < files.size() && opened < kMaxOpen; i++) {
+        if (files[i].open) continue;
+        OpenImgFile(files[i].path);
+        last = files[i].name;
+        opened++;
+    }
+    if (opened > 0) {
+        /* document_set_active rather than ActivateDocumentTab: going back is
+           not navigation, and the reset that rides along with a real tab
+           switch would throw away the World View staging we came from. */
+        int back = document_index_of_uid(was_active);
+        if (back >= 0) {
+            document_set_active(back);
+            g_doc_tab_select_request = back;
+        }
+        WorldFindBloodImgFiles(files, true);   /* refresh the cache we invalidated */
+        if (opened == 1)
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Opened %s for its blood runs.", last.c_str());
+        else
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Opened %d blood IMGs for their runs.", opened);
+        g_restore_msg_timer = 4.0f;
+    }
+    return opened;
 }
 
 bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
@@ -6235,6 +6516,11 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
     state.lane_visible[slot] = true;
     state.hold_end[slot] = true;      /* a spray plays once */
     state.stop_tick[slot] = 0;
+    /* Every blood row starts on the anipoint of the frame that spawned it, so
+       two sprays added from the same hit land exactly on top of each other and
+       have to be dragged apart. Rigid by default: grab any frame and the whole
+       spray travels with it. */
+    state.lane_rigid[slot] = true;
 
     int n = (int)run.frames.size();
     EnsureWorldMarkedFrameDelays(state, slot, n);
@@ -6244,11 +6530,12 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
        the run fires once at start_tick and then stops, whatever the rest of
        the scene is doing on its own clocks.
 
-       Blood gets MK2's own blood speed rather than the panel's default hold:
-       every spray in MKBLOOD.ASM runs at an ani speed of 5 (`movk 5,a3`), and
-       the shipped SPILL lane in MKDEATH.ASM is annotated "x5 game ticks per
-       step". Inheriting a default hold of 4 -- or whatever the last lane was
-       set to -- is what makes a spray crawl. */
+       The row comes in at one tick per frame rather than at MK2's own blood
+       speed (ani speed 5 in MKBLOOD.ASM). That speed is what the finished
+       effect plays at, not what it is authored at: imported at 5 the spray
+       only lands on every fifth tick and can no longer be walked onto the
+       exact tick of the hit that caused it. Set the speed afterwards with the
+       row's Ticks/frame, which is one edit; un-quantising it is not. */
     int hold = ClampTimelineHold(kWorldBloodTicksPerFrame);
     int t = start_tick;
     for (int i = 0; i < n; i++) {
@@ -6277,10 +6564,173 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
     WorldMarkedSetTick(state, start_tick);
 
     snprintf(msg, sizeof(msg),
-             "Blood row: %s x%d from %s, starting at tick %d on this frame's anipoint.",
-             run.stem.c_str(), n, run.doc_name.c_str(), start_tick);
+             "Blood row: %s x%d from %s, starting at tick %d on this frame's "
+             "anipoint at %d tick%s per frame. Drag any frame to move the "
+             "whole spray.",
+             run.stem.c_str(), n, run.doc_name.c_str(), start_tick,
+             hold, hold == 1 ? "" : "s");
     if (out_msg) *out_msg = msg;
     return true;
+}
+
+/* ---- The blood picker ---------------------------------------------------
+   BLOOD.IMG is a couple of hundred sprites in twenty-odd runs, and once the
+   file name alone qualifies a file, MK1BLOOD.IMG stacks on top of that. A
+   flat menu of every run is taller than the screen and unusable, so the runs
+   live in a scrolling list with a filter box: type "spill", or scroll to the
+   thumbnail you recognise. */
+static bool WorldBloodRunMatchesFilter(const WorldBloodRun &run, const char *filter)
+{
+    if (!filter || !filter[0]) return true;
+    std::string needle(filter);
+    for (size_t i = 0; i < needle.size(); i++)
+        needle[i] = (char)tolower((unsigned char)needle[i]);
+    std::string hay = run.stem + " " + run.doc_name;
+    for (size_t i = 0; i < hay.size(); i++)
+        hay[i] = (char)tolower((unsigned char)hay[i]);
+    return hay.find(needle) != std::string::npos;
+}
+
+static void WorldDrawBloodRunPicker(WorldMarkedSequenceState &state,
+                                    const std::vector<WorldMarkedLane> &lanes,
+                                    const WorldMarkedLane &lane, int entry)
+{
+    static char s_filter[48] = "";
+
+    std::vector<WorldBloodRun> runs;
+    WorldCollectBloodRuns(runs);
+
+    std::vector<WorldBloodFile> files;
+    WorldFindBloodImgFiles(files, false);
+    int unopened = 0;
+    for (size_t i = 0; i < files.size(); i++)
+        if (!files[i].open) unopened++;
+
+    /* Auto-populate. Nobody opens BLOOD.IMG before they need it -- the request
+       is always "start blood here", never "go and open the blood file first"
+       -- so when the list would be empty and the art is sitting next to the
+       IMGs already open, fetch it instead of explaining how to. Only on the
+       frame the menu opens, and only when there is nothing to show: past that
+       point opening tabs is the user's call, on the button below. */
+    if (runs.empty() && unopened > 0 && ImGui::IsWindowAppearing()) {
+        if (WorldOpenBloodImgFiles() > 0) {
+            WorldCollectBloodRuns(runs);
+            WorldFindBloodImgFiles(files, false);
+            unopened = 0;
+            for (size_t i = 0; i < files.size(); i++)
+                if (!files[i].open) unopened++;
+        }
+    }
+
+    int start_tick = WorldMarkedTickForFrame(state, lane.delay_slot,
+                                             (int)lane.frames.size(), entry);
+    const int hold = ClampTimelineHold(kWorldBloodTicksPerFrame);
+    ImGui::TextDisabled("Starts at tick %d, %d tick%s per frame, plays once.",
+                        start_tick, hold, hold == 1 ? "" : "s");
+
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputTextWithHint("##blood_filter", "filter (spill, guts, ...)",
+                             s_filter, sizeof(s_filter));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear##blood_filter_clear")) s_filter[0] = 0;
+
+    const float row_h = 34.0f;
+    const float box = row_h - 8.0f;
+    ImGui::BeginChild("##blood_runs", ImVec2(300.0f, 232.0f), true,
+                      ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImU32 col_text = ImGui::GetColorU32(ImGuiCol_Text);
+    ImU32 col_dim  = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    int shown = 0;
+    for (size_t r = 0; r < runs.size(); r++) {
+        const WorldBloodRun &run = runs[r];
+        if (!WorldBloodRunMatchesFilter(run, s_filter)) continue;
+        shown++;
+
+        ImGui::PushID((int)r);
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        /* Only the rows on screen pay for a texture: BuildWorldSpriteTexture
+           converts every pixel through the palette on each call, and a list
+           of two hundred runs would do that two hundred times a frame. */
+        bool row_on_screen = ImGui::IsRectVisible(ImVec2(280.0f, row_h));
+        bool pick = ImGui::Selectable("##blood_pick", false,
+                                      ImGuiSelectableFlags_None,
+                                      ImVec2(0.0f, row_h));
+
+        /* The middle frame, not the first: a spray opens with a couple of
+           near-empty frames, and a thumbnail of nothing identifies nothing. */
+        Document *run_doc = document_get(run.doc_idx);
+        IMG *thumb = (run_doc && !run.frames.empty())
+                   ? doc_get_img(run_doc, run.frames[run.frames.size() / 2])
+                   : NULL;
+        SDL_Texture *tex = row_on_screen
+                         ? BuildWorldSpriteTexture(run_doc, thumb, 255) : NULL;
+        if (tex && thumb->w > 0 && thumb->h > 0) {
+            float longest = (float)(thumb->w > thumb->h ? thumb->w : thumb->h);
+            float scale = box / longest;
+            float w = thumb->w * scale, h = thumb->h * scale;
+            ImVec2 a(pos.x + 4.0f + (box - w) * 0.5f,
+                     pos.y + 4.0f + (box - h) * 0.5f);
+            dl->AddImage((ImTextureID)(intptr_t)tex, a, ImVec2(a.x + w, a.y + h));
+        }
+        if (row_on_screen) {
+            char head[96];
+            snprintf(head, sizeof(head), "%s  x%d", run.stem.c_str(),
+                     (int)run.frames.size());
+            float tx = pos.x + box + 12.0f;
+            dl->AddText(ImVec2(tx, pos.y + 3.0f), col_text, head);
+            dl->AddText(ImVec2(tx, pos.y + 17.0f), col_dim, run.doc_name.c_str());
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s x%d from %s\nStarts at tick %d, %d tick%s per frame.",
+                              run.stem.c_str(), (int)run.frames.size(),
+                              run.doc_name.c_str(), start_tick,
+                              hold, hold == 1 ? "" : "s");
+        ImGui::PopID();
+
+        if (pick) {
+            std::string msg;
+            WorldMarkedCreateBloodLane(state, lanes, lane, entry, run, &msg);
+            if (!msg.empty()) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", msg.c_str());
+                g_restore_msg_timer = 5.0f;
+            }
+            /* A Selectable inside a child window does not close the popup it
+               sits in the way a MenuItem would, so say so: this closes the
+               submenu and the frame's context menu with it. */
+            ImGui::CloseCurrentPopup();
+            break;
+        }
+    }
+    if (shown == 0) {
+        if (!runs.empty())
+            ImGui::TextDisabled("Nothing matches \"%s\".", s_filter);
+        else if (unopened > 0)
+            ImGui::TextDisabled("Blood IMGs found -- open them below.");
+        else {
+            ImGui::TextDisabled("No blood sprites in the open tabs, and no");
+            ImGui::TextDisabled("BLOOD IMG beside them on disk. Open BLOOD.IMG,");
+            ImGui::TextDisabled("or any IMG whose sprites read as BLOOD/SPURT/");
+            ImGui::TextDisabled("DRIP/SPRAY/SPLAT/GUTS/GORE.");
+        }
+    }
+    ImGui::EndChild();
+
+    if (unopened > 0) {
+        char label[96];
+        snprintf(label, sizeof(label), "Open %d blood IMG%s found on disk##blood_open",
+                 unopened, unopened == 1 ? "" : "s");
+        /* A button, not a MenuItem: a MenuItem closes the menu on click, and
+           the point of the button is to watch the list fill and pick from it. */
+        if (ImGui::Button(label)) WorldOpenBloodImgFiles();
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::TextDisabled("Opens them as tabs; the tab you are on stays active.");
+            for (size_t i = 0; i < files.size(); i++)
+                if (!files[i].open) ImGui::TextUnformatted(files[i].path.c_str());
+            ImGui::EndTooltip();
+        }
+    }
 }
 
 WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState &state,
@@ -6401,30 +6851,7 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
                                                         (int)lane.frames.size(), fi));
             ImGui::Separator();
             if (ImGui::BeginMenu("Start Blood Here")) {
-                std::vector<WorldBloodRun> runs;
-                WorldCollectBloodRuns(runs);
-                if (runs.empty()) {
-                    ImGui::TextDisabled("No blood frames in the open tabs.");
-                    ImGui::TextDisabled("Open BLOOD.IMG (SPILL1-13) or any IMG whose");
-                    ImGui::TextDisabled("sprites read as BLOOD/SPURT/DRIP/SPRAY/GUTS.");
-                } else {
-                    for (size_t r = 0; r < runs.size(); r++) {
-                        char item[160];
-                        snprintf(item, sizeof(item), "%s  %s x%d##blood%d",
-                                 runs[r].doc_name.c_str(), runs[r].stem.c_str(),
-                                 (int)runs[r].frames.size(), (int)r);
-                        if (ImGui::MenuItem(item)) {
-                            std::string msg;
-                            WorldMarkedCreateBloodLane(state, lanes, lane, fi,
-                                                       runs[r], &msg);
-                            if (!msg.empty()) {
-                                snprintf(g_restore_msg, sizeof(g_restore_msg),
-                                         "%s", msg.c_str());
-                                g_restore_msg_timer = 5.0f;
-                            }
-                        }
-                    }
-                }
+                WorldDrawBloodRunPicker(state, lanes, lane, fi);
                 ImGui::EndMenu();
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -6518,27 +6945,48 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out.reserve(4096);
     out += "; IMGTOOL World View fatality sequence draft\n";
     out += "; One lane is one actor/object animation table.\n";
-    /* This used to read "mirroring is draw-only; apply dAX/dAY once after
-       mirroring the sprite", which is not what the preview does and would put
-       every flipped entry 2*dAX out. The offsets go onto the art anipoint
-       BEFORE the flip, which is also how MK2 spells its own spawn offsets --
-       MKREACT.ASM calls them "measured in FACING space because multi_adjust_xy
-       mirrors it for a flipped object". Spell the formula out rather than
-       describe it. */
-    out += "; Export contract: dAX/dAY are added to the sprite's own art anipoint\n";
-    out += ";   BEFORE the flip transform, which is exactly how World View draws it:\n";
-    out += ";     left = anchor_x - anieff(anix + dAX, sizex, fliph)\n";
-    out += ";     top  = anchor_y - anieff(aniy + dAY, sizey, flipv)\n";
+    /* The tables are emitted in MK2's OWN sign, not World View's, and the
+       conversion is flip-dependent rather than a flat negation.
+
+       World View authors an ANIPOINT offset, drawing at
+       `anchor - anieff(ani + dA, size, flip)`. MK2's ani_adjustxy carries a
+       POSITION offset -- multi_adjust_xy does `oxpos += dX` / `oypos += dY`,
+       negating dX alone under b_fliph. Equate the two and:
+
+         dX = -dAX                     always: the engine's own b_fliph
+                                       negation cancels the preview's X mirror
+         dY = flipv ? +dAY : -dAY      the engine never mirrors dY, so anieff's
+                                       Y mirror is ours to resolve
+
+       Emitting a constant negation inverted every V-flipped frame, which is
+       most of a spin lane: a descent came out climbing off the top of the
+       screen. Emitting the raw authoring sign inverts the unflipped ones
+       instead. Neither is a fix; the flip bit is. */
+    out += "; Export contract: dAX/dAY below are MK2 POSITION offsets, the same\n";
+    out += ";   sign and space as ani_adjustxy -- +dAY moves the object DOWN the\n";
+    out += ";   screen (multi_adjust_xy: oypos += dY), +dAX moves it forward in\n";
+    out += ";   FACING space (oxpos += dX, negated by the engine when flipped).\n";
+    out += ";   Use them as printed; do not negate them again when transcribing.\n";
+    out += ";   World View holds the same placement as an ANIPOINT offset, drawing\n";
+    out += ";   at anchor - anieff(ani + dA, size, flip). Converting is NOT a flat\n";
+    out += ";   sign flip: X always inverts, Y only for frames that are not\n";
+    out += ";   V-flipped, since anieff already mirrors Y on the ones that are and\n";
+    out += ";   the engine never mirrors dY itself.\n";
     char conv_line[160];
     snprintf(conv_line, sizeof(conv_line),
              ";   anieff = %s, %s.\n",
              mirror_convention_label(g_mirror_convention),
              mirror_convention_source(g_mirror_convention));
     out += conv_line;
-    out += ";   So dAX is in FACING space, not screen space: +dAX moves the sprite\n";
-    out += ";   left unflipped and right flipped, the same way MK2's own blood and\n";
-    out += ";   prop spawn offsets mirror with facing. Applying dAX as a screen\n";
-    out += ";   offset after mirroring lands every flipped entry 2*dAX away.\n";
+    out += ";   dAX is in FACING space, not screen space, the same way MK2's own\n";
+    out += ";   blood and prop spawn offsets mirror with facing -- so one set of\n";
+    out += ";   values serves both sides and needs no pre-mirroring. Applying dAX\n";
+    out += ";   as a screen offset after mirroring lands every flipped entry\n";
+    out += ";   2*dAX away.\n";
+    out += "; The rows are ABSOLUTE offsets from the anchor; ani_adjustxy is\n";
+    out += ";   cumulative. Each row that changes prints the ani_adjustxy operand\n";
+    out += ";   it would take, so the lane can be transcribed without differencing\n";
+    out += ";   it by hand. A held pose prints none: it needs no second adjust.\n";
     out += "; The runtime must substitute its body/victim object for the shared anchor.\n";
     char world_meta[192];
     snprintf(world_meta, sizeof(world_meta),
@@ -6654,13 +7102,38 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
         }
         if (lane_sleep < 1) lane_sleep = 1;
 
-        char sleep_line[224];
+        /* A row is one PREVIEW tick x lane_sleep, and a preview tick is only
+           a game tick when Tick Hz is left at MK2's 54.7. Author at 10.9 and
+           every hold in this lane means five game ticks, not one -- exported
+           as the raw count the lane ran five times too fast in game, which is
+           not a timing subtlety anyone spots by reading the table. Convert
+           once, here, and report the sleep the engine should actually be
+           passed. */
+        float preview_hz = state.fps > 0.1f ? state.fps : kMk2TickHz;
+        float ticks_per_row = (float)lane_sleep * kMk2TickHz / preview_hz;
+        int game_sleep = (int)(ticks_per_row + 0.5f);
+        if (game_sleep < 1) game_sleep = 1;
+
+        char sleep_line[288];
         snprintf(sleep_line, sizeof(sleep_line),
-                 "; Run this lane with a9 = [%d,ani_offset]: %d tick%s per row,\n"
+                 "; Run this lane with a9 = [%d,ani_offset]: %d game tick%s per row,\n"
                  ";   i.e. %.1f fps at MK2's %.1f Hz. Rows below are steps, not ticks.\n",
-                 lane_sleep, lane_sleep, lane_sleep == 1 ? "" : "s",
-                 kMk2TickHz / (float)lane_sleep, kMk2TickHz);
+                 game_sleep, game_sleep, game_sleep == 1 ? "" : "s",
+                 kMk2TickHz / (float)game_sleep, kMk2TickHz);
         out += sleep_line;
+        if (preview_hz < kMk2TickHz - 0.05f || preview_hz > kMk2TickHz + 0.05f) {
+            char rate_line[288];
+            snprintf(rate_line, sizeof(rate_line),
+                     ";   (authored at %.1f Hz preview, %d preview tick%s per row;\n"
+                     ";    scaled by %.2f to reach game ticks%s)\n",
+                     preview_hz, lane_sleep, lane_sleep == 1 ? "" : "s",
+                     kMk2TickHz / preview_hz,
+                     (ticks_per_row - (float)game_sleep > 0.05f ||
+                      ticks_per_row - (float)game_sleep < -0.05f)
+                         ? " -- ROUNDED, the preview rate is not a whole"
+                           " divisor of 54.7" : "");
+            out += rate_line;
+        }
         {
             bool lane_has_motion = false;
             for (int fi = 0; fi < (int)lane.frames.size() && !lane_has_motion; fi++)
@@ -6746,6 +7219,11 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
         bool reached_stop_tick = false;
         bool has_wide_local = false;
         int first_wide_tick = -1;
+        /* Last offset written to the local table, for the ani_adjustxy delta
+           annotation. Starts at 0,0: the object enters the lane sitting on
+           the anchor with nothing accumulated. */
+        int prev_out_dx = 0;
+        int prev_out_dy = 0;
         for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
             if (slot_stop_tick > 0 && tick > slot_stop_tick) {
                 reached_stop_tick = true;
@@ -6896,22 +7374,59 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 }
                 out += "\n";
 
+                /* Into MK2's position sign. NOT a constant negation -- that
+                   is the trap this export fell into, and it inverts a whole
+                   lane's descent.
+
+                   The preview draws at anchor - anieff(ani + dA, size, flip),
+                   so the drawn offset from the anchor is -dA unflipped and
+                   +dA flipped: anieff mirrors about size, and the size term
+                   cancels in the difference, which is why this holds for both
+                   mirror conventions.
+
+                   X: multi_adjust_xy negates dX itself under b_fliph, and
+                      that exactly cancels the preview's own X mirror. So X is
+                      an unconditional negation, flipped or not.
+                   Y: the engine never touches dY -- multi_adjust_xy mirrors
+                      a0 only -- so the V-flip stays ours to resolve here. A
+                      V-flipped frame already agrees with MK2 and passes
+                      through; an unflipped one negates. */
+                bool frame_flipv = (frame_mirror & kWorldFrameMirrorY) != 0;
+                int out_dx = -eff_dx;
+                int out_dy = frame_flipv ? eff_dy : -eff_dy;
                 local_table += "\t.word\t";
-                local_table += std::to_string(eff_dx);
+                local_table += std::to_string(out_dx);
                 local_table += ",";
-                local_table += std::to_string(eff_dy);
+                local_table += std::to_string(out_dy);
                 local_table += "\t; tick ";
                 local_table += std::to_string(tick);
                 local_table += hidden ? " hidden " : " ";
                 local_table += sprite;
+                /* These rows are ABSOLUTE offsets from the anchor, but
+                   ani_adjustxy is cumulative -- it adds to oxpos/oypos and
+                   leaves them there. So print the difference each row would
+                   need as an ani_adjustxy operand. MKSA.ASM's heli lane was
+                   converted by hand ("ani_adjustxy wants deltas, so they are
+                   differenced"), which is a subtraction nobody should be
+                   doing on paper. A repeat of the same offset prints nothing,
+                   because a held pose needs no second adjust. */
+                if (out_dx != prev_out_dx || out_dy != prev_out_dy) {
+                    local_table += "  ani_adjustxy ";
+                    local_table += std::to_string(out_dx - prev_out_dx);
+                    local_table += ",";
+                    local_table += std::to_string(out_dy - prev_out_dy);
+                }
                 local_table += "\n";
+                prev_out_dx = out_dx;
+                prev_out_dy = out_dy;
 
                 if (lane_has_dual) {
                     dual_table += "\t.word\t";
                     if (dual && !hidden) {
-                        dual_table += std::to_string(eff_dual_dx);
+                        dual_table += std::to_string(-eff_dual_dx);
                         dual_table += ",";
-                        dual_table += std::to_string(eff_dual_dy);
+                        dual_table += std::to_string(frame_flipv ? eff_dual_dy
+                                                                : -eff_dual_dy);
                         dual_table += "\t; tick ";
                         dual_table += std::to_string(tick);
                         dual_table += " second ";
@@ -7227,7 +7742,16 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
             int next_dy =
                 ClampWorldMarkedAniptDelta(state.drag_dy +
                                            (state.drag_mirror_y ? py : -py));
-            if (!state.drag_dual && frame_idx == 0 && ImGui::GetIO().KeyCtrl) {
+            /* Move the whole run, not just the frame under the cursor.
+               This used to also require frame_idx == 0, which made it a trap:
+               park the row on any other frame, Ctrl-drag, and only that one
+               frame moved -- silently, because the rest are not on screen at
+               that tick to show they stayed behind. Every frame is a valid
+               handle on the run now. */
+            bool move_together = !state.drag_dual &&
+                                 (state.lane_rigid[state_slot] ||
+                                  ImGui::GetIO().KeyCtrl);
+            if (move_together) {
                 int n = (int)dst_dx[state_slot].size();
                 for (int fi = 0; fi < n && fi < (int)dst_dy[state_slot].size(); fi++) {
                     int base_dx = fi < (int)state.drag_all_dx.size()
@@ -8326,6 +8850,7 @@ void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
     state.frame_doc[slot].clear();
     state.pingpong_delay[slot] = 0;
     state.stop_tick[slot] = 0;
+    state.lane_rigid[slot] = false;
 }
 
 /* frame_doc[slot] stores a doc TAB INDEX per entry, not a Document* — the
@@ -17599,31 +18124,10 @@ void SeqScrToggleSelectedMark(void)
     if (owner) owner->dirty = true;
 }
 
-static std::string SeqScrDocFullPath(const Document *doc)
-{
-    if (!doc || !doc->fname_s[0]) return std::string();
-    std::string dir(doc->fpath_s);
-    if (dir.empty()) return std::string(doc->fname_s);
-    return PathCombine(dir, doc->fname_s);
-}
-
-static bool SeqScrPathsEqual(const std::string &a, const std::string &b)
-{
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); i++) {
-        char ca = (char)tolower((unsigned char)a[i]);
-        char cb = (char)tolower((unsigned char)b[i]);
-        if (ca == '/') ca = '\\';
-        if (cb == '/') cb = '\\';
-        if (ca != cb) return false;
-    }
-    return true;
-}
-
 static int SeqScrFindOpenDoc(const std::string &full_path)
 {
     for (int i = 0; i < document_tab_count(); i++) {
-        if (SeqScrPathsEqual(SeqScrDocFullPath(document_get(i)), full_path))
+        if (WorldPathsEqual(WorldDocFullPath(document_get(i)), full_path))
             return i;
     }
     return -1;
@@ -17745,7 +18249,7 @@ void SeqScrRebuildFrameLibrary(bool open_missing)
        back: browsing the library must not move the user's editing focus. */
     if (open_missing && !dir.empty()) {
         int restore = document_active_index();
-        std::string restore_path = SeqScrDocFullPath(document_get(restore));
+        std::string restore_path = WorldDocFullPath(document_get(restore));
         bool opened_any = false;
         for (size_t i = 0; i < lib.files.size(); i++) {
             if (lib.file_docs[i] >= 0) continue;

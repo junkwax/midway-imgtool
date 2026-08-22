@@ -30,11 +30,13 @@ enum {
    visible-until value can't spray tens of thousands of files. */
 enum { kWorldPngSequenceMaxFrames = 600 };
 
-/* Ticks a blood frame holds. MKBLOOD.ASM runs every spray at an ani speed of
-   5 (`movk 5,a3`), and MKDEATH.ASM's shipped SPILL lane is annotated "x5 game
-   ticks per step", so a blood row is authored at the speed the game plays it
-   rather than at whatever the panel's default hold happens to be. */
-enum { kWorldBloodTicksPerFrame = 5 };
+/* Ticks a blood frame holds when a spray is first imported. MKBLOOD.ASM runs
+   its sprays at an ani speed of 5, but that is the speed the finished effect
+   plays at, not the granularity you author it at: imported at 5 the row lands
+   on every fifth tick and can no longer be lined up with the frame that caused
+   it. Import at 1 -- one tick per blood frame, the finest the timeline has --
+   and set the speed afterwards with the row's Ticks/frame. */
+enum { kWorldBloodTicksPerFrame = 1 };
 
 /* MK2 runs its game logic once per video field on the TMS34010 hardware, about
    54.7 times a second. A SEQSCR "tick" is exactly one of those, so a hold of 2
@@ -574,6 +576,13 @@ struct WorldMarkedSequenceState {
     std::vector<int> motion_cap_y[kWorldMarkedMaxTabs];
     int lane_base_dx[kWorldMarkedMaxTabs] = {}; /* game-style lane spawn offset */
     int lane_base_dy[kWorldMarkedMaxTabs] = {};
+    /* Rigid row: dragging ANY frame in the world moves the whole run by that
+       delta, instead of just the frame under the cursor. A blood spray is one
+       travelling effect, not a set of independently posed frames -- placing it
+       a frame at a time means thirteen chances to leave one behind. Ctrl-drag
+       does the same on any row; this makes it the default for rows that are
+       only ever moved as a unit. */
+    bool lane_rigid[kWorldMarkedMaxTabs] = {};
     std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip bits: X=ani_flip, Y=ani_flip_v */
     std::vector<int> frame_z[kWorldMarkedMaxTabs];      /* per-entry draw priority; higher draws on top */
     std::vector<int> dual_on[kWorldMarkedMaxTabs];      /* per-entry second sprite instance enabled */
@@ -863,6 +872,24 @@ struct WorldBloodRun {
     std::vector<int> frames;     /* image indices, in image-list order */
 };
 void WorldCollectBloodRuns(std::vector<WorldBloodRun> &out);
+
+/* An IMG on disk whose FILE name reads as blood -- BLOOD.IMG, MK1BLOOD.IMG.
+   The sprites inside one are not required to say "blood" themselves:
+   MKBLOOD.TBL's runs are GUSHER/GOOBER/BIGBLD/BPARTS/STAB at least as often
+   as SPILL/SPURT, so matching sprite names alone finds barely half of what
+   BLOOD.IMG holds. The file name is what qualifies its whole contents. */
+struct WorldBloodFile {
+    std::string path;      /* full path */
+    std::string name;      /* file name only */
+    bool open = false;     /* already an open tab */
+};
+/* Scan the folders an IMG could plausibly live in -- every open tab's, the
+   active document's, $IMGDIR, and their sibling data/ dirs -- for those files.
+   Cached; the scan re-runs when the open tabs change or `force_rescan`. */
+void WorldFindBloodImgFiles(std::vector<WorldBloodFile> &out, bool force_rescan);
+/* Open every discovered blood IMG that is not already a tab, then put the tab
+   that was active back. Returns how many were opened. */
+int WorldOpenBloodImgFiles(void);
 /* Add a row playing `run` once, starting at the tick `src_entry` of `src_lane`
    begins and sitting on that entry's anipoint. */
 bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,

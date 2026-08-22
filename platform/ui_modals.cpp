@@ -3268,6 +3268,10 @@ static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
     WvpWriteInt(f, key, state.lane_order[slot]);
     snprintf(key, sizeof(key), "slot.%d.hold_end", slot);
     WvpWriteBool(f, key, state.hold_end[slot]);
+    /* Absent in projects saved before rows could be rigid; those read back as
+       false, which is the old behaviour. */
+    snprintf(key, sizeof(key), "slot.%d.rigid", slot);
+    WvpWriteBool(f, key, state.lane_rigid[slot]);
     snprintf(key, sizeof(key), "slot.%d.mirror", slot);
     {
         WorldMarkedSequenceState &mutable_state =
@@ -3341,6 +3345,7 @@ static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
     state.lane_visible[slot] = WvpGetBool(kv, prefix + "visible", state.lane_visible[slot]);
     state.lane_order[slot] = WvpGetInt(kv, prefix + "order", -1);
     state.hold_end[slot] = WvpGetBool(kv, prefix + "hold_end", state.hold_end[slot]);
+    state.lane_rigid[slot] = WvpGetBool(kv, prefix + "rigid", false);
     bool *mirror = WorldMarkedMirrorFlag(state, slot);
     if (mirror) *mirror = WvpGetBool(kv, prefix + "mirror", *mirror);
 
