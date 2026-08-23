@@ -601,16 +601,26 @@ static void file_preview_refresh(const std::string &path)
 void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& entries, const char* ext_filter)
 {
     entries.clear();
+    /* `ext_filter` may name several extensions, ';'-separated ("WAX;WVP"), so a
+       dialog can list one format under both its current and its retired name. */
+    std::vector<std::string> exts;
+    for (const char *p = (ext_filter ? ext_filter : ""); *p; ) {
+        const char *sep = strchr(p, ';');
+        size_t len = sep ? (size_t)(sep - p) : strlen(p);
+        if (len) exts.push_back(std::string(p, len));
+        if (!sep) break;
+        p = sep + 1;
+    }
 #ifdef _WIN32
     WIN32_FIND_DATAA fd;
     std::string search = dir;
     if (!search.empty() && search.back() != '\\' && search.back() != '/') search += "\\";
-    if (ext_filter && ext_filter[0])
-        search += std::string("*.") + ext_filter;
-    else
-        search += "*";
-    HANDLE hFind = FindFirstFileA(search.c_str(), &fd);
-    if (hFind != INVALID_HANDLE_VALUE) {
+    const std::string dir_prefix = search;
+    for (size_t ei = 0; ei == 0 || ei < exts.size(); ei++) {
+        search = dir_prefix;
+        search += exts.empty() ? std::string("*") : ("*." + exts[ei]);
+        HANDLE hFind = FindFirstFileA(search.c_str(), &fd);
+        if (hFind == INVALID_HANDLE_VALUE) continue;
         do {
             if (strcmp(fd.cFileName, ".") == 0) continue;
             bool is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -622,7 +632,7 @@ void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& entries, 
         } while (FindNextFileA(hFind, &fd));
         FindClose(hFind);
     }
-    if (ext_filter && ext_filter[0]) {
+    if (!exts.empty()) {
         std::string dir_search = dir;
         if (!dir_search.empty() && dir_search.back() != '\\' && dir_search.back() != '/') dir_search += "\\";
         dir_search += "*";
@@ -654,9 +664,12 @@ void GetDirectoryFiles(const std::string& dir, std::vector<FileEntry>& entries, 
             long long mt = have_stat ? (long long)st.st_mtime : 0LL;
             if (is_dir) {
                 entries.push_back({dir_ent->d_name, true, 0LL, mt});
-            } else if (ext_filter && ext_filter[0]) {
+            } else if (!exts.empty()) {
                 const char* dot = strrchr(dir_ent->d_name, '.');
-                if (dot && strcasecmp(dot + 1, ext_filter) == 0)
+                bool ext_match = false;
+                for (size_t ei = 0; dot && ei < exts.size() && !ext_match; ei++)
+                    ext_match = strcasecmp(dot + 1, exts[ei].c_str()) == 0;
+                if (ext_match)
                     entries.push_back({dir_ent->d_name, false, sz, mt});
             } else {
                 entries.push_back({dir_ent->d_name, false, sz, mt});
@@ -992,10 +1005,19 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::LoadAsmAnim:
         case FileDialogMode::SaveAsmAnim: return "ASM";
         case FileDialogMode::LoadWorldProject:
-        case FileDialogMode::SaveWorldProject: return "WVP";
+        case FileDialogMode::SaveWorldProject: return "WAX";
         case FileDialogMode::LoadWorldBdd: return "BDD";
     }
     return "";
+}
+
+/* What the browser lists, which is not always what a save writes. World View
+   projects are `.WAX` now; they were `.WVP` through v3.31.0, and those still
+   open, so the load dialog lists both names. Saving always produces `.WAX`. */
+static const char* GetDialogListExtensions(FileDialogMode mode)
+{
+    if (mode == FileDialogMode::LoadWorldProject) return "WAX;WVP";
+    return GetDialogExtension(mode);
 }
 
 /* Modes that write a file the user names. Open/import modes are excluded: a
@@ -1167,11 +1189,16 @@ void OpenFileDialog(FileDialogMode mode) {
                                                        : g_last_world_project_path.substr(0, sep);
             std::string file = sep == std::string::npos ? g_last_world_project_path
                                                          : g_last_world_project_path.substr(sep + 1);
+            /* A project opened under the old name saves back out as .WAX, so
+               reopening this dialog does not keep proposing the retired one. */
+            size_t fdot = file.find_last_of('.');
+            if (fdot != std::string::npos && _stricmp(file.c_str() + fdot + 1, "WVP") == 0)
+                file = file.substr(0, fdot) + ".WAX";
             snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s", file.c_str());
             if (!dir.empty())
                 snprintf(g_file_dialog_dir, sizeof(g_file_dialog_dir), "%s", dir.c_str());
         } else {
-            snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "world_view.WVP");
+            snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "world_view.WAX");
         }
     } else if (g_doc->fname_s[0] != '\0') {
         size_t n = 0;
@@ -1383,7 +1410,7 @@ void DrawFileDialog() {
         }
 
         std::vector<FileEntry> entries;
-        GetDirectoryFiles(current_dir, entries, GetDialogExtension(g_file_dialog_mode));
+        GetDirectoryFiles(current_dir, entries, GetDialogListExtensions(g_file_dialog_mode));
 
         std::sort(entries.begin(), entries.end(), [](const FileEntry& a, const FileEntry& b) {
             /* Directories always come first regardless of sort key, so the
@@ -1787,7 +1814,7 @@ void DrawFileDialog() {
                 g_restore_msg_timer = 4.0f;
             } else if (g_file_dialog_mode == FileDialogMode::SaveWorldProject) {
                 size_t dot = full_path.find_last_of('.');
-                if (dot == std::string::npos) full_path += ".WVP";
+                if (dot == std::string::npos) full_path += ".WAX";
                 if (SaveWorldProjectFile(full_path.c_str()))
                     g_last_world_project_path = full_path;
             } else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) {
@@ -3029,14 +3056,14 @@ void AsmProcessOppAutoload(void)
     if (resolved == 0) g_request_locate_opp_img = true;
 }
 
-static std::string WvpKey(const char *prefix, int idx, const char *field)
+static std::string WaxKey(const char *prefix, int idx, const char *field)
 {
     char buf[128];
     snprintf(buf, sizeof(buf), "%s.%d.%s", prefix, idx, field);
     return std::string(buf);
 }
 
-static std::string WvpJoinInts(const std::vector<int> &values)
+static std::string WaxJoinInts(const std::vector<int> &values)
 {
     std::string out;
     for (size_t i = 0; i < values.size(); i++) {
@@ -3046,7 +3073,7 @@ static std::string WvpJoinInts(const std::vector<int> &values)
     return out;
 }
 
-static std::vector<int> WvpParseInts(const std::string &text)
+static std::vector<int> WaxParseInts(const std::string &text)
 {
     std::vector<int> out;
     const char *p = text.c_str();
@@ -3063,33 +3090,33 @@ static std::vector<int> WvpParseInts(const std::string &text)
     return out;
 }
 
-static void WvpWriteString(FILE *f, const char *key, const std::string &value)
+static void WaxWriteString(FILE *f, const char *key, const std::string &value)
 {
     fprintf(f, "%s=%s\n", key, value.c_str());
 }
 
-static void WvpWriteInt(FILE *f, const char *key, int value)
+static void WaxWriteInt(FILE *f, const char *key, int value)
 {
     fprintf(f, "%s=%d\n", key, value);
 }
 
-static void WvpWriteFloat(FILE *f, const char *key, float value)
+static void WaxWriteFloat(FILE *f, const char *key, float value)
 {
     fprintf(f, "%s=%.6g\n", key, value);
 }
 
-static void WvpWriteBool(FILE *f, const char *key, bool value)
+static void WaxWriteBool(FILE *f, const char *key, bool value)
 {
-    WvpWriteInt(f, key, value ? 1 : 0);
+    WaxWriteInt(f, key, value ? 1 : 0);
 }
 
-static void WvpWriteVec(FILE *f, const std::string &key,
+static void WaxWriteVec(FILE *f, const std::string &key,
                         const std::vector<int> &values)
 {
-    WvpWriteString(f, key.c_str(), WvpJoinInts(values));
+    WaxWriteString(f, key.c_str(), WaxJoinInts(values));
 }
 
-static bool WvpReadFile(const char *path,
+static bool WaxReadFile(const char *path,
                         std::unordered_map<std::string, std::string> &kv)
 {
     kv.clear();
@@ -3116,7 +3143,7 @@ static bool WvpReadFile(const char *path,
     return true;
 }
 
-static std::string WvpGetString(
+static std::string WaxGetString(
     const std::unordered_map<std::string, std::string> &kv,
     const std::string &key,
     const std::string &fallback = std::string())
@@ -3125,7 +3152,7 @@ static std::string WvpGetString(
     return it == kv.end() ? fallback : it->second;
 }
 
-static int WvpGetInt(const std::unordered_map<std::string, std::string> &kv,
+static int WaxGetInt(const std::unordered_map<std::string, std::string> &kv,
                      const std::string &key, int fallback)
 {
     auto it = kv.find(key);
@@ -3135,7 +3162,7 @@ static int WvpGetInt(const std::unordered_map<std::string, std::string> &kv,
     return end == it->second.c_str() ? fallback : (int)v;
 }
 
-static float WvpGetFloat(const std::unordered_map<std::string, std::string> &kv,
+static float WaxGetFloat(const std::unordered_map<std::string, std::string> &kv,
                          const std::string &key, float fallback)
 {
     auto it = kv.find(key);
@@ -3145,21 +3172,21 @@ static float WvpGetFloat(const std::unordered_map<std::string, std::string> &kv,
     return end == it->second.c_str() ? fallback : v;
 }
 
-static bool WvpGetBool(const std::unordered_map<std::string, std::string> &kv,
+static bool WaxGetBool(const std::unordered_map<std::string, std::string> &kv,
                        const std::string &key, bool fallback)
 {
-    return WvpGetInt(kv, key, fallback ? 1 : 0) != 0;
+    return WaxGetInt(kv, key, fallback ? 1 : 0) != 0;
 }
 
-static std::vector<int> WvpGetVec(
+static std::vector<int> WaxGetVec(
     const std::unordered_map<std::string, std::string> &kv,
     const std::string &key)
 {
     auto it = kv.find(key);
-    return it == kv.end() ? std::vector<int>() : WvpParseInts(it->second);
+    return it == kv.end() ? std::vector<int>() : WaxParseInts(it->second);
 }
 
-static std::vector<int> WvpMarkedIndices(Document *doc)
+static std::vector<int> WaxMarkedIndices(Document *doc)
 {
     std::vector<int> out;
     int idx = 0;
@@ -3171,7 +3198,7 @@ static std::vector<int> WvpMarkedIndices(Document *doc)
     return out;
 }
 
-static void WvpApplyMarkedIndices(Document *doc, const std::vector<int> &marked)
+static void WaxApplyMarkedIndices(Document *doc, const std::vector<int> &marked)
 {
     if (!doc) return;
     for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p)
@@ -3182,7 +3209,7 @@ static void WvpApplyMarkedIndices(Document *doc, const std::vector<int> &marked)
     }
 }
 
-static int WvpFindAsmByLabel(const std::vector<AsmAnim> &anims,
+static int WaxFindAsmByLabel(const std::vector<AsmAnim> &anims,
                              const std::string &label,
                              int fallback)
 {
@@ -3195,7 +3222,7 @@ static int WvpFindAsmByLabel(const std::vector<AsmAnim> &anims,
     return anims.empty() ? -1 : 0;
 }
 
-static void WvpClearAsmState(void)
+static void WaxClearAsmState(void)
 {
     g_asm_anims.clear();
     g_asm_anim_sel = -1;
@@ -3214,7 +3241,7 @@ static void WvpClearAsmState(void)
     ClearAsmAnimTexture();
 }
 
-static int WvpResolveDocIndex(int saved_idx,
+static int WaxResolveDocIndex(int saved_idx,
                               const std::string &path,
                               const std::vector<int> &doc_map)
 {
@@ -3235,7 +3262,7 @@ static int WvpResolveDocIndex(int saved_idx,
     return -1;
 }
 
-static int WvpSlotFrameCount(const WorldMarkedSequenceState &state, int slot)
+static int WaxSlotFrameCount(const WorldMarkedSequenceState &state, int slot)
 {
     int n = (int)state.sequence_frames[slot].size();
     if ((int)state.default_frames[slot].size() > n) n = (int)state.default_frames[slot].size();
@@ -3258,7 +3285,7 @@ static int WvpSlotFrameCount(const WorldMarkedSequenceState &state, int slot)
     return n;
 }
 
-static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
+static void WaxWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
                          int slot)
 {
     char key[128];
@@ -3266,163 +3293,163 @@ static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
     std::string doc_path = DocFullPath(document_get(doc_idx));
 
     snprintf(key, sizeof(key), "slot.%d.visible", slot);
-    WvpWriteBool(f, key, state.lane_visible[slot]);
+    WaxWriteBool(f, key, state.lane_visible[slot]);
     /* Row order rank. Absent in projects saved before rows could be moved,
        which read back as -1 and are re-ranked in build order on first draw. */
     snprintf(key, sizeof(key), "slot.%d.order", slot);
-    WvpWriteInt(f, key, state.lane_order[slot]);
+    WaxWriteInt(f, key, state.lane_order[slot]);
     snprintf(key, sizeof(key), "slot.%d.hold_end", slot);
-    WvpWriteBool(f, key, state.hold_end[slot]);
+    WaxWriteBool(f, key, state.hold_end[slot]);
     /* Absent in projects saved before rows could be rigid; those read back as
        false, which is the old behaviour. */
     snprintf(key, sizeof(key), "slot.%d.rigid", slot);
-    WvpWriteBool(f, key, state.lane_rigid[slot]);
+    WaxWriteBool(f, key, state.lane_rigid[slot]);
     /* Only meaningful with hold_custom set; written either way so the pair
        reads straight out of the file. */
     snprintf(key, sizeof(key), "slot.%d.hold_custom", slot);
-    WvpWriteBool(f, key, state.slot_hold_custom[slot]);
+    WaxWriteBool(f, key, state.slot_hold_custom[slot]);
     snprintf(key, sizeof(key), "slot.%d.hold", slot);
-    WvpWriteInt(f, key, state.slot_hold[slot]);
+    WaxWriteInt(f, key, state.slot_hold[slot]);
     snprintf(key, sizeof(key), "slot.%d.mirror", slot);
     {
         WorldMarkedSequenceState &mutable_state =
             const_cast<WorldMarkedSequenceState &>(state);
         bool *mirror = WorldMarkedMirrorFlag(mutable_state, slot);
-        WvpWriteBool(f, key, mirror ? *mirror : false);
+        WaxWriteBool(f, key, mirror ? *mirror : false);
     }
     snprintf(key, sizeof(key), "slot.%d.doc_idx", slot);
-    WvpWriteInt(f, key, doc_idx);
+    WaxWriteInt(f, key, doc_idx);
     snprintf(key, sizeof(key), "slot.%d.doc_path", slot);
-    WvpWriteString(f, key, doc_path);
-    WvpWriteVec(f, WvpKey("slot", slot, "sequence_frames"), state.sequence_frames[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "default_frames"), state.default_frames[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "frame_delays"), state.frame_delays[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "local_dx"), state.local_dx[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "local_dy"), state.local_dy[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "visible_from"), state.visible_from[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "visible_until"), state.visible_until[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "motion_dx"), state.motion_dx[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "motion_dy"), state.motion_dy[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "motion_cap_x"), state.motion_cap_x[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "motion_cap_y"), state.motion_cap_y[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "frame_mirror"), state.frame_mirror[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "frame_z"), state.frame_z[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "dual_on"), state.dual_on[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "dual_dx"), state.dual_dx[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "dual_dy"), state.dual_dy[slot]);
-    WvpWriteVec(f, WvpKey("slot", slot, "dual_z"), state.dual_z[slot]);
+    WaxWriteString(f, key, doc_path);
+    WaxWriteVec(f, WaxKey("slot", slot, "sequence_frames"), state.sequence_frames[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "default_frames"), state.default_frames[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "frame_delays"), state.frame_delays[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "local_dx"), state.local_dx[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "local_dy"), state.local_dy[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "visible_from"), state.visible_from[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "visible_until"), state.visible_until[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "motion_dx"), state.motion_dx[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "motion_dy"), state.motion_dy[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "motion_cap_x"), state.motion_cap_x[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "motion_cap_y"), state.motion_cap_y[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "frame_mirror"), state.frame_mirror[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "frame_z"), state.frame_z[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "dual_on"), state.dual_on[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "dual_dx"), state.dual_dx[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "dual_dy"), state.dual_dy[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "dual_z"), state.dual_z[slot]);
     /* Per-entry doc override: -1 means "use this row's own doc" (doc_idx
        above), any other value is a doc.count index — a frame dragged in
        from another row's document. */
-    WvpWriteVec(f, WvpKey("slot", slot, "frame_doc_idx"), state.frame_doc[slot]);
+    WaxWriteVec(f, WaxKey("slot", slot, "frame_doc_idx"), state.frame_doc[slot]);
     snprintf(key, sizeof(key), "slot.%d.pingpong_delay", slot);
-    WvpWriteInt(f, key, state.pingpong_delay[slot]);
+    WaxWriteInt(f, key, state.pingpong_delay[slot]);
     snprintf(key, sizeof(key), "slot.%d.stop_tick", slot);
-    WvpWriteInt(f, key, state.stop_tick[slot]);
+    WaxWriteInt(f, key, state.stop_tick[slot]);
     snprintf(key, sizeof(key), "slot.%d.auto_step", slot);
-    WvpWriteInt(f, key, state.auto_step[slot]);
+    WaxWriteInt(f, key, state.auto_step[slot]);
     snprintf(key, sizeof(key), "slot.%d.auto_life", slot);
-    WvpWriteInt(f, key, state.auto_life[slot]);
+    WaxWriteInt(f, key, state.auto_life[slot]);
     snprintf(key, sizeof(key), "slot.%d.auto_vx", slot);
-    WvpWriteInt(f, key, state.auto_vx[slot]);
+    WaxWriteInt(f, key, state.auto_vx[slot]);
     snprintf(key, sizeof(key), "slot.%d.auto_vy", slot);
-    WvpWriteInt(f, key, state.auto_vy[slot]);
+    WaxWriteInt(f, key, state.auto_vy[slot]);
     snprintf(key, sizeof(key), "slot.%d.auto_y", slot);
-    WvpWriteInt(f, key, state.auto_y[slot]);
+    WaxWriteInt(f, key, state.auto_y[slot]);
     snprintf(key, sizeof(key), "slot.%d.chain_count", slot);
-    WvpWriteInt(f, key, state.chain_count[slot]);
+    WaxWriteInt(f, key, state.chain_count[slot]);
     snprintf(key, sizeof(key), "slot.%d.chain_gap", slot);
-    WvpWriteInt(f, key, state.chain_gap[slot]);
+    WaxWriteInt(f, key, state.chain_gap[slot]);
     snprintf(key, sizeof(key), "slot.%d.chain_delay", slot);
-    WvpWriteInt(f, key, state.chain_delay[slot]);
+    WaxWriteInt(f, key, state.chain_delay[slot]);
     snprintf(key, sizeof(key), "slot.%d.chain_vy", slot);
-    WvpWriteInt(f, key, state.chain_vy[slot]);
+    WaxWriteInt(f, key, state.chain_vy[slot]);
     snprintf(key, sizeof(key), "slot.%d.chain_pingpong", slot);
-    WvpWriteBool(f, key, state.chain_pingpong[slot]);
+    WaxWriteBool(f, key, state.chain_pingpong[slot]);
     snprintf(key, sizeof(key), "slot.%d.subframe_swap_tick", slot);
-    WvpWriteInt(f, key, state.subframe_swap_tick[slot]);
+    WaxWriteInt(f, key, state.subframe_swap_tick[slot]);
     snprintf(key, sizeof(key), "slot.%d.subframe_waterline_y", slot);
-    WvpWriteInt(f, key, state.subframe_waterline_y[slot]);
+    WaxWriteInt(f, key, state.subframe_waterline_y[slot]);
     snprintf(key, sizeof(key), "slot.%d.subframe_fine_source", slot);
-    WvpWriteInt(f, key, state.subframe_fine_source[slot]);
+    WaxWriteInt(f, key, state.subframe_fine_source[slot]);
 }
 
-static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
+static void WaxReadSlot(const std::unordered_map<std::string, std::string> &kv,
                         WorldMarkedSequenceState &state,
                         int slot,
                         const std::vector<int> &doc_map)
 {
     std::string prefix = "slot." + std::to_string(slot) + ".";
-    state.lane_visible[slot] = WvpGetBool(kv, prefix + "visible", state.lane_visible[slot]);
-    state.lane_order[slot] = WvpGetInt(kv, prefix + "order", -1);
-    state.hold_end[slot] = WvpGetBool(kv, prefix + "hold_end", state.hold_end[slot]);
-    state.lane_rigid[slot] = WvpGetBool(kv, prefix + "rigid", false);
+    state.lane_visible[slot] = WaxGetBool(kv, prefix + "visible", state.lane_visible[slot]);
+    state.lane_order[slot] = WaxGetInt(kv, prefix + "order", -1);
+    state.hold_end[slot] = WaxGetBool(kv, prefix + "hold_end", state.hold_end[slot]);
+    state.lane_rigid[slot] = WaxGetBool(kv, prefix + "rigid", false);
     /* Absent in older projects: those rows follow the global, which is what
        they did when they were saved. */
-    state.slot_hold_custom[slot] = WvpGetBool(kv, prefix + "hold_custom", false);
+    state.slot_hold_custom[slot] = WaxGetBool(kv, prefix + "hold_custom", false);
     bool had_slot_hold = kv.count(prefix + "hold") != 0;
     state.slot_hold[slot] = ClampTimelineHold(
-        WvpGetInt(kv, prefix + "hold", state.default_hold));
+        WaxGetInt(kv, prefix + "hold", state.default_hold));
     bool *mirror = WorldMarkedMirrorFlag(state, slot);
-    if (mirror) *mirror = WvpGetBool(kv, prefix + "mirror", *mirror);
+    if (mirror) *mirror = WaxGetBool(kv, prefix + "mirror", *mirror);
 
-    int saved_doc_idx = WvpGetInt(kv, prefix + "doc_idx", -1);
-    std::string doc_path = WvpGetString(kv, prefix + "doc_path");
-    int doc_idx = WvpResolveDocIndex(saved_doc_idx, doc_path, doc_map);
+    int saved_doc_idx = WaxGetInt(kv, prefix + "doc_idx", -1);
+    std::string doc_path = WaxGetString(kv, prefix + "doc_path");
+    int doc_idx = WaxResolveDocIndex(saved_doc_idx, doc_path, doc_map);
     WorldMarkedSetRowDoc(state, slot, doc_idx);
 
-    state.sequence_frames[slot] = WvpGetVec(kv, prefix + "sequence_frames");
-    state.default_frames[slot] = WvpGetVec(kv, prefix + "default_frames");
-    state.frame_delays[slot] = WvpGetVec(kv, prefix + "frame_delays");
+    state.sequence_frames[slot] = WaxGetVec(kv, prefix + "sequence_frames");
+    state.default_frames[slot] = WaxGetVec(kv, prefix + "default_frames");
+    state.frame_delays[slot] = WaxGetVec(kv, prefix + "frame_delays");
     /* A project written before rows carried a hold still has per-frame
        delays, so take the row's hold from those rather than from the global.
        Reporting the global would make the row's T/f box disagree with what
        the row is actually doing the moment the project opens. */
     if (!had_slot_hold && !state.frame_delays[slot].empty())
         state.slot_hold[slot] = ClampTimelineHold(state.frame_delays[slot][0]);
-    state.local_dx[slot] = WvpGetVec(kv, prefix + "local_dx");
-    state.local_dy[slot] = WvpGetVec(kv, prefix + "local_dy");
-    state.visible_from[slot] = WvpGetVec(kv, prefix + "visible_from");
-    state.visible_until[slot] = WvpGetVec(kv, prefix + "visible_until");
-    state.motion_dx[slot] = WvpGetVec(kv, prefix + "motion_dx");
-    state.motion_dy[slot] = WvpGetVec(kv, prefix + "motion_dy");
-    state.motion_cap_x[slot] = WvpGetVec(kv, prefix + "motion_cap_x");
-    state.motion_cap_y[slot] = WvpGetVec(kv, prefix + "motion_cap_y");
-    state.frame_mirror[slot] = WvpGetVec(kv, prefix + "frame_mirror");
-    state.frame_z[slot] = WvpGetVec(kv, prefix + "frame_z");
-    state.dual_on[slot] = WvpGetVec(kv, prefix + "dual_on");
-    state.dual_dx[slot] = WvpGetVec(kv, prefix + "dual_dx");
-    state.dual_dy[slot] = WvpGetVec(kv, prefix + "dual_dy");
-    state.dual_z[slot] = WvpGetVec(kv, prefix + "dual_z");
+    state.local_dx[slot] = WaxGetVec(kv, prefix + "local_dx");
+    state.local_dy[slot] = WaxGetVec(kv, prefix + "local_dy");
+    state.visible_from[slot] = WaxGetVec(kv, prefix + "visible_from");
+    state.visible_until[slot] = WaxGetVec(kv, prefix + "visible_until");
+    state.motion_dx[slot] = WaxGetVec(kv, prefix + "motion_dx");
+    state.motion_dy[slot] = WaxGetVec(kv, prefix + "motion_dy");
+    state.motion_cap_x[slot] = WaxGetVec(kv, prefix + "motion_cap_x");
+    state.motion_cap_y[slot] = WaxGetVec(kv, prefix + "motion_cap_y");
+    state.frame_mirror[slot] = WaxGetVec(kv, prefix + "frame_mirror");
+    state.frame_z[slot] = WaxGetVec(kv, prefix + "frame_z");
+    state.dual_on[slot] = WaxGetVec(kv, prefix + "dual_on");
+    state.dual_dx[slot] = WaxGetVec(kv, prefix + "dual_dx");
+    state.dual_dy[slot] = WaxGetVec(kv, prefix + "dual_dy");
+    state.dual_z[slot] = WaxGetVec(kv, prefix + "dual_z");
 
     /* frame_doc[slot] stores a doc tab index (-1 = this row's own doc), never
        a Document* — the saved index was only ever valid in the saving
        session's own tab order, so remap it the same way doc_idx above is
        remapped; -1 needs no remapping. */
-    std::vector<int> fdoc_idx = WvpGetVec(kv, prefix + "frame_doc_idx");
+    std::vector<int> fdoc_idx = WaxGetVec(kv, prefix + "frame_doc_idx");
     state.frame_doc[slot].assign(fdoc_idx.size(), -1);
     for (size_t i = 0; i < fdoc_idx.size(); i++) {
         if (fdoc_idx[i] < 0) continue;
-        state.frame_doc[slot][i] = WvpResolveDocIndex(fdoc_idx[i], std::string(), doc_map);
+        state.frame_doc[slot][i] = WaxResolveDocIndex(fdoc_idx[i], std::string(), doc_map);
     }
 
-    state.pingpong_delay[slot] = WvpGetInt(kv, prefix + "pingpong_delay", state.pingpong_delay[slot]);
-    state.stop_tick[slot] = WvpGetInt(kv, prefix + "stop_tick", state.stop_tick[slot]);
-    state.auto_step[slot] = WvpGetInt(kv, prefix + "auto_step", state.auto_step[slot]);
-    state.auto_life[slot] = WvpGetInt(kv, prefix + "auto_life", state.auto_life[slot]);
-    state.auto_vx[slot] = WvpGetInt(kv, prefix + "auto_vx", state.auto_vx[slot]);
-    state.auto_vy[slot] = WvpGetInt(kv, prefix + "auto_vy", state.auto_vy[slot]);
-    state.auto_y[slot] = WvpGetInt(kv, prefix + "auto_y", state.auto_y[slot]);
-    state.chain_count[slot] = WvpGetInt(kv, prefix + "chain_count", state.chain_count[slot]);
-    state.chain_gap[slot] = WvpGetInt(kv, prefix + "chain_gap", state.chain_gap[slot]);
-    state.chain_delay[slot] = WvpGetInt(kv, prefix + "chain_delay", state.chain_delay[slot]);
-    state.chain_vy[slot] = WvpGetInt(kv, prefix + "chain_vy", state.chain_vy[slot]);
-    state.chain_pingpong[slot] = WvpGetBool(kv, prefix + "chain_pingpong", state.chain_pingpong[slot]);
-    state.subframe_swap_tick[slot] = WvpGetInt(kv, prefix + "subframe_swap_tick", state.subframe_swap_tick[slot]);
-    state.subframe_waterline_y[slot] = WvpGetInt(kv, prefix + "subframe_waterline_y", state.subframe_waterline_y[slot]);
-    state.subframe_fine_source[slot] = WvpGetInt(kv, prefix + "subframe_fine_source", state.subframe_fine_source[slot]);
+    state.pingpong_delay[slot] = WaxGetInt(kv, prefix + "pingpong_delay", state.pingpong_delay[slot]);
+    state.stop_tick[slot] = WaxGetInt(kv, prefix + "stop_tick", state.stop_tick[slot]);
+    state.auto_step[slot] = WaxGetInt(kv, prefix + "auto_step", state.auto_step[slot]);
+    state.auto_life[slot] = WaxGetInt(kv, prefix + "auto_life", state.auto_life[slot]);
+    state.auto_vx[slot] = WaxGetInt(kv, prefix + "auto_vx", state.auto_vx[slot]);
+    state.auto_vy[slot] = WaxGetInt(kv, prefix + "auto_vy", state.auto_vy[slot]);
+    state.auto_y[slot] = WaxGetInt(kv, prefix + "auto_y", state.auto_y[slot]);
+    state.chain_count[slot] = WaxGetInt(kv, prefix + "chain_count", state.chain_count[slot]);
+    state.chain_gap[slot] = WaxGetInt(kv, prefix + "chain_gap", state.chain_gap[slot]);
+    state.chain_delay[slot] = WaxGetInt(kv, prefix + "chain_delay", state.chain_delay[slot]);
+    state.chain_vy[slot] = WaxGetInt(kv, prefix + "chain_vy", state.chain_vy[slot]);
+    state.chain_pingpong[slot] = WaxGetBool(kv, prefix + "chain_pingpong", state.chain_pingpong[slot]);
+    state.subframe_swap_tick[slot] = WaxGetInt(kv, prefix + "subframe_swap_tick", state.subframe_swap_tick[slot]);
+    state.subframe_waterline_y[slot] = WaxGetInt(kv, prefix + "subframe_waterline_y", state.subframe_waterline_y[slot]);
+    state.subframe_fine_source[slot] = WaxGetInt(kv, prefix + "subframe_fine_source", state.subframe_fine_source[slot]);
 
-    EnsureWorldMarkedFrameDelays(state, slot, WvpSlotFrameCount(state, slot));
+    EnsureWorldMarkedFrameDelays(state, slot, WaxSlotFrameCount(state, slot));
 }
 
 static bool SaveWorldProjectFile(const char *path)
@@ -3437,89 +3464,89 @@ static bool SaveWorldProjectFile(const char *path)
 
     WorldMarkedSequenceState &state = g_world_marked_state;
     fprintf(f, "format=imgtool_world_project\n");
-    WvpWriteInt(f, "version", 1);
-    WvpWriteString(f, "app", "midway-imgtool");
+    WaxWriteInt(f, "version", 1);
+    WaxWriteString(f, "app", "midway-imgtool");
 
-    WvpWriteBool(f, "world.enabled", g_world_state.enabled);
-    WvpWriteInt(f, "world.w", g_world_state.w);
-    WvpWriteInt(f, "world.h", g_world_state.h);
-    WvpWriteInt(f, "world.origin_x", g_world_state.origin_x);
-    WvpWriteInt(f, "world.origin_y", g_world_state.origin_y);
-    WvpWriteBool(f, "world.onion", g_world_state.onion);
+    WaxWriteBool(f, "world.enabled", g_world_state.enabled);
+    WaxWriteInt(f, "world.w", g_world_state.w);
+    WaxWriteInt(f, "world.h", g_world_state.h);
+    WaxWriteInt(f, "world.origin_x", g_world_state.origin_x);
+    WaxWriteInt(f, "world.origin_y", g_world_state.origin_y);
+    WaxWriteBool(f, "world.onion", g_world_state.onion);
 
-    WvpWriteBool(f, "state.marked_play", state.marked_play);
+    WaxWriteBool(f, "state.marked_play", state.marked_play);
     /* Constant, and written only so a reader of the file does not have to
        know it. Nothing loads it back -- the rate is kMk2TickHz in code. */
-    WvpWriteFloat(f, "state.tick_hz", kMk2TickHz);
+    WaxWriteFloat(f, "state.tick_hz", kMk2TickHz);
     /* The hold is the number that maps to the ASM sleep, and it is the one
        thing a consumer of this file cannot re-derive: the tick rate is fixed
        hardware, so without this a reloaded project - or a script generating a
        lane from it - falls back to a hold of 1 and runs the animation
        kDefaultTimelineHold times too fast. */
-    WvpWriteInt(f, "state.default_hold", state.default_hold);
-    WvpWriteFloat(f, "state.timer", state.timer);
-    WvpWriteInt(f, "state.frame", state.frame);
-    WvpWriteBool(f, "state.paused", state.paused);
-    WvpWriteBool(f, "state.dummy_decap_body", state.dummy_decap_body);
-    WvpWriteBool(f, "state.dummy_decap_reset", state.dummy_decap_reset);
-    WvpWriteBool(f, "state.dummy_decap_manual", state.dummy_decap_manual);
-    WvpWriteInt(f, "state.dummy_decap_doc_idx", state.dummy_decap_doc_idx);
-    WvpWriteString(f, "state.dummy_decap_doc_path",
+    WaxWriteInt(f, "state.default_hold", state.default_hold);
+    WaxWriteFloat(f, "state.timer", state.timer);
+    WaxWriteInt(f, "state.frame", state.frame);
+    WaxWriteBool(f, "state.paused", state.paused);
+    WaxWriteBool(f, "state.dummy_decap_body", state.dummy_decap_body);
+    WaxWriteBool(f, "state.dummy_decap_reset", state.dummy_decap_reset);
+    WaxWriteBool(f, "state.dummy_decap_manual", state.dummy_decap_manual);
+    WaxWriteInt(f, "state.dummy_decap_doc_idx", state.dummy_decap_doc_idx);
+    WaxWriteString(f, "state.dummy_decap_doc_path",
                    DocFullPath(document_get(state.dummy_decap_doc_idx)));
-    WvpWriteString(f, "state.dummy_decap_prefix", state.dummy_decap_prefix);
-    WvpWriteBool(f, "state.draw_sprite_borders", state.draw_sprite_borders);
-    WvpWriteBool(f, "state.show_boundary_overlay", state.show_boundary_overlay);
-    WvpWriteBool(f, "state.embedded_active", state.embedded_active);
-    WvpWriteBool(f, "state.embedded_is_script", state.embedded_is_script);
-    WvpWriteBool(f, "state.embedded_show_companions", state.embedded_show_companions);
-    WvpWriteInt(f, "state.embedded_record_index", state.embedded_record_index);
-    WvpWriteInt(f, "state.embedded_doc_idx", state.embedded_doc_idx);
-    WvpWriteString(f, "state.embedded_doc_path",
+    WaxWriteString(f, "state.dummy_decap_prefix", state.dummy_decap_prefix);
+    WaxWriteBool(f, "state.draw_sprite_borders", state.draw_sprite_borders);
+    WaxWriteBool(f, "state.show_boundary_overlay", state.show_boundary_overlay);
+    WaxWriteBool(f, "state.embedded_active", state.embedded_active);
+    WaxWriteBool(f, "state.embedded_is_script", state.embedded_is_script);
+    WaxWriteBool(f, "state.embedded_show_companions", state.embedded_show_companions);
+    WaxWriteInt(f, "state.embedded_record_index", state.embedded_record_index);
+    WaxWriteInt(f, "state.embedded_doc_idx", state.embedded_doc_idx);
+    WaxWriteString(f, "state.embedded_doc_path",
                    DocFullPath(document_get(state.embedded_doc_idx)));
-    WvpWriteString(f, "state.embedded_name", state.embedded_name);
-    WvpWriteVec(f, "state.embedded_targets", state.embedded_targets);
-    WvpWriteInt(f, "state.embedded_label_count",
+    WaxWriteString(f, "state.embedded_name", state.embedded_name);
+    WaxWriteVec(f, "state.embedded_targets", state.embedded_targets);
+    WaxWriteInt(f, "state.embedded_label_count",
                 (int)state.embedded_frame_labels.size());
     for (int i = 0; i < (int)state.embedded_frame_labels.size(); i++)
-        WvpWriteString(f, WvpKey("embedded_label", i, "text").c_str(),
+        WaxWriteString(f, WaxKey("embedded_label", i, "text").c_str(),
                        state.embedded_frame_labels[(size_t)i]);
 
     int doc_count = document_tab_count();
-    WvpWriteInt(f, "doc.count", doc_count);
-    WvpWriteInt(f, "doc.active", document_active_index());
+    WaxWriteInt(f, "doc.count", doc_count);
+    WaxWriteInt(f, "doc.active", document_active_index());
     for (int i = 0; i < doc_count; i++) {
         Document *doc = document_get(i);
-        WvpWriteString(f, WvpKey("doc", i, "path").c_str(), DocFullPath(doc));
-        WvpWriteVec(f, WvpKey("doc", i, "marked"), WvpMarkedIndices(doc));
+        WaxWriteString(f, WaxKey("doc", i, "path").c_str(), DocFullPath(doc));
+        WaxWriteVec(f, WaxKey("doc", i, "marked"), WaxMarkedIndices(doc));
     }
 
-    WvpWriteString(f, "asm.player.path", g_asm_anim_file);
-    WvpWriteInt(f, "asm.player.sel", g_asm_anim_sel);
-    WvpWriteString(f, "asm.player.label",
+    WaxWriteString(f, "asm.player.path", g_asm_anim_file);
+    WaxWriteInt(f, "asm.player.sel", g_asm_anim_sel);
+    WaxWriteString(f, "asm.player.label",
                    (g_asm_anim_sel >= 0 && g_asm_anim_sel < (int)g_asm_anims.size())
                        ? g_asm_anims[g_asm_anim_sel].label : std::string());
-    WvpWriteBool(f, "asm.player.enabled", g_asm_lane_enabled);
-    WvpWriteString(f, "asm.opp.path", g_asm_opp_file);
-    WvpWriteInt(f, "asm.opp.sel", g_asm_opp_sel);
-    WvpWriteString(f, "asm.opp.label",
+    WaxWriteBool(f, "asm.player.enabled", g_asm_lane_enabled);
+    WaxWriteString(f, "asm.opp.path", g_asm_opp_file);
+    WaxWriteInt(f, "asm.opp.sel", g_asm_opp_sel);
+    WaxWriteString(f, "asm.opp.label",
                    (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
                        ? g_asm_opp_anims[g_asm_opp_sel].label : std::string());
-    WvpWriteBool(f, "asm.opp.enabled", g_asm_opp_enabled);
-    WvpWriteBool(f, "asm.window.show", g_show_asm_anim);
-    WvpWriteInt(f, "asm.window.frame", g_asm_anim_frame);
-    WvpWriteBool(f, "asm.window.play", g_asm_anim_play);
-    WvpWriteFloat(f, "asm.window.fps", g_asm_anim_fps);
+    WaxWriteBool(f, "asm.opp.enabled", g_asm_opp_enabled);
+    WaxWriteBool(f, "asm.window.show", g_show_asm_anim);
+    WaxWriteInt(f, "asm.window.frame", g_asm_anim_frame);
+    WaxWriteBool(f, "asm.window.play", g_asm_anim_play);
+    WaxWriteFloat(f, "asm.window.fps", g_asm_anim_fps);
 
-    WvpWriteInt(f, "slot.count", kWorldMarkedMaxTabs);
+    WaxWriteInt(f, "slot.count", kWorldMarkedMaxTabs);
     for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++)
-        WvpWriteSlot(f, state, slot);
+        WaxWriteSlot(f, state, slot);
 
-    WvpWriteInt(f, "split.count", (int)state.split_lanes.size());
+    WaxWriteInt(f, "split.count", (int)state.split_lanes.size());
     for (int i = 0; i < (int)state.split_lanes.size(); i++) {
         const WorldMarkedSplitLane &split = state.split_lanes[(size_t)i];
-        WvpWriteInt(f, WvpKey("split", i, "slot").c_str(), split.slot);
-        WvpWriteInt(f, WvpKey("split", i, "doc_idx").c_str(), split.doc_idx);
-        WvpWriteString(f, WvpKey("split", i, "doc_path").c_str(),
+        WaxWriteInt(f, WaxKey("split", i, "slot").c_str(), split.slot);
+        WaxWriteInt(f, WaxKey("split", i, "doc_idx").c_str(), split.doc_idx);
+        WaxWriteString(f, WaxKey("split", i, "doc_path").c_str(),
                        DocFullPath(document_get(split.doc_idx)));
     }
 
@@ -3533,8 +3560,8 @@ static bool SaveWorldProjectFile(const char *path)
 static bool LoadWorldProjectFile(const char *path)
 {
     std::unordered_map<std::string, std::string> kv;
-    if (!WvpReadFile(path, kv) ||
-        WvpGetString(kv, "format") != "imgtool_world_project") {
+    if (!WaxReadFile(path, kv) ||
+        WaxGetString(kv, "format") != "imgtool_world_project") {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Not an imgtool World View project.");
         g_restore_msg_timer = 4.0f;
@@ -3543,7 +3570,7 @@ static bool LoadWorldProjectFile(const char *path)
 
     /* A project is a complete workspace, not an overlay on its caller's
        tabs. Start clean so every saved IMG gets the same document index it
-       had when the WVP was written. */
+       had when the project was written. */
     while (document_tab_count() > 1)
         document_close_tab(document_tab_count() - 1);
     document_set_active(0);
@@ -3561,11 +3588,11 @@ static bool LoadWorldProjectFile(const char *path)
         return PathReadable(relative) ? relative : std::string();
     };
 
-    int doc_count = WvpGetInt(kv, "doc.count", 0);
+    int doc_count = WaxGetInt(kv, "doc.count", 0);
     std::vector<int> doc_map((size_t)(doc_count > 0 ? doc_count : 0), -1);
     int missing_docs = 0;
     for (int i = 0; i < doc_count; i++) {
-        std::string saved_path = WvpGetString(kv, WvpKey("doc", i, "path"));
+        std::string saved_path = WaxGetString(kv, WaxKey("doc", i, "path"));
         if (saved_path.empty()) { missing_docs++; continue; }
         std::string doc_path = resolve_img_path(saved_path);
         if (doc_path.empty()) {
@@ -3580,27 +3607,27 @@ static bool LoadWorldProjectFile(const char *path)
             continue;
         }
         doc_map[(size_t)i] = idx;
-        WvpApplyMarkedIndices(doc, WvpGetVec(kv, WvpKey("doc", i, "marked")));
+        WaxApplyMarkedIndices(doc, WaxGetVec(kv, WaxKey("doc", i, "marked")));
     }
     g_last_world_project_path = project_path;
 
-    WvpClearAsmState();
-    std::string player_path = WvpGetString(kv, "asm.player.path");
+    WaxClearAsmState();
+    std::string player_path = WaxGetString(kv, "asm.player.path");
     if (!player_path.empty() && PathReadable(player_path) &&
         LoadAsmAnimations(player_path.c_str())) {
-        int sel = WvpFindAsmByLabel(g_asm_anims,
-                                    WvpGetString(kv, "asm.player.label"),
-                                    WvpGetInt(kv, "asm.player.sel", 0));
+        int sel = WaxFindAsmByLabel(g_asm_anims,
+                                    WaxGetString(kv, "asm.player.label"),
+                                    WaxGetInt(kv, "asm.player.sel", 0));
         AsmAnimSelect(sel);
         g_request_asm_autoload = false;
         AsmProcessAutoload();
     }
-    std::string opp_path = WvpGetString(kv, "asm.opp.path");
+    std::string opp_path = WaxGetString(kv, "asm.opp.path");
     if (!opp_path.empty() && PathReadable(opp_path) &&
         LoadAsmOpponent(opp_path.c_str())) {
-        g_asm_opp_sel = WvpFindAsmByLabel(g_asm_opp_anims,
-                                          WvpGetString(kv, "asm.opp.label"),
-                                          WvpGetInt(kv, "asm.opp.sel", 0));
+        g_asm_opp_sel = WaxFindAsmByLabel(g_asm_opp_anims,
+                                          WaxGetString(kv, "asm.opp.label"),
+                                          WaxGetInt(kv, "asm.opp.sel", 0));
         if (g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size())
             AsmResolveAnimGlobal(g_asm_opp_anims[g_asm_opp_sel]);
         g_request_asm_opp_autoload = false;
@@ -3608,66 +3635,66 @@ static bool LoadWorldProjectFile(const char *path)
     }
 
     WorldViewState loaded_world;
-    loaded_world.enabled = WvpGetBool(kv, "world.enabled", true);
-    loaded_world.w = WvpGetInt(kv, "world.w", loaded_world.w);
-    loaded_world.h = WvpGetInt(kv, "world.h", loaded_world.h);
-    loaded_world.origin_x = WvpGetInt(kv, "world.origin_x", loaded_world.origin_x);
-    loaded_world.origin_y = WvpGetInt(kv, "world.origin_y", loaded_world.origin_y);
-    loaded_world.onion = WvpGetBool(kv, "world.onion", loaded_world.onion);
+    loaded_world.enabled = WaxGetBool(kv, "world.enabled", true);
+    loaded_world.w = WaxGetInt(kv, "world.w", loaded_world.w);
+    loaded_world.h = WaxGetInt(kv, "world.h", loaded_world.h);
+    loaded_world.origin_x = WaxGetInt(kv, "world.origin_x", loaded_world.origin_x);
+    loaded_world.origin_y = WaxGetInt(kv, "world.origin_y", loaded_world.origin_y);
+    loaded_world.onion = WaxGetBool(kv, "world.onion", loaded_world.onion);
 
     WorldMarkedSequenceState loaded_state;
-    loaded_state.marked_play = WvpGetBool(kv, "state.marked_play", true);
+    loaded_state.marked_play = WaxGetBool(kv, "state.marked_play", true);
     /* "state.fps" in projects written before the rate was fixed is
        deliberately ignored: it is exactly the stale authored-at rate that
        made those lanes export mistimed, and honouring it would reintroduce
        the scaling this removed. */
     loaded_state.default_hold =
-        ClampTimelineHold(WvpGetInt(kv, "state.default_hold",
+        ClampTimelineHold(WaxGetInt(kv, "state.default_hold",
                                     loaded_state.default_hold));
-    loaded_state.timer = WvpGetFloat(kv, "state.timer", 0.0f);
-    loaded_state.frame = WvpGetInt(kv, "state.frame", 0);
-    loaded_state.paused = WvpGetBool(kv, "state.paused", loaded_state.paused);
-    loaded_state.dummy_decap_body = WvpGetBool(kv, "state.dummy_decap_body", false);
-    loaded_state.dummy_decap_reset = WvpGetBool(kv, "state.dummy_decap_reset", true);
-    loaded_state.dummy_decap_manual = WvpGetBool(kv, "state.dummy_decap_manual", false);
+    loaded_state.timer = WaxGetFloat(kv, "state.timer", 0.0f);
+    loaded_state.frame = WaxGetInt(kv, "state.frame", 0);
+    loaded_state.paused = WaxGetBool(kv, "state.paused", loaded_state.paused);
+    loaded_state.dummy_decap_body = WaxGetBool(kv, "state.dummy_decap_body", false);
+    loaded_state.dummy_decap_reset = WaxGetBool(kv, "state.dummy_decap_reset", true);
+    loaded_state.dummy_decap_manual = WaxGetBool(kv, "state.dummy_decap_manual", false);
     loaded_state.dummy_decap_doc_idx =
-        WvpResolveDocIndex(WvpGetInt(kv, "state.dummy_decap_doc_idx", -1),
-                           WvpGetString(kv, "state.dummy_decap_doc_path"),
+        WaxResolveDocIndex(WaxGetInt(kv, "state.dummy_decap_doc_idx", -1),
+                           WaxGetString(kv, "state.dummy_decap_doc_path"),
                            doc_map);
-    loaded_state.dummy_decap_prefix = WvpGetString(kv, "state.dummy_decap_prefix");
-    loaded_state.draw_sprite_borders = WvpGetBool(kv, "state.draw_sprite_borders", true);
-    loaded_state.show_boundary_overlay = WvpGetBool(kv, "state.show_boundary_overlay", true);
-    loaded_state.embedded_active = WvpGetBool(kv, "state.embedded_active", false);
-    loaded_state.embedded_is_script = WvpGetBool(kv, "state.embedded_is_script", false);
+    loaded_state.dummy_decap_prefix = WaxGetString(kv, "state.dummy_decap_prefix");
+    loaded_state.draw_sprite_borders = WaxGetBool(kv, "state.draw_sprite_borders", true);
+    loaded_state.show_boundary_overlay = WaxGetBool(kv, "state.show_boundary_overlay", true);
+    loaded_state.embedded_active = WaxGetBool(kv, "state.embedded_active", false);
+    loaded_state.embedded_is_script = WaxGetBool(kv, "state.embedded_is_script", false);
     loaded_state.embedded_show_companions =
-        WvpGetBool(kv, "state.embedded_show_companions", false);
+        WaxGetBool(kv, "state.embedded_show_companions", false);
     loaded_state.embedded_record_index =
-        WvpGetInt(kv, "state.embedded_record_index", -1);
+        WaxGetInt(kv, "state.embedded_record_index", -1);
     loaded_state.embedded_doc_idx =
-        WvpResolveDocIndex(WvpGetInt(kv, "state.embedded_doc_idx", -1),
-                           WvpGetString(kv, "state.embedded_doc_path"),
+        WaxResolveDocIndex(WaxGetInt(kv, "state.embedded_doc_idx", -1),
+                           WaxGetString(kv, "state.embedded_doc_path"),
                            doc_map);
-    loaded_state.embedded_name = WvpGetString(kv, "state.embedded_name");
-    loaded_state.embedded_targets = WvpGetVec(kv, "state.embedded_targets");
-    int label_count = WvpGetInt(kv, "state.embedded_label_count", 0);
+    loaded_state.embedded_name = WaxGetString(kv, "state.embedded_name");
+    loaded_state.embedded_targets = WaxGetVec(kv, "state.embedded_targets");
+    int label_count = WaxGetInt(kv, "state.embedded_label_count", 0);
     loaded_state.embedded_frame_labels.clear();
     for (int i = 0; i < label_count; i++)
         loaded_state.embedded_frame_labels.push_back(
-            WvpGetString(kv, WvpKey("embedded_label", i, "text")));
+            WaxGetString(kv, WaxKey("embedded_label", i, "text")));
 
-    int slot_count = WvpGetInt(kv, "slot.count", kWorldMarkedMaxTabs);
+    int slot_count = WaxGetInt(kv, "slot.count", kWorldMarkedMaxTabs);
     if (slot_count > kWorldMarkedMaxTabs) slot_count = kWorldMarkedMaxTabs;
     for (int slot = 0; slot < slot_count; slot++)
-        WvpReadSlot(kv, loaded_state, slot, doc_map);
+        WaxReadSlot(kv, loaded_state, slot, doc_map);
 
-    int split_count = WvpGetInt(kv, "split.count", 0);
+    int split_count = WaxGetInt(kv, "split.count", 0);
     loaded_state.split_lanes.clear();
     for (int i = 0; i < split_count; i++) {
         WorldMarkedSplitLane split = {};
-        split.slot = WvpGetInt(kv, WvpKey("split", i, "slot"), -1);
+        split.slot = WaxGetInt(kv, WaxKey("split", i, "slot"), -1);
         split.doc_idx =
-            WvpResolveDocIndex(WvpGetInt(kv, WvpKey("split", i, "doc_idx"), -1),
-                               WvpGetString(kv, WvpKey("split", i, "doc_path")),
+            WaxResolveDocIndex(WaxGetInt(kv, WaxKey("split", i, "doc_idx"), -1),
+                               WaxGetString(kv, WaxKey("split", i, "doc_path")),
                                doc_map);
         if (split.slot >= 0 && split.slot < kWorldMarkedSourceTabs &&
             document_get(split.doc_idx))
@@ -3676,17 +3703,17 @@ static bool LoadWorldProjectFile(const char *path)
 
     g_world_state = loaded_world;
     g_world_marked_state = loaded_state;
-    g_asm_lane_enabled = WvpGetBool(kv, "asm.player.enabled", g_asm_lane_enabled);
-    g_asm_opp_enabled = WvpGetBool(kv, "asm.opp.enabled", g_asm_opp_enabled);
-    g_show_asm_anim = WvpGetBool(kv, "asm.window.show", g_show_asm_anim);
-    g_asm_anim_frame = WvpGetInt(kv, "asm.window.frame", 0);
-    g_asm_anim_play = WvpGetBool(kv, "asm.window.play", g_asm_anim_play);
-    g_asm_anim_fps = WvpGetFloat(kv, "asm.window.fps", g_asm_anim_fps);
+    g_asm_lane_enabled = WaxGetBool(kv, "asm.player.enabled", g_asm_lane_enabled);
+    g_asm_opp_enabled = WaxGetBool(kv, "asm.opp.enabled", g_asm_opp_enabled);
+    g_show_asm_anim = WaxGetBool(kv, "asm.window.show", g_show_asm_anim);
+    g_asm_anim_frame = WaxGetInt(kv, "asm.window.frame", 0);
+    g_asm_anim_play = WaxGetBool(kv, "asm.window.play", g_asm_anim_play);
+    g_asm_anim_fps = WaxGetFloat(kv, "asm.window.fps", g_asm_anim_fps);
     if (g_asm_anim_fps < 1.0f) g_asm_anim_fps = 1.0f;
     if (g_asm_anim_fps > 60.0f) g_asm_anim_fps = 60.0f;
 
-    int active_saved = WvpGetInt(kv, "doc.active", -1);
-    int active_idx = WvpResolveDocIndex(active_saved, std::string(), doc_map);
+    int active_saved = WaxGetInt(kv, "doc.active", -1);
+    int active_idx = WaxResolveDocIndex(active_saved, std::string(), doc_map);
     if (active_idx >= 0)
         ActivateDocumentTab(active_idx);
 

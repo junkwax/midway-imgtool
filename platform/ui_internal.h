@@ -792,9 +792,14 @@ extern bool g_show_seqscr_editor;
 extern const float TOOLBAR_W;
 extern const float PANEL_W;
 
-/* Collapse document tabs sharing a name stem into one tab with a dropdown.
-   Defined in ui_main.cpp; only engages for a stem with several files. */
+/* Fold document tabs sharing a name stem into one expandable tab. Defined in
+   ui_main.cpp; engages only past kDocTabGroupMin tabs, and only for a stem
+   that has several files behind it. */
 extern bool g_group_doc_tabs;
+/* Below this many open tabs the bar is not crowded enough to be worth
+   folding, and folding only costs you the reorder drag. The case this is for
+   is a library dump, and those run to dozens. */
+static const int kDocTabGroupMin = 10;
 float DrawDocumentTabBar(float y, float sw);
 void rebuild_img_texture(IMG *img);
 void OpenRenameImage(void);

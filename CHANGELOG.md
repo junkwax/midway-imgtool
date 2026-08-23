@@ -8,6 +8,67 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [Unreleased]
+
+### World View projects are `.WAX`
+
+The project file the World View saves — the whole workspace: open IMGs, marked
+frames, lanes, holds, ASM bindings, background — was `.WVP`. It is `.WAX` now.
+
+- **Saving and exporting always writes `.WAX`.** The default name is
+  `world_view.WAX`, a typed name with no extension gets `.WAX` appended, and a
+  project opened from an old `.WVP` is proposed back as `.WAX`, so re-saving
+  one migrates it.
+- **`.WVP` still opens.** The Load dialog lists `.WAX` and `.WVP` together —
+  the file dialog's extension filter now takes a `;`-separated list, and the
+  loader has always keyed off the `format=imgtool_world_project` line inside
+  the file rather than the name on it. Nothing about the format changed; every
+  project written by an earlier build loads unmodified.
+
+## [v3.32.0] — World View projects are .WAX; tabs fold when the bar is full
+
+### Projects are `.WAX` now
+
+World View projects save as `.WAX`. `.WVP` files written through v3.31.0 still
+open — the load dialog lists both — and a project opened under the old name is
+written back out as `.WAX`, so the rename happens on the first save rather than
+needing a pass over the library.
+
+External readers take the path either way; nothing about the file's contents
+changed.
+
+### The Frame Sequence bar stayed even when nothing is marked
+
+`DrawWorldMarkedTimelinePanel` had two early returns — no lanes, and no
+drawable frames — that replaced the whole strip with a line of grey text.
+
+- **The strip is scene-wide, so it stays.** Transport, Ticks/frame and the
+  menus were disappearing at exactly the moment someone wants them: nothing is
+  marked, and they are looking for **File... > Load Project**. The panel draws
+  either way now and the reason sits under the header.
+
+### `Export...` was not an export menu
+
+It held **Load Project**, which reads a file rather than writing one, and
+nobody looks for that under Export.
+
+- **Renamed `File...`**, which honestly covers the mix — PNG stills, PNG
+  sequences, and saving *or* loading the project.
+
+### Tab folding, reworked
+
+Shipped in v3.31.0 as a dropdown that engaged for any repeated stem. Both
+halves were wrong in practice.
+
+- **Only past 10 open tabs.** Below that the bar is not crowded enough to be
+  worth folding, and folding costs you the reorder drag. The case this is for
+  is a library dump, and those run to dozens.
+- **Clicking a folded tab expands it in place** instead of opening a dropdown.
+  The members lay out as ordinary tabs behind a `v STEM (n)` header that folds
+  them back. An expanded member keys on its uid — it is a file again — while
+  the folded tab keys on the stem, which is what stays put as members open and
+  close underneath it.
+
 ## [v3.31.0] — The tick rate is hardware; the row is what you set
 
 ### Promote to sequence wrote its records backwards

@@ -4332,8 +4332,12 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     ImGui::SameLine();
 
     /* ---- Export: pixels out, and the whole scene in and out ---- */
-    if (WorldHeaderMenu("Export...##world_menu_export", "##world_export_popup",
-                        "PNG stills and sequences, and the World View project file.")) {
+    /* Was "Export...", which only described half of what is in here -- Load
+       Project reads a file rather than writing one, and someone looking for
+       it does not open a menu called Export. */
+    if (WorldHeaderMenu("File...##world_menu_export", "##world_export_popup",
+                        "PNG stills and sequences, and saving or loading the\n"
+                        "World View project file.")) {
         if (ImGui::MenuItem("Save PNG...##world_marked_save_png"))
             action.request_save_png = true;
         if (ImGui::IsItemHovered())
@@ -4407,7 +4411,7 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
         ImGui::EndPopup();
     }
 
-    /* Which .wvp this is. A lane gets iterated as barakadown3, barakadoneout,
+    /* Which .wax this is. A lane gets iterated as barakadown3, barakadoneout,
        barakcleandone... and the scene on screen cannot tell you which of them
        you are looking at -- nor which one a generator reading the file will
        pick up. Name it on the strip, and click to put the full path on the
@@ -4435,7 +4439,7 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
             ImGui::TextDisabled("| no project");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("No World View project has been opened or saved\n"
-                                  "this session. Export... > Save Project names one.");
+                                  "this session. File... > Save Project names one.");
         }
     }
 
@@ -5234,6 +5238,14 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
         result.header =
             WorldDrawMarkedPanelHeader(state, lanes, dummy_decap_missing,
                                        selected_img, active_doc_idx);
+
+        /* The header stays whatever the scene holds; only the rows below it
+           are missing, so say so here rather than in place of the strip. */
+        if (lanes.empty()) {
+            ImGui::Separator();
+            ImGui::TextDisabled("No rows. Mark sprites in an IMG tab, turn on ASM");
+            ImGui::TextDisabled("lanes, or load a project from File... above.");
+        }
 
         /* Slot 1 owns the keys and the per-frame tools until a row is clicked.
 
@@ -7436,6 +7448,11 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
            the anchor with nothing accumulated. */
         int prev_out_dx = 0;
         int prev_out_dy = 0;
+        /* Same running total, but for the ani_adjustxy rows emitted INLINE
+           in the lane below. Separate from prev_out_* because the table is
+           written per tick and the lane is written per row. */
+        int prev_lane_dx = 0;
+        int prev_lane_dy = 0;
         for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
             if (slot_stop_tick > 0 && tick > slot_stop_tick) {
                 reached_stop_tick = true;
@@ -7519,6 +7536,36 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 if (eff_dx < -128 || eff_dx > 127 || eff_dy < -128 || eff_dy > 127) {
                     has_wide_local = true;
                     if (first_wide_tick < 0) first_wide_tick = tick;
+                }
+                /* ani_adjustxy, INLINE and already in MK2's sign, so the
+                   lane assembles as-is and nobody has to difference the
+                   *_local_anipts table by hand. Same conversion as that
+                   table: X always negates, Y only when the frame is not
+                   V-flipped.
+
+                   ORDER MATTERS. multi_adjust_xy negates dx against whatever
+                   b_fliph is set at that moment, and dAX is in FACING space -
+                   mirrored by the character's facing alone, never by a
+                   per-entry flipX. So drop X back to base first, apply the
+                   offset there, and let the flip ops below put the entry's
+                   own mirror on. Emitting it while a per-entry flipX was
+                   still set lands that entry 2*dAX away. */
+                {
+                    bool row_flipv = (frame_mirror & kWorldFrameMirrorY) != 0;
+                    int row_dx = -eff_dx;
+                    int row_dy = row_flipv ? eff_dy : -eff_dy;
+                    if (row_dx != prev_lane_dx || row_dy != prev_lane_dy) {
+                        WorldAppendFrameFlipOps(out, &emitted_mirror,
+                                                emitted_mirror &
+                                                    ~kWorldFrameMirrorX);
+                        char adj[64];
+                        snprintf(adj, sizeof(adj),
+                                 "\t.long\tani_adjustxy\n\t.word\t%d,%d\n",
+                                 row_dx - prev_lane_dx, row_dy - prev_lane_dy);
+                        out += adj;
+                        prev_lane_dx = row_dx;
+                        prev_lane_dy = row_dy;
+                    }
                 }
                 WorldAppendFrameFlipOps(out, &emitted_mirror, frame_mirror);
                 out += "\t.long\t";
@@ -19815,15 +19862,13 @@ void DrawWorldMarkedTimelinePanel(void)
 
     WorldMarkedApplyLaneOrder(g_world_marked_state, lanes);
 
-    /* One marked row is enough here too -- see WorldDrawMarkedTabs. */
-    if (lanes.empty()) {
-        ImGui::TextDisabled("Mark sprites in an IMG tab, or enable ASM lanes.");
-        return;
-    }
-    if (!WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, 0.0f)) {
-        ImGui::TextDisabled("World View frame sequence has no drawable frames.");
-        return;
-    }
+    /* Both of these used to return early with a line of grey text, which took
+       the whole Frame Sequence strip with them -- transport, Ticks/frame, and
+       the File/Overlays/Lanes menus. Those are scene-wide controls, and the
+       moment nothing is marked is exactly when someone wants to load a
+       project or check the tick rate. Draw the panel either way; the reason
+       goes inside it, under the header. */
+    WorldUpdateMarkedLanePlayback(g_world_marked_state, lanes, 0.0f);
 
     WorldMarkedPanelLayout layout;
     layout.pos = ImGui::GetCursorScreenPos();
