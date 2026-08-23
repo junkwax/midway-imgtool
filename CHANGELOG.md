@@ -8,6 +8,111 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [v3.31.0] — The tick rate is hardware; the row is what you set
+
+### Promote to sequence wrote its records backwards
+
+A non-script SEQSCR record is stored **back-to-front** — `WorldDecodeSeqScrRecord`
+reads it with `e = num-1-display_e`, and `SeqScrLaneOwnEntries` calls
+`std::reverse` before writing one back for exactly that reason.
+`WorldMarkedPromoteLaneToSequence` did not. It built its list in lane order and
+handed it straight to `SeqScrReplaceEntries`, which writes raw slot for slot.
+
+- **Every promoted sequence came out reversed**, and because dX/dY travel with
+  their entries, each frame's local anipoints landed on the wrong sprite. The
+  values were never wrong — the ordering was. Records promoted before this
+  release are stored reversed and need redoing.
+
+### Blood rows ignored the speed control
+
+A blood spray is a *scheduled* row: `WorldMarkedCreateBloodLane` writes
+`visible_from[i] = base + i*hold` and `visible_until[i] = base + (i+1)*hold` so
+the run fires once on the tick of the hit. Every retime path rewrote
+`frame_delays` and left those windows alone, so the runner held each frame
+longer while the schedule still said "show frame 3 on tick 13" — the row kept
+its old cadence and looked like the speed control had skipped it.
+
+- **`WorldMarkedRetimeSchedule` re-lays the windows** at the new hold, from both
+  the global and the per-row setter. Only a run that is exactly uniform at the
+  old hold is touched; Build Chain output and hand-typed Show@/Hide@ encode
+  gaps that are not hold-derived and are left alone rather than guessed at.
+- **Sprays follow the global again.** They were being created pinned out of it,
+  so the scene's Ticks/frame never reached a blood row for the life of the
+  project. They import at 1 tick and inherit like everything else.
+- **`slot_hold` is the row's real hold**, pinned or not. It used to report the
+  global for any unpinned row, so a spray sitting at its imported 1 tick
+  displayed the scene's 4 and read as though it had already inherited.
+
+### The per-row Ticks/frame nobody could find
+
+It was the last widget in a `SameLine` chain running eye → Up → Down → Del →
+[KEYS] → Stop → Stop@ → PongDelay → **T/f**, so on any panel that was not very
+wide it was clipped off the right edge. The affordance for handing a row back
+to the global only rendered on rows that were *already* pinned, so an
+inheriting row showed nothing and inheritance never looked like a concept.
+
+- **Moved to the front of the row**, right after [KEYS], reading `T/f [4]
+  ☑Global` on every row. Checked means inheriting; unticking pins the row at
+  its current value, and typing in the box pins it too.
+- Per-row holds round-trip through `.wvp` (`slot.N.hold`, `slot.N.hold_custom`,
+  and `state.default_hold`). A project written before rows carried a hold takes
+  each row's hold from its saved per-frame delays rather than reporting the
+  global.
+
+### FPS was still a slider
+
+`kMk2TickHz` is now **54.7068** — measured from MAME's mk2 driver
+`refresh_attoseconds`, 18.279 ms a tick, one tick per display refresh.
+
+- **The tick rate is a readout, not a control.** `WorldMarkedSequenceState::fps`
+  is gone rather than clamped, so there is no second source of truth left to
+  drift: the two World View sliders and the View-menu one are a static
+  `54.71 Hz`, and Ticks/frame is the only speed knob.
+- **The export's rate correction is dead code and was removed.** No more
+  `kMk2TickHz/preview_hz` scaling and no `ROUNDED, the preview rate is not a
+  whole divisor of 54.7` warning — a row is `lane_sleep` ticks, full stop.
+- **The fatality workspace no longer drags its 8 fps preview rate onto World
+  View.** Any lane exported from that workspace was coming out scaled by
+  54.7/8. Its FPS box still drives the Image timeline, which is a separate
+  clock.
+- `.wvp` writes `state.tick_hz` as a constant for readers. The old `state.fps`
+  key is deliberately **not** loaded: it is the stale authored-at rate that
+  caused the mistiming, and honouring it would reintroduce the scaling.
+
+### Promote asks where it is going
+
+`To Seq` fired the instant it was hit — it named the record from the row's first
+sprite and dropped it into whichever tab was active, with no way to say
+otherwise.
+
+- **`To Seq...` now prompts** for a name (seeded from the first sprite, focused
+  on open) and which open tab to write into, listing each with its sprite and
+  sequence counts and marking the row's own file.
+- The destination is made active for the write and restored afterwards, so a
+  row can promote into **any** open file — frames living elsewhere are imported
+  into it on the way. The old "select a frame so its IMG tab is active" gate is
+  gone.
+
+### Tabs group by name
+
+`fname_s` is a DOS 8.3 **basename**, so a library opened across several folders
+fills the bar with tabs reading the same thing, and a character arrives as
+`BARAKA1/2/3.IMG` — a dozen tabs that are really one subject.
+
+- **Files sharing a name stem collapse into one tab**, labelled with whichever
+  member is in front plus a count. Clicking it lists the members with their
+  paths; hovering previews the group without opening it.
+- A stem with one file stays an ordinary tab, so a session with no repeats is
+  unchanged. Toggle at **View → Group Tabs by Name**, on by default. Tab
+  drag-reorder is disabled while a group is showing, since tab order no longer
+  maps 1:1 to document order.
+
+### Also
+
+- The World View header names the `.wvp` last opened or saved, and copies its
+  full path on click. With several variants of one lane in flight, the scene on
+  screen could not tell you which you were looking at.
+
 ## [v3.30.0] — A row is a step, not a tick
 
 ### The exported timing was several times too slow

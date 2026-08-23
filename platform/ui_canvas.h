@@ -43,7 +43,12 @@ enum { kWorldBloodTicksPerFrame = 1 };
    is 2/54.7s on the real machine. Previewing at anything else makes timing
    decisions that will not hold up in game, which is why every tick-driven
    preview defaults to this rate rather than a round number. */
-constexpr float kMk2TickHz = 54.7f;
+/* Measured from MAME's mk2 driver: refresh_attoseconds =
+   18,279,250,000,000,000, i.e. 54.7068 Hz / 18.279 ms a tick.  One game
+   tick is one display refresh - a lane at sleep 4 holds each row for
+   exactly 4 emulator frames.  (Not 60 Hz / 16 ms; MK2's own docs had that
+   wrong, and they have since been corrected.) */
+constexpr float kMk2TickHz = 54.7068f;
 
 struct WorldViewState {
     bool enabled = false;
@@ -504,13 +509,30 @@ struct WorldMarkedSequenceState {
        nothing marked the lane draw returns early anyway, so defaulting it on
        costs nothing and skips the ritual. */
     bool marked_play = true;
-    float fps = kMk2TickHz;   /* ticks per second, i.e. real game speed */
+    /* There is deliberately no adjustable tick rate here. It used to be a
+       `float fps` on this struct with a 1..60 slider, and every lane authored
+       with that slider moved shipped mistimed: the export had to scale the
+       hold by kMk2TickHz/fps to recover game ticks, and rounded when the
+       preview rate was not a whole divisor of 54.7. The rate is hardware --
+       read kMk2TickHz. Ticks/frame is the only speed knob. */
     /* Ticks each frame holds when nothing else authored a timing for it. The
        tick rate is hardware and does not move; this is the number that does,
        and it is the same number you write into the ASM. See
        kDefaultTimelineHold for why it is 4 rather than 1 — the Image timeline
        shares the constant so the two previews cannot disagree. */
     int default_hold = kDefaultTimelineHold;
+    /* slot_hold is the row's ACTUAL hold -- what its T/f box shows and what a
+       grown row extends at -- whether or not it is pinned. slot_hold_custom
+       only answers "may the global overwrite this row", and defaults to false
+       so the global genuinely reaches the whole scene.
+
+       Keeping these two separate matters: slot_hold used to be read only for
+       pinned rows, so an unpinned blood row sitting at its imported 1 tick
+       reported the scene's 4 and looked as though it had already inherited
+       when nothing had retimed it. Zero means never set, and only then does
+       default_hold stand in. */
+    int slot_hold[kWorldMarkedMaxTabs] = {};
+    bool slot_hold_custom[kWorldMarkedMaxTabs] = {};
     float timer = 0.0f;
     int frame = 0;
     /* Starts paused. World View opening straight into a running animation
@@ -938,10 +960,28 @@ bool WorldMarkedAttachSpriteToFrame(WorldMarkedSequenceState &state,
    sync the editor selection to the target sprite. */
 void StepWorldEmbeddedSeqScrEntry(WorldMarkedSequenceState &state, int delta);
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count);
-/* Set every lane frame's hold to `ticks` and restart the tick clock so the new
-   timing is visible immediately. The dummy-decap slot is left alone: its holds
-   are a canned effect with their own reset button, not user timing. */
-void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks);
+/* Push `ticks` into every row that is still following the global hold, and
+   restart the tick clock so the new timing shows immediately. Rows pinned with
+   their own T/f are skipped unless `include_custom`, the explicit "make
+   everything match" action behind the All button. The dummy-decap slot is
+   always left alone: its holds are a canned effect with their own reset
+   button, not user timing.
+
+   Both setters also re-lay a SCHEDULED row's Show@/Hide@ windows at the new
+   hold. Blood sprays are scheduled runs (visible_from = base + i*hold), and
+   rewriting frame_delays without the windows left them playing at their old
+   cadence -- the row appeared to ignore the speed control completely. Windows
+   that are not a uniform run at the old hold (Build Chain output, hand-typed
+   Show@/Hide@) are left untouched rather than guessed at. */
+void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks,
+                                 bool include_custom = false);
+/* Set one row's hold. custom=true pins it against the global; custom=false
+   hands it back so the global owns it again. */
+void WorldMarkedSetSlotHold(WorldMarkedSequenceState &state, int slot,
+                            int ticks, bool custom);
+/* The hold this row actually runs at -- pinned or not. Falls back to the
+   global only for a row whose hold was never set. */
+int WorldMarkedSlotHold(const WorldMarkedSequenceState &state, int slot);
 
 /* ---- Baking World View placement back into the IMG ----------------------
    A marked lane positions a frame at (origin - (anipoint + local dX/dY)), and
@@ -1009,10 +1049,18 @@ bool WorldMarkedRemoveLane(WorldMarkedSequenceState &state,
    Everything else a row carries (per-entry flips, Z, motion, show/hide
    ticks, the dual copy, composite pieces beyond the primary) has nowhere to
    go in the IMG, so it is counted and named in `out_msg` rather than
-   silently dropped. Writes through g_doc, so the row's document must be the
-   active tab; callers gate on lane.doc == g_doc. */
+   silently dropped.
+
+   `seq_name` names the record (empty falls back to a name derived from the
+   row's first sprite). `target_doc_idx` is the open tab to write into, -1 for
+   the active one; the destination is made active for the write and restored
+   after, and any frame living in another file is imported into it on the way.
+
+   Entries are written back-to-front, because that is how a non-script SEQSCR
+   record is stored -- see the std::reverse in the body. */
 bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
                                       const WorldMarkedLane &lane,
+                                      const char *seq_name, int target_doc_idx,
                                       std::string *out_msg);
 void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx);
 void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx, int dir);

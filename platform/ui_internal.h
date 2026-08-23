@@ -792,6 +792,9 @@ extern bool g_show_seqscr_editor;
 extern const float TOOLBAR_W;
 extern const float PANEL_W;
 
+/* Collapse document tabs sharing a name stem into one tab with a dropdown.
+   Defined in ui_main.cpp; only engages for a stem with several files. */
+extern bool g_group_doc_tabs;
 float DrawDocumentTabBar(float y, float sw);
 void rebuild_img_texture(IMG *img);
 void OpenRenameImage(void);

@@ -72,6 +72,11 @@ static std::string g_file_dialog_anchor_file;
 static char g_lod_override_dir[1024] = "";
 static std::string g_last_world_project_path;
 
+const char *WorldLastProjectPath(void)
+{
+    return g_last_world_project_path.c_str();
+}
+
 static unsigned int g_tbl_base_address = 0x02000000;
 static bool g_tbl_export_mk3_format = false;
 static bool g_tbl_export_palette = false;
@@ -3272,6 +3277,12 @@ static void WvpWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
        false, which is the old behaviour. */
     snprintf(key, sizeof(key), "slot.%d.rigid", slot);
     WvpWriteBool(f, key, state.lane_rigid[slot]);
+    /* Only meaningful with hold_custom set; written either way so the pair
+       reads straight out of the file. */
+    snprintf(key, sizeof(key), "slot.%d.hold_custom", slot);
+    WvpWriteBool(f, key, state.slot_hold_custom[slot]);
+    snprintf(key, sizeof(key), "slot.%d.hold", slot);
+    WvpWriteInt(f, key, state.slot_hold[slot]);
     snprintf(key, sizeof(key), "slot.%d.mirror", slot);
     {
         WorldMarkedSequenceState &mutable_state =
@@ -3346,6 +3357,12 @@ static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
     state.lane_order[slot] = WvpGetInt(kv, prefix + "order", -1);
     state.hold_end[slot] = WvpGetBool(kv, prefix + "hold_end", state.hold_end[slot]);
     state.lane_rigid[slot] = WvpGetBool(kv, prefix + "rigid", false);
+    /* Absent in older projects: those rows follow the global, which is what
+       they did when they were saved. */
+    state.slot_hold_custom[slot] = WvpGetBool(kv, prefix + "hold_custom", false);
+    bool had_slot_hold = kv.count(prefix + "hold") != 0;
+    state.slot_hold[slot] = ClampTimelineHold(
+        WvpGetInt(kv, prefix + "hold", state.default_hold));
     bool *mirror = WorldMarkedMirrorFlag(state, slot);
     if (mirror) *mirror = WvpGetBool(kv, prefix + "mirror", *mirror);
 
@@ -3357,6 +3374,12 @@ static void WvpReadSlot(const std::unordered_map<std::string, std::string> &kv,
     state.sequence_frames[slot] = WvpGetVec(kv, prefix + "sequence_frames");
     state.default_frames[slot] = WvpGetVec(kv, prefix + "default_frames");
     state.frame_delays[slot] = WvpGetVec(kv, prefix + "frame_delays");
+    /* A project written before rows carried a hold still has per-frame
+       delays, so take the row's hold from those rather than from the global.
+       Reporting the global would make the row's T/f box disagree with what
+       the row is actually doing the moment the project opens. */
+    if (!had_slot_hold && !state.frame_delays[slot].empty())
+        state.slot_hold[slot] = ClampTimelineHold(state.frame_delays[slot][0]);
     state.local_dx[slot] = WvpGetVec(kv, prefix + "local_dx");
     state.local_dy[slot] = WvpGetVec(kv, prefix + "local_dy");
     state.visible_from[slot] = WvpGetVec(kv, prefix + "visible_from");
@@ -3425,7 +3448,15 @@ static bool SaveWorldProjectFile(const char *path)
     WvpWriteBool(f, "world.onion", g_world_state.onion);
 
     WvpWriteBool(f, "state.marked_play", state.marked_play);
-    WvpWriteFloat(f, "state.fps", state.fps);
+    /* Constant, and written only so a reader of the file does not have to
+       know it. Nothing loads it back -- the rate is kMk2TickHz in code. */
+    WvpWriteFloat(f, "state.tick_hz", kMk2TickHz);
+    /* The hold is the number that maps to the ASM sleep, and it is the one
+       thing a consumer of this file cannot re-derive: the tick rate is fixed
+       hardware, so without this a reloaded project - or a script generating a
+       lane from it - falls back to a hold of 1 and runs the animation
+       kDefaultTimelineHold times too fast. */
+    WvpWriteInt(f, "state.default_hold", state.default_hold);
     WvpWriteFloat(f, "state.timer", state.timer);
     WvpWriteInt(f, "state.frame", state.frame);
     WvpWriteBool(f, "state.paused", state.paused);
@@ -3586,7 +3617,13 @@ static bool LoadWorldProjectFile(const char *path)
 
     WorldMarkedSequenceState loaded_state;
     loaded_state.marked_play = WvpGetBool(kv, "state.marked_play", true);
-    loaded_state.fps = WvpGetFloat(kv, "state.fps", loaded_state.fps);
+    /* "state.fps" in projects written before the rate was fixed is
+       deliberately ignored: it is exactly the stale authored-at rate that
+       made those lanes export mistimed, and honouring it would reintroduce
+       the scaling this removed. */
+    loaded_state.default_hold =
+        ClampTimelineHold(WvpGetInt(kv, "state.default_hold",
+                                    loaded_state.default_hold));
     loaded_state.timer = WvpGetFloat(kv, "state.timer", 0.0f);
     loaded_state.frame = WvpGetInt(kv, "state.frame", 0);
     loaded_state.paused = WvpGetBool(kv, "state.paused", loaded_state.paused);
@@ -4736,7 +4773,10 @@ static void Mk2FatalityStageDualPlans(const Mk2FatalityFighterDef &fighter,
 
     g_world_state.enabled = true;
     g_world_marked_state.marked_play = true;
-    g_world_marked_state.fps = g_mk2_fatality_preview_fps;
+    /* Only the Image timeline takes this rate. World View runs at the
+       hardware tick rate and has no adjustable clock -- staging a fatality
+       used to drag its 8 fps preview rate onto World View, and any lane
+       exported from that workspace came out scaled by 54.7/8. */
     g_play_speed = g_mk2_fatality_preview_fps;
     g_is_playing = true;
     g_world_marked_state.mirror_active = false;
@@ -5159,10 +5199,10 @@ void DrawMk2FatalityWindow(void)
     if (g_mk2_fatality_preview_fps < 1.0f) g_mk2_fatality_preview_fps = 1.0f;
     if (g_mk2_fatality_preview_fps > 30.0f) g_mk2_fatality_preview_fps = 30.0f;
     ImGui::SetNextItemWidth(86);
+    /* Image-timeline preview speed only; World View is fixed at kMk2TickHz. */
     if (ImGui::InputFloat("FPS##mk2fatal_fps", &g_mk2_fatality_preview_fps, 1.0f, 4.0f, "%.1f")) {
         if (g_mk2_fatality_preview_fps < 1.0f) g_mk2_fatality_preview_fps = 1.0f;
         if (g_mk2_fatality_preview_fps > 30.0f) g_mk2_fatality_preview_fps = 30.0f;
-        g_world_marked_state.fps = g_mk2_fatality_preview_fps;
         g_play_speed = g_mk2_fatality_preview_fps;
     }
 

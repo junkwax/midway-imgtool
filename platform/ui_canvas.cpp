@@ -3119,15 +3119,13 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
                                    std::vector<WorldMarkedLane> &lanes,
                                    float delta_time)
 {
-    if (state.fps < 1.0f) state.fps = 1.0f;
-    if (state.fps > 60.0f) state.fps = 60.0f;
     if (state.embedded_active && state.embedded_is_script) {
         state.paused = true;
         state.timer = 0.0f;
     }
     if (!state.paused)
         state.timer += delta_time;
-    float step = 1.0f / state.fps;
+    float step = 1.0f / kMk2TickHz;
     while (state.timer >= step) {
         state.timer -= step;
         state.frame++;
@@ -3870,7 +3868,7 @@ void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
         label += part;
     }
     char fps_buf[32];
-    snprintf(fps_buf, sizeof(fps_buf), "   fps=%.1f", state.fps);
+    snprintf(fps_buf, sizeof(fps_buf), "   %.2f Hz", kMk2TickHz);
     label += fps_buf;
 
     ImVec2 label_sz = ImGui::CalcTextSize(label.c_str());
@@ -3957,6 +3955,24 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
     return result;
 }
 
+/* The tick rate, as a fact rather than a control. MK2 refreshes at
+   54.7068 Hz and there is no version of the machine that does not, so the
+   only thing this has to do is stop people looking for a speed knob here
+   and reach for Ticks/frame instead. */
+static void WorldDrawTickRateReadout(void)
+{
+    ImGui::TextDisabled("%.2f Hz", kMk2TickHz);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "MK2's hardware tick rate, and not adjustable: one tick is one\n"
+            "display refresh, measured from MAME's mk2 driver at\n"
+            "%.4f Hz (18.279 ms).\n\n"
+            "This used to be a 1..60 slider, which is how lanes got authored\n"
+            "against a made-up rate and shipped several times too slow. Set\n"
+            "speed with Ticks/frame -- that is the number the export writes.",
+            kMk2TickHz);
+}
+
 /* Ticks per frame, sitting next to the transport in both preview headers.
    This is the control that actually sets playback speed: the tick rate is
    hardware (54.7 Hz) and stays put, while the hold is authoring, and the value
@@ -3982,10 +3998,12 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
             "Hold every frame this many ticks. This is the sleep value the\n"
             "animation runner is given -- MKUTIL.ASM animate_a9 holds one\n"
             ".long row for this many ticks -- not a preview-only speed.\n\n"
-            "MK2 runs %.1f ticks a second, so a hold of %d plays at %.1f fps.\n"
-            "Changing it rewrites every lane's per-frame hold; the dummy body\n"
-            "keeps its own canned timing.",
-            kMk2TickHz, shown, kMk2TickHz / (float)shown);
+            "MK2 runs %.4f ticks a second, so a hold of %d is\n"
+            "%.4f / %d = %.2f rows a second.\n\n"
+            "Rows follow this until one is given its own T/f, which then keeps\n"
+            "it; \"All\" overrides those too. The dummy body keeps its own\n"
+            "canned timing either way.",
+            kMk2TickHz, shown, kMk2TickHz, shown, kMk2TickHz / (float)shown);
     }
 
     /* The same number from the other end. Ticks are what the game holds and
@@ -3994,7 +4012,7 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
        5 game ticks a frame -- 10.9 fps -- with the mismatch baked in. Type the
        rate, get the nearest whole tick count, and see what it actually is. */
     int hold_now = ClampTimelineHold(state.default_hold);
-    float derived = state.fps / (float)hold_now;
+    float derived = kMk2TickHz / (float)hold_now;
     ImGui::SameLine(0.0f, 8.0f);
     ImGui::TextDisabled("fps");
     ImGui::SameLine(0.0f, 4.0f);
@@ -4005,7 +4023,7 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
     if (ImGui::InputFloat(fps_id, &want_fps, 0.0f, 0.0f, "%.1f",
                           ImGuiInputTextFlags_EnterReturnsTrue)) {
         if (want_fps > 0.05f) {
-            int want_hold = (int)(state.fps / want_fps + 0.5f);
+            int want_hold = (int)(kMk2TickHz / want_fps + 0.5f);
             state.default_hold = ClampTimelineHold(want_hold);
             WorldMarkedApplyUniformHold(state, state.default_hold);
         }
@@ -4017,9 +4035,31 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
             "part of a tick -- at %.1f Hz the reachable rates are %.1f, %.1f,\n"
             "%.1f, %.1f, %.1f, %.1f... Asking for 12 gives a hold of 4, which is\n"
             "%.1f fps. That is the number the game will run.",
-            state.fps, state.fps, state.fps / 2.0f, state.fps / 3.0f,
-            state.fps / 4.0f, state.fps / 5.0f, state.fps / 6.0f,
-            state.fps / 4.0f);
+            kMk2TickHz, kMk2TickHz, kMk2TickHz / 2.0f, kMk2TickHz / 3.0f,
+            kMk2TickHz / 4.0f, kMk2TickHz / 5.0f, kMk2TickHz / 6.0f,
+            kMk2TickHz / 4.0f);
+
+    /* How many rows have been taken off the box to its left, and the one
+       action that pulls them back. Without the count, a global that visibly
+       does nothing to part of the scene reads as broken rather than as rows
+       that were deliberately pinned. */
+    int own_rows = 0;
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++)
+        if (slot != kWorldDummyDecapSlot && state.slot_hold_custom[slot])
+            own_rows++;
+    if (own_rows > 0) {
+        char all_id[64];
+        snprintf(all_id, sizeof(all_id), "All##%s_hold_all", id_suffix);
+        ImGui::SameLine(0.0f, 8.0f);
+        if (ImGui::SmallButton(all_id))
+            WorldMarkedApplyUniformHold(state, state.default_hold, true);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%d row%s been taken off the global with its own T/f.\n"
+                              "Apply %d to every row and put them all back on\n"
+                              "the global.",
+                              own_rows, own_rows == 1 ? " has" : "s have",
+                              ClampTimelineHold(state.default_hold));
+    }
 }
 
 /* One grouped popup, opened from a SmallButton. The header used to run two
@@ -4194,20 +4234,11 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     ImGui::SameLine();
     WorldDrawTickHoldControl(state, "world_marked_panel");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(105.0f);
-    /* Labelled "FPS" for a long time, which is how a 12 in this box came to
-       mean "12 frames a second" to everyone who used it. It is the tick
-       clock: at 12 here a 4-tick hold plays at 3 frames a second. */
-    ImGui::SliderFloat("Tick Hz##world_marked_panel_fps", &state.fps, 1.0f, 60.0f, "%.1f");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Preview tick rate -- ticks per second, not frames.\n"
-                          "MK2's hardware runs at %.1f and does not move, so leave\n"
-                          "it there and set the speed with Ticks/frame; the fps box\n"
-                          "next to it shows what the two come to.", kMk2TickHz);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Game##world_marked_game_fps")) state.fps = kMk2TickHz;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Reset to the real MK2 tick rate (%.1f Hz).", kMk2TickHz);
+    /* Was a 1..60 "Tick Hz" slider, and before that one labelled "FPS" --
+       which is how a 12 typed here came to mean "12 frames a second" to
+       everyone who used it, when it was setting the tick clock. The rate is
+       hardware, so it is a readout now and Ticks/frame is the only knob. */
+    WorldDrawTickRateReadout();
 
     WorldHeaderDivider();
 
@@ -4374,6 +4405,38 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
             ImGui::SetTooltip("Remove split rows and restore each source row to its\n"
                               "marked-frame sequence.");
         ImGui::EndPopup();
+    }
+
+    /* Which .wvp this is. A lane gets iterated as barakadown3, barakadoneout,
+       barakcleandone... and the scene on screen cannot tell you which of them
+       you are looking at -- nor which one a generator reading the file will
+       pick up. Name it on the strip, and click to put the full path on the
+       clipboard, since the next step is usually pasting it somewhere. */
+    {
+        const char *proj = WorldLastProjectPath();
+        ImGui::SameLine();
+        if (proj && proj[0]) {
+            const char *slash = strrchr(proj, '\\');
+            const char *fwd = strrchr(proj, '/');
+            if (fwd && (!slash || fwd > slash)) slash = fwd;
+            const char *base = slash ? slash + 1 : proj;
+            ImGui::TextDisabled("| %s", base);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("World View project last opened or saved:\n%s\n"
+                                  "Click to copy the full path.", proj);
+            }
+            if (ImGui::IsItemClicked()) {
+                ImGui::SetClipboardText(proj);
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Copied project path: %s", proj);
+                g_restore_msg_timer = 4.0f;
+            }
+        } else {
+            ImGui::TextDisabled("| no project");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("No World View project has been opened or saved\n"
+                                  "this session. Export... > Save Project names one.");
+        }
     }
 
     /* The one status that stays on the strip: it only appears when the scene
@@ -5504,6 +5567,121 @@ static int WorldGroundAlignLaneAnipoints(const WorldMarkedLane &lane)
    and still has to be deletable. Opened at the caller's own ID-stack level:
    an OpenPopup issued from inside the Row... menu would register against that
    popup's stack and never draw. Returns true when the row went away. */
+/* Defined further down, next to the promote itself. */
+static std::string WorldMarkedSequenceNameForLane(const WorldMarkedLane &lane);
+
+/* Where a promoted row lands, asked before anything is written.
+
+   Promote used to fire the instant the button was hit: it named the record
+   from the row's first sprite and dropped it into whichever tab was active,
+   with no way to say otherwise. Both halves of that were wrong often enough
+   to matter -- the derived name collides as soon as two rows come off the
+   same sprite stem, and the destination is frequently NOT the tab in front,
+   because the row was staged from sprites in several files.
+
+   Held across frames because a modal spans them; keyed to the slot it was
+   opened for so a stray Del elsewhere cannot retarget it. */
+static char s_promote_name[32] = "";
+static int  s_promote_doc = -1;
+static int  s_promote_slot = -1;
+
+static void WorldOpenPromoteSeqDialog(const WorldMarkedLane &lane)
+{
+    std::string seed = WorldMarkedSequenceNameForLane(lane);
+    snprintf(s_promote_name, sizeof(s_promote_name), "%s", seed.c_str());
+    /* Default to the row's own file when it has one -- that is the answer
+       most of the time, and it keeps the old behaviour one Enter away. */
+    s_promote_doc = -1;
+    for (int i = 0; i < document_tab_count(); i++) {
+        if (document_get(i) == lane.doc) { s_promote_doc = i; break; }
+    }
+    if (s_promote_doc < 0) s_promote_doc = document_active_index();
+    s_promote_slot = lane.delay_slot;
+    ImGui::OpenPopup("##world_promote_seq");
+}
+
+static void WorldDrawPromoteSeqDialog(WorldMarkedSequenceState &state,
+                                      const WorldMarkedLane &lane)
+{
+    ImGui::SetNextWindowSize(ImVec2(430.0f, 0.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("##world_promote_seq", NULL,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    /* The dialog outlives a rebuild of `lanes`; if the row it was opened for
+       is gone, close rather than write into whatever took its slot. */
+    if (s_promote_slot != lane.delay_slot) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
+    ImGui::TextUnformatted("Promote row to a SEQSCR sequence");
+    ImGui::Separator();
+
+    ImGui::TextDisabled("Name");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.0f);
+    /* Land in the name box: it is the field that always gets changed. */
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::InputText("##world_promote_name", s_promote_name,
+                     sizeof(s_promote_name));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Name of the new record, as it appears in the Anim tab.\n"
+                          "Seeded from the row's first sprite; up to %d characters.",
+                          (int)sizeof(s_promote_name) - 1);
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Write into");
+    int tabs = document_tab_count();
+    if (s_promote_doc < 0 || s_promote_doc >= tabs)
+        s_promote_doc = document_active_index();
+    if (ImGui::BeginListBox("##world_promote_doc", ImVec2(-1.0f, 132.0f))) {
+        for (int i = 0; i < tabs; i++) {
+            Document *d = document_get(i);
+            if (!d) continue;
+            char label[160];
+            snprintf(label, sizeof(label), "%s%s  (%u sprite%s, %u seq)##promote_doc_%d",
+                     d->fname_s[0] ? d->fname_s : "Untitled",
+                     d == lane.doc ? "  <- row's file" : "",
+                     d->imgcnt, d->imgcnt == 1 ? "" : "s", d->seqcnt, i);
+            if (ImGui::Selectable(label, s_promote_doc == i))
+                s_promote_doc = i;
+        }
+        ImGui::EndListBox();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The open tab that will hold the record. Frames from any\n"
+                          "other file are imported into it -- reused when a sprite\n"
+                          "of that name is already there, copied in with its\n"
+                          "palette when not.");
+
+    ImGui::Separator();
+    bool named = s_promote_name[0] != 0;
+    ImGui::BeginDisabled(!named);
+    if (ImGui::Button("Promote##world_promote_go", ImVec2(110, 0))) {
+        std::string msg;
+        WorldMarkedPromoteLaneToSequence(state, lane, s_promote_name,
+                                         s_promote_doc, &msg);
+        if (!msg.empty()) {
+            snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", msg.c_str());
+            g_restore_msg_timer = 6.0f;
+        }
+        s_promote_slot = -1;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    if (!named && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Give the sequence a name first.");
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel##world_promote_no", ImVec2(110, 0))) {
+        s_promote_slot = -1;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+
 static bool WorldDrawRowDeleteConfirm(WorldMarkedSequenceState &state,
                                       const WorldMarkedLane &lane,
                                       int display_slot, bool want_open)
@@ -5623,6 +5801,52 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Left/Right controls this slot and loads each frame's real IMG anipoints.");
     }
+    /* This row's speed, and whether the global still owns it. Both live here
+       rather than at the end of the strip: this used to be the last thing
+       submitted after Stop@, PongDelay and the rest, so on any panel that was
+       not very wide it was clipped off the right edge and nobody knew a
+       per-row hold existed at all.
+
+       "Global" checked means the row inherits -- change the global Ticks/frame
+       and this row moves with it, which is what every row does until it is
+       deliberately taken off. Typing a value here takes it off, because that
+       is the only reason to type one. */
+    if (!lane.dummy_decap) {
+        int slot = lane.delay_slot;
+        bool own = state.slot_hold_custom[slot];
+        int shown = WorldMarkedSlotHold(state, slot);
+        ImGui::SameLine();
+        ImGui::TextDisabled("T/f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Ticks per frame for this row: %d tick%s, so %.4f / %d = %.2f\n"
+                "rows a second. This is the sleep the ASM export writes.\n\n"
+                "%s",
+                shown, shown == 1 ? "" : "s", kMk2TickHz, shown,
+                kMk2TickHz / (float)shown,
+                own ? "Taken off the global -- the scene's Ticks/frame no longer"
+                      " reaches it."
+                    : "Following the global Ticks/frame.");
+        ImGui::SameLine(0.0f, 4.0f);
+        ImGui::SetNextItemWidth(48.0f);
+        int want = shown;
+        if (ImGui::InputInt("##world_lane_hold", &want, 0, 0))
+            WorldMarkedSetSlotHold(state, slot, want, true);
+        ImGui::SameLine(0.0f, 4.0f);
+        bool follow = !own;
+        if (ImGui::Checkbox("Global##world_lane_hold_global", &follow))
+            WorldMarkedSetSlotHold(state, slot,
+                                   follow ? state.default_hold : shown, !follow);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(follow
+                ? "Following the scene's global Ticks/frame (%d). Change the\n"
+                  "global and this row changes with it. Untick, or type a\n"
+                  "value in the box, to give the row a speed of its own."
+                : "Off the global: this row stays at %d no matter what the\n"
+                  "scene's Ticks/frame is set to. Tick this to hand it back.",
+                follow ? ClampTimelineHold(state.default_hold) : shown);
+    }
+
     ImGui::SameLine();
     ImGui::Checkbox("Stop##world_lane_stop", &state.hold_end[lane.delay_slot]);
     if (ImGui::IsItemHovered())
@@ -5816,29 +6040,26 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             /* Promote lives on the strip rather than in the menu because it
                is the end of the job: the row has been staged, and this is
                what turns it into something the IMG can hold. */
-            bool can_promote = lane.doc && lane.doc == g_doc && !lane.frames.empty();
+            /* No longer gated on the row's file being the active tab -- the
+               dialog asks which tab to write into, and switches to it. */
+            bool can_promote = !lane.frames.empty() && document_tab_count() > 0;
             ImGui::SameLine();
             ImGui::BeginDisabled(!can_promote);
-            if (ImGui::SmallButton("To Seq##world_seq_promote")) {
-                std::string msg;
-                WorldMarkedPromoteLaneToSequence(state, lane, &msg);
-                if (!msg.empty()) {
-                    snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", msg.c_str());
-                    g_restore_msg_timer = 6.0f;
-                }
-            }
+            if (ImGui::SmallButton("To Seq...##world_seq_promote"))
+                WorldOpenPromoteSeqDialog(lane);
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip(can_promote
-                    ? "Write this row into the IMG as a new SEQSCR sequence:\n"
-                      "one entry per row entry, carrying sprite, ticks, dX and dY.\n"
-                      "Frames living in other tabs are brought into this IMG so the\n"
+                    ? "Write this row into an IMG as a new SEQSCR sequence:\n"
+                      "one entry per row entry, carrying sprite, ticks, dX and dY.\n\n"
+                      "Asks for a name and which open tab to write into first.\n"
+                      "Frames living in other tabs are brought into that IMG so the\n"
                       "entry can name them -- reused if a sprite of that name is\n"
-                      "already here, copied in with its palette if not.\n"
+                      "already there, copied in with its palette if not.\n\n"
                       "Flips, Z, motion, Show@/Hide@ and dual are preview-only and\n"
                       "cannot be stored in an entry -- the toast names what was left.\n"
                       "Open it afterwards from the Anim tab."
-                    : "Select a frame from this row first so its IMG tab is active.");
+                    : "This row has no frames to promote.");
 
             ImGui::SameLine();
             if (ImGui::SmallButton("Row...##world_seq_row_menu"))
@@ -6178,6 +6399,7 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         }
     }
 
+    WorldDrawPromoteSeqDialog(state, lane);
     return WorldDrawRowDeleteConfirm(state, lane, display_slot, want_delete_popup);
 }
 
@@ -6537,6 +6759,14 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
        exact tick of the hit that caused it. Set the speed afterwards with the
        row's Ticks/frame, which is one edit; un-quantising it is not. */
     int hold = ClampTimelineHold(kWorldBloodTicksPerFrame);
+    /* Imported at 1 tick, but NOT pinned: the global Ticks/frame still owns
+       this row. Pinning it here meant a spray silently ignored the scene's
+       speed control forever after -- and because the row is scheduled, the
+       only thing that ever retimed it was code that also re-lays its
+       Show@/Hide@ windows. Pin it from the row's own T/f if a spray really
+       does need to run at a different rate from the hit it came from. */
+    state.slot_hold[slot] = hold;
+    state.slot_hold_custom[slot] = false;
     int t = start_tick;
     for (int i = 0; i < n; i++) {
         state.frame_delays[slot][i] = hold;
@@ -6990,9 +7220,9 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; The runtime must substitute its body/victim object for the shared anchor.\n";
     char world_meta[192];
     snprintf(world_meta, sizeof(world_meta),
-             "; World View: W=%d H=%d Origin=(%d,%d) TickHz=%.2f\n",
+             "; World View: W=%d H=%d Origin=(%d,%d) TickHz=%.4f\n",
              g_world_state.w, g_world_state.h,
-             g_world_state.origin_x, g_world_state.origin_y, state.fps);
+             g_world_state.origin_x, g_world_state.origin_y, kMk2TickHz);
     out += world_meta;
     out += "; TIMING. One .long row is one ANIMATION STEP, not one tick.\n";
     out += ";   MKUTIL.ASM animate_a9 takes a9 = [sleep,ani_offset] and holds each\n";
@@ -7102,38 +7332,20 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
         }
         if (lane_sleep < 1) lane_sleep = 1;
 
-        /* A row is one PREVIEW tick x lane_sleep, and a preview tick is only
-           a game tick when Tick Hz is left at MK2's 54.7. Author at 10.9 and
-           every hold in this lane means five game ticks, not one -- exported
-           as the raw count the lane ran five times too fast in game, which is
-           not a timing subtlety anyone spots by reading the table. Convert
-           once, here, and report the sleep the engine should actually be
-           passed. */
-        float preview_hz = state.fps > 0.1f ? state.fps : kMk2TickHz;
-        float ticks_per_row = (float)lane_sleep * kMk2TickHz / preview_hz;
-        int game_sleep = (int)(ticks_per_row + 0.5f);
-        if (game_sleep < 1) game_sleep = 1;
+        /* A row is lane_sleep ticks, full stop. The preview runs at the
+           hardware rate and cannot be set to anything else, so there is no
+           rate conversion left to do here -- this used to scale by
+           kMk2TickHz/preview_hz and warn when the slider had been moved to
+           something that was not a whole divisor of 54.7. */
+        int game_sleep = lane_sleep;
 
         char sleep_line[288];
         snprintf(sleep_line, sizeof(sleep_line),
                  "; Run this lane with a9 = [%d,ani_offset]: %d game tick%s per row,\n"
-                 ";   i.e. %.1f fps at MK2's %.1f Hz. Rows below are steps, not ticks.\n",
+                 ";   i.e. %.1f fps at MK2's %.4f Hz. Rows below are steps, not ticks.\n",
                  game_sleep, game_sleep, game_sleep == 1 ? "" : "s",
                  kMk2TickHz / (float)game_sleep, kMk2TickHz);
         out += sleep_line;
-        if (preview_hz < kMk2TickHz - 0.05f || preview_hz > kMk2TickHz + 0.05f) {
-            char rate_line[288];
-            snprintf(rate_line, sizeof(rate_line),
-                     ";   (authored at %.1f Hz preview, %d preview tick%s per row;\n"
-                     ";    scaled by %.2f to reach game ticks%s)\n",
-                     preview_hz, lane_sleep, lane_sleep == 1 ? "" : "s",
-                     kMk2TickHz / preview_hz,
-                     (ticks_per_row - (float)game_sleep > 0.05f ||
-                      ticks_per_row - (float)game_sleep < -0.05f)
-                         ? " -- ROUNDED, the preview rate is not a whole"
-                           " divisor of 54.7" : "");
-            out += rate_line;
-        }
         {
             bool lane_has_motion = false;
             for (int fi = 0; fi < (int)lane.frames.size() && !lane_has_motion; fi++)
@@ -7963,13 +8175,98 @@ void WorldMarkedSetTick(WorldMarkedSequenceState &state, int tick)
     state.frame = ClampWorldMarkedVisibleFrom(tick);
 }
 
-void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks)
+int WorldMarkedSlotHold(const WorldMarkedSequenceState &state, int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs)
+        return ClampTimelineHold(state.default_hold);
+    /* slot_hold is the row's REAL hold, pinned or not -- it is what the T/f
+       box shows and what a grown row extends at. It used to report the global
+       for any row that was not pinned, which meant a blood row sitting at 1
+       tick displayed the scene's 4 and read as if it had already inherited
+       when it had not. Zero is the never-set case (the array is value
+       initialised), and only then does the global stand in. */
+    int hold = state.slot_hold[slot];
+    if (hold <= 0) hold = state.default_hold;
+    return ClampTimelineHold(hold);
+}
+
+/* Re-lay a scheduled row's Show@/Hide@ windows for a new hold.
+
+   A blood spray is scheduled, not looped: WorldMarkedCreateBloodLane writes
+   visible_from[i] = base + i*hold and visible_until[i] = that + hold, so the
+   run fires once at the tick of the hit. Retiming such a row by rewriting
+   frame_delays alone changed how long the runner held each frame while the
+   windows still said "show frame 3 for tick 13 only" -- the row kept its old
+   cadence on screen and looked like the speed control had missed it. That is
+   the bug this exists to close.
+
+   Only a run that is exactly uniform at old_hold is touched. Windows authored
+   by Build Chain or typed into Show@/Hide@ by hand encode gaps and launch
+   delays that are not derived from the hold, and rescaling those would be
+   inventing timing the user did not ask for. */
+static void WorldMarkedRetimeSchedule(WorldMarkedSequenceState &state, int slot,
+                                      int old_hold, int new_hold)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    if (old_hold == new_hold || old_hold < 1 || new_hold < 1) return;
+
+    std::vector<int> &from = state.visible_from[slot];
+    std::vector<int> &until = state.visible_until[slot];
+    int n = (int)from.size();
+    if (n < 1 || (int)until.size() < n) return;
+
+    /* An unscheduled row leaves these at 0 and is driven by the tick clock
+       alone; there is nothing to re-lay. */
+    int base = from[0];
+    if (base <= 0 && until[0] <= 0) return;
+
+    for (int i = 0; i < n; i++) {
+        if (from[i] != base + i * old_hold) return;
+        if (until[i] != base + (i + 1) * old_hold) return;
+    }
+    for (int i = 0; i < n; i++) {
+        from[i] = ClampWorldMarkedVisibleFrom(base + i * new_hold);
+        until[i] = ClampWorldMarkedVisibleUntil(base + (i + 1) * new_hold);
+    }
+}
+
+void WorldMarkedSetSlotHold(WorldMarkedSequenceState &state, int slot,
+                            int ticks, bool custom)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    /* The dummy body runs canned stock timing and is not anyone's to retime
+       from here -- the same reason the global skips it. */
+    if (slot == kWorldDummyDecapSlot) return;
+    ticks = ClampTimelineHold(ticks);
+    int old_hold = WorldMarkedSlotHold(state, slot);
+    state.slot_hold[slot] = ticks;
+    state.slot_hold_custom[slot] = custom;
+    for (int &delay : state.frame_delays[slot])
+        delay = ticks;
+    WorldMarkedRetimeSchedule(state, slot, old_hold, ticks);
+    state.frame = 0;
+    state.timer = 0.0f;
+}
+
+void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks,
+                                 bool include_custom)
 {
     ticks = ClampTimelineHold(ticks);
     for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
         if (slot == kWorldDummyDecapSlot) continue;
+        /* A row that was pinned with its own T/f keeps it. Pinning is opt-in
+           and per row, so the global still reaches everything else -- which
+           is the whole point of it being called the global. */
+        if (state.slot_hold_custom[slot] && !include_custom) continue;
+        if (include_custom) state.slot_hold_custom[slot] = false;
+        int old_hold = WorldMarkedSlotHold(state, slot);
+        state.slot_hold[slot] = ticks;
         for (int &delay : state.frame_delays[slot])
             delay = ticks;
+        /* Scheduled rows -- blood sprays above all -- have to have their
+           Show@/Hide@ run re-laid at the new hold or they keep the old
+           cadence and appear to ignore the global entirely. */
+        WorldMarkedRetimeSchedule(state, slot, old_hold, ticks);
     }
     /* Rewind the tick clock rather than the sequences: the frame you were
        looking at keeps its place in the list, it just holds longer now. */
@@ -7977,17 +8274,20 @@ void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks)
     state.timer = 0.0f;
 }
 
+
 void EnsureWorldMarkedFrameDelays(WorldMarkedSequenceState &state, int slot, int frame_count)
 {
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     if (frame_count < 0) frame_count = 0;
 
     std::vector<int> &delays = state.frame_delays[slot];
-    /* Frames arriving with no authored timing take the default hold, not one
+    /* Frames arriving with no authored timing take the row's hold, not one
        tick. A 1-tick hold is 54.7 fps, which is not a speed any MK2 animation
-       plays at, so it made a freshly marked set unwatchable. */
+       plays at, so it made a freshly marked set unwatchable. The row's hold,
+       not the global one: a row that owns its timing has to keep it when it
+       grows, or extending a 1-tick blood row appends frames at 4. */
     if ((int)delays.size() < frame_count)
-        delays.resize((size_t)frame_count, ClampTimelineHold(state.default_hold));
+        delays.resize((size_t)frame_count, WorldMarkedSlotHold(state, slot));
     else if ((int)delays.size() > frame_count)
         delays.resize((size_t)frame_count);
     for (int &delay : delays)
@@ -8851,6 +9151,8 @@ void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
     state.pingpong_delay[slot] = 0;
     state.stop_tick[slot] = 0;
     state.lane_rigid[slot] = false;
+    state.slot_hold[slot] = ClampTimelineHold(state.default_hold);
+    state.slot_hold_custom[slot] = false;
 }
 
 /* frame_doc[slot] stores a doc TAB INDEX per entry, not a Document* — the
@@ -9749,13 +10051,28 @@ static std::string WorldMarkedSequenceNameForLane(const WorldMarkedLane &lane)
 
 bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
                                       const WorldMarkedLane &lane,
+                                      const char *seq_name, int target_doc_idx,
                                       std::string *out_msg)
 {
     int slot = lane.delay_slot;
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return false;
     if (lane.frames.empty()) return false;
-    /* SeqScrAddRecord and friends all write g_doc's blob. */
-    if (!lane.doc || lane.doc != g_doc) return false;
+
+    /* SeqScrAddRecord and friends all write g_doc's blob, so the destination
+       tab has to be the active one while the record is built. It used to be
+       required to ALREADY be active -- the row could only ever promote into
+       whichever tab happened to be in front, which is why the caller now asks
+       where it should go. Switch, write, switch back. */
+    if (target_doc_idx < 0) target_doc_idx = document_active_index();
+    Document *target = document_get(target_doc_idx);
+    if (!target) return false;
+    const int restore_doc = document_active_index();
+    const bool switched = target_doc_idx != restore_doc;
+    if (switched) document_set_active(target_doc_idx);
+    struct DocRestore {
+        bool on; int idx;
+        ~DocRestore() { if (on) document_set_active(idx); }
+    } doc_restore{switched, restore_doc};
 
     EnsureWorldMarkedFrameDelays(state, slot, (int)lane.frames.size());
 
@@ -9819,6 +10136,15 @@ bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
         return false;
     }
 
+    /* Non-script records are STORED back-to-front: WorldDecodeSeqScrRecord
+       reads them with e = num-1-display_e, and SeqScrLaneOwnEntries reverses
+       for exactly this reason before writing one back. Promote built its list
+       in lane order and handed it straight to SeqScrReplaceEntries, which
+       writes raw slot for slot -- so the record came out reversed, and every
+       dX/dY arrived attached to the wrong sprite. That is what "the local
+       anipoints do not promote correctly" was. */
+    std::reverse(entries.begin(), entries.end());
+
     if (!SeqScrAddRecord(false)) {
         snprintf(msg, sizeof(msg),
                  "Could not add a sequence (anim blob is truncated or out of memory).");
@@ -9833,7 +10159,11 @@ bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
         if (out_msg) *out_msg = msg;
         return false;
     }
-    std::string name = WorldMarkedSequenceNameForLane(lane);
+    /* The caller's name wins; the derived one is only the seed the prompt
+       was filled with, and a fallback for callers that do not ask. */
+    std::string name = (seq_name && *seq_name)
+                     ? std::string(seq_name)
+                     : WorldMarkedSequenceNameForLane(lane);
     SeqScrSetName(new_idx, name.c_str());
 
     /* Say what did not come across. Silence here would be the worst outcome:
@@ -9881,8 +10211,11 @@ bool WorldMarkedPromoteLaneToSequence(WorldMarkedSequenceState &state,
         }
     }
 
-    snprintf(msg, sizeof(msg), "Promoted to sequence %d '%s' (%d entr%s).%s%s",
-             new_idx, name.c_str(), (int)entries.size(),
+    snprintf(msg, sizeof(msg),
+             "Promoted to sequence %d '%s' in %s (%d entr%s).%s%s",
+             new_idx, name.c_str(),
+             target->fname_s[0] ? target->fname_s : "Untitled",
+             (int)entries.size(),
              entries.size() == 1 ? "y" : "ies", tail, foreign_tail);
     if (out_msg) *out_msg = msg;
     return true;
@@ -18805,15 +19138,7 @@ static bool SeqScrDrawToolbar(WorldMarkedSequenceState &state,
     ImGui::SameLine();
     WorldDrawTickHoldControl(state, "seqscr_ws");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(105.0f);
-    ImGui::SliderFloat("FPS##seqscr_ws_fps", &state.fps, 1.0f, 60.0f, "%.1f");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Ticks per second. MK2 runs at %.1f, so that is\n"
-                          "what a hold of N ticks looks like in game.", kMk2TickHz);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Game##seqscr_ws_game_fps")) state.fps = kMk2TickHz;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Reset to the real MK2 tick rate (%.1f Hz).", kMk2TickHz);
+    WorldDrawTickRateReadout();
     ImGui::SameLine();
     ImGui::TextDisabled("Tick");
     ImGui::SameLine();
@@ -18932,11 +19257,11 @@ static bool SeqScrDrawToolbar(WorldMarkedSequenceState &state,
        correct and under-sampled, which looks like judder. */
     {
         float render_fps = ImGui::GetIO().Framerate;
-        bool starved = render_fps > 1.0f && render_fps < state.fps * 0.9f;
+        bool starved = render_fps > 1.0f && render_fps < kMk2TickHz * 0.9f;
         if (starved)
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
                                "anchor y=%d  %.0f fps < %.1f ticks/s",
-                               g_world_state.origin_y, render_fps, state.fps);
+                               g_world_state.origin_y, render_fps, kMk2TickHz);
         else
             ImGui::TextDisabled("anchor y=%d  %.0f fps",
                                 g_world_state.origin_y, render_fps);
@@ -18945,7 +19270,7 @@ static bool SeqScrDrawToolbar(WorldMarkedSequenceState &state,
                               "lasts N/%.1f s regardless of frame rate. When the render\n"
                               "rate falls below the tick rate you see fewer than every\n"
                               "frame, which reads as judder rather than wrong timing.",
-                              state.fps);
+                              kMk2TickHz);
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Copy ASM##seqscr_ws_copy_asm")) {

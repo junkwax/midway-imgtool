@@ -39,6 +39,11 @@ void RecentSave();
 void save_last_dir_cat(const char *dir, const char *category);
 void ActivateDocumentTab(int idx);
 void OpenImgFile(const std::string &full_path);
+/* Full path of the World View project last loaded OR saved this session, ""
+   before either happens. The World View header shows it: with several .wvp
+   variants of one lane in flight, "which one am I looking at" is not
+   answerable from the scene itself. */
+const char *WorldLastProjectPath(void);
 void PrepareDocumentForOpenedFile(void);
 void RequestOpenDialog(void);
 void RequestOpenPath(const std::string &path);

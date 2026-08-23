@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <regex>
+#include <map>
 
 #include "img_format.h"
 #include "ui_internal.h"
@@ -1562,6 +1563,15 @@ void DrawMainLayout(void)
         if (ImGui::BeginMenu("View")) {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
             ImGui::MenuItem("Verbose Logging", NULL, &g_verbose);
+            ImGui::MenuItem("Group Tabs by Name", NULL, &g_group_doc_tabs);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Collapse document tabs that share a name stem into one tab --\n"
+                    "BARAKA1/2/3.IMG become a single BARAKA tab, and so do copies\n"
+                    "of one 8.3 name opened from different folders. Click the tab\n"
+                    "to pick which file is in front.\n\n"
+                    "A stem with only one file is left as an ordinary tab.\n"
+                    "Dragging tabs to reorder is off while any group is showing.");
             ImGui::Separator();
             ImGui::BeginDisabled(g_doc->ilselected < 0);
             if (ImGui::MenuItem("Zoom In", "Ctrl+=")) QueueZoomStep(1);
@@ -1661,10 +1671,9 @@ void DrawMainLayout(void)
                     WorldMarkedRestart(g_world_marked_state);
                 }
                 ImGui::MenuItem("Marked Playback Paused", NULL, &g_world_marked_state.paused);
-                ImGui::SetNextItemWidth(80);
-                ImGui::SliderFloat("Marked FPS", &g_world_marked_state.fps, 1.0f, 60.0f, "%.1f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Ticks per second. MK2 runs at %.1f.", kMk2TickHz);
+                /* The tick rate is hardware and this was a 1..60 slider on
+                   it; see WorldDrawTickRateReadout. Speed is Ticks/frame. */
+                ImGui::TextDisabled("Marked tick rate: %.4f Hz", kMk2TickHz);
                 if (ImGui::MenuItem("Dummy Decap Body", NULL,
                                     &g_world_marked_state.dummy_decap_body)) {
                     g_world_marked_state.dummy_decap_reset = true;
@@ -4267,6 +4276,64 @@ static void RequestCloseDocumentTab(int idx)
     if (closing_active) g_doc_tab_select_request = document_active_index();
 }
 
+/* ---- Document tab grouping ----------------------------------------------
+   fname_s is a DOS 8.3 BASENAME, so a library opened across several folders
+   fills the bar with tabs reading the same thing, and a character's frames
+   arrive as BARAKA1/2/3.IMG -- a dozen tabs that are really one subject. Files
+   sharing a name stem collapse into a single tab that names whichever member
+   is in front; clicking it lists the rest.
+
+   The stem is the filename with its extension and any trailing digits
+   removed. Only stems with more than one member group -- a lone file is still
+   just its own tab, which is what makes this safe to leave on. */
+static std::string DocTabStem(const Document *doc)
+{
+    std::string s = (doc && doc->fname_s[0]) ? doc->fname_s : "Untitled";
+    size_t dot = s.find_last_of('.');
+    if (dot != std::string::npos && dot > 0) s.resize(dot);
+    /* Done here rather than through strip_trailing_sequence_digits, which
+       runs trim_sprite_name first -- that is tuned for sprite names, not
+       filenames, and is not this function's business. */
+    size_t end = s.size();
+    while (end > 0 && isdigit((unsigned char)s[end - 1])) end--;
+    if (end > 0 && end < s.size()) s.resize(end);
+    return s;
+}
+
+/* On by default: it only ever engages for a stem that actually has several
+   files behind it, so a session with no repeats looks exactly as before. */
+bool g_group_doc_tabs = true;
+
+/* The group whose dropdown is open, captured when the popup is opened -- the
+   group list is rebuilt every frame, and a popup outlives the frame that
+   opened it. */
+static std::vector<int> s_open_group_members;
+
+struct DocTabGroup {
+    std::string stem;
+    std::vector<int> members;   /* document indices, in tab order */
+};
+
+static void BuildDocTabGroups(std::vector<DocTabGroup> &groups)
+{
+    groups.clear();
+    for (int i = 0; i < document_tab_count(); i++) {
+        Document *d = document_get(i);
+        if (!d) continue;
+        std::string stem = DocTabStem(d);
+        bool placed = false;
+        for (DocTabGroup &g : groups) {
+            if (g.stem == stem) { g.members.push_back(i); placed = true; break; }
+        }
+        if (!placed) {
+            DocTabGroup g;
+            g.stem = stem;
+            g.members.push_back(i);
+            groups.push_back(g);
+        }
+    }
+}
+
 float DrawDocumentTabBar(float y, float sw)
 {
     const float tab_h = ImGui::GetFrameHeight();
@@ -4286,6 +4353,12 @@ float DrawDocumentTabBar(float y, float sw)
     unsigned int close_uid = 0;
     bool new_tab = false;
     int active = document_active_index();
+    /* Set while any stem has more than one file behind it. Tab order no
+       longer matches document order then, so the drag-reorder mapping below
+       has to sit out -- reordering a group would be reordering a set. */
+    bool any_group = false;
+    int open_group = -1;
+    std::map<int, std::vector<int> > group_members;
 
     /* Only force ImGui's selected tab when the active document actually changed
        (open / close / new / World View sync), not every frame. Re-asserting
@@ -4311,45 +4384,112 @@ float DrawDocumentTabBar(float y, float sw)
         tab_bar_ptr = ImGui::GetCurrentTabBar();
         int n = document_tab_count();
         doc_tab_ids.assign((size_t)n, 0);
-        for (int i = 0; i < n; i++) {
-            Document *doc = document_get(i);
-            if (!doc) continue;
 
+        std::vector<DocTabGroup> groups;
+        if (g_group_doc_tabs) {
+            BuildDocTabGroups(groups);
+        } else {
+            for (int i = 0; i < n; i++) {
+                DocTabGroup g;
+                g.members.push_back(i);
+                groups.push_back(g);
+            }
+        }
+        for (const DocTabGroup &g : groups)
+            if (g.members.size() > 1) { any_group = true; break; }
+
+        int select_slot = (g_doc_tab_select_request >= 0)
+                        ? g_doc_tab_select_request : active;
+
+        for (int gi = 0; gi < (int)groups.size(); gi++) {
+            const DocTabGroup &g = groups[(size_t)gi];
+            bool grouped = g.members.size() > 1;
+
+            /* Whichever member is active fronts the group; with none active
+               that is the first. Picking from the dropdown activates the
+               member, so it becomes the front one on its own -- no separate
+               "remembered choice" to fall out of step with the document. */
+            int cur = g.members[0];
+            bool group_active = false;
+            for (int m : g.members)
+                if (m == active) { cur = m; group_active = true; break; }
+            bool group_wants_select = false;
+            for (int m : g.members)
+                if (m == select_slot) { group_wants_select = true; break; }
+            if (group_wants_select) {
+                for (int m : g.members)
+                    if (m == select_slot) { cur = m; break; }
+            }
+
+            Document *doc = document_get(cur);
+            if (!doc) continue;
             const char *base = doc->fname_s[0] ? doc->fname_s : "Untitled";
+
             /* `###` keys the tab on the uid alone, so the visible half is free
                to change. With `##` the ID hashed the whole label: the moment an
                edit added the dirty asterisk, ImGui saw the old tab vanish and a
                brand-new one appear, dropped the selection, and fell back to
-               whichever tab it had highlighted least recently — the active
+               whichever tab it had highlighted least recently -- the active
                document had not changed, so nothing ever put the highlight
-               back. */
-            char label[96];
-            snprintf(label, sizeof(label), "%s%s###doc_tab_uid_%u",
-                     doc->dirty ? "* " : "", base, doc->uid);
+               back. A group keys on its stem instead, which is what stays put
+               as members are opened and closed underneath it. */
+            char label[160];
+            if (grouped)
+                snprintf(label, sizeof(label), "%s%s  (%d)###doc_group_%s",
+                         doc->dirty ? "* " : "", base, (int)g.members.size(),
+                         g.stem.c_str());
+            else
+                snprintf(label, sizeof(label), "%s%s###doc_tab_uid_%u",
+                         doc->dirty ? "* " : "", base, doc->uid);
 
             bool open = true;
             /* Exactly one SetSelected per frame. A pending request outranks the
                current active index; when two tabs claimed it the later
                submission silently won. */
-            int select_slot = (g_doc_tab_select_request >= 0)
-                            ? g_doc_tab_select_request : active;
-            bool want_select = force_select && (i == select_slot);
+            bool want_select = force_select && group_wants_select;
             ImGuiTabItemFlags item_flags = want_select ? ImGuiTabItemFlags_SetSelected
                                                        : ImGuiTabItemFlags_None;
             bool visible = ImGui::BeginTabItem(label, &open, item_flags);
             /* Record the ID ImGui assigned this tab so a drag-reorder can be
-               mapped back to the document index after EndTabBar. */
+               mapped back to the document index after EndTabBar. A group
+               records it against the member it is fronting, which is the one
+               the selection fallback below should resolve it to. */
             if (tab_bar_ptr && tab_bar_ptr->LastTabItemIdx >= 0 &&
                 tab_bar_ptr->LastTabItemIdx < tab_bar_ptr->Tabs.Size)
-                doc_tab_ids[(size_t)i] =
+                doc_tab_ids[(size_t)cur] =
                     tab_bar_ptr->Tabs[tab_bar_ptr->LastTabItemIdx].ID;
             bool activated = ImGui::IsItemActivated();
-            if (activated && i != active)
+            if (activated && cur != active)
                 activate_uid = doc->uid;
+            /* One click both fronts the group and expands it, so the members
+               are never more than a click away -- a collapsed group that only
+               opened on some second gesture would just be a tab that hides
+               files. */
+            if (grouped && ImGui::IsItemClicked())
+                open_group = gi;
+            if (grouped && ImGui::IsItemHovered() && !ImGui::IsItemActive()) {
+                ImGui::BeginTooltip();
+                ImGui::Text("%d files named %s*", (int)g.members.size(),
+                            g.stem.c_str());
+                ImGui::Separator();
+                for (int m : g.members) {
+                    Document *md = document_get(m);
+                    if (!md) continue;
+                    ImGui::Text("%s%s%s%s", m == active ? "> " : "   ",
+                                md->dirty ? "* " : "",
+                                md->fname_s[0] ? md->fname_s : "Untitled",
+                                m == active ? "  (open)" : "");
+                }
+                ImGui::Separator();
+                ImGui::TextDisabled("Click the tab to pick one.");
+                ImGui::EndTooltip();
+            }
             if (visible)
                 ImGui::EndTabItem();
             if (!open)
                 close_uid = doc->uid;
+
+            if (grouped) group_members[gi] = g.members;
         }
 
         /* The World View toggles used to live here, on the document strip.
@@ -4359,6 +4499,36 @@ float DrawDocumentTabBar(float y, float sw)
         if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip))
             new_tab = true;
         ImGui::EndTabBar();
+    }
+
+    /* Opened from a group tab above, drawn after EndTabBar so the popup is not
+       nested inside a tab item's ID stack. */
+    if (open_group >= 0) {
+        s_open_group_members = group_members[open_group];
+        ImGui::OpenPopup("##doc_group_pick");
+    }
+    if (ImGui::BeginPopup("##doc_group_pick")) {
+        ImGui::TextDisabled("Files in this group");
+        ImGui::Separator();
+        for (int m : s_open_group_members) {
+            Document *d = document_get(m);
+            if (!d) continue;
+            /* The path is the only thing separating two files with the same
+               8.3 name, so it is on the row rather than in a tooltip. */
+            char row[280];
+            snprintf(row, sizeof(row), "%s%s##doc_group_pick_%u",
+                     d->dirty ? "* " : "",
+                     d->fname_s[0] ? d->fname_s : "Untitled", d->uid);
+            if (ImGui::Selectable(row, m == document_active_index())) {
+                activate_uid = d->uid;
+                ImGui::CloseCurrentPopup();
+            }
+            if (d->fpath_s[0]) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("  %s", d->fpath_s);
+            }
+        }
+        ImGui::EndPopup();
     }
     ImGui::PopStyleColor(3);
     g_doc_tab_select_request = -1;
@@ -4372,7 +4542,8 @@ float DrawDocumentTabBar(float y, float sw)
        and the document order agree afterwards — applying the permutation to
        both is not a double-shuffle. */
     bool reordered = false;
-    if (tab_bar_ptr && (int)doc_tab_ids.size() == document_tab_count()) {
+    if (tab_bar_ptr && !any_group &&
+        (int)doc_tab_ids.size() == document_tab_count()) {
         std::vector<int> new_order;
         new_order.reserve(doc_tab_ids.size());
         for (int t = 0; t < tab_bar_ptr->Tabs.Size; t++) {
