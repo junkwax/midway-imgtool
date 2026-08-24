@@ -17,8 +17,17 @@
 #include "img_format.h"  /* IMG */
 #include "ui_timeline.h" /* kDefaultTimelineHold — shared with the Image timeline */
 
+/* Slot layout. The special lanes sit AFTER the marked rows, so changing
+   kWorldMarkedSourceTabs moves them -- and a .WAX stores rows by slot index.
+   A project written under the old count would hand its dummy-body row to a
+   marked-row slot and lose the lane entirely, so the writer records
+   `slot.source_tabs` and the loaders remap the specials off it.
+   kWorldMarkedLegacySourceTabs is what files written before that key existed
+   used, and is the fallback when it is absent. */
+enum { kWorldMarkedLegacySourceTabs = 10 };
+
 enum {
-    kWorldMarkedSourceTabs = 10,                  /* marked IMG rows */
+    kWorldMarkedSourceTabs = 20,                  /* marked IMG rows */
     kWorldDummyDecapSlot = kWorldMarkedSourceTabs,/* optional dummy body */
     kWorldAsmSlot,                                /* ASM-driven player lane */
     kWorldAsmOpponentSlot,                        /* ASM-driven opponent lane */
@@ -535,6 +544,12 @@ struct WorldMarkedSequenceState {
     bool slot_hold_custom[kWorldMarkedMaxTabs] = {};
     float timer = 0.0f;
     int frame = 0;
+    /* The tick by which every visible lane has finished, recomputed each
+       frame by WorldUpdateMarkedLanePlayback. Only meaningful when nothing in
+       the scene loops; the transport reads it to know that Play should start
+       over rather than resume against an ended scene. Preview state, not
+       saved. */
+    int preview_end_tick = 0;
     /* Starts paused. World View opening straight into a running animation
        meant every layout read, every anipoint check and every drag started
        against a moving target; Play is one click when you actually want
@@ -709,6 +724,8 @@ struct WorldMarkedPanelAction {
     bool request_load_asm = false;
     bool request_save_project = false;
     bool request_load_project = false;
+    /* Same file, added to the open scene instead of replacing it. */
+    bool request_append_project = false;
     bool request_save_png = false;
     bool request_save_png_seq = false;
     bool request_load_bg = false;
@@ -920,6 +937,9 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
                                 int src_entry,
                                 const WorldBloodRun &run,
                                 std::string *out_msg);
+/* Show the Subframes/Tick/Swap strip above a row's thumbnails. Off by
+   default; toggled from the app's View menu. Defined in ui_canvas.cpp. */
+extern bool g_world_show_subframe_tool;
 std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                                 const std::vector<WorldMarkedLane> &lanes);
 bool WorldDrawMarkedAsmPopup(WorldMarkedSequenceState &state);
@@ -982,6 +1002,15 @@ void WorldMarkedSetSlotHold(WorldMarkedSequenceState &state, int slot,
 /* The hold this row actually runs at -- pinned or not. Falls back to the
    global only for a row whose hold was never set. */
 int WorldMarkedSlotHold(const WorldMarkedSequenceState &state, int slot);
+
+/* ---- Merging a second project into the open scene ----------------------
+   Load replaces the workspace; these two let another .WAX be laid on top of
+   it instead. The copy is field-by-field on purpose: the origin, tick clock,
+   global hold and ASM lanes belong to the scene already open. */
+int WorldMarkedFirstFreeSourceSlot(const WorldMarkedSequenceState &state);
+bool WorldMarkedCopySlotFrom(WorldMarkedSequenceState &state, int dst_slot,
+                             WorldMarkedSequenceState &src, int src_slot,
+                             int doc_idx);
 
 /* ---- Baking World View placement back into the IMG ----------------------
    A marked lane positions a frame at (origin - (anipoint + local dX/dY)), and

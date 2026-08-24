@@ -765,10 +765,22 @@ void DrawMainLayout(void)
     if (!io.KeyShift && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) copy_image(true);
     if (!io.KeyShift && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) paste_image();
 
-    /* Adobe-standard selection shortcuts. */
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_A, route)) select_all();
+    /* Adobe-standard selection shortcuts.
+
+       Gated on the Image canvas actually being in front. select_all() sets a
+       pixel marquee over the SELECTED SPRITE, which the other canvas modes do
+       not draw in sprite space -- pressed in World View it left a stray
+       marquee sitting in the corner of the scene, over nothing, because the
+       rectangle is in sprite pixels and World View is not.
+
+       Ctrl+D stays live everywhere: clearing a selection you cannot see is
+       exactly what someone who has ended up with a stray one wants, and it
+       cannot create anything. */
+    bool image_canvas = ImageCanvasActive();
+    if (image_canvas && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_A, route)) select_all();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_D, route)) deselect_all();
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_I, route)) invert_selection();
+    if (image_canvas &&
+        ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_I, route)) invert_selection();
     /* Ctrl+J duplicates: a floating paste commits and stays floating as a
        second copy of itself; otherwise duplicates the current image. */
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_J, route)) {
@@ -1574,6 +1586,16 @@ void DrawMainLayout(void)
                     "Below %d tabs nothing is folded. Dragging tabs to reorder\n"
                     "is off while a group is folded.", kDocTabGroupMin,
                     kDocTabGroupMin);
+            ImGui::MenuItem("Show Subframe Swap Tool", NULL,
+                            &g_world_show_subframe_tool);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Show the Subframes/Tick/Swap strip above a World View row's\n"
+                    "frame thumbnails. It replaces the selected sprite with a\n"
+                    "single composite of its child subframes, from a tick onward.\n\n"
+                    "Off by default: it only appears when the selected sprite\n"
+                    "happens to have subframes, so it arrives unannounced and\n"
+                    "pushes the thumbnails down.");
             ImGui::Separator();
             ImGui::BeginDisabled(g_doc->ilselected < 0);
             if (ImGui::MenuItem("Zoom In", "Ctrl+=")) QueueZoomStep(1);
@@ -1753,8 +1775,7 @@ void DrawMainLayout(void)
                and only once it is off fit-to-window. */
             char zoom_label[32];
             zoom_label[0] = 0;
-            bool image_canvas = !g_world_state.enabled && !g_seqscr_workspace &&
-                                !g_reactions_workspace && !AnipointLink().enabled;
+            bool image_canvas = ImageCanvasActive();
             if (image_canvas && !g_zoom_fit && g_doc->ilselected >= 0)
                 snprintf(zoom_label, sizeof(zoom_label), "%.0f%%", g_zoom * 100.0f);
 
@@ -3338,6 +3359,7 @@ void DrawMainLayout(void)
     if (g_request_save_world_asm) { g_request_save_world_asm = false; OpenFileDialog(FileDialogMode::SaveAsmAnim); }
     if (g_request_save_world_project) { g_request_save_world_project = false; OpenFileDialog(FileDialogMode::SaveWorldProject); }
     if (g_request_load_world_project) { g_request_load_world_project = false; OpenFileDialog(FileDialogMode::LoadWorldProject); }
+    if (g_request_append_world_project) { g_request_append_world_project = false; OpenFileDialog(FileDialogMode::AppendWorldProject); }
     if (g_request_load_world_bg)      { g_request_load_world_bg = false; OpenFileDialog(FileDialogMode::LoadWorldBdd); }
     if (g_request_save_world_png) { g_request_save_world_png = false; OpenFileDialog(FileDialogMode::ExportWorldPng); }
     if (g_request_save_world_png_seq) { g_request_save_world_png_seq = false; OpenFileDialog(FileDialogMode::ExportWorldPngSeq); }

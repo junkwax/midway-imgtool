@@ -202,6 +202,7 @@ bool g_request_save_world_project = false;
 bool g_request_save_world_png = false;
 bool g_request_save_world_png_seq = false;
 bool g_request_load_world_project = false;
+bool g_request_append_world_project = false;
 bool g_request_load_world_bg = false;
 bool g_request_load_asm = false;
 bool g_request_load_opp_asm = false;

@@ -200,6 +200,19 @@ extern int           g_img_tex_h;
 #define ICON_UNLOCK   "\xEE\xA2\x98"     /* U+E898 lock_open */
 #define ICON_SUBFRAME "\xEE\x97\x9A"     /* U+E5DA subdirectory_arrow_right */
 #define ICON_FLIP_PREVIEW "\xEE\x8F\xA8"  /* U+E3E8 flip — h-mirror preview */
+/* World View header strip. The icon font covers the whole private use area
+   (0xE000..0xF8FF), so these need no change to the glyph range. ICON_LAYERS is
+   the same codepoint as ICON_ONION on purpose: onion skinning IS layering, and
+   an overlay menu is the set of layers over the scene. */
+#define ICON_LAYERS   "\xEE\x94\xBB"     /* U+E53B layers — overlays menu */
+#define ICON_CODE     "\xEE\xA1\xAF"     /* U+E86F code — generated ASM */
+/* Row ordering and the transport. */
+#define ICON_UP       "\xEE\x97\x98"     /* U+E5D8 arrow_upward */
+#define ICON_DOWN     "\xEE\x97\x9B"     /* U+E5DB arrow_downward */
+#define ICON_CLOSE    "\xEE\x97\x8D"     /* U+E5CD close — remove this row */
+#define ICON_PLAY     "\xEE\x80\xB7"     /* U+E037 play_arrow */
+#define ICON_PAUSE    "\xEE\x80\xB4"     /* U+E034 pause */
+#define ICON_REFRESH  "\xEE\x97\x95"     /* U+E5D5 refresh */
 
 /* Paint-tool glyphs for the right-hand toolbar column. Named rather than left
    as inline literals so the set can be audited: two tools previously shared
@@ -226,6 +239,14 @@ extern int           g_img_tex_h;
 #define ICON_VIS_TXT      "V "
 #define ICON_SAVE_TXT     "Sv"
 #define ICON_MARK_TXT     "Mk"
+#define ICON_LAYERS_TXT   "Ov"
+#define ICON_CODE_TXT     "Asm"
+#define ICON_UP_TXT       "Up"
+#define ICON_DOWN_TXT     "Dn"
+#define ICON_CLOSE_TXT    "X"
+#define ICON_PLAY_TXT     "Play"
+#define ICON_PAUSE_TXT    "Pause"
+#define ICON_REFRESH_TXT  "Refresh"
 #define ICON_MARK_ALL_TXT "MA"
 #define ICON_CLEAR_TXT    "CM"
 #define ICON_POINTS_TXT   "Pt"
@@ -757,6 +778,16 @@ extern bool g_seqscr_workspace;
 /* React canvas tab: the opponent's reactions and their per-frame anipoints.
    Mutually exclusive with the other canvas modes, like g_seqscr_workspace. */
 extern bool g_reactions_workspace;
+
+/* True when the plain Image canvas is the view in front -- i.e. none of the
+   World / Anim / Link / React workspaces has it. Anything that acts in SPRITE
+   PIXEL space (the marquee, the pixel tools) has to check this: those
+   coordinates mean nothing in the other modes, and acting on them there
+   leaves artefacts drawn against the wrong space.
+
+   Defined in ui_canvas.cpp rather than inline here: AnipointLink() lives in
+   ui_canvas.h, which this header does not include. */
+bool ImageCanvasActive(void);
 /* Set while the Anim frame browser is the list Up/Down/Space act on, cleared
    when another list takes the keyboard. Same contract as g_palette_nav. */
 extern bool g_seqscr_frame_nav;
@@ -879,6 +910,9 @@ extern bool g_request_save_world_project;
 extern bool g_request_save_world_png;
 extern bool g_request_save_world_png_seq;
 extern bool g_request_load_world_project;
+/* Same dialog, but the chosen project's rows are added to the open scene
+   instead of replacing the workspace. */
+extern bool g_request_append_world_project;
 extern bool g_request_load_world_bg;
 extern bool g_request_load_asm;
 extern bool g_request_load_opp_asm;

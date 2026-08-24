@@ -1657,6 +1657,14 @@ WorldCanvasLayout ComputeWorldCanvasLayout(ImVec2 avail, ImVec2 img_pos,
     return layout;
 }
 
+/* One frame thumbnail, and the breathing room the strip needs around them.
+   The ctrl+click highlight is drawn outside each thumbnail, so the strip has
+   to carry padding or the highlight is clipped against the child's own edge.
+   Anything reserving vertical space for a row reads these rather than a
+   number that was measured once. */
+static const float kWorldLaneThumbPx = 34.0f;
+static const float kWorldLaneStripPad = 4.0f;
+
 WorldMarkedPanelLayout ComputeWorldMarkedPanelLayout(ImVec2 avail,
                                                      ImVec2 img_pos,
                                                      int lane_count,
@@ -1669,13 +1677,24 @@ WorldMarkedPanelLayout ComputeWorldMarkedPanelLayout(ImVec2 avail,
     if (hidden_lane_count > lane_count) hidden_lane_count = lane_count;
     int drawn = lane_count - hidden_lane_count;
     /* A hidden row is its own header line and nothing else, so it should not
-       reserve the 104px a row with controls and a thumbnail strip needs. */
-    layout.height = 54.0f + (float)drawn * 104.0f +
+       reserve what a row with controls and a thumbnail strip needs.
+
+       104 was that figure before the strip gained padding for the ctrl+click
+       highlight; it grows by the same amount rather than being re-measured,
+       so the two stay in step. */
+    const float row_h = 104.0f + kWorldLaneStripPad * 2.0f;
+    /* 54 covered a one-line header. The strip wraps to a second row now --
+       timing on the first, the tools and menus on the second -- so the
+       allowance follows the font rather than staying a number that was right
+       for the old layout. */
+    const float header_h = 54.0f + ImGui::GetFrameHeightWithSpacing();
+    layout.height = header_h + (float)drawn * row_h +
                     (float)hidden_lane_count * 26.0f;
     float max_h = avail.y - 24.0f;
     if (max_h > 380.0f) max_h = 380.0f;
     if (layout.height > max_h) layout.height = max_h;
-    if (layout.height < 96.0f) layout.height = 96.0f;
+    float min_h = 96.0f + ImGui::GetFrameHeightWithSpacing();
+    if (layout.height < min_h) layout.height = min_h;
     layout.pos = ImVec2(img_pos.x + 8.0f,
                         img_pos.y + avail.y - layout.height - 8.0f);
     if (layout.pos.y < img_pos.y + 8.0f)
@@ -2418,12 +2437,39 @@ bool WorldAppendAsmLane(WorldMarkedSequenceState &state, const char *name,
 
     int n = (int)lane.frames.size();
     EnsureWorldMarkedFrameDelays(state, slot_id, n);
+
+    /* WHERE THE IMPORTED LANE'S TIMING COMES FROM, and it is not always the
+       lane.
+
+       An EXPANDED lane carries its hold by repeating the frame label - four
+       identical rows is a hold of four - so those rows really are one tick
+       each and applying a hold on top would multiply it. That was the only
+       case this used to handle, and it pinned every import to 1.
+
+       Most MK2 lanes are not written that way. They list one row per POSE and
+       the hold lives in the CALLER: mframew takes it in a0, animate_a9 takes
+       [sleep|index] with the sleep in the high word, init_anirate takes ticks
+       per frame. a_sahb_splat is five rows run at sleep 4; a_guts, STAB,
+       SMGUSH and the rest of MKBLOOD are the same shape. Nothing in the table
+       itself says 4, so importing one and pinning it to 1 produced a row
+       running at 54.7 fps - a rate no MK2 animation plays at - with no hint
+       that timing had been discarded.
+
+       Tell them apart by looking for a repeat. A lane with two consecutive
+       identical frames was expanded and is self-timing; one whose every row is
+       a distinct pose carries no timing at all, so the honest default is the
+       row's own hold rather than a made-up 1. */
+    bool expanded = false;
+    for (int k = 1; k < n && !expanded; k++) {
+        const std::vector<int> *a = frames[k - 1].piece_img;
+        const std::vector<int> *b = frames[k].piece_img;
+        if (a && b && *a == *b) expanded = true;
+    }
+    int imported_hold = expanded ? 1 : WorldMarkedSlotHold(state, slot_id);
+
     for (int k = 0; k < n; k++) {
         const WorldAsmLaneFrame &fr = frames[k];
-        /* Stays 1, and must: an ASM animation encodes a hold by repeating the
-           frame label, so the repeats already carry the timing. Applying the
-           default hold here would multiply it. */
-        state.frame_delays[slot_id][k] = 1;
+        state.frame_delays[slot_id][k] = ClampTimelineHold(imported_hold);
         /* fr.dx/dy is an ASM POSITION offset -- the running total of the
            animation's own ani_adjustxy rows, or a *_local_anipts row, which
            the exporter writes in that same sign. local_dx/dy is an ANIPOINT
@@ -3087,19 +3133,35 @@ WorldMarkedTabsResult WorldDrawMarkedTabs(WorldMarkedSequenceState &state,
    Zero — keep counting — whenever something deliberately parks the preview on
    a tick: a lane holding its last entry, a tick stop, or a ping-pong chain
    whose reversal is computed from the running tick. */
+/* How long the scene runs, and whether it repeats.
+
+   Returns the tick to wrap at, or 0 when NOTHING in the scene loops. Either
+   way `out_end_tick` receives the tick by which every visible lane has
+   finished.
+
+   This used to bail out with 0 the moment it met one held or stopped lane,
+   which meant "do not wrap" -- and nothing else ever stopped the clock, so the
+   tick counter ran away for as long as the window was open with the scene
+   sitting finished underneath it. A lane that holds is a lane that has
+   finished, not a reason to count forever. */
 static int WorldMarkedPreviewLoopTicks(WorldMarkedSequenceState &state,
-                                       const std::vector<WorldMarkedLane> &lanes)
+                                       const std::vector<WorldMarkedLane> &lanes,
+                                       int *out_end_tick)
 {
     int longest = 0;
+    bool any_loops = false;
     for (size_t li = 0; li < lanes.size(); li++) {
         const WorldMarkedLane &lane = lanes[li];
         int slot = lane.delay_slot;
         int n = (int)lane.frames.size();
         if (n <= 0 || slot < 0 || slot >= kWorldMarkedMaxTabs) continue;
         if (!state.lane_visible[slot]) continue;
-        if (state.hold_end[slot]) return 0;
-        if (state.stop_tick[slot] > 0) return 0;
-        if (state.chain_pingpong[slot]) return 0;
+        /* Holds its last frame, freezes at a tick, or reverses -- none of
+           these come back round on their own. */
+        bool holds = state.hold_end[slot] ||
+                     state.stop_tick[slot] > 0 ||
+                     state.chain_pingpong[slot];
+        if (!holds) any_loops = true;
 
         int span = WorldMarkedSequenceTicks(state, slot, n);
         for (int i = 0; i < n; i++) {
@@ -3110,9 +3172,14 @@ static int WorldMarkedPreviewLoopTicks(WorldMarkedSequenceState &state,
                 state.visible_until[slot][i] > span)
                 span = state.visible_until[slot][i];
         }
+        if (state.stop_tick[slot] > 0 && state.stop_tick[slot] + 1 > span)
+            span = state.stop_tick[slot] + 1;
         if (span > longest) longest = span;
     }
-    return longest;
+    if (out_end_tick) *out_end_tick = longest;
+    /* One looping lane is enough to make the whole scene repeat: the held
+       ones replay alongside it, which is what a scene loop means. */
+    return any_loops ? longest : 0;
 }
 
 bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
@@ -3130,9 +3197,19 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
         state.timer -= step;
         state.frame++;
     }
-    int loop_ticks = WorldMarkedPreviewLoopTicks(state, lanes);
-    if (loop_ticks > 0 && state.frame >= loop_ticks)
-        state.frame %= loop_ticks;
+    int end_tick = 0;
+    int loop_ticks = WorldMarkedPreviewLoopTicks(state, lanes, &end_tick);
+    state.preview_end_tick = end_tick;
+    if (loop_ticks > 0) {
+        if (state.frame >= loop_ticks)
+            state.frame %= loop_ticks;
+    } else if (end_tick > 0 && state.frame >= end_tick) {
+        /* Nothing here loops and everything has played. Park the clock on the
+           last tick instead of counting into empty space -- the scene on
+           screen stopped changing a long time before the number did. */
+        state.frame = end_tick;
+        state.paused = true;
+    }
 
     bool have_image = false;
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
@@ -3955,6 +4032,63 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
     return result;
 }
 
+/* Off by default. The Subframes/Tick/Now/Swap strip sits directly above the
+   thumbnails and only appears when the selected sprite happens to have child
+   subframes, so it turns up unbidden in the middle of an unrelated edit and
+   pushes the strip down. It is a real tool, just a rare one -- View > Show
+   Subframe Swap Tool turns it back on. */
+bool g_world_show_subframe_tool = false;
+
+/* ---- Ctrl+click frame selection ----------------------------------------
+   A set of (row, entry) pairs picked out of the thumbnail strips, across any
+   number of rows, so a run can be gathered and dropped into the row being
+   built. Drag-and-drop already MOVES one frame between rows; this is the
+   copy, and the multiple.
+
+   Held as a plain vector because it is tiny and needs a stable order: entries
+   are copied in row-then-index order, not click order, so picking the same
+   frames in a different sequence still yields the same run. */
+struct WorldFrameSel {
+    int slot;
+    int frame_idx;
+};
+static std::vector<WorldFrameSel> g_world_frame_sel;
+
+/* Defined further down, next to the move it is modelled on. */
+bool WorldMarkedCopySelectionToSlot(WorldMarkedSequenceState &state,
+                                    int dst_slot, int *out_copied,
+                                    int *out_skipped);
+
+static bool WorldFrameSelContains(int slot, int frame_idx)
+{
+    for (const WorldFrameSel &e : g_world_frame_sel)
+        if (e.slot == slot && e.frame_idx == frame_idx) return true;
+    return false;
+}
+
+static void WorldFrameSelToggle(int slot, int frame_idx)
+{
+    for (size_t i = 0; i < g_world_frame_sel.size(); i++) {
+        if (g_world_frame_sel[i].slot == slot &&
+            g_world_frame_sel[i].frame_idx == frame_idx) {
+            g_world_frame_sel.erase(g_world_frame_sel.begin() + (long)i);
+            return;
+        }
+    }
+    WorldFrameSel e;
+    e.slot = slot;
+    e.frame_idx = frame_idx;
+    g_world_frame_sel.push_back(e);
+}
+
+/* Every entry a row loses or gains shifts the indices the selection is holding,
+   so anything that rebuilds a row drops it rather than letting it point at
+   whatever moved into place. */
+static void WorldFrameSelClear(void)
+{
+    g_world_frame_sel.clear();
+}
+
 /* The tick rate, as a fact rather than a control. MK2 refreshes at
    54.7068 Hz and there is no version of the machine that does not, so the
    only thing this has to do is stop people looking for a speed knob here
@@ -3973,6 +4107,38 @@ static void WorldDrawTickRateReadout(void)
             kMk2TickHz);
 }
 
+/* An InputInt that hands its value over only when the edit FINISHES -- Enter,
+   Tab, or clicking away -- instead of on every keystroke.
+
+   Committing per keystroke is what made the hold boxes fight back. Deleting
+   the "2" from "12" hands the commit a 1; ClampTimelineHold accepts it, the
+   row is retimed to 1, its scheduled windows are re-laid, and the tick clock
+   is rewound. The box is then rewritten from that new value underneath the
+   caret, so the "7" meant for "17" lands somewhere else and the playhead has
+   moved as well. Half-typed numbers are not edits, and nothing outside the
+   widget should see them.
+
+   Deliberately does not consult IsItemActive: an InputInt with step buttons is
+   a GROUP, and a group's LastItemData.ID is 0, so IsItemActive is always false
+   for one. IsItemDeactivatedAfterEdit is forwarded by EndGroup and is true for
+   both shapes -- and it only fires when something really was edited, so a
+   click in and straight back out commits nothing.
+
+   One pending value is enough: ImGui has at most one active item. */
+static bool WorldDeferredIntInput(const char *id, int shown, float width,
+                                  int step, int *out_value)
+{
+    static int s_pending = 0;
+    ImGui::SetNextItemWidth(width);
+    int edited = shown;
+    bool changed = ImGui::InputInt(id, &edited, step, step);
+    if (ImGui::IsItemActivated()) s_pending = shown;
+    if (changed) s_pending = edited;
+    if (!ImGui::IsItemDeactivatedAfterEdit()) return false;
+    if (out_value) *out_value = s_pending;
+    return true;
+}
+
 /* Ticks per frame, sitting next to the transport in both preview headers.
    This is the control that actually sets playback speed: the tick rate is
    hardware (54.7 Hz) and stays put, while the hold is authoring, and the value
@@ -3986,23 +4152,23 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
     snprintf(id, sizeof(id), "##%s_hold", id_suffix);
     ImGui::TextDisabled("Ticks/frame");
     ImGui::SameLine(0.0f, 4.0f);
-    ImGui::SetNextItemWidth(76.0f);
-    int hold = state.default_hold;
-    if (ImGui::InputInt(id, &hold, 1, 1)) {
+    int hold = 0;
+    if (WorldDeferredIntInput(id, state.default_hold, 76.0f, 1, &hold)) {
         state.default_hold = ClampTimelineHold(hold);
         WorldMarkedApplyUniformHold(state, state.default_hold);
     }
     if (ImGui::IsItemHovered()) {
         int shown = ClampTimelineHold(state.default_hold);
         ImGui::SetTooltip(
-            "Hold every frame this many ticks. This is the sleep value the\n"
-            "animation runner is given -- MKUTIL.ASM animate_a9 holds one\n"
-            ".long row for this many ticks -- not a preview-only speed.\n\n"
+            "Hold every frame this many ticks, on every VISIBLE row. This is\n"
+            "the sleep value the animation runner is given -- MKUTIL.ASM\n"
+            "animate_a9 holds one .long row for this many ticks -- not a\n"
+            "preview-only speed.\n\n"
             "MK2 runs %.4f ticks a second, so a hold of %d is\n"
             "%.4f / %d = %.2f rows a second.\n\n"
             "Rows follow this until one is given its own T/f, which then keeps\n"
-            "it; \"All\" overrides those too. The dummy body keeps its own\n"
-            "canned timing either way.",
+            "it; \"All\" overrides that. Hidden rows and the dummy body are left\n"
+            "alone -- show a row to retime it.",
             kMk2TickHz, shown, kMk2TickHz, shown, kMk2TickHz / (float)shown);
     }
 
@@ -4039,26 +4205,48 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
             kMk2TickHz / 4.0f, kMk2TickHz / 5.0f, kMk2TickHz / 6.0f,
             kMk2TickHz / 4.0f);
 
-    /* How many rows have been taken off the box to its left, and the one
-       action that pulls them back. Without the count, a global that visibly
-       does nothing to part of the scene reads as broken rather than as rows
-       that were deliberately pinned. */
-    int own_rows = 0;
-    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++)
-        if (slot != kWorldDummyDecapSlot && state.slot_hold_custom[slot])
-            own_rows++;
-    if (own_rows > 0) {
-        char all_id[64];
-        snprintf(all_id, sizeof(all_id), "All##%s_hold_all", id_suffix);
+    /* Which rows this box does NOT reach, and the one action that pulls the
+       pinned ones back. Without the count, a global that visibly does nothing
+       to part of the scene reads as broken rather than as rows that were
+       deliberately pinned or parked.
+
+       Pinned and hidden are counted apart because only one of them is
+       something "All" can undo. */
+    int own_rows = 0, hidden_rows = 0;
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
+        if (slot == kWorldDummyDecapSlot) continue;
+        if (state.sequence_frames[slot].empty()) continue;
+        if (!state.lane_visible[slot]) hidden_rows++;
+        else if (state.slot_hold_custom[slot]) own_rows++;
+    }
+    if (own_rows > 0 || hidden_rows > 0) {
         ImGui::SameLine(0.0f, 8.0f);
-        if (ImGui::SmallButton(all_id))
-            WorldMarkedApplyUniformHold(state, state.default_hold, true);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%d row%s been taken off the global with its own T/f.\n"
-                              "Apply %d to every row and put them all back on\n"
-                              "the global.",
-                              own_rows, own_rows == 1 ? " has" : "s have",
-                              ClampTimelineHold(state.default_hold));
+        if (own_rows > 0) {
+            char all_id[64];
+            snprintf(all_id, sizeof(all_id), "All##%s_hold_all", id_suffix);
+            if (ImGui::SmallButton(all_id))
+                WorldMarkedApplyUniformHold(state, state.default_hold, true);
+        } else {
+            ImGui::TextDisabled("(%d hidden)", hidden_rows);
+        }
+        if (ImGui::IsItemHovered()) {
+            char note[320];
+            int n = 0;
+            n += snprintf(note + n, sizeof(note) - n,
+                          "This hold reaches every visible row that is not pinned.\n\n");
+            if (own_rows > 0)
+                n += snprintf(note + n, sizeof(note) - n,
+                              "%d pinned with its own T/f. Click to apply %d to\n"
+                              "every visible row and put them back on the global.\n",
+                              own_rows, ClampTimelineHold(state.default_hold));
+            if (hidden_rows > 0 && n < (int)sizeof(note))
+                snprintf(note + n, sizeof(note) - n,
+                         "%d hidden, and left alone -- a hidden row shows no T/f,\n"
+                         "so retiming it would change timing you cannot see. Show\n"
+                         "the row to retime it. \"All\" does not override this.\n",
+                         hidden_rows);
+            ImGui::SetTooltip("%s", note);
+        }
     }
 }
 
@@ -4213,15 +4401,30 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     /* ---- Transport: the only controls that stay on the strip ---- */
     ImGui::Text("Frame Sequence");
     ImGui::SameLine();
-    if (ImGui::SmallButton(state.paused ? "Play##world_marked_pause"
-                                        : "Pause##world_marked_pause")) {
+    if (ImGui::SmallButton(state.paused
+            ? (g_icon_font_loaded ? ICON_PLAY "##world_marked_pause"
+                                  : ICON_PLAY_TXT "##world_marked_pause")
+            : (g_icon_font_loaded ? ICON_PAUSE "##world_marked_pause"
+                                  : ICON_PAUSE_TXT "##world_marked_pause"))) {
+        /* A scene where nothing loops parks itself on its last tick. Resuming
+           from there would sit still and re-pause on the next frame, so Play
+           starts it over instead of being a button that does nothing. */
+        bool ended = state.paused && state.preview_end_tick > 0 &&
+                     state.frame >= state.preview_end_tick;
         state.paused = !state.paused;
+        if (ended) WorldMarkedRestart(state);
     }
+    if (ImGui::IsItemHovered() && state.preview_end_tick > 0 &&
+        state.frame >= state.preview_end_tick)
+        ImGui::SetTooltip("Every row has finished at tick %d and nothing here\n"
+                          "loops. Play starts the scene over.",
+                          state.preview_end_tick);
     ImGui::SameLine();
-    if (ImGui::SmallButton("Refresh##world_marked_restart"))
+    if (ImGui::SmallButton(g_icon_font_loaded ? ICON_REFRESH "##world_marked_restart"
+                                              : ICON_REFRESH_TXT "##world_marked_restart"))
         WorldMarkedRestart(state);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Restart every marked tab sequence from frame 1.");
+        ImGui::SetTooltip("Restart: every marked row plays again from frame 1.");
     ImGui::SameLine();
     ImGui::TextDisabled("Tick");
     ImGui::SameLine();
@@ -4240,12 +4443,130 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
        hardware, so it is a readout now and Ticks/frame is the only knob. */
     WorldDrawTickRateReadout();
 
-    WorldHeaderDivider();
+    /* ---- Second row -------------------------------------------------------
+       The strip had grown to transport, timing, a selection group, four menus
+       and the project name on ONE line, which runs off the side of a docked
+       panel long before the menus are reached. Everything that acts on the
+       scene starts again at the left here, under the clock it reads. No
+       SameLine above: the line break IS the separator, which is why the
+       divider that used to sit before Overlays is gone. */
 
-    /* ---- Overlays: everything drawn over or behind the playfield ---- */
-    if (WorldHeaderMenu("Overlays...##world_menu_overlays", "##world_overlays_popup",
+    /* Only on screen while frames are picked. The count is the point: a
+       selection spread over rows that are scrolled apart is otherwise
+       invisible, and a Copy button with no idea how much would be a button
+       nobody trusts. */
+    if (!g_world_frame_sel.empty()) {
+        int picked = (int)g_world_frame_sel.size();
+        int dst = state.active_slot;
+        bool dst_ok = dst >= 0 && dst < kWorldMarkedMaxTabs &&
+                      dst != kWorldDummyDecapSlot;
+        ImGui::TextColored(ImVec4(0.35f, 0.86f, 1.0f, 1.0f), "%d picked", picked);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%d frame%s ctrl+clicked. They copy in row order,\n"
+                              "not the order you clicked them.", picked,
+                              picked == 1 ? "" : "s");
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::BeginDisabled(!dst_ok);
+        if (ImGui::SmallButton("Copy to Active##world_sel_copy")) {
+            int copied = 0, skipped = 0;
+            if (WorldMarkedCopySelectionToSlot(state, dst, &copied, &skipped)) {
+                char tail[96];
+                tail[0] = 0;
+                if (skipped > 0)
+                    snprintf(tail, sizeof(tail),
+                             " %d skipped: composite entries cannot cross files.",
+                             skipped);
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Copied %d frame%s to row %d.%s", copied,
+                         copied == 1 ? "" : "s", dst + 1, tail);
+                g_restore_msg_timer = 4.0f;
+                WorldFrameSelClear();
+            }
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(dst_ok
+                ? "Append the picked frames to the row holding [KEYS] (row %d),\n"
+                  "carrying their offsets, flips, Z and hold. The originals stay\n"
+                  "put -- drag a frame instead to move it."
+                : "No row holds [KEYS]. Click a row's frame first to make it\n"
+                  "the active row.", dst + 1);
+        ImGui::SameLine(0.0f, 4.0f);
+        if (ImGui::SmallButton("X##world_sel_clear"))
+            WorldFrameSelClear();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Drop the picked frames.");
+        /* Keep the menus on this same second row rather than starting a
+           third one that only exists while something is picked. */
+        WorldHeaderDivider();
+    }
+
+    /* ---- File: the scene in and out, and pixels out ----
+       First on the row because it is the one people arrive looking for.
+       Load Project is how a session starts, and hunting for it behind two
+       menus about drawing and codegen was backwards.
+
+       Was called "Export...", which described half of what is in here -- Load
+       Project reads a file rather than writing one, and nobody looks for that
+       under Export. */
+    if (WorldHeaderMenu(g_icon_font_loaded ? ICON_FOLDER "##world_menu_export"
+                                           : "File##world_menu_export",
+                        "##world_export_popup",
+                        "FILE\n\n"
+                        "PNG stills and sequences, and saving or loading the\n"
+                        "World View project file.")) {
+        if (ImGui::MenuItem("Save PNG...##world_marked_save_png"))
+            action.request_save_png = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Write the composited scene at this tick -- every visible lane,\n"
+                              "in draw order -- to a PNG.");
+        if (ImGui::MenuItem("Save PNG Sequence...##world_marked_save_png_seq"))
+            action.request_save_png_seq = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Write one PNG per tick across the whole sequence,\n"
+                              "numbered <name>_0000.PNG onward.");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Save Project...##world_marked_save_project"))
+            action.request_save_project = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save the World View layout, slots, timing, offsets, marks,\n"
+                              "and source file links.");
+        if (ImGui::MenuItem("Load Project...##world_marked_load_project"))
+            action.request_load_project = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Restore a World View project exactly as it was saved.\n"
+                              "Closes what is open first -- a project is a whole\n"
+                              "workspace, not an overlay.");
+        if (ImGui::MenuItem("Append Project...##world_marked_append_project"))
+            action.request_append_project = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Add another project's rows to the scene already open,\n"
+                              "into whatever rows are free. Its IMGs are opened\n"
+                              "alongside the current tabs, and one already open is\n"
+                              "reused rather than opened twice.\n\n"
+                              "Only the rows come across: the origin, canvas size,\n"
+                              "tick clock and global hold stay as they are here.\n"
+                              "Two halves of a fight saved separately can be\n"
+                              "watched together this way.");
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine();
+
+    /* ---- Overlays: everything in the scene that is not a marked row ---- */
+    bool lanes_marked = state.dummy_decap_body || !state.split_lanes.empty();
+    if (WorldHeaderMenu(g_icon_font_loaded
+                            ? (lanes_marked ? ICON_LAYERS "*##world_menu_overlays"
+                                            : ICON_LAYERS "##world_menu_overlays")
+                            : (lanes_marked ? "Overlays *##world_menu_overlays"
+                                            : "Overlays##world_menu_overlays"),
+                        "##world_overlays_popup",
+                        "OVERLAYS\n\n"
                         "Sprite borders, TV-safe bounds, the reference figure,\n"
-                        "the stage background, and anchor linking.")) {
+                        "the stage background, anchor linking, the dummy\n"
+                        "fatality body, and clearing split rows.\n\n"
+                        "* means the dummy body or a split row is in the scene.\n"
+                        "Row order, timing and deletion live on each row.")) {
         ImGui::Checkbox("Borders##world_marked_borders", &state.draw_sprite_borders);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Draw colored sprite bounds in World View.");
@@ -4292,84 +4613,12 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
             ImGui::SetTooltip("Drag from a feature on one World View sprite to its matching\n"
                               "feature on another. On release, the target sprite's anipoint\n"
                               "is moved so the two points meet.");
-        ImGui::EndPopup();
-    }
-
-    ImGui::SameLine();
-
-    /* ---- ASM: the generated animation tables ---- */
-    if (WorldHeaderMenu("ASM...##world_menu_asm", "##world_asm_popup",
-                        "Copy, preview, save or load animation-table source.")) {
-        if (ImGui::MenuItem("Copy ASM to Clipboard##world_marked_copy_asm")) {
-            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
-            ImGui::SetClipboardText(state.generated_asm.c_str());
-            action.copied_asm = true;
-            action.copied_lane_count = (int)lanes.size();
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned\n"
-                              "local-anipoint tables.");
-        if (ImGui::MenuItem("View ASM##world_marked_view_asm")) {
-            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
-            state.show_asm = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Preview the generated animation-table source.");
-        if (ImGui::MenuItem("Save ASM...##world_marked_save_asm")) {
-            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
-            action.request_save_asm = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Save the generated animation tables to a .ASM file.");
-        if (ImGui::MenuItem("Load ASM...##world_marked_load_asm"))
-            action.request_load_asm = true;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
-                              "The sprite IMGs it references are opened automatically.");
-        ImGui::EndPopup();
-    }
-
-    ImGui::SameLine();
-
-    /* ---- Export: pixels out, and the whole scene in and out ---- */
-    /* Was "Export...", which only described half of what is in here -- Load
-       Project reads a file rather than writing one, and someone looking for
-       it does not open a menu called Export. */
-    if (WorldHeaderMenu("File...##world_menu_export", "##world_export_popup",
-                        "PNG stills and sequences, and saving or loading the\n"
-                        "World View project file.")) {
-        if (ImGui::MenuItem("Save PNG...##world_marked_save_png"))
-            action.request_save_png = true;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Write the composited scene at this tick -- every visible lane,\n"
-                              "in draw order -- to a PNG.");
-        if (ImGui::MenuItem("Save PNG Sequence...##world_marked_save_png_seq"))
-            action.request_save_png_seq = true;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Write one PNG per tick across the whole sequence,\n"
-                              "numbered <name>_0000.PNG onward.");
         ImGui::Separator();
-        if (ImGui::MenuItem("Save Project...##world_marked_save_project"))
-            action.request_save_project = true;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Save the World View layout, slots, timing, offsets, marks,\n"
-                              "and source file links.");
-        if (ImGui::MenuItem("Load Project...##world_marked_load_project"))
-            action.request_load_project = true;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Restore a World View project exactly as it was saved.");
-        ImGui::EndPopup();
-    }
-
-    ImGui::SameLine();
-
-    /* ---- Lanes: which rows exist, rather than what any one row does ---- */
-    bool lanes_marked = state.dummy_decap_body || !state.split_lanes.empty();
-    if (WorldHeaderMenu(lanes_marked ? "Lanes *##world_menu_lanes"
-                                     : "Lanes...##world_menu_lanes",
-                        "##world_lanes_popup",
-                        "The dummy fatality body, and the split rows.\n"
-                        "Row order and deletion live on each row.")) {
+        /* The dummy body and the split rows moved here from a "Lanes..." menu
+           of their own. Overlays already means "things in the scene that are
+           not your marked rows" -- the reference figure and the stage
+           background live here -- and one fewer menu on the strip is worth
+           more than the category being exact. */
         if (ImGui::Checkbox("Dummy Body##world_dummy_decap_body",
                             &state.dummy_decap_body)) {
             state.dummy_decap_reset = true;
@@ -4400,14 +4649,50 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Return to automatic dummy body selection.");
         }
-
-        ImGui::Separator();
         if (ImGui::MenuItem("Clear Split Rows##world_marked_clear_splits", NULL, false,
                             !state.split_lanes.empty()))
             WorldMarkedClearSplitLanes(state);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("Remove split rows and restore each source row to its\n"
                               "marked-frame sequence.");
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine();
+
+    /* ---- ASM: the generated animation tables ---- */
+    if (WorldHeaderMenu(g_icon_font_loaded ? ICON_CODE "##world_menu_asm"
+                                           : "ASM##world_menu_asm",
+                        "##world_asm_popup",
+                        "ASM\n\n"
+                        "Copy, preview, save or load animation-table source\n"
+                        "for the WHOLE scene. Each row has its own copy button.")) {
+        if (ImGui::MenuItem("Copy ASM to Clipboard##world_marked_copy_asm")) {
+            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+            ImGui::SetClipboardText(state.generated_asm.c_str());
+            action.copied_asm = true;
+            action.copied_lane_count = (int)lanes.size();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Copies one animation table per marked tab, plus aligned\n"
+                              "local-anipoint tables.");
+        if (ImGui::MenuItem("View ASM##world_marked_view_asm")) {
+            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+            state.show_asm = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Preview the generated animation-table source.");
+        if (ImGui::MenuItem("Save ASM...##world_marked_save_asm")) {
+            state.generated_asm = WorldBuildMarkedAsm(state, lanes);
+            action.request_save_asm = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save the generated animation tables to a .ASM file.");
+        if (ImGui::MenuItem("Load ASM...##world_marked_load_asm"))
+            action.request_load_asm = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Load a saved/character .ASM into the ASM Animations viewer.\n"
+                              "The sprite IMGs it references are opened automatically.");
         ImGui::EndPopup();
     }
 
@@ -5744,6 +6029,34 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
     const char *doc_name = !lane.label.empty()
                          ? lane.label.c_str()
                          : (lane.doc && lane.doc->fname_s[0] ? lane.doc->fname_s : "Untitled");
+
+    /* This row's own animation table, ahead of the eye so it reads as
+       something the row produces rather than something done to it. The
+       header's ASM... menu emits the WHOLE scene as one draft, which is the
+       wrong unit when a lane is being iterated on its own -- a fatality is
+       built one actor at a time, and pasting five tables to get at one is how
+       the wrong lane ends up in a character file. */
+    {
+        std::vector<WorldMarkedLane> one;
+        one.push_back(lane);
+        if (ImGui::SmallButton(g_icon_font_loaded ? ICON_CODE "##world_lane_asm"
+                                                  : "ASM##world_lane_asm")) {
+            state.generated_asm = WorldBuildMarkedAsm(state, one);
+            ImGui::SetClipboardText(state.generated_asm.c_str());
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Copied %s's animation table (%d entr%s) to the clipboard.",
+                     doc_name, (int)lane.frames.size(),
+                     lane.frames.size() == 1 ? "y" : "ies");
+            g_restore_msg_timer = 4.0f;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Copy JUST this row's animation table, with its\n"
+                              "local-anipoint table, to the clipboard.\n\n"
+                              "ASM... on the strip above does the whole scene,\n"
+                              "and can also view, save or load one.");
+        ImGui::SameLine();
+    }
+
     bool row_visible = state.lane_visible[lane.delay_slot];
     const char *eye = g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT;
     if (!row_visible)
@@ -5764,7 +6077,8 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
        for equal Z, and ASM export order all at once. */
     ImGui::SameLine();
     ImGui::BeginDisabled(display_slot <= 0);
-    if (ImGui::SmallButton("Up##world_lane_up"))
+    if (ImGui::SmallButton(g_icon_font_loaded ? ICON_UP "##world_lane_up"
+                                              : ICON_UP_TXT "##world_lane_up"))
         WorldMarkedMoveLane(state, lanes, display_slot, -1);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -5772,13 +6086,16 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                           "sharing a Z, and the order the ASM tables come out in.");
     ImGui::SameLine();
     ImGui::BeginDisabled(display_slot >= (int)lanes.size() - 1);
-    if (ImGui::SmallButton("Dn##world_lane_down"))
+    if (ImGui::SmallButton(g_icon_font_loaded ? ICON_DOWN "##world_lane_down"
+                                              : ICON_DOWN_TXT "##world_lane_down"))
         WorldMarkedMoveLane(state, lanes, display_slot, +1);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Move this row down.");
+        ImGui::SetTooltip("Move this row down. Row order is the draw order for\n"
+                          "lanes sharing a Z, and the ASM table order.");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Del##world_lane_del"))
+    if (ImGui::SmallButton(g_icon_font_loaded ? ICON_CLOSE "##world_lane_del"
+                                              : ICON_CLOSE_TXT "##world_lane_del"))
         want_delete_popup = true;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Remove this row. Asks first and spells out what it will do --\n"
@@ -5802,7 +6119,10 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Collapsed while hidden: no controls, no thumbnails,\n"
                               "no sprite textures built, and nothing drawn in the\n"
-                              "world. Click the eye to bring it back.");
+                              "world. Click the eye to bring it back.\n\n"
+                              "Its timing is frozen too -- the global Ticks/frame\n"
+                              "skips hidden rows, so this row keeps the hold it\n"
+                              "had when you hid it.");
         return WorldDrawRowDeleteConfirm(state, lane, display_slot,
                                          want_delete_popup);
     }
@@ -5840,9 +6160,8 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                       " reaches it."
                     : "Following the global Ticks/frame.");
         ImGui::SameLine(0.0f, 4.0f);
-        ImGui::SetNextItemWidth(48.0f);
-        int want = shown;
-        if (ImGui::InputInt("##world_lane_hold", &want, 0, 0))
+        int want = 0;
+        if (WorldDeferredIntInput("##world_lane_hold", shown, 48.0f, 0, &want))
             WorldMarkedSetSlotHold(state, slot, want, true);
         ImGui::SameLine(0.0f, 4.0f);
         bool follow = !own;
@@ -5917,10 +6236,14 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         ImGui::SameLine();
         ImGui::Checkbox("Mirror##world_lane_mirror", mirror_flag);
     }
-    /* Z belongs to the slot, not the entry. Draw priority is "which lane is in
-       front", and a lane whose Z changed halfway through would pop through the
-       one it overlaps. The per-entry array stays — the ASM export annotates
-       each entry — but editing writes the whole slot at once. */
+    /* Z is usually a property of the row: draw priority is "which lane is in
+       front", and a lane whose Z changes halfway pops through the one it
+       overlaps. So this box sets the whole row at once and is the one to
+       reach for.
+
+       It is no longer the ONLY way in, though -- the frame editor has a Z for
+       the selected entry. The renderer has always sorted per entry and the
+       export has always annotated per entry; the array simply had no editor. */
     {
         int slot_z = 0;
         const std::vector<int> &zs = state.frame_z[lane.delay_slot];
@@ -5935,9 +6258,13 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                 entry_z = z;
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Draw priority for this whole slot: higher Z draws on top\n"
-                              "of other lanes. Equal Z keeps the normal lane order\n"
-                              "(slot 1 on top). Applies to every entry in the slot.");
+            ImGui::SetTooltip("Draw priority for this whole row: higher Z draws on top\n"
+                              "of other rows. Equal Z keeps the normal row order\n"
+                              "(row 1 on top).\n\n"
+                              "Writes every entry at once, and shows entry 1's value --\n"
+                              "so a row whose Z changes partway reads as its first\n"
+                              "entry here. Set a single frame's Z with the Z box in\n"
+                              "the frame editor below.");
     }
     if (!lane.dummy_decap) {
         ImGui::SameLine();
@@ -6124,30 +6451,67 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         int motion_dy = state.motion_dy[lane.delay_slot][edit_fi];
         int motion_cap_x = state.motion_cap_x[lane.delay_slot][edit_fi];
         int motion_cap_y = state.motion_cap_y[lane.delay_slot][edit_fi];
+        /* DEFERRED, and this box above all the others on this row.
+           ClampTimelineHold floors at 1, so a per-keystroke commit does not
+           merely show a wrong number for an instant - clearing the field to
+           retype it commits the empty value as 1, WorldMarkedSetSlotHold-style
+           retiming runs, and the box is rewritten from that 1 under the caret
+           so the digits meant for it land somewhere else. The visible result is
+           a row that will not hold anything but 1 no matter how often you type
+           into it, and it is intermittent: overtyping a single digit survives,
+           clear-then-type does not. Every blood row in data/sliceblood.WAX came
+           out at 1 tick this way while the dive lane authored beside it kept
+           its 3s and 4s. */
         ImGui::SameLine();
         ImGui::TextDisabled("Delay");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(38.0f);
-        if (ImGui::InputInt("##world_edit_delay", &delay, 0, 0))
+        if (WorldDeferredIntInput("##world_edit_delay", delay, 38.0f, 0, &delay))
             state.frame_delays[lane.delay_slot][edit_fi] = ClampTimelineHold(delay);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Repeat count for this sequence entry.");
         ImGui::SameLine();
         ImGui::TextDisabled("dAX");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(46.0f);
-        if (ImGui::InputInt("##world_edit_dax", &local_dx, 0, 0))
+        if (WorldDeferredIntInput("##world_edit_dax", local_dx, 46.0f, 0, &local_dx))
             state.local_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(local_dx);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Local anipoint X delta for this entry. You can also drag the sprite in the world canvas.");
         ImGui::SameLine();
         ImGui::TextDisabled("dAY");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(46.0f);
-        if (ImGui::InputInt("##world_edit_day", &local_dy, 0, 0))
+        if (WorldDeferredIntInput("##world_edit_day", local_dy, 46.0f, 0, &local_dy))
             state.local_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(local_dy);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Local anipoint Y delta for this entry. Positive values move the effective anipoint down.");
+        /* This ENTRY's draw priority. The row-level Z next to Mirror writes
+           every entry at once, which is the right default -- draw priority is
+           usually "which lane is in front" and a lane that changes Z halfway
+           pops through whatever it overlaps. But a hand passing behind a torso
+           for three frames and in front for the rest is a real pose, the
+           renderer has always sorted per entry, and the ASM export already
+           annotates each one, so the array was the only thing without a way to
+           edit it. */
+        ImGui::SameLine();
+        ImGui::TextDisabled("Z");
+        ImGui::SameLine();
+        int entry_z = state.frame_z[lane.delay_slot][edit_fi];
+        if (WorldDeferredIntInput("##world_edit_z", entry_z, 42.0f, 0, &entry_z))
+            state.frame_z[lane.delay_slot][edit_fi] = ClampWorldMarkedZ(entry_z);
+        if (ImGui::IsItemHovered()) {
+            bool uniform = true;
+            const std::vector<int> &zs = state.frame_z[lane.delay_slot];
+            for (size_t zi = 1; zi < zs.size() && uniform; zi++)
+                if (zs[zi] != zs[0]) uniform = false;
+            ImGui::SetTooltip(
+                "Draw priority for THIS entry only: higher draws on top.\n"
+                "Equal Z falls back to row order (row 1 on top).\n\n"
+                "%s\n\n"
+                "The Z box on the row above sets every entry at once.",
+                uniform ? "Every entry in this row currently shares one Z."
+                        : "This row's entries do NOT all share a Z -- it changes\n"
+                          "partway through, which the preview and the export\n"
+                          "both honour.");
+        }
         int mirror_bits = state.frame_mirror[lane.delay_slot][edit_fi];
         bool flip_x = (mirror_bits & kWorldFrameMirrorX) != 0;
         bool flip_y = (mirror_bits & kWorldFrameMirrorY) != 0;
@@ -6196,32 +6560,27 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
             ImGui::Separator();
 
             ImGui::TextDisabled("Schedule (global preview ticks)");
-            ImGui::SetNextItemWidth(90.0f);
-            if (ImGui::InputInt("Show@##world_edit_show", &show_at, 1, 1))
+            if (WorldDeferredIntInput("Show@##world_edit_show", show_at, 90.0f, 1, &show_at))
                 state.visible_from[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleFrom(show_at);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Hide this entry until the global preview tick reaches this value.");
-            ImGui::SetNextItemWidth(90.0f);
-            if (ImGui::InputInt("Hide@##world_edit_hide", &hide_at, 1, 1))
+            if (WorldDeferredIntInput("Hide@##world_edit_hide", hide_at, 90.0f, 1, &hide_at))
                 state.visible_until[lane.delay_slot][edit_fi] = ClampWorldMarkedVisibleUntil(hide_at);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Hide this entry once the global preview tick reaches this value. 0 disables the cutoff.");
 
             ImGui::Separator();
             ImGui::TextDisabled("Motion (pixels per tick)");
-            ImGui::SetNextItemWidth(90.0f);
-            if (ImGui::InputInt("vX##world_edit_vx", &motion_dx, 1, 1))
+            if (WorldDeferredIntInput("vX##world_edit_vx", motion_dx, 90.0f, 1, &motion_dx))
                 state.motion_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dx);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Visual X motion in pixels per tick. Positive moves this entry right.");
-            ImGui::SetNextItemWidth(90.0f);
-            if (ImGui::InputInt("vY##world_edit_vy", &motion_dy, 1, 1))
+            if (WorldDeferredIntInput("vY##world_edit_vy", motion_dy, 90.0f, 1, &motion_dy))
                 state.motion_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedMotion(motion_dy);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Visual Y motion in pixels per tick. Positive moves this entry down.");
             ImGui::BeginDisabled(!(motion_dx || motion_dy || motion_cap_x || motion_cap_y));
-            ImGui::SetNextItemWidth(90.0f);
-            if (ImGui::InputInt("StopY##world_edit_stop_y", &motion_cap_y, 1, 1))
+            if (WorldDeferredIntInput("StopY##world_edit_stop_y", motion_cap_y, 90.0f, 1, &motion_cap_y))
                 state.motion_cap_y[lane.delay_slot][edit_fi] =
                     ClampWorldMarkedMotionCap(motion_cap_y);
             ImGui::EndDisabled();
@@ -6238,18 +6597,15 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                 int dual_dx = state.dual_dx[lane.delay_slot][edit_fi];
                 int dual_dy = state.dual_dy[lane.delay_slot][edit_fi];
                 int dual_z = state.dual_z[lane.delay_slot][edit_fi];
-                ImGui::SetNextItemWidth(90.0f);
-                if (ImGui::InputInt("dAX2##world_edit_dax2", &dual_dx, 1, 1))
+                if (WorldDeferredIntInput("dAX2##world_edit_dax2", dual_dx, 90.0f, 1, &dual_dx))
                     state.dual_dx[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(dual_dx);
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Local anipoint X delta for the second copy of this sprite.");
-                ImGui::SetNextItemWidth(90.0f);
-                if (ImGui::InputInt("dAY2##world_edit_day2", &dual_dy, 1, 1))
+                if (WorldDeferredIntInput("dAY2##world_edit_day2", dual_dy, 90.0f, 1, &dual_dy))
                     state.dual_dy[lane.delay_slot][edit_fi] = ClampWorldMarkedAniptDelta(dual_dy);
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Local anipoint Y delta for the second copy of this sprite.");
-                ImGui::SetNextItemWidth(90.0f);
-                if (ImGui::InputInt("Z2##world_edit_z2", &dual_z, 1, 1))
+                if (WorldDeferredIntInput("Z2##world_edit_z2", dual_z, 90.0f, 1, &dual_z))
                     state.dual_z[lane.delay_slot][edit_fi] = ClampWorldMarkedZ(dual_z);
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Draw priority for the second copy. Lower than the slot Z puts\n"
@@ -7025,11 +7381,30 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
         }
     }
 
-    ImGui::BeginChild("##world_lane_frames", ImVec2(0.0f, 42.0f), false,
+    /* A borderless BeginChild gets ZERO window padding in ImGui, whatever
+       WindowPadding is pushed around it -- so content sits flush against the
+       child's clip rect. The ctrl+click highlight is drawn 2px OUTSIDE the
+       thumbnail, which put it exactly on that edge and shaved the top and
+       left off it. AlwaysUseWindowPadding opts back in, and the height grows
+       to match so the bottom edge is not clipped instead.
+
+       kWorldLaneStripPad is the space the highlight needs on every side; it
+       and the 104px per-row reserve in ComputeWorldMarkedPanelLayout move
+       together. */
+    const float pad = kWorldLaneStripPad;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
+    ImGui::BeginChild("##world_lane_frames",
+                      ImVec2(0.0f, kWorldLaneThumbPx +
+                                   ImGui::GetStyle().FramePadding.y * 2.0f +
+                                   pad * 2.0f),
+                      false,
                       ImGuiWindowFlags_HorizontalScrollbar |
-                      ImGuiWindowFlags_NoBackground);
+                      ImGuiWindowFlags_NoBackground |
+                      ImGuiWindowFlags_AlwaysUseWindowPadding);
     for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
-        if (fi > 0) ImGui::SameLine(0.0f, 6.0f);
+        /* 4px of gap plus 2px of highlight on each neighbour: enough that two
+           picked frames side by side still read as two. */
+        if (fi > 0) ImGui::SameLine(0.0f, 8.0f);
         ImGui::PushID(fi);
         ImGui::BeginGroup();
         int img_idx = lane.frames[fi];
@@ -7056,7 +7431,7 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
             }
             clicked = ImGui::ImageButton("##world_thumb",
                                          (ImTextureID)(intptr_t)thumb_tex,
-                                         ImVec2(34.0f, 34.0f),
+                                         ImVec2(kWorldLaneThumbPx, kWorldLaneThumbPx),
                                          ImVec2(mirror_x ? 1.0f : 0.0f,
                                                 mirror_y ? 1.0f : 0.0f),
                                          ImVec2(mirror_x ? 0.0f : 1.0f,
@@ -7066,7 +7441,7 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
         } else {
             char fallback[16];
             snprintf(fallback, sizeof(fallback), "%d", img_idx);
-            clicked = ImGui::Button(fallback, ImVec2(34.0f, 34.0f));
+            clicked = ImGui::Button(fallback, ImVec2(kWorldLaneThumbPx, kWorldLaneThumbPx));
         }
         ImVec2 item_min = ImGui::GetItemRectMin();
         ImVec2 item_max = ImGui::GetItemRectMax();
@@ -7074,7 +7449,19 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
             ImGui::PopStyleColor();
         if (is_being_dragged)
             ImGui::PopStyleVar();
-        if (clicked) {
+        bool picked = WorldFrameSelContains(lane.delay_slot, fi);
+        if (clicked && ImGui::GetIO().KeyCtrl) {
+            /* Ctrl+click gathers; it deliberately does NOT move the playhead
+               or change the editor selection, because picking six frames out
+               of a row would otherwise drag the whole scene around six
+               times. */
+            WorldFrameSelToggle(lane.delay_slot, fi);
+            picked = !picked;
+        } else if (clicked) {
+            /* A plain click is the old behaviour, and it clears the pick --
+               a selection you can no longer see the edges of is worse than
+               no selection. */
+            WorldFrameSelClear();
             state.paused = true;
             state.timer = 0.0f;
             state.frame = WorldMarkedTickForFrame(state, lane.delay_slot,
@@ -7083,6 +7470,15 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
             action.clicked = true;
             action.doc_idx = lane.doc_idx;
             action.img_idx = img_idx;
+        }
+        if (picked) {
+            /* Drawn over the thumbnail rather than as a style colour: the
+               current-entry highlight already owns the button colour, and a
+               frame can be both. */
+            ImGui::GetWindowDrawList()->AddRect(
+                ImVec2(item_min.x - 2.0f, item_min.y - 2.0f),
+                ImVec2(item_max.x + 2.0f, item_max.y + 2.0f),
+                IM_COL32(90, 220, 255, 255), 3.0f, 0, 2.0f);
         }
         /* Right-click a frame: the spray has to start somewhere, and "this
            frame, where it is" is the only anchor an authoring tool can offer
@@ -7112,7 +7508,8 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
             ImGui::SetTooltip("[%d] %s%s%s%s", img_idx, sprite_name.c_str(),
                               (mirror_bits & kWorldFrameMirrorX) ? " flipX" : "",
                               (mirror_bits & kWorldFrameMirrorY) ? " flipY" : "",
-                              draggable ? "\nDrag to reorder, or drop onto another row to move it there." : "");
+                              draggable ? "\nDrag to reorder, or drop onto another row to move it there."
+                                          "\nCtrl+click to pick several, then Copy on the strip above." : "");
         }
         if (draggable && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID |
                                                     ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
@@ -7176,6 +7573,7 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
         }
     }
     ImGui::EndChild();
+    ImGui::PopStyleVar();   /* the strip's WindowPadding */
 
     return action;
 }
@@ -7185,7 +7583,11 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
 {
     std::string out;
     out.reserve(4096);
-    out += "; IMGTOOL World View fatality sequence draft\n";
+    /* Not "fatality": nothing in here is fatality-specific and it never was.
+       Walks, reactions, projectiles and props all come out of the same
+       generator, and a header claiming otherwise sends people looking for a
+       different tool. */
+    out += "; IMGTOOL World View animation draft\n";
     out += "; One lane is one actor/object animation table.\n";
     /* The tables are emitted in MK2's OWN sign, not World View's, and the
        conversion is flip-dependent rather than a flat negation.
@@ -7229,7 +7631,7 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += ";   cumulative. Each row that changes prints the ani_adjustxy operand\n";
     out += ";   it would take, so the lane can be transcribed without differencing\n";
     out += ";   it by hand. A held pose prints none: it needs no second adjust.\n";
-    out += "; The runtime must substitute its body/victim object for the shared anchor.\n";
+    out += "; The runtime must substitute its own object for the shared anchor.\n";
     char world_meta[192];
     snprintf(world_meta, sizeof(world_meta),
              "; World View: W=%d H=%d Origin=(%d,%d) TickHz=%.4f\n",
@@ -7244,8 +7646,10 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += ";   preview that looked right ends up several times too slow in game.\n";
     out += ";   Each lane below prints the sleep its rows were built for. Pass that\n";
     out += ";   value; do not substitute a house default.\n";
-    out += "; Show@/Hide@ entries act as timed held subframes in preview;\n";
-    out += "; export emits 0 outside that tick window.\n";
+    out += "; Show@/Hide@ entries act as timed held subframes in preview, and\n";
+    out += "; export emits 0 outside that tick window. A lane whose entries are\n";
+    out += "; scheduled starts its rows at its FIRST scheduled tick and prints\n";
+    out += "; the tick to spawn it at -- a table carries no spawn time of its own.\n";
     out += "; vX/vY motion is baked into the per-tick local anipoint rows;\n";
     out += "; StopX/StopY caps clamp that baked preview motion.\n";
     out += "; Each *_local_anipts table is aligned 1:1 with the .long rows.\n";
@@ -7264,7 +7668,10 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += "; primary's *_local_anipts offset and rely on their own art anipoint\n";
     out += "; for relative placement, same as the World View preview.\n";
     out += "; Per-entry Flip X/Y controls emit ani_flip/ani_flip_v toggles.\n";
-    out += "; Run these lanes at the same animation sleep/FPS used in the preview.\n\n";
+    out += "; Run each lane at the sleep IT prints above its rows -- lanes with\n";
+    out += "; different holds do not share one. The preview runs at MK2's own\n";
+    out += "; 54.7068 Hz and cannot be set to anything else, so a row here is a\n";
+    out += "; game tick.\n\n";
 
     for (int slot = 0; slot < (int)lanes.size(); slot++) {
         const WorldMarkedLane &lane = lanes[slot];
@@ -7439,7 +7846,42 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
             piece_tables[(size_t)c] += std::to_string(c + 2);
             piece_tables[(size_t)c] += "_sprites\n";
         }
-        int tick = 0;
+        /* Where this lane's clock starts.
+
+           visible_from/visible_until are ABSOLUTE preview ticks -- a blood run
+           spawned on the tick of a hit at 40 has visible_from[0] = 40. The
+           export used to start its own counter at 0 and count the lane's rows,
+           so every row of a scheduled lane failed `tick < visible_from` and
+           emitted `.long 0`: the whole table came out hidden and terminated on
+           row 0, which is not something you notice until you paste it.
+
+           A table does not carry its own spawn time -- the routine that starts
+           it does -- so the lane's clock begins at its first scheduled tick and
+           the spawn tick is reported as a comment instead. Unscheduled lanes
+           have these all at 0 and are unaffected. This also fixes Stop@, which
+           is an absolute preview tick and was being compared against a
+           lane-local count. */
+        int lane_tick_base = 0;
+        {
+            int earliest = -1;
+            for (int fi = 0; fi < (int)lane.frames.size(); fi++) {
+                int vf = state.visible_from[lane.delay_slot][fi];
+                int vu = state.visible_until[lane.delay_slot][fi];
+                if (vf <= 0 && vu <= 0) continue;   /* entry is not scheduled */
+                if (earliest < 0 || vf < earliest) earliest = vf;
+            }
+            if (earliest > 0) lane_tick_base = earliest;
+        }
+        if (lane_tick_base > 0) {
+            char spawn_line[224];
+            snprintf(spawn_line, sizeof(spawn_line),
+                     "; Scheduled lane: spawn it at preview tick %d. The rows below\n"
+                     ";   start there, and the ; tick N comments are absolute preview\n"
+                     ";   ticks so they line up with the World View transport.\n",
+                     lane_tick_base);
+            out += spawn_line;
+        }
+        int tick = lane_tick_base;
         bool reached_stop_tick = false;
         bool has_wide_local = false;
         int first_wide_tick = -1;
@@ -8301,6 +8743,14 @@ void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks,
     ticks = ClampTimelineHold(ticks);
     for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
         if (slot == kWorldDummyDecapSlot) continue;
+        /* A hidden row is parked, not part of the scene being timed. It shows
+           no T/f of its own while hidden -- the row collapses to one line
+           before those controls are reached -- so retiming it here would edit
+           a row whose timing the user cannot see, and they would find it
+           changed whenever they brought it back. Unhide it to retime it.
+           This holds for `include_custom` too: "All" overrides PINNING, and
+           hidden is not pinned. */
+        if (!state.lane_visible[slot]) continue;
         /* A row that was pinned with its own T/f keeps it. Pinning is opt-in
            and per row, so the global still reaches everything else -- which
            is the whole point of it being called the global. */
@@ -9084,6 +9534,9 @@ static bool WorldDrawSubframeSwapTool(WorldMarkedSequenceState &state,
                                       bool embedded)
 {
     int slot = lane.delay_slot;
+    /* Gated here rather than at the call sites so the embedded workspace and
+       the lane strip cannot drift apart. */
+    if (!g_world_show_subframe_tool) return false;
     if (lane.dummy_decap || !WorldMarkedSequenceSlotEditableForSubframes(slot) ||
         !lane.doc)
         return false;
@@ -9190,6 +9643,7 @@ static bool WorldDrawSubframeSwapTool(WorldMarkedSequenceState &state,
 
 void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
 {
+    WorldFrameSelClear();   /* see WorldMarkedDuplicateSequenceEntry */
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     for (const WorldSeqArrayRef &ref : WorldMarkedSeqArrays(state, slot))
         ref.vec->clear();
@@ -9640,6 +10094,99 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
     EnsureWorldMarkedFrameDelays(state, dst_slot, (int)tail.size());
     state.paused = true;
     WorldMarkedRestart(state);
+    return true;
+}
+
+/* ---- Merging one project's rows into the scene already open -------------
+   Two lanes of a fight live in two .WAX files as often as one, and until now
+   the only way to see them together was to rebuild one of them by hand inside
+   the other. Load replaces the workspace; these let a second project be laid
+   on top of it.
+
+   The row is copied field for field rather than by assigning the whole state,
+   because everything outside the per-slot arrays -- the origin, the tick
+   clock, the global hold, the ASM lanes -- belongs to the scene that is
+   already open and must survive the merge. */
+
+/* The first marked-row slot with nothing in it, or -1 when the scene is full.
+   WorldMarkedFindFreeSplitSlot answers the same question from a lane list;
+   this one asks the state directly, because a project being merged in has no
+   lanes built yet. */
+int WorldMarkedFirstFreeSourceSlot(const WorldMarkedSequenceState &state)
+{
+    for (int slot = 0; slot < kWorldMarkedSourceTabs; slot++) {
+        if (slot == kWorldDummyDecapSlot) continue;
+        if (state.sequence_frames[slot].empty() &&
+            state.default_frames[slot].empty())
+            return slot;
+    }
+    return -1;
+}
+
+/* Copy one row out of `src` into `dst_slot` of `state`. `doc_idx` is the
+   destination document index for the row -- the caller resolves it, since only
+   it knows how the merged project's documents map onto the open tabs. */
+bool WorldMarkedCopySlotFrom(WorldMarkedSequenceState &state, int dst_slot,
+                             WorldMarkedSequenceState &src, int src_slot,
+                             int doc_idx)
+{
+    if (dst_slot < 0 || dst_slot >= kWorldMarkedSourceTabs) return false;
+    if (src_slot < 0 || src_slot >= kWorldMarkedMaxTabs) return false;
+    if (dst_slot == kWorldDummyDecapSlot) return false;
+    if (src.sequence_frames[src_slot].empty() &&
+        src.default_frames[src_slot].empty())
+        return false;
+
+    std::vector<int> frames = src.sequence_frames[src_slot].empty()
+                            ? src.default_frames[src_slot]
+                            : src.sequence_frames[src_slot];
+    if (frames.empty()) return false;
+
+    EnsureWorldMarkedFrameDelays(src, src_slot, (int)frames.size());
+
+    WorldMarkedSetRowDoc(state, dst_slot, doc_idx);
+    state.default_frames[dst_slot] = src.default_frames[src_slot];
+    state.sequence_frames[dst_slot] = frames;
+
+    std::vector<WorldSeqArrayRef> src_refs = WorldMarkedSeqArrays(src, src_slot);
+    std::vector<WorldSeqArrayRef> dst_refs = WorldMarkedSeqArrays(state, dst_slot);
+    for (size_t i = 0; i < src_refs.size() && i < dst_refs.size(); i++)
+        *dst_refs[i].vec = *src_refs[i].vec;
+    state.entry_pieces[dst_slot] = src.entry_pieces[src_slot];
+    state.frame_doc[dst_slot] = src.frame_doc[src_slot];
+
+    state.lane_visible[dst_slot] = src.lane_visible[src_slot];
+    state.hold_end[dst_slot] = src.hold_end[src_slot];
+    state.lane_rigid[dst_slot] = src.lane_rigid[src_slot];
+    state.pingpong_delay[dst_slot] = src.pingpong_delay[src_slot];
+    state.stop_tick[dst_slot] = src.stop_tick[src_slot];
+    state.slot_hold[dst_slot] = src.slot_hold[src_slot];
+    state.slot_hold_custom[dst_slot] = src.slot_hold_custom[src_slot];
+    bool *src_mirror = WorldMarkedMirrorFlag(src, src_slot);
+    bool *dst_mirror = WorldMarkedMirrorFlag(state, dst_slot);
+    if (src_mirror && dst_mirror) *dst_mirror = *src_mirror;
+
+    state.auto_step[dst_slot] = src.auto_step[src_slot];
+    state.auto_life[dst_slot] = src.auto_life[src_slot];
+    state.auto_vx[dst_slot] = src.auto_vx[src_slot];
+    state.auto_vy[dst_slot] = src.auto_vy[src_slot];
+    state.auto_y[dst_slot] = src.auto_y[src_slot];
+    state.chain_count[dst_slot] = src.chain_count[src_slot];
+    state.chain_gap[dst_slot] = src.chain_gap[src_slot];
+    state.chain_delay[dst_slot] = src.chain_delay[src_slot];
+    state.chain_vy[dst_slot] = src.chain_vy[src_slot];
+    state.chain_pingpong[dst_slot] = src.chain_pingpong[src_slot];
+    state.subframe_swap_tick[dst_slot] = src.subframe_swap_tick[src_slot];
+    state.subframe_waterline_y[dst_slot] = src.subframe_waterline_y[src_slot];
+    state.subframe_fine_source[dst_slot] = src.subframe_fine_source[src_slot];
+
+    /* Merged rows go to the back of the draw/display order rather than
+       fighting the open scene for its ranks. */
+    state.lane_order[dst_slot] = kWorldMarkedMaxTabs + dst_slot;
+
+    EnsureWorldMarkedFrameDelays(state, dst_slot,
+                                 (int)state.sequence_frames[dst_slot].size());
+    WorldMarkedClampAutoChainSettings(state, dst_slot);
     return true;
 }
 
@@ -10331,6 +10878,11 @@ void WorldMarkedClearSplitLanes(WorldMarkedSequenceState &state)
 
 void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx)
 {
+    /* Any entry added or removed slides the indices the ctrl+click selection
+       is holding, and a stale index that is still IN RANGE quietly points at
+       a different frame -- which would copy the wrong art with no error. Drop
+       the selection rather than try to fix it up. */
+    WorldFrameSelClear();
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     std::vector<int> &frames = state.sequence_frames[slot];
     if (frame_idx < 0 || frame_idx >= (int)frames.size()) return;
@@ -10351,6 +10903,7 @@ void WorldMarkedDuplicateSequenceEntry(WorldMarkedSequenceState &state, int slot
 
 void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx, int dir)
 {
+    WorldFrameSelClear();   /* see WorldMarkedDuplicateSequenceEntry */
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     std::vector<int> &frames = state.sequence_frames[slot];
     int n = (int)frames.size();
@@ -10371,6 +10924,7 @@ void WorldMarkedMoveSequenceEntry(WorldMarkedSequenceState &state, int slot, int
 
 void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, int frame_idx)
 {
+    WorldFrameSelClear();   /* see WorldMarkedDuplicateSequenceEntry */
     if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
     std::vector<int> &frames = state.sequence_frames[slot];
     if ((int)frames.size() <= 1 || frame_idx < 0 || frame_idx >= (int)frames.size()) return;
@@ -10390,10 +10944,119 @@ void WorldMarkedDeleteSequenceEntry(WorldMarkedSequenceState &state, int slot, i
     state.frame = WorldMarkedTickForFrame(state, slot, (int)frames.size(), frame_idx);
 }
 
+/* Copy the ctrl+click selection into `dst_slot`, appended in row-then-index
+   order. Modelled on WorldMarkedMoveEntryBetweenSlots, minus the erase.
+
+   Every source entry is snapshotted BEFORE anything is appended. Copying into
+   a row that is also a source would otherwise read entries through indices its
+   own growth had already invalidated -- and copying a row into itself is the
+   ordinary way to repeat a run, so that is not an edge case. */
+bool WorldMarkedCopySelectionToSlot(WorldMarkedSequenceState &state,
+                                    int dst_slot, int *out_copied,
+                                    int *out_skipped)
+{
+    if (out_copied) *out_copied = 0;
+    if (out_skipped) *out_skipped = 0;
+    if (dst_slot < 0 || dst_slot >= kWorldMarkedMaxTabs) return false;
+    if (dst_slot == kWorldDummyDecapSlot) return false;
+    if (g_world_frame_sel.empty()) return false;
+
+    std::vector<WorldFrameSel> picks = g_world_frame_sel;
+    std::sort(picks.begin(), picks.end(),
+              [](const WorldFrameSel &a, const WorldFrameSel &b) {
+                  if (a.slot != b.slot) return a.slot < b.slot;
+                  return a.frame_idx < b.frame_idx;
+              });
+
+    struct Snapshot {
+        int frame_val;
+        std::vector<int> arrays;
+        std::vector<int> pieces;
+        int doc_idx;
+    };
+    std::vector<Snapshot> snaps;
+    int skipped = 0;
+
+    bool dst_had_frames = !state.sequence_frames[dst_slot].empty();
+    int first_src_slot = -1;
+
+    for (const WorldFrameSel &pick : picks) {
+        int src_slot = pick.slot;
+        if (src_slot < 0 || src_slot >= kWorldMarkedMaxTabs) { skipped++; continue; }
+        std::vector<int> &src_frames = state.sequence_frames[src_slot];
+        if (pick.frame_idx < 0 || pick.frame_idx >= (int)src_frames.size()) {
+            skipped++;
+            continue;
+        }
+        EnsureWorldMarkedFrameDelays(state, src_slot, (int)src_frames.size());
+
+        int src_doc_idx = (pick.frame_idx < (int)state.frame_doc[src_slot].size())
+                        ? state.frame_doc[src_slot][pick.frame_idx] : -1;
+        Document *src_doc = WorldMarkedResolveEntryDoc(WorldMarkedRowDoc(state, src_slot),
+                                                       src_doc_idx);
+
+        /* Same restriction the move has: a composite entry's extra pieces
+           resolve against its row's own bound doc, and per-piece cross-doc
+           tracking is not wired up. */
+        bool is_composite = pick.frame_idx < (int)state.entry_pieces[src_slot].size() &&
+                            state.entry_pieces[src_slot][pick.frame_idx].size() > 1;
+        if (src_slot != dst_slot && is_composite && dst_had_frames &&
+            src_doc != WorldMarkedRowDoc(state, dst_slot)) {
+            skipped++;
+            continue;
+        }
+
+        Snapshot snap;
+        snap.frame_val = src_frames[pick.frame_idx];
+        std::vector<WorldSeqArrayRef> src_refs = WorldMarkedSeqArrays(state, src_slot);
+        snap.arrays.resize(src_refs.size());
+        for (size_t i = 0; i < src_refs.size(); i++)
+            snap.arrays[i] = (*src_refs[i].vec)[pick.frame_idx];
+        snap.pieces = state.entry_pieces[src_slot][pick.frame_idx];
+        /* "-1" means "this row's own doc", which would silently re-point at
+           the DESTINATION row once the entry lands there. */
+        snap.doc_idx = (src_slot == dst_slot)
+                     ? src_doc_idx
+                     : (src_doc_idx >= 0 ? src_doc_idx
+                                         : WorldMarkedRowDocIndex(state, src_slot));
+        if (first_src_slot < 0) first_src_slot = src_slot;
+        snaps.push_back(snap);
+    }
+
+    if (out_skipped) *out_skipped = skipped;
+    if (snaps.empty()) return false;
+
+    /* An empty destination adopts the source's document binding, the same way
+       a move into an empty row does. */
+    if (!dst_had_frames && first_src_slot >= 0 && first_src_slot != dst_slot)
+        state.sequence_doc_uid[dst_slot] = state.sequence_doc_uid[first_src_slot];
+
+    std::vector<int> &dst_frames = state.sequence_frames[dst_slot];
+    for (const Snapshot &snap : snaps) {
+        EnsureWorldMarkedFrameDelays(state, dst_slot, (int)dst_frames.size());
+        int at = (int)dst_frames.size();
+        dst_frames.insert(dst_frames.begin() + at, snap.frame_val);
+        std::vector<WorldSeqArrayRef> dst_refs = WorldMarkedSeqArrays(state, dst_slot);
+        for (size_t i = 0; i < dst_refs.size() && i < snap.arrays.size(); i++)
+            dst_refs[i].vec->insert(dst_refs[i].vec->begin() + at, snap.arrays[i]);
+        state.entry_pieces[dst_slot].insert(state.entry_pieces[dst_slot].begin() + at,
+                                            snap.pieces);
+        state.frame_doc[dst_slot].insert(state.frame_doc[dst_slot].begin() + at,
+                                         snap.doc_idx);
+    }
+
+    EnsureWorldMarkedFrameDelays(state, dst_slot, (int)dst_frames.size());
+    if (out_copied) *out_copied = (int)snaps.size();
+    state.paused = true;
+    state.timer = 0.0f;
+    return true;
+}
+
 bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
                                       int src_slot, int src_frame_idx,
                                       int dst_slot, int dst_frame_idx)
 {
+    WorldFrameSelClear();   /* see WorldMarkedDuplicateSequenceEntry */
     if (src_slot < 0 || src_slot >= kWorldMarkedMaxTabs) return false;
     if (dst_slot < 0 || dst_slot >= kWorldMarkedMaxTabs) return false;
 
@@ -16307,6 +16970,12 @@ static void scale_clipboard_to_fit(int max_w, int max_h)
 }
 
 
+bool ImageCanvasActive(void)
+{
+    return !g_world_state.enabled && !g_seqscr_workspace &&
+           !g_reactions_workspace && !AnipointLink().enabled;
+}
+
 void select_all(void)
 
 {
@@ -18068,6 +18737,8 @@ static void WorldHandleMarkedPanelResult(const WorldMarkedPanelResult &panel_res
         g_request_save_world_png_seq = true;
     if (panel_action.request_load_project)
         g_request_load_world_project = true;
+    if (panel_action.request_append_project)
+        g_request_append_world_project = true;
     if (panel_action.request_load_bg)
         g_request_load_world_bg = true;
     if (panel_action.request_load_asm) {

@@ -104,6 +104,7 @@ static char g_sheet_prefix[12]    = "FRAME";
 
 static bool SaveWorldProjectFile(const char *path);
 static bool LoadWorldProjectFile(const char *path);
+static bool AppendWorldProjectFile(const char *path);
 
 static bool g_show_opacity_gradient = false;
 static bool g_opacity_gradient_marked = false;
@@ -1016,7 +1017,8 @@ static const char* GetDialogExtension(FileDialogMode mode)
    open, so the load dialog lists both names. Saving always produces `.WAX`. */
 static const char* GetDialogListExtensions(FileDialogMode mode)
 {
-    if (mode == FileDialogMode::LoadWorldProject) return "WAX;WVP";
+    if (mode == FileDialogMode::LoadWorldProject ||
+        mode == FileDialogMode::AppendWorldProject) return "WAX;WVP";
     return GetDialogExtension(mode);
 }
 
@@ -1349,6 +1351,7 @@ void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::LoadAsmAnim) title = "Load Character ASM";
     else if (g_file_dialog_mode == FileDialogMode::SaveAsmAnim) title = "Save World View ASM";
     else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) title = "Load World View Project";
+    else if (g_file_dialog_mode == FileDialogMode::AppendWorldProject) title = "Append World View Project";
     else if (g_file_dialog_mode == FileDialogMode::LoadWorldBdd) title = "Load Reference Background (BDD)";
     else if (g_file_dialog_mode == FileDialogMode::SaveWorldProject) title = "Save World View Project";
     else if (g_file_dialog_mode == FileDialogMode::ExportWorldPng) title = "Export World View PNG";
@@ -1817,6 +1820,8 @@ void DrawFileDialog() {
                 if (dot == std::string::npos) full_path += ".WAX";
                 if (SaveWorldProjectFile(full_path.c_str()))
                     g_last_world_project_path = full_path;
+            } else if (g_file_dialog_mode == FileDialogMode::AppendWorldProject) {
+                AppendWorldProjectFile(full_path.c_str());
             } else if (g_file_dialog_mode == FileDialogMode::LoadWorldProject) {
                 LoadWorldProjectFile(full_path.c_str());
             } else if (g_file_dialog_mode == FileDialogMode::LoadWorldBdd) {
@@ -3374,12 +3379,34 @@ static void WaxWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
     WaxWriteInt(f, key, state.subframe_fine_source[slot]);
 }
 
+/* A saved slot index in this build's layout, or -1 when it has nowhere to go.
+
+   Marked rows keep their index. The specials that follow them are matched by
+   OFFSET from the saved row count, so a project written when there were ten
+   marked rows puts its dummy body at saved slot 10 and lands it on slot 20
+   here. Without this the lane would be read as marked row 10 -- a real row,
+   with real frames, in the wrong place. */
+static int WaxMapSavedSlot(int saved_slot, int saved_source_tabs)
+{
+    if (saved_slot < 0) return -1;
+    if (saved_source_tabs <= 0) saved_source_tabs = kWorldMarkedLegacySourceTabs;
+    if (saved_slot < saved_source_tabs)
+        return saved_slot < kWorldMarkedSourceTabs ? saved_slot : -1;
+    int special = saved_slot - saved_source_tabs;
+    int mapped = kWorldMarkedSourceTabs + special;
+    return mapped < kWorldMarkedMaxTabs ? mapped : -1;
+}
+
+/* `saved_slot` indexes the FILE, `slot` the state being filled. They differ
+   for the special lanes whenever the project was written with a different
+   marked-row count -- see WaxMapSavedSlot. */
 static void WaxReadSlot(const std::unordered_map<std::string, std::string> &kv,
                         WorldMarkedSequenceState &state,
+                        int saved_slot,
                         int slot,
                         const std::vector<int> &doc_map)
 {
-    std::string prefix = "slot." + std::to_string(slot) + ".";
+    std::string prefix = "slot." + std::to_string(saved_slot) + ".";
     state.lane_visible[slot] = WaxGetBool(kv, prefix + "visible", state.lane_visible[slot]);
     state.lane_order[slot] = WaxGetInt(kv, prefix + "order", -1);
     state.hold_end[slot] = WaxGetBool(kv, prefix + "hold_end", state.hold_end[slot]);
@@ -3538,6 +3565,10 @@ static bool SaveWorldProjectFile(const char *path)
     WaxWriteFloat(f, "asm.window.fps", g_asm_anim_fps);
 
     WaxWriteInt(f, "slot.count", kWorldMarkedMaxTabs);
+    /* Where the marked rows stop and the dummy/ASM/embedded lanes begin. A
+       reader needs this to place those lanes: they move whenever the marked
+       row count changes, and the slot index alone does not say which is which. */
+    WaxWriteInt(f, "slot.source_tabs", kWorldMarkedSourceTabs);
     for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++)
         WaxWriteSlot(f, state, slot);
 
@@ -3555,6 +3586,130 @@ static bool SaveWorldProjectFile(const char *path)
              "Saved World View project.");
     g_restore_msg_timer = 4.0f;
     return true;
+}
+
+
+/* Lay another project's rows on top of the scene already open.
+
+   Deliberately NOT LoadWorldProjectFile with a flag: load starts by closing
+   every tab so each saved IMG lands on the document index it had when the
+   project was written, and that is precisely what an append must not do. Here
+   the incoming documents are opened alongside the current ones and the row's
+   doc indices are remapped onto wherever they actually landed.
+
+   Only the marked rows come across. The origin, canvas size, tick clock,
+   global hold, dummy body and ASM lanes all belong to the scene already open;
+   a merged project that moved the anchor would drag the rows already placed
+   against it. */
+static bool AppendWorldProjectFile(const char *path)
+{
+    std::unordered_map<std::string, std::string> kv;
+    if (!WaxReadFile(path, kv) ||
+        WaxGetString(kv, "format") != "imgtool_world_project") {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Not an imgtool World View project.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+
+    std::string project_path(path ? path : "");
+    size_t project_sep = project_path.find_last_of("\\/");
+    std::string project_dir = project_sep == std::string::npos
+                            ? std::string() : project_path.substr(0, project_sep);
+    auto resolve_img_path = [&](const std::string &saved) -> std::string {
+        if (saved.empty()) return std::string();
+        if (PathReadable(saved)) return saved;
+        std::string relative = project_dir.empty() ? saved : PathCombine(project_dir, saved);
+        return PathReadable(relative) ? relative : std::string();
+    };
+
+    /* An IMG this project needs that is ALREADY open is reused rather than
+       opened twice -- two tabs of one file would give the merged rows a
+       different document to the ones already on screen. */
+    int doc_count = WaxGetInt(kv, "doc.count", 0);
+    std::vector<int> doc_map((size_t)(doc_count > 0 ? doc_count : 0), -1);
+    int missing_docs = 0;
+    for (int i = 0; i < doc_count; i++) {
+        std::string saved_path = WaxGetString(kv, WaxKey("doc", i, "path"));
+        if (saved_path.empty()) { missing_docs++; continue; }
+        std::string doc_path = resolve_img_path(saved_path);
+        if (doc_path.empty()) { missing_docs++; continue; }
+        int idx = FindOpenDocumentByPath(doc_path);
+        if (idx < 0) {
+            OpenImgFile(doc_path);
+            idx = FindOpenDocumentByPath(doc_path);
+        }
+        Document *doc = document_get(idx);
+        if (!doc || doc->imgcnt == 0) { missing_docs++; continue; }
+        doc_map[(size_t)i] = idx;
+        WaxApplyMarkedIndices(doc, WaxGetVec(kv, WaxKey("doc", i, "marked")));
+    }
+
+    /* Read the whole project into a scratch state, then lift only its rows
+       out. Reading straight into the live state would overwrite the scene. */
+    WorldMarkedSequenceState incoming;
+    incoming.default_hold =
+        ClampTimelineHold(WaxGetInt(kv, "state.default_hold",
+                                    incoming.default_hold));
+    int saved_source_tabs = WaxGetInt(kv, "slot.source_tabs",
+                                      kWorldMarkedLegacySourceTabs);
+    int slot_count = WaxGetInt(kv, "slot.count", kWorldMarkedMaxTabs);
+    for (int saved = 0; saved < slot_count; saved++) {
+        int slot = WaxMapSavedSlot(saved, saved_source_tabs);
+        if (slot < 0) continue;
+        WaxReadSlot(kv, incoming, saved, slot, doc_map);
+    }
+
+    WorldMarkedSequenceState &live = g_world_marked_state;
+    int appended = 0, no_room = 0, unresolved = 0;
+    for (int slot = 0; slot < slot_count && slot < kWorldMarkedSourceTabs; slot++) {
+        if (slot == kWorldDummyDecapSlot) continue;
+        if (incoming.sequence_frames[slot].empty() &&
+            incoming.default_frames[slot].empty())
+            continue;
+
+        int doc_idx = WorldMarkedRowDocIndex(incoming, slot);
+        if (!document_get(doc_idx)) { unresolved++; continue; }
+
+        int dst = WorldMarkedFirstFreeSourceSlot(live);
+        if (dst < 0) { no_room++; continue; }
+        if (!WorldMarkedCopySlotFrom(live, dst, incoming, slot, doc_idx)) {
+            unresolved++;
+            continue;
+        }
+        /* Merged rows are split rows as far as the panel is concerned: they
+           are not this document's own marked set, so they must not be rebuilt
+           from it. */
+        WorldMarkedSplitLane split = {};
+        split.slot = dst;
+        split.doc_idx = doc_idx;
+        live.split_lanes.push_back(split);
+        appended++;
+    }
+
+    if (appended > 0) {
+        live.paused = true;
+        WorldMarkedRestart(live);
+        g_world_state.enabled = true;
+        live.marked_play = true;
+    }
+
+    char tail[160];
+    tail[0] = 0;
+    if (no_room > 0 || unresolved > 0 || missing_docs > 0)
+        snprintf(tail, sizeof(tail),
+                 "%s%s%s",
+                 no_room > 0 ? " No free rows for the rest." : "",
+                 unresolved > 0 ? " Some rows had no reachable IMG." : "",
+                 missing_docs > 0 ? " Some IMG files were missing." : "");
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Appended %d row%s from %s.%s", appended,
+             appended == 1 ? "" : "s",
+             project_path.substr(project_path.find_last_of("\\/") + 1).c_str(),
+             tail);
+    g_restore_msg_timer = 5.0f;
+    g_img_tex_idx = -2;
+    return appended > 0;
 }
 
 static bool LoadWorldProjectFile(const char *path)
@@ -3682,16 +3837,21 @@ static bool LoadWorldProjectFile(const char *path)
         loaded_state.embedded_frame_labels.push_back(
             WaxGetString(kv, WaxKey("embedded_label", i, "text")));
 
+    int saved_source_tabs = WaxGetInt(kv, "slot.source_tabs",
+                                      kWorldMarkedLegacySourceTabs);
     int slot_count = WaxGetInt(kv, "slot.count", kWorldMarkedMaxTabs);
-    if (slot_count > kWorldMarkedMaxTabs) slot_count = kWorldMarkedMaxTabs;
-    for (int slot = 0; slot < slot_count; slot++)
-        WaxReadSlot(kv, loaded_state, slot, doc_map);
+    for (int saved = 0; saved < slot_count; saved++) {
+        int slot = WaxMapSavedSlot(saved, saved_source_tabs);
+        if (slot < 0) continue;
+        WaxReadSlot(kv, loaded_state, saved, slot, doc_map);
+    }
 
     int split_count = WaxGetInt(kv, "split.count", 0);
     loaded_state.split_lanes.clear();
     for (int i = 0; i < split_count; i++) {
         WorldMarkedSplitLane split = {};
-        split.slot = WaxGetInt(kv, WaxKey("split", i, "slot"), -1);
+        split.slot = WaxMapSavedSlot(WaxGetInt(kv, WaxKey("split", i, "slot"), -1),
+                                     saved_source_tabs);
         split.doc_idx =
             WaxResolveDocIndex(WaxGetInt(kv, WaxKey("split", i, "doc_idx"), -1),
                                WaxGetString(kv, WaxKey("split", i, "doc_path")),
