@@ -25,6 +25,118 @@ frames, lanes, holds, ASM bindings, background — was `.WVP`. It is `.WAX` now.
   the file rather than the name on it. Nothing about the format changed; every
   project written by an earlier build loads unmodified.
 
+## [v3.33.0] — The exporter emitted an empty table; 20 rows; deferred edits
+
+### Every exported lane came out hidden
+
+`.long 0` on every row, in every table, terminating on row 0. Any lane exported
+this way was unusable as pasted.
+
+The export's `tick` counter started at 0 and counted the lane's own rows, but
+`visible_from` / `visible_until` hold **absolute preview ticks**. A blood run
+spawned on the tick of a hit at 40 has `visible_from[0] = 40`, so every row
+failed `tick < visible_from`, every frame read as hidden, and the table
+terminated immediately.
+
+- **A scheduled lane now starts its clock at its first scheduled tick** and
+  prints `; Scheduled lane: spawn it at preview tick N`. A table carries no
+  spawn time of its own — the routine that starts it does. Unscheduled lanes
+  have these all at zero and are unaffected.
+- **`Stop@` was broken by the same expression.** It is also an absolute preview
+  tick and was being compared against a lane-local count, so it fired in the
+  wrong place on any scheduled lane. `WorldMarkedPreviewLoopTicks` was not
+  counting it toward the scene span at all.
+
+### Per-keystroke commits fought the caret, and one of them destroyed timing
+
+Every numeric box in the frame editor committed on **every keystroke**. Delete
+the `2` from `12` and the commit gets `1`: `ClampTimelineHold` floors at 1, the
+row retimes, its scheduled windows are re-laid, the tick clock rewinds, and the
+box is rewritten from that `1` underneath the caret — so the `7` meant for `17`
+lands somewhere else.
+
+- **14 boxes now commit only when the edit finishes** — Enter, Tab, or clicking
+  away. Half-typed numbers never reach the state.
+- Only `Delay` was destructive rather than merely irritating, because only its
+  clamp floors at 1. That is why overtyping a digit survived while
+  clear-then-retype flattened a row — and why one lane kept its 3s and 4s while
+  the blood rows beside it went to 1.
+- **Existing projects keep their flattened delays.** This stops it happening
+  again; it does not repair saved data.
+
+### 20 marked rows
+
+Was 10. The special lanes sit *after* the marked rows, so the count moving
+would have handed a project's dummy-body row to a marked-row slot and lost the
+lane — a `.WAX` stores rows by slot index.
+
+- The writer records `slot.source_tabs`, and both loaders map the specials by
+  **offset from the saved row count** rather than raw index. Verified against a
+  real project: legacy `10/11/12/13` → `20/21/22/23`.
+- Files predating the key fall back to 10, which is what they used.
+
+### Several projects in one scene
+
+- **File... > Append Project...** lays another `.WAX`'s rows over the scene
+  already open, into whatever rows are free. Its IMGs open alongside the
+  current tabs, and one already open is reused rather than opened twice.
+- Only the rows come across: origin, canvas size, tick clock and global hold
+  belong to the scene already open. A merged project that moved the anchor
+  would drag everything already placed against it.
+
+### Playback
+
+- **The tick stops running when the scene has finished.** It used to bail out of
+  the loop calculation on meeting one held or stopped lane — meaning "do not
+  wrap" — and nothing else ever stopped the clock. If anything loops, the scene
+  loops; if nothing does, the clock parks on the last tick. Play restarts an
+  ended scene rather than being a dead button.
+- **Hidden rows keep their timing.** The global Ticks/frame skips them: a hidden
+  row shows no `T/f` of its own, so retiming it changed timing you could not
+  see. `All` does not override this — show the row to retime it.
+
+### World View editing
+
+- **Ctrl+click picks frames across any number of rows**, and `Copy to Active`
+  appends them to the row holding `[KEYS]`, carrying offsets, flips, Z and hold.
+  Copies in row order, not click order. Originals stay put.
+- **Per-frame Z.** The renderer has always sorted per entry and the export has
+  always annotated per entry; the array simply had no editor. The row-level Z
+  still sets every entry at once and says so.
+- **Ctrl+A no longer leaves a marquee in the corner of World View.** It set a
+  pixel marquee spanning the selected sprite, in sprite coordinates, which World
+  View does not draw in. Selection shortcuts are gated on the Image canvas being
+  in front; `Ctrl+D` stays live everywhere, since clearing a stray selection is
+  what you want.
+- The ctrl+click highlight is no longer clipped: a borderless `BeginChild` gets
+  zero padding in ImGui whatever is pushed around it.
+
+### The export header said "fatality"
+
+Nothing in the generator is fatality-specific and never was — walks, reactions,
+projectiles and props all come out of it.
+
+- Retitled `; IMGTOOL World View animation draft`; `body/victim object` →
+  `its own object`.
+- Two info lines were wrong: the Show@/Hide@ note now explains the spawn-tick
+  base, and `Run these lanes at the same animation sleep/FPS used in the
+  preview` was left over from the adjustable-rate era.
+
+### Also
+
+- **ASM import no longer discards the caller's sleep.** A lane with two
+  consecutive identical frames was expanded and is self-timing, so it keeps a
+  hold of 1; a lane of distinct poses carries no timing at all and now takes the
+  row's own hold instead of a made-up 1.
+- **Icons** for File / Overlays / ASM, row Up / Down / Close, and Play / Pause /
+  Refresh, all with text fallbacks.
+- **Per-row ASM button** copies just that row's table — the scene-wide menu is
+  the wrong unit when iterating one actor.
+- The `Lanes...` menu folded into `Overlays...`, which carries its `*` marker.
+  The Subframe Swap Tool is off by default, under **View**.
+- The Frame Sequence strip wraps to a second row: timing on the first,
+  everything acting on the scene on the second.
+
 ## [v3.32.0] — World View projects are .WAX; tabs fold when the bar is full
 
 ### Projects are `.WAX` now
