@@ -146,3 +146,80 @@ int FindNearestPaletteSlot(const PAL *pal, unsigned short color_word)
     }
     return best;
 }
+
+void PlanPaletteIsolation(const unsigned char *words, int numc,
+                          const bool *reserved, const bool *contested,
+                          const bool *live, int max_numc,
+                          PaletteIsolatePlan *out)
+{
+    if (!out) return;
+    for (int i = 0; i < 256; i++) { out->dest[i] = -1; out->copy_from[i] = -1; }
+    out->matched = out->recycled = out->appended = out->approximated = 0;
+    out->numc = 0;
+
+    if (!words || numc <= 0) return;
+    if (numc > 256) numc = 256;
+    if (max_numc > 256) max_numc = 256;
+    if (max_numc < numc) max_numc = numc;
+    out->numc = numc;
+    if (!reserved || !contested) return;
+
+    /* The palette is planned against a working copy so that a duplicate handed
+       out for one index is visible as an exact match to the next — two teeth
+       shades on the same silver only ever cost one slot. */
+    unsigned short w[256];
+    for (int i = 0; i < numc; i++) w[i] = palette_word_at(words, i);
+
+    bool taken[256];
+    for (int i = 0; i < 256; i++) taken[i] = live ? live[i] : true;
+
+    int cur = numc;
+    for (int c = 1; c < numc; c++) {
+        if (!contested[c]) continue;
+        const unsigned short want = w[c];
+        int d = -1;
+
+        /* Reserved slots are never a destination, which also rules out every
+           other contested index — they all sit inside the reserved set. */
+        for (int i = 1; i < cur && d < 0; i++) {
+            if (i == c || reserved[i]) continue;
+            if (w[i] == want) d = i;
+        }
+        if (d >= 0) { out->dest[c] = d; out->matched++; continue; }
+
+        for (int i = 1; i < cur && d < 0; i++)
+            if (!taken[i] && !reserved[i]) d = i;
+        if (d >= 0) {
+            w[d] = want;
+            out->copy_from[d] = c;
+            taken[d] = true;
+            out->dest[c] = d;
+            out->recycled++;
+            continue;
+        }
+
+        if (cur < max_numc) {
+            d = cur++;
+            w[d] = want;
+            out->copy_from[d] = c;
+            taken[d] = true;
+            out->dest[c] = d;
+            out->appended++;
+            continue;
+        }
+
+        /* Out of room. The nearest unreserved color still frees the index, at
+           the cost of shifting the art outside the region. */
+        int best = -1, best_dist = 0;
+        for (int i = 1; i < cur; i++) {
+            if (reserved[i]) continue;
+            int dist = PaletteColorDistance5(w[i], want);
+            if (best < 0 || dist < best_dist) { best = i; best_dist = dist; }
+        }
+        if (best < 0) continue;   /* every slot is reserved; leave this one be */
+        out->dest[c] = best;
+        out->approximated++;
+    }
+
+    out->numc = cur;
+}

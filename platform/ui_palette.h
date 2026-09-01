@@ -101,6 +101,15 @@ void OpenPaletteMergePreview(void);
 int InheritSelectedPaletteFromMarked(void);
 int MergeDuplicatePalettes(void);
 void ApplySelectionRemapToMatchingSprites(void);
+/* Reserve the selection's palette indices for the selection alone: repoint
+   every pixel outside it that shares one at a duplicate slot holding the
+   same color, so the frame looks identical but those indices can be
+   recolored without touching the rest of the sprite. */
+void IsolateSelectionColors(void);
+/* Same isolation run across every sprite on the palette, locating the feature
+   in each frame with the propagation matcher. Opens a per-frame preview. */
+void OpenIsolatePropagatePreview(void);
+void DrawIsolatePropagateDialog(void);
 void BuildSelectedPaletteUsage(void);
 int FindNearestUsedPaletteSlotForUsage(int color_idx, int *dist_out);
 void CalculatePaletteHistogram(void);

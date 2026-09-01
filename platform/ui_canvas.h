@@ -39,13 +39,29 @@ enum {
    visible-until value can't spray tens of thousands of files. */
 enum { kWorldPngSequenceMaxFrames = 600 };
 
-/* Ticks a blood frame holds when a spray is first imported. MKBLOOD.ASM runs
-   its sprays at an ani speed of 5, but that is the speed the finished effect
-   plays at, not the granularity you author it at: imported at 5 the row lands
-   on every fifth tick and can no longer be lined up with the frame that caused
-   it. Import at 1 -- one tick per blood frame, the finest the timeline has --
-   and set the speed afterwards with the row's Ticks/frame. */
-enum { kWorldBloodTicksPerFrame = 1 };
+/* Ticks a blood frame holds. This is the rate MK2 plays blood at, not a
+   preview convenience, and it is NOT the scene's Ticks/frame: a spray is its
+   own object with its own clock -- create_blood_proc spawns a process that
+   animates itself while the character it came off runs at whatever speed the
+   move is authored at. A blood row is created pinned for that reason, and the
+   global never reaches it (see lane_own_rate).
+
+   MKBLOOD.ASM does not have ONE speed, so this is the modal one. Counting the
+   file: the frame waits handed to `framew` are 6 (x12), 4 (x7), 3 (x6), 5 and
+   1 once each, and the generic `spawn_drip` spawner -- what most of the spray
+   procs actually go through -- passes an ani speed of 4 in all but one place
+   (`movi 000040002h,a5`, `000040000h,a5`; one 6). 4 is the drip spawner's rate
+   and the most common single value across both mechanisms, so it is what a
+   spray comes in at. A run that wants 3 or 6 gets it from the row's own T/f,
+   which is one edit and stays put.
+
+   It was 1 for a while, on the reasoning that a spray imported at its real
+   speed lands on every Nth tick and can no longer be walked onto the frame
+   that caused it. That is no longer true: the run is laid from the spawning
+   frame's tick outward, so its first frame is on the hit exactly whatever the
+   hold is, and it follows that frame afterwards. What 1 actually bought was a
+   spray playing four times too fast against every scene at the default hold. */
+enum { kWorldBloodTicksPerFrame = 4 };
 
 /* MK2 runs its game logic once per video field on the TMS34010 hardware, about
    54.7 times a second. A SEQSCR "tick" is exactly one of those, so a hold of 2
@@ -512,6 +528,7 @@ struct WorldMarkedSequenceState {
             spawn_slot[i] = -1;
             spawn_entry[i] = -1;
             spawn_tick[i] = -1;
+            lane_own_rate[i] = false;
         }
         hold_end[kWorldDummyDecapSlot] = true;
     }
@@ -691,6 +708,23 @@ struct WorldMarkedSequenceState {
     int spawn_slot[kWorldMarkedMaxTabs];
     int spawn_entry[kWorldMarkedMaxTabs];
     int spawn_tick[kWorldMarkedMaxTabs];
+    /* This row's rate is ITS OWN and the scene's Ticks/frame never reaches it,
+       "All" included -- which is the one thing slot_hold_custom does not give
+       you, since All exists precisely to override pinning.
+
+       Blood sets it. A spray is not part of the character's animation: MK2
+       spawns it as a separate process running its own ani speed out of
+       MKBLOOD.ASM while the character runs the speed its move is authored at.
+       Retiming the scene and taking the blood with it retimes an effect the
+       game will play at a fixed rate no matter what, so the preview stops
+       agreeing with the machine.
+
+       Ticking the row's Global box clears this -- deliberate, per row, and the
+       only way back onto the global. Note this governs the RATE only: where
+       the run starts still follows the frame it was spawned on, so changing
+       the scene's speed still slides the spray along to wherever the hit went.
+       See WorldMarkedResyncSpawnedRows. */
+    bool lane_own_rate[kWorldMarkedMaxTabs] = {};
 };
 
 struct WorldMarkedLane {

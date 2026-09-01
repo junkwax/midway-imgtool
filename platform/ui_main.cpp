@@ -1481,6 +1481,19 @@ void DrawMainLayout(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Uses the current selection as a sample, then remaps likely\n"
                 "matching same-palette regions across the IMG to the current swatch.");
+            if (ImGui::MenuItem("Isolate Selection Colors"))                  IsolateSelectionColors();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Reserves the palette indices the selection draws with for the\n"
+                "selection alone. Pixels elsewhere in this sprite that share one\n"
+                "are repointed at a duplicate slot of the same color, so the frame\n"
+                "looks identical and those indices can be recolored on their own.\n"
+                "Grows the palette when it has to; other frames are untouched.");
+            if (ImGui::MenuItem("Isolate Selection Colors Across Frames..."))  OpenIsolatePropagatePreview();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "The same isolation, run over every sprite on this palette. Finds\n"
+                "the feature in each frame the way Remap Similar Regions does, then\n"
+                "reserves the indices once for all of them. Previews per frame first;\n"
+                "frames it cannot find the feature in are flagged and left off.");
             if (ImGui::MenuItem("Split Selection to Overlay Frame"))          SplitSelectionToOverlayFrame(true);
             if (ImGui::MenuItem("Copy Selection to Overlay Frame"))           SplitSelectionToOverlayFrame(false);
             ImGui::Separator();
@@ -3353,6 +3366,8 @@ void DrawMainLayout(void)
     DrawLoad2VerifyDialog();
 
     DrawPaletteMergeQualityDialog();
+
+    DrawIsolatePropagateDialog();
 
     DrawSpriteLayerPanel();
 

@@ -4166,7 +4166,12 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
             "%.4f / %d = %.2f rows a second.\n\n"
             "Rows follow this until one is given its own T/f, which then keeps\n"
             "it; \"All\" overrides that. Hidden rows and the dummy body are left\n"
-            "alone -- show a row to retime it.",
+            "alone -- show a row to retime it.\n\n"
+            "Blood rows are not reached at all, by this or by \"All\": a spray is\n"
+            "its own object in MK2, running MKBLOOD.ASM's ani speed while the\n"
+            "character runs the speed its move is authored at. Retiming the\n"
+            "scene still SLIDES a spray to wherever the hit it was spawned on\n"
+            "ended up; it does not change how fast the spray plays.",
             kMk2TickHz, shown, kMk2TickHz, shown, kMk2TickHz / (float)shown);
     }
 
@@ -4210,25 +4215,29 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
 
        Pinned and hidden are counted apart because only one of them is
        something "All" can undo. */
-    int own_rows = 0, hidden_rows = 0;
+    int own_rows = 0, hidden_rows = 0, rate_rows = 0;
     for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
         if (slot == kWorldDummyDecapSlot) continue;
         if (state.sequence_frames[slot].empty()) continue;
         if (!state.lane_visible[slot]) hidden_rows++;
+        else if (state.lane_own_rate[slot]) rate_rows++;
         else if (state.slot_hold_custom[slot]) own_rows++;
     }
-    if (own_rows > 0 || hidden_rows > 0) {
+    if (own_rows > 0 || hidden_rows > 0 || rate_rows > 0) {
         ImGui::SameLine(0.0f, 8.0f);
         if (own_rows > 0) {
             char all_id[64];
             snprintf(all_id, sizeof(all_id), "All##%s_hold_all", id_suffix);
             if (ImGui::SmallButton(all_id))
                 WorldMarkedApplyUniformHold(state, state.default_hold, true);
+        } else if (rate_rows > 0) {
+            ImGui::TextDisabled("(%d own rate%s)", rate_rows,
+                                hidden_rows > 0 ? ", some hidden" : "");
         } else {
             ImGui::TextDisabled("(%d hidden)", hidden_rows);
         }
         if (ImGui::IsItemHovered()) {
-            char note[320];
+            char note[640];
             int n = 0;
             n += snprintf(note + n, sizeof(note) - n,
                           "This hold reaches every visible row that is not pinned.\n\n");
@@ -4237,6 +4246,13 @@ static void WorldDrawTickHoldControl(WorldMarkedSequenceState &state,
                               "%d pinned with its own T/f. Click to apply %d to\n"
                               "every visible row and put them back on the global.\n",
                               own_rows, ClampTimelineHold(state.default_hold));
+            if (rate_rows > 0 && n < (int)sizeof(note))
+                n += snprintf(note + n, sizeof(note) - n,
+                              "%d run at a rate of their OWN, which this box never\n"
+                              "reaches and \"All\" does not override -- blood plays at\n"
+                              "MK2's speed, not the scene's. Tick a row's Global box\n"
+                              "to hand it back.\n",
+                              rate_rows);
             if (hidden_rows > 0 && n < (int)sizeof(note))
                 snprintf(note + n, sizeof(note) - n,
                          "%d hidden, and left alone -- a hidden row shows no T/f,\n"
@@ -6154,23 +6170,38 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                 "%s",
                 shown, shown == 1 ? "" : "s", kMk2TickHz, shown,
                 kMk2TickHz / (float)shown,
-                own ? "Taken off the global -- the scene's Ticks/frame no longer"
-                      " reaches it."
-                    : "Following the global Ticks/frame.");
+                state.lane_own_rate[slot]
+                    ? "This row's own rate. The scene's Ticks/frame never"
+                      " reaches it, \"All\" included."
+                : own ? "Taken off the global -- the scene's Ticks/frame no"
+                        " longer reaches it."
+                      : "Following the global Ticks/frame.");
         ImGui::SameLine(0.0f, 4.0f);
         int want = 0;
         if (WorldDeferredIntInput("##world_lane_hold", shown, 48.0f, 0, &want))
             WorldMarkedSetSlotHold(state, slot, want, true);
         ImGui::SameLine(0.0f, 4.0f);
         bool follow = !own;
-        if (ImGui::Checkbox("Global##world_lane_hold_global", &follow))
+        if (ImGui::Checkbox("Global##world_lane_hold_global", &follow)) {
+            /* Ticking it is the deliberate, per-row way back onto the global,
+               and the only thing that gives up a row's own rate -- "All" does
+               not, precisely so a spray cannot be swept back in by accident. */
+            if (follow) state.lane_own_rate[slot] = false;
             WorldMarkedSetSlotHold(state, slot,
                                    follow ? state.default_hold : shown, !follow);
+        }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(follow
                 ? "Following the scene's global Ticks/frame (%d). Change the\n"
                   "global and this row changes with it. Untick, or type a\n"
                   "value in the box, to give the row a speed of its own."
+                : state.lane_own_rate[slot]
+                ? "This row runs at ITS OWN rate of %d and the scene's\n"
+                  "Ticks/frame never reaches it -- not even \"All\". Blood is\n"
+                  "like this: MK2 spawns a spray as its own process at its own\n"
+                  "ani speed, so it does not share the character's clock.\n\n"
+                  "Type in the box to change the rate. Tick this to give the\n"
+                  "row back to the global."
                 : "Off the global: this row stays at %d no matter what the\n"
                   "scene's Ticks/frame is set to. Tick this to hand it back.",
                 follow ? ClampTimelineHold(state.default_hold) : shown);
@@ -7152,21 +7183,28 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
        the run fires once at start_tick and then stops, whatever the rest of
        the scene is doing on its own clocks.
 
-       The row comes in at one tick per frame rather than at MK2's own blood
-       speed (ani speed 5 in MKBLOOD.ASM). That speed is what the finished
-       effect plays at, not what it is authored at: imported at 5 the spray
-       only lands on every fifth tick and can no longer be walked onto the
-       exact tick of the hit that caused it. Set the speed afterwards with the
-       row's Ticks/frame, which is one edit; un-quantising it is not. */
+       It comes in at MK2's own blood speed -- see kWorldBloodTicksPerFrame for
+       where 4 comes from and why MKBLOOD.ASM does not have a single number.
+       The old objection to importing at the real speed was that a quantised
+       run cannot be walked onto the exact tick of the hit; that is no longer
+       so, because the run is laid from start_tick OUTWARD rather than off a
+       grid, and start_tick is the hit. Frame 0 is on it whatever the hold. */
     int hold = ClampTimelineHold(kWorldBloodTicksPerFrame);
-    /* Imported at 1 tick, but NOT pinned: the global Ticks/frame still owns
-       this row. Pinning it here meant a spray silently ignored the scene's
-       speed control forever after -- and because the row is scheduled, the
-       only thing that ever retimed it was code that also re-lays its
-       Show@/Hide@ windows. Pin it from the row's own T/f if a spray really
-       does need to run at a different rate from the hit it came from. */
+    /* Pinned, and pinned harder than the T/f box can pin anything: a spray
+       runs at MK2's blood speed and the scene's Ticks/frame does not reach it,
+       "All" included. It is a separate object in the game -- create_blood_proc
+       spawns a process that animates itself while the character carries on at
+       whatever speed its move is authored at -- so tying the two rates
+       together previews an effect the machine will never play.
+
+       This reverses the v3.33.0 "sprays follow the global again". That change
+       was right about the mechanics it fixed (a scheduled row has to have its
+       Show@/Hide@ re-laid or a retime does nothing visible) and wrong about
+       who owns the number. The mechanics still hold for a spray retimed from
+       its own T/f, which is where a run that wants 3 or 6 gets it. */
     state.slot_hold[slot] = hold;
-    state.slot_hold_custom[slot] = false;
+    state.slot_hold_custom[slot] = true;
+    state.lane_own_rate[slot] = true;
     /* Tied to the frame it came off, not to the tick that frame happens to sit
        on today. Retime the scene and WorldMarkedResyncSpawnedRows walks the
        spray back onto the hit; move the spray by hand and the tie is dropped.
@@ -7202,9 +7240,9 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
 
     snprintf(msg, sizeof(msg),
              "Blood row: %s x%d from %s, starting at tick %d on this frame's "
-             "anipoint at %d tick%s per frame. It follows that frame -- retime "
-             "the scene and it moves with it. Drag any frame to move the whole "
-             "spray.",
+             "anipoint at MK2's blood speed of %d tick%s per frame, which the "
+             "scene's Ticks/frame will not change. It still slides to follow "
+             "that frame. Drag any frame to move the whole spray.",
              run.stem.c_str(), n, run.doc_name.c_str(), start_tick,
              hold, hold == 1 ? "" : "s");
     if (out_msg) *out_msg = msg;
@@ -7265,7 +7303,8 @@ static void WorldDrawBloodRunPicker(WorldMarkedSequenceState &state,
     const int hold = ClampTimelineHold(kWorldBloodTicksPerFrame);
     ImGui::TextDisabled("Starts at tick %d, %d tick%s per frame, plays once.",
                         start_tick, hold, hold == 1 ? "" : "s");
-    ImGui::TextDisabled("Follows this frame -- retime the scene and it moves.");
+    ImGui::TextDisabled("MK2's blood speed, kept: the scene's Ticks/frame never");
+    ImGui::TextDisabled("retimes a spray. It still slides to follow this frame.");
 
     ImGui::SetNextItemWidth(220.0f);
     ImGui::InputTextWithHint("##blood_filter", "filter (spill, guts, ...)",
@@ -7539,8 +7578,11 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
                                   "create_blood_proc's [y,x] offset from the victim.\n\n"
                                   "The spray stays tied to THIS frame: change the scene's\n"
                                   "Ticks/frame, this row's T/f or this frame's Delay and\n"
-                                  "the run moves to wherever the frame ended up. Move the\n"
-                                  "spray's own Show@ by hand and the tie is dropped.");
+                                  "the run slides to wherever the frame ended up. Move the\n"
+                                  "spray's own Show@ by hand and the tie is dropped.\n\n"
+                                  "It does not take the scene's SPEED with it. A spray is\n"
+                                  "its own object running MKBLOOD.ASM's ani speed; the row\n"
+                                  "comes in pinned there and the global cannot reach it.");
             ImGui::EndPopup();
         }
         if (!dragging_frame && ImGui::IsItemHovered()) {
@@ -8897,6 +8939,13 @@ void WorldMarkedApplyUniformHold(WorldMarkedSequenceState &state, int ticks,
            This holds for `include_custom` too: "All" overrides PINNING, and
            hidden is not pinned. */
         if (!state.lane_visible[slot]) continue;
+        /* A row that OWNS its rate is not the scene's to retime at all, and
+           unlike pinning that is not something "All" overrides. Blood is the
+           case: MK2 spawns a spray as its own process at its own ani speed out
+           of MKBLOOD.ASM, so a preview that dragged it along with the scene's
+           Ticks/frame would be showing timing the game will never play. Hand
+           it back with the row's own Global box. */
+        if (state.lane_own_rate[slot]) continue;
         /* A row that was pinned with its own T/f keeps it. Pinning is opt-in
            and per row, so the global still reaches everything else -- which
            is the whole point of it being called the global. */
@@ -9827,6 +9876,7 @@ void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
     state.spawn_slot[slot] = -1;
     state.spawn_entry[slot] = -1;
     state.spawn_tick[slot] = -1;
+    state.lane_own_rate[slot] = false;
     for (int s = 0; s < kWorldMarkedMaxTabs; s++)
         if (state.spawn_slot[s] == slot) state.spawn_slot[s] = -1;
 }
@@ -10255,10 +10305,12 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
     state.pingpong_delay[dst_slot] = state.pingpong_delay[src_slot];
     state.stop_tick[dst_slot] = state.stop_tick[src_slot];
     /* Not the spray we placed: it keeps the windows it was copied with, and
-       has nothing of its own to follow. */
+       has nothing of its own to follow. The hold is not copied along either --
+       these paths never did -- so it cannot claim a rate of its own. */
     state.spawn_slot[dst_slot] = -1;
     state.spawn_entry[dst_slot] = -1;
     state.spawn_tick[dst_slot] = -1;
+    state.lane_own_rate[dst_slot] = false;
     bool *src_mirror = WorldMarkedMirrorFlag(state, src_slot);
     bool *dst_mirror = WorldMarkedMirrorFlag(state, dst_slot);
     if (src_mirror && dst_mirror)
@@ -10342,9 +10394,12 @@ bool WorldMarkedCopySlotFrom(WorldMarkedSequenceState &state, int dst_slot,
     state.stop_tick[dst_slot] = src.stop_tick[src_slot];
     state.slot_hold[dst_slot] = src.slot_hold[src_slot];
     state.slot_hold_custom[dst_slot] = src.slot_hold_custom[src_slot];
-    /* Rows merged in from another project land in whatever slots are free, so
-       a spawn link read out of that file names rows that are not these. The
-       run keeps the schedule it was saved with; it just stops following. */
+    /* The rate travels with the hold: a spray merged in from another project
+       is still a spray, and the scene it is landing in must not retime it. */
+    state.lane_own_rate[dst_slot] = src.lane_own_rate[src_slot];
+    /* The spawn LINK does not: merged rows land in whatever slots are free, so
+       one read out of that file names rows that are not these. The run keeps
+       the schedule it was saved with; it just stops following. */
     state.spawn_slot[dst_slot] = -1;
     state.spawn_entry[dst_slot] = -1;
     state.spawn_tick[dst_slot] = -1;
@@ -10416,10 +10471,12 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
     state.pingpong_delay[dst_slot] = state.pingpong_delay[src_slot];
     state.stop_tick[dst_slot] = state.stop_tick[src_slot];
     /* Not the spray we placed: it keeps the windows it was copied with, and
-       has nothing of its own to follow. */
+       has nothing of its own to follow. The hold is not copied along either --
+       these paths never did -- so it cannot claim a rate of its own. */
     state.spawn_slot[dst_slot] = -1;
     state.spawn_entry[dst_slot] = -1;
     state.spawn_tick[dst_slot] = -1;
+    state.lane_own_rate[dst_slot] = false;
     bool *src_mirror = WorldMarkedMirrorFlag(state, src_slot);
     bool *dst_mirror = WorldMarkedMirrorFlag(state, dst_slot);
     if (src_mirror && dst_mirror)

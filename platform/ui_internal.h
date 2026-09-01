@@ -392,6 +392,9 @@ extern bool g_png_import_match_palette;
 void DrawRightPanelPaletteEditor(float panel_h);
 void ApplyVariantToSelection(void);
 void ApplySelectionRemapToMatchingSprites(void);
+void IsolateSelectionColors(void);
+void OpenIsolatePropagatePreview(void);
+void DrawIsolatePropagateDialog(void);
 void SplitSelectionToOverlayFrame(bool clear_source);
 void OpenRenamePalette(int idx);
 

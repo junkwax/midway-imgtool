@@ -64,3 +64,48 @@ int FindNearestPaletteSlot(const PAL *pal, unsigned short color_word);
 int FindNearestMergedSlot(const PAL *target, int base_count,
                           const unsigned short *added, int added_count,
                           unsigned short color_word, bool perceptual);
+
+/* ---- Palette index isolation ----
+   Work out how to give one region of a sprite exclusive ownership of the
+   palette indices it draws with, so those indices can be recolored without
+   dragging the rest of the art along — Baraka's blades without his teeth.
+
+   The plan repoints the pixels OUTSIDE the region; the region itself never
+   moves. For each contested index (owned by the region, also drawn outside
+   it) a destination slot is chosen, cheapest first:
+
+     1. a slot already holding that exact color   — free,
+     2. a slot no sprite on the palette draws with — costs a color, no slot,
+     3. a freshly appended duplicate               — grows numc,
+     4. the nearest color the region does not own  — only once the palette is
+        full, and the only outcome where the art actually changes.
+
+   This is pure planning: nothing is written, the palette is not grown, and no
+   pixel is touched. The caller grows the palette to `numc`, performs the
+   `copy_from` color writes, then rewrites its outside pixels through `dest`. */
+struct PaletteIsolatePlan {
+    /* dest[i] is the slot that outside pixels of index i must become, or -1
+       when index i is not contested and should be left exactly as it is. */
+    int dest[256];
+    /* copy_from[d] is the index whose color slot d has to be given before the
+       plan is valid, or -1 when d already holds the right color. Sources are
+       always reserved indices, which are never themselves destinations, so
+       these writes are safe to apply in any order. */
+    int copy_from[256];
+    int numc;           /* palette size the plan needs; >= the numc passed in */
+    int matched;        /* destinations that cost nothing at all */
+    int recycled;       /* destinations taken from slots nothing was drawing */
+    int appended;       /* destinations added past the old end of the palette */
+    int approximated;   /* destinations that change the color of the art */
+};
+
+/* Fill `out` with the isolation plan for `words` (2-bytes-per-entry, `numc`
+   colors). `reserved` marks every index the region draws with; `contested`
+   marks the subset of those also drawn outside it; `live` marks every index
+   any sprite on this palette draws with, so a slot that is merely unused can
+   be recycled without disturbing another frame. Index 0 is transparent and is
+   never reserved, recycled, or handed out. `max_numc` caps growth (256). */
+void PlanPaletteIsolation(const unsigned char *words, int numc,
+                          const bool *reserved, const bool *contested,
+                          const bool *live, int max_numc,
+                          PaletteIsolatePlan *out);

@@ -73,6 +73,7 @@ static bool g_show_indexed_gradient = false;
 static float g_indexed_gradient_colors[11][3] = {};
 static bool g_indexed_gradient_color_set[11] = {};
 static int g_indexed_gradient_color_count = 2;
+static int g_indexed_gradient_active_stop = 0;   /* stop the color wheel edits */
 static int g_indexed_gradient_palette_idx = -1;
 static bool g_indexed_gradient_targets[256] = {};
 static unsigned char g_indexed_gradient_baseline[512] = {};
@@ -163,6 +164,7 @@ static void SelectIndexedGradientPreset(const IndexedGradientPreset &preset)
         g_indexed_gradient_colors[i][2] = preset.colors[i].z;
         g_indexed_gradient_color_set[i] = true;
     }
+    g_indexed_gradient_active_stop = 0;
     g_indexed_gradient_applied = false;
 }
 
@@ -3853,6 +3855,7 @@ void OpenIndexedGradientDialog(void)
     for (int i = 1; i < g_indexed_gradient_palette_count; i++)
         g_indexed_gradient_targets[i] = g_palette_selection[i];
     g_indexed_gradient_color_count = 2;
+    g_indexed_gradient_active_stop = 0;
     memset(g_indexed_gradient_colors, 0, sizeof(g_indexed_gradient_colors));
     memset(g_indexed_gradient_color_set, 0, sizeof(g_indexed_gradient_color_set));
     g_indexed_gradient_applied = false;
@@ -3982,6 +3985,8 @@ static void ReverseIndexedGradient(void)
         g_indexed_gradient_color_set[i] = g_indexed_gradient_color_set[j];
         g_indexed_gradient_color_set[j] = set;
     }
+    g_indexed_gradient_active_stop = g_indexed_gradient_color_count - 1 -
+                                     g_indexed_gradient_active_stop;
     g_indexed_gradient_applied = false;
 }
 
@@ -4027,6 +4032,7 @@ static int BuildIndexedGradientFromPalette(void)
         g_indexed_gradient_color_set[i] = true;
     }
     g_indexed_gradient_color_count = n;
+    if (g_indexed_gradient_active_stop >= n) g_indexed_gradient_active_stop = n - 1;
     g_indexed_gradient_applied = false;
     return n;
 }
@@ -4136,17 +4142,29 @@ void DrawIndexedGradientDialog(void)
         }
     }
     ImGui::Separator();
-    ImGui::Text("Gradient colors (%d / 11)", g_indexed_gradient_color_count);
     bool all_set = true;
+    /* Stops on the left, one always-open color wheel on the right. The wheel
+       edits whichever stop is selected, so picking a ramp color no longer
+       means opening (and losing) a popup per stop. */
+    ImGui::BeginGroup();
+    ImGui::Text("Gradient colors (%d / 11)", g_indexed_gradient_color_count);
     for (int i = 0; i < g_indexed_gradient_color_count; i++) {
         ImGui::PushID(i);
-        ImGui::Text("%d", i + 1); ImGui::SameLine();
+        char stop_label[8];
+        snprintf(stop_label, sizeof(stop_label), "%d", i + 1);
+        if (ImGui::RadioButton(stop_label, g_indexed_gradient_active_stop == i))
+            g_indexed_gradient_active_stop = i;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Edit stop %d with the color wheel.", i + 1);
+        ImGui::SameLine(46.0f);
         ImGui::SetNextItemWidth(250);
         bool color_changed = ImGui::ColorEdit3("##color", g_indexed_gradient_colors[i],
                                                ImGuiColorEditFlags_PickerHueWheel |
                                                ImGuiColorEditFlags_DisplayRGB);
-        if (color_changed || ImGui::IsItemActivated())
+        if (color_changed || ImGui::IsItemActivated()) {
             g_indexed_gradient_color_set[i] = true;
+            g_indexed_gradient_active_stop = i;
+        }
         if (!g_indexed_gradient_color_set[i]) {
             all_set = false;
             ImGui::SameLine(); ImGui::TextDisabled("empty");
@@ -4159,6 +4177,7 @@ void DrawIndexedGradientDialog(void)
                     g_indexed_gradient_color_set[j] = g_indexed_gradient_color_set[j + 1];
                 }
                 g_indexed_gradient_color_count--; i--;
+                if (g_indexed_gradient_active_stop > i + 1) g_indexed_gradient_active_stop--;
             }
         }
         ImGui::PopID();
@@ -4168,6 +4187,7 @@ void DrawIndexedGradientDialog(void)
         memset(g_indexed_gradient_colors[g_indexed_gradient_color_count], 0,
                sizeof(g_indexed_gradient_colors[g_indexed_gradient_color_count]));
         g_indexed_gradient_color_set[g_indexed_gradient_color_count] = false;
+        g_indexed_gradient_active_stop = g_indexed_gradient_color_count;
         g_indexed_gradient_color_count++;
     }
     if (g_indexed_gradient_color_count >= 11) ImGui::EndDisabled();
@@ -4186,7 +4206,64 @@ void DrawIndexedGradientDialog(void)
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Sample the palette colors this gradient targets, darkest to lightest, into the current number of stops.");
-    ImGui::TextDisabled("Click a swatch to open its color wheel. All colors must be chosen before Apply.");
+    ImGui::EndGroup();
+
+    ImGui::SameLine(0.0f, 16.0f);
+    ImGui::BeginGroup();
+    if (g_indexed_gradient_active_stop >= g_indexed_gradient_color_count)
+        g_indexed_gradient_active_stop = g_indexed_gradient_color_count - 1;
+    if (g_indexed_gradient_active_stop < 0) g_indexed_gradient_active_stop = 0;
+    int active = g_indexed_gradient_active_stop;
+    ImGui::Text("Stop %d of %d", active + 1, g_indexed_gradient_color_count);
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::ColorPicker3("##gradient_wheel", g_indexed_gradient_colors[active],
+                            ImGuiColorEditFlags_PickerHueWheel |
+                            ImGuiColorEditFlags_DisplayRGB |
+                            ImGuiColorEditFlags_NoSidePreview |
+                            ImGuiColorEditFlags_NoLabel))
+        g_indexed_gradient_color_set[active] = true;
+    /* The whole ramp, so a wheel edit can be judged against its neighbours. */
+    {
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        const float bar_w = 200.0f, bar_h = 18.0f;
+        const int slices = 64;
+        int n = g_indexed_gradient_color_count;
+        for (int i = 0; i < slices; i++) {
+            float t = (float)i / (float)(slices - 1);
+            float scaled = t * (float)(n - 1);
+            int seg = (int)floorf(scaled);
+            if (seg >= n - 1) seg = n - 2;
+            if (seg < 0) seg = 0;
+            float f = scaled - (float)seg;
+            ImVec4 c(0.0f, 0.0f, 0.0f, 1.0f);
+            c.x = g_indexed_gradient_colors[seg][0] + (g_indexed_gradient_colors[seg + 1][0] - g_indexed_gradient_colors[seg][0]) * f;
+            c.y = g_indexed_gradient_colors[seg][1] + (g_indexed_gradient_colors[seg + 1][1] - g_indexed_gradient_colors[seg][1]) * f;
+            c.z = g_indexed_gradient_colors[seg][2] + (g_indexed_gradient_colors[seg + 1][2] - g_indexed_gradient_colors[seg][2]) * f;
+            float x0 = p.x + bar_w * (float)i / (float)slices;
+            float x1 = p.x + bar_w * (float)(i + 1) / (float)slices;
+            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1 + 1.0f, p.y + bar_h),
+                              ImGui::ColorConvertFloat4ToU32(c));
+        }
+        dl->AddRect(p, ImVec2(p.x + bar_w, p.y + bar_h), IM_COL32(150, 150, 150, 255));
+        /* Marker for where the edited stop sits along the ramp. */
+        float tx = p.x + bar_w * (n > 1 ? (float)active / (float)(n - 1) : 0.0f);
+        if (tx > p.x + bar_w - 4.0f) tx = p.x + bar_w - 4.0f;
+        if (tx < p.x + 4.0f) tx = p.x + 4.0f;
+        dl->AddTriangleFilled(ImVec2(tx, p.y + bar_h * 0.5f),
+                              ImVec2(tx - 5.0f, p.y + bar_h + 6.0f),
+                              ImVec2(tx + 5.0f, p.y + bar_h + 6.0f),
+                              IM_COL32(255, 220, 90, 255));
+        ImGui::Dummy(ImVec2(bar_w, bar_h + 8.0f));
+    }
+    ImGui::EndGroup();
+
+    /* Recompute after the wheel so a color set this frame previews at once. */
+    all_set = true;
+    for (int i = 0; i < g_indexed_gradient_color_count; i++)
+        if (!g_indexed_gradient_color_set[i]) all_set = false;
+    ImGui::TextDisabled("Pick a stop on the left, then set its color with the wheel. All colors must be chosen before Apply.");
     ImGui::SeparatorText("Preview");
     SDL_Texture *preview = all_set ? BuildIndexedGradientPreview() : NULL;
     IMG *preview_img = get_img(g_indexed_gradient_image_idx);
@@ -5024,14 +5101,19 @@ struct SelectionComponentStats {
     long long sum_x, sum_y;
 };
 
+/* `target_idx` is the swatch the sample will be remapped ONTO, which is
+   excluded from the sample so a partly-done remap does not re-seed itself.
+   Pass 0 when there is no destination swatch — the isolation caller samples
+   the selection's own colors and excludes nothing but transparency. */
 static bool BuildSelectionPropagateSample(SelectionPropagateSample *sample,
+                                          int target_idx,
                                           char *err, size_t err_sz)
 {
     if (err && err_sz) err[0] = '\0';
     if (!sample) return false;
     sample->src_idx = g_doc->ilselected;
     sample->pal_idx = -1;
-    sample->target_idx = g_sel_color;
+    sample->target_idx = target_idx;
     memset(sample->source_colors, 0, sizeof(sample->source_colors));
     sample->exact_pixels.clear();
     sample->rel_seeds.clear();
@@ -5050,7 +5132,7 @@ static bool BuildSelectionPropagateSample(SelectionPropagateSample *sample,
         snprintf(err, err_sz, "Select the feature first, then propagate it.");
         return false;
     }
-    if (g_sel_color <= 0 || g_sel_color >= 256) {
+    if (target_idx < 0 || target_idx >= 256) {
         snprintf(err, err_sz, "Pick a non-transparent destination swatch first.");
         return false;
     }
@@ -5071,7 +5153,7 @@ static bool BuildSelectionPropagateSample(SelectionPropagateSample *sample,
         for (int x = 0; x < src->w; x++) {
             if (!selection_contains_pixel(src, x, y)) continue;
             unsigned char ci = pix[y * stride + x];
-            if (ci == 0 || ci == (unsigned char)g_sel_color) continue;
+            if (ci == 0 || ci == (unsigned char)target_idx) continue;
             sample->source_colors[ci] = true;
             sample->exact_pixels.push_back({x, y});
             sum_x += x;
@@ -5285,7 +5367,13 @@ void ApplySelectionRemapToMatchingSprites(void)
 {
     SelectionPropagateSample sample = {};
     char err[160];
-    if (!BuildSelectionPropagateSample(&sample, err, sizeof(err))) {
+    if (g_sel_color <= 0 || g_sel_color >= 256) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Pick a non-transparent destination swatch first.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    if (!BuildSelectionPropagateSample(&sample, g_sel_color, err, sizeof(err))) {
         snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", err);
         g_restore_msg_timer = 4.0f;
         return;
@@ -5369,3 +5457,511 @@ void ApplySelectionRemapToMatchingSprites(void)
     g_restore_msg_timer = 5.0f;
 }
 
+
+/* ---- Isolate Selection Colors ---------------------------------------
+   Give the selected region exclusive ownership of the palette indices it
+   draws with, so those indices become free to recolor on their own -- the
+   blades without the teeth. PlanPaletteIsolation works out where the pixels
+   outside the selection should point instead; this drives it with the
+   document's state and applies the result as one undo step.
+
+   Scope is the selected sprite. A palette is shared across frames, so the
+   other frames keep whatever indices they had; run this per frame to isolate
+   a whole animation. */
+static void IsolateMarkLiveSlots(const IMG *head, int palnum, bool *live)
+{
+    for (const IMG *o = head; o; o = (const IMG *)o->nxt_p) {
+        if ((int)o->palnum != palnum || !o->data_p) continue;
+        int ostride = ((int)o->w + 3) & ~3;
+        const unsigned char *op = (const unsigned char *)o->data_p;
+        for (int y = 0; y < (int)o->h; y++)
+            for (int x = 0; x < (int)o->w; x++) {
+                unsigned char v = op[y * ostride + x];
+                if (v != 0) live[v] = true;
+            }
+    }
+}
+
+void IsolateSelectionColors(void)
+{
+    IMG *img = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
+    if (!img || !img->data_p || img->w == 0 || img->h == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Select a sprite first.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    if (!g_grid_sel.active) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Make a selection first (marquee, lasso, or magic wand).");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    PAL *pal = get_pal(img->palnum);
+    if (!pal || !pal->data_p || pal->numc <= 1) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Sprite %d has no usable palette.", g_doc->ilselected);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    const int base_numc = (int)pal->numc < 256 ? (int)pal->numc : 256;
+    const int stride = ((int)img->w + 3) & ~3;
+
+    /* Index 0 is transparent everywhere, and an index past numc is already
+       broken art -- neither is worth reserving or repointing. */
+    bool reserved[256] = {false};
+    bool outside[256] = {false};
+    int inside_px = 0;
+    {
+        const unsigned char *pix = (const unsigned char *)img->data_p;
+        for (int y = 0; y < (int)img->h; y++)
+            for (int x = 0; x < (int)img->w; x++) {
+                unsigned char v = pix[y * stride + x];
+                if (v == 0 || v >= base_numc) continue;
+                if (selection_contains_pixel(img, x, y)) { reserved[v] = true; inside_px++; }
+                else                                       outside[v] = true;
+            }
+    }
+
+    if (inside_px == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Selection covers no opaque pixels.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    bool contested[256] = {false};
+    int reserved_n = 0, nconf = 0;
+    for (int i = 1; i < base_numc; i++) {
+        if (!reserved[i]) continue;
+        reserved_n++;
+        if (outside[i]) { contested[i] = true; nconf++; }
+    }
+
+    if (nconf == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Already exclusive: the selection's %d color%s appear nowhere else in this sprite.",
+                 reserved_n, reserved_n == 1 ? "" : "s");
+        g_restore_msg_timer = 5.0f;
+        return;
+    }
+
+    /* A slot is only safe to recycle when NO sprite on this palette draws with
+       it -- taking one another frame still references would recolor that
+       frame. Both image chains count; img2_p is one document swap away. */
+    bool live[256] = {false};
+    IsolateMarkLiveSlots((const IMG *)g_doc->img_p, (int)img->palnum, live);
+    IsolateMarkLiveSlots((const IMG *)g_doc->img2_p, (int)img->palnum, live);
+
+    PaletteIsolatePlan plan;
+    PlanPaletteIsolation((const unsigned char *)pal->data_p, base_numc,
+                         reserved, contested, live, 256, &plan);
+
+    /* Nothing to hand out means a full palette whose every color the selection
+       already owns. Bail before the undo push so a no-op leaves no entry. */
+    if (plan.matched + plan.recycled + plan.appended + plan.approximated == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Could not free any index: the palette is full and every color is inside the selection.");
+        g_restore_msg_timer = 5.0f;
+        return;
+    }
+
+    if (!doc_undo_push()) return;
+
+    const int old_bpp = (int)pal->bitspix;
+    if (plan.numc > base_numc && !ensure_palette_numc(pal, plan.numc)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Could not grow the palette to %d colors.", plan.numc);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    const int new_numc = (int)pal->numc < 256 ? (int)pal->numc : 256;
+
+    unsigned char *pd = (unsigned char *)pal->data_p;
+    for (int d = 1; d < new_numc; d++)
+        if (plan.copy_from[d] >= 0)
+            memcpy(pd + d * 2, pd + plan.copy_from[d] * 2, 2);
+
+    unsigned char *wpix = (unsigned char *)img->data_p;
+    int changed = 0;
+    for (int y = 0; y < (int)img->h; y++)
+        for (int x = 0; x < (int)img->w; x++) {
+            unsigned char *p = wpix + y * stride + x;
+            if (plan.dest[*p] < 0) continue;
+            if (selection_contains_pixel(img, x, y)) continue;
+            *p = (unsigned char)plan.dest[*p];
+            changed++;
+        }
+
+    /* A planned destination always has outside pixels behind it — that is what
+       made its index contested — so `changed` is necessarily non-zero here. */
+    ApplyPalette((int)img->palnum);
+    save_palette_baseline();
+    InvalidatePaletteUsage();
+    InvalidatePaletteSync();
+    InvalidateThumb(g_doc->ilselected);
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    char detail[192];
+    int n = snprintf(detail, sizeof(detail), "%d matched", plan.matched);
+    if (plan.recycled)     n += snprintf(detail + n, sizeof(detail) - n, ", %d recycled", plan.recycled);
+    if (plan.appended)     n += snprintf(detail + n, sizeof(detail) - n, ", %d appended", plan.appended);
+    if (plan.approximated) n += snprintf(detail + n, sizeof(detail) - n, ", %d approximated", plan.approximated);
+    if (new_numc != base_numc)
+        n += snprintf(detail + n, sizeof(detail) - n, "; palette %d -> %d", base_numc, new_numc);
+    if ((int)pal->bitspix != old_bpp)
+        snprintf(detail + n, sizeof(detail) - n, ", %dbpp -> %dbpp", old_bpp, (int)pal->bitspix);
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Reserved %d index%s for the selection (%s); %d px repointed%s.",
+             nconf, nconf == 1 ? "" : "es", detail, changed,
+             plan.approximated ? " -- approximated colors changed the art" : "");
+    g_restore_msg_timer = 6.0f;
+}
+
+/* ---- Isolate Selection Colors across frames --------------------------
+   A palette is shared, so reserving indices on one frame does not finish the
+   job: recolor reserved index 13 and any OTHER frame still drawing 13 on its
+   teeth changes too. This runs the same isolation over every sprite on the
+   palette, using the propagation matcher that backs "Remap Similar Regions"
+   to work out where the feature sits in each frame.
+
+   The plan is computed ONCE, from the union of what is contested across the
+   chosen frames, because a shared palette can only have one answer. Frames
+   the matcher finds nothing in are the risky ones -- every reserved-index
+   pixel there reads as "not the feature" -- so they are listed, flagged, and
+   left switched off until the user says otherwise. */
+struct IsolatePropagateFrame {
+    int  img_idx;
+    char name[20];
+    int  w, h;
+    std::vector<unsigned char> region;  /* w*h, 1 = matcher says "this is it" */
+    int  region_px;
+    int  outside_px;                    /* reserved-index pixels outside it */
+    bool include;
+    bool is_source;
+};
+
+static bool g_show_isolate_propagate = false;
+static std::vector<IsolatePropagateFrame> g_isolate_frames;
+static SelectionPropagateSample g_isolate_sample;
+static bool g_isolate_reserved[256];
+static int  g_isolate_pal_idx = -1;
+static int  g_isolate_reserved_n = 0;
+
+static void CloseIsolatePropagate(void)
+{
+    g_show_isolate_propagate = false;
+    g_isolate_frames.clear();
+    g_isolate_frames.shrink_to_fit();
+}
+
+void OpenIsolatePropagatePreview(void)
+{
+    g_isolate_frames.clear();
+    g_isolate_pal_idx = -1;
+    g_isolate_reserved_n = 0;
+    memset(g_isolate_reserved, 0, sizeof(g_isolate_reserved));
+
+    char err[160];
+    /* Target 0: no destination swatch is involved, so nothing is excluded
+       from the sample but transparency. */
+    if (!BuildSelectionPropagateSample(&g_isolate_sample, 0, err, sizeof(err))) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "%s", err);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    PAL *pal = get_pal(g_isolate_sample.pal_idx);
+    if (!pal || !pal->data_p || pal->numc <= 1) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Source sprite has no usable palette.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    const int numc = (int)pal->numc < 256 ? (int)pal->numc : 256;
+    for (int i = 1; i < numc; i++) {
+        if (!g_isolate_sample.source_colors[i]) continue;
+        g_isolate_reserved[i] = true;
+        g_isolate_reserved_n++;
+    }
+    if (g_isolate_reserved_n == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Selection covers no opaque pixels.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    g_isolate_pal_idx = g_isolate_sample.pal_idx;
+
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if ((int)img->palnum != g_isolate_pal_idx || !img->data_p ||
+            img->w == 0 || img->h == 0)
+            continue;
+
+        IsolatePropagateFrame f;
+        f.img_idx = idx;
+        snprintf(f.name, sizeof(f.name), "%.15s", img->n_s);
+        f.w = (int)img->w;
+        f.h = (int)img->h;
+        f.is_source = (idx == g_isolate_sample.src_idx);
+        f.region.assign((size_t)f.w * f.h, 0);
+
+        std::vector<std::pair<int,int>> pts =
+            FindSelectionPropagationPixels(img, g_isolate_sample, idx);
+        for (const auto &p : pts)
+            if (p.first >= 0 && p.first < f.w && p.second >= 0 && p.second < f.h)
+                f.region[(size_t)p.second * f.w + p.first] = 1;
+        f.region_px = (int)pts.size();
+
+        const int stride = (f.w + 3) & ~3;
+        const unsigned char *pix = (const unsigned char *)img->data_p;
+        f.outside_px = 0;
+        for (int y = 0; y < f.h; y++)
+            for (int x = 0; x < f.w; x++) {
+                unsigned char v = pix[y * stride + x];
+                if (v == 0 || !g_isolate_reserved[v]) continue;
+                if (f.region[(size_t)y * f.w + x]) continue;
+                f.outside_px++;
+            }
+
+        /* Default a no-match frame off. Including it is not corruption -- the
+           duplicate holds the same color, so it still looks right -- but its
+           feature would stop following the reserved indices, which is exactly
+           what the user came here for. */
+        f.include = f.is_source || f.region_px > 0;
+        g_isolate_frames.push_back(std::move(f));
+    }
+
+    if (g_isolate_frames.empty()) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "No sprites share palette %d.", g_isolate_pal_idx);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    g_show_isolate_propagate = true;
+}
+
+static void ApplyIsolatePropagate(void)
+{
+    PAL *pal = get_pal(g_isolate_pal_idx);
+    if (!pal || !pal->data_p || pal->numc <= 1) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Palette went away.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    const int base_numc = (int)pal->numc < 256 ? (int)pal->numc : 256;
+
+    /* One shared palette means one shared answer: gather what every chosen
+       frame contests before planning anything. */
+    bool contested[256] = {false};
+    int nconf = 0, usable = 0;
+    for (const IsolatePropagateFrame &f : g_isolate_frames) {
+        if (!f.include) continue;
+        IMG *img = get_img(f.img_idx);
+        if (!img || !img->data_p) continue;
+        if ((int)img->w != f.w || (int)img->h != f.h) continue;  /* resized under us */
+        usable++;
+        const int stride = (f.w + 3) & ~3;
+        const unsigned char *pix = (const unsigned char *)img->data_p;
+        for (int y = 0; y < f.h; y++)
+            for (int x = 0; x < f.w; x++) {
+                unsigned char v = pix[y * stride + x];
+                if (v == 0 || v >= base_numc || !g_isolate_reserved[v]) continue;
+                if (f.region[(size_t)y * f.w + x]) continue;
+                contested[v] = true;
+            }
+    }
+    for (int i = 1; i < base_numc; i++) if (contested[i]) nconf++;
+
+    if (nconf == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Already exclusive: nothing outside the feature draws those %d index%s in the %d chosen frame%s.",
+                 g_isolate_reserved_n, g_isolate_reserved_n == 1 ? "" : "es",
+                 usable, usable == 1 ? "" : "s");
+        g_restore_msg_timer = 5.0f;
+        return;
+    }
+
+    bool live[256] = {false};
+    IsolateMarkLiveSlots((const IMG *)g_doc->img_p, g_isolate_pal_idx, live);
+    IsolateMarkLiveSlots((const IMG *)g_doc->img2_p, g_isolate_pal_idx, live);
+
+    PaletteIsolatePlan plan;
+    PlanPaletteIsolation((const unsigned char *)pal->data_p, base_numc,
+                         g_isolate_reserved, contested, live, 256, &plan);
+
+    if (plan.matched + plan.recycled + plan.appended + plan.approximated == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Could not free any index: the palette is full and every color is inside the feature.");
+        g_restore_msg_timer = 5.0f;
+        return;
+    }
+
+    if (!doc_undo_push()) return;
+
+    const int old_bpp = (int)pal->bitspix;
+    if (plan.numc > base_numc && !ensure_palette_numc(pal, plan.numc)) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Could not grow the palette to %d colors.", plan.numc);
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+    const int new_numc = (int)pal->numc < 256 ? (int)pal->numc : 256;
+
+    unsigned char *pd = (unsigned char *)pal->data_p;
+    for (int d = 1; d < new_numc; d++)
+        if (plan.copy_from[d] >= 0)
+            memcpy(pd + d * 2, pd + plan.copy_from[d] * 2, 2);
+
+    int changed = 0, frames = 0;
+    for (const IsolatePropagateFrame &f : g_isolate_frames) {
+        if (!f.include) continue;
+        IMG *img = get_img(f.img_idx);
+        if (!img || !img->data_p) continue;
+        if ((int)img->w != f.w || (int)img->h != f.h) continue;
+        const int stride = (f.w + 3) & ~3;
+        unsigned char *pix = (unsigned char *)img->data_p;
+        int n = 0;
+        for (int y = 0; y < f.h; y++)
+            for (int x = 0; x < f.w; x++) {
+                unsigned char *p = pix + y * stride + x;
+                if (plan.dest[*p] < 0) continue;
+                if (f.region[(size_t)y * f.w + x]) continue;
+                *p = (unsigned char)plan.dest[*p];
+                n++;
+            }
+        if (n > 0) { changed += n; frames++; InvalidateThumb(f.img_idx); }
+    }
+
+    ApplyPalette(g_isolate_pal_idx);
+    save_palette_baseline();
+    InvalidatePaletteUsage();
+    InvalidatePaletteSync();
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    char detail[192];
+    int n = snprintf(detail, sizeof(detail), "%d matched", plan.matched);
+    if (plan.recycled)     n += snprintf(detail + n, sizeof(detail) - n, ", %d recycled", plan.recycled);
+    if (plan.appended)     n += snprintf(detail + n, sizeof(detail) - n, ", %d appended", plan.appended);
+    if (plan.approximated) n += snprintf(detail + n, sizeof(detail) - n, ", %d approximated", plan.approximated);
+    if (new_numc != base_numc)
+        n += snprintf(detail + n, sizeof(detail) - n, "; palette %d -> %d", base_numc, new_numc);
+    if ((int)pal->bitspix != old_bpp)
+        snprintf(detail + n, sizeof(detail) - n, ", %dbpp -> %dbpp", old_bpp, (int)pal->bitspix);
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Reserved %d index%s across %d frame%s (%s); %d px repointed%s.",
+             nconf, nconf == 1 ? "" : "es", frames, frames == 1 ? "" : "s",
+             detail, changed,
+             plan.approximated ? " -- approximated colors changed the art" : "");
+    g_restore_msg_timer = 6.0f;
+}
+
+void DrawIsolatePropagateDialog(void)
+{
+    if (g_show_isolate_propagate)
+        ImGui::OpenPopup("Isolate Selection Colors Across Frames");
+    if (!ImGui::BeginPopupModal("Isolate Selection Colors Across Frames",
+                                &g_show_isolate_propagate,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!g_show_isolate_propagate && !g_isolate_frames.empty())
+            CloseIsolatePropagate();
+        return;
+    }
+
+    ImGui::Text("Reserving %d palette index%s on palette %d for the selected feature.",
+                g_isolate_reserved_n, g_isolate_reserved_n == 1 ? "" : "es",
+                g_isolate_pal_idx);
+    ImGui::TextDisabled("Each frame keeps the pixels the matcher believes are the feature; every other");
+    ImGui::TextDisabled("pixel on a reserved index is repointed at a duplicate slot of the same color.");
+    ImGui::Separator();
+
+    int on = 0, total_out = 0, blind = 0, blind_on = 0;
+    for (const IsolatePropagateFrame &f : g_isolate_frames) {
+        bool no_match = (f.region_px == 0 && !f.is_source);
+        if (no_match) blind++;
+        if (!f.include) continue;
+        on++;
+        total_out += f.outside_px;
+        if (no_match) blind_on++;
+    }
+
+    if (ImGui::SmallButton("All")) {
+        for (IsolatePropagateFrame &f : g_isolate_frames) f.include = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("None")) {
+        for (IsolatePropagateFrame &f : g_isolate_frames) f.include = f.is_source;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Only Matched")) {
+        for (IsolatePropagateFrame &f : g_isolate_frames)
+            f.include = f.is_source || f.region_px > 0;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d of %d frames selected", on, (int)g_isolate_frames.size());
+
+    ImGui::BeginChild("isolate_frames", ImVec2(608, 260), true);
+    for (size_t i = 0; i < g_isolate_frames.size(); i++) {
+        IsolatePropagateFrame &f = g_isolate_frames[i];
+        bool no_match = (f.region_px == 0 && !f.is_source);
+        ImGui::PushID((int)i);
+        if (f.is_source) {
+            bool pinned = true;
+            ImGui::BeginDisabled();
+            ImGui::Checkbox("##inc", &pinned);
+            ImGui::EndDisabled();
+        } else {
+            ImGui::Checkbox("##inc", &f.include);
+        }
+        ImGui::SameLine();
+        if (no_match)
+            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.35f, 1.0f),
+                               "#%-4d %-15s  no match found  -  %d px on reserved indices",
+                               f.img_idx, f.name, f.outside_px);
+        else
+            ImGui::Text("#%-4d %-15s  %5d px feature%s  -  %d px repointed",
+                        f.img_idx, f.name, f.region_px,
+                        f.is_source ? " (source)" : "", f.outside_px);
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    if (blind > 0) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.82f, 0.35f, 1.0f));
+        ImGui::TextWrapped(
+            "%d frame%s where the matcher found nothing. Including one is safe to look at -- "
+            "the duplicate is the same color -- but its feature stops following the reserved "
+            "indices, so a later recolor will skip it. Left off by default.",
+            blind, blind == 1 ? "" : "s");
+        ImGui::PopStyleColor();
+    }
+    if (blind_on > 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f),
+                           "%d no-match frame%s currently switched on.",
+                           blind_on, blind_on == 1 ? "" : "s");
+
+    ImGui::Separator();
+    ImGui::Text("%d frame%s, %d pixel%s to repoint.",
+                on, on == 1 ? "" : "s", total_out, total_out == 1 ? "" : "s");
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(total_out == 0);
+    bool apply = ImGui::Button("Isolate", ImVec2(120, 0));
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    bool cancel = ImGui::Button("Cancel", ImVec2(100, 0));
+    if (apply || cancel) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+
+    /* Outside the popup scope: applying frees the frame list the loop above
+       is still reading, so it has to happen after EndPopup. */
+    if (apply) ApplyIsolatePropagate();
+    if (apply || cancel) CloseIsolatePropagate();
+}

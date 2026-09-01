@@ -3315,6 +3315,11 @@ static void WaxWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
     WaxWriteBool(f, key, state.slot_hold_custom[slot]);
     snprintf(key, sizeof(key), "slot.%d.hold", slot);
     WaxWriteInt(f, key, state.slot_hold[slot]);
+    /* "This row's rate is its own and the global never reaches it, All
+       included" -- blood. Absent in older projects, which read back false:
+       their sprays were on the global when they were saved. */
+    snprintf(key, sizeof(key), "slot.%d.own_rate", slot);
+    WaxWriteBool(f, key, state.lane_own_rate[slot]);
     /* The frame this row was spawned against -- a blood spray and the hit that
        caused it. Absent in projects saved before sprays followed their frame;
        those read back free-standing, keeping the exact schedule they were
@@ -3425,6 +3430,7 @@ static void WaxReadSlot(const std::unordered_map<std::string, std::string> &kv,
     /* Absent in older projects: those rows follow the global, which is what
        they did when they were saved. */
     state.slot_hold_custom[slot] = WaxGetBool(kv, prefix + "hold_custom", false);
+    state.lane_own_rate[slot] = WaxGetBool(kv, prefix + "own_rate", false);
     bool had_slot_hold = kv.count(prefix + "hold") != 0;
     state.slot_hold[slot] = ClampTimelineHold(
         WaxGetInt(kv, prefix + "hold", state.default_hold));

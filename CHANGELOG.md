@@ -10,6 +10,94 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### The blades keep their indices to themselves
+
+Selecting Baraka's blades and recoloring the swatch used to recolor his teeth
+along with them, because both draw the same silver ramp. **Selection > Isolate
+Selection Colors** reserves the indices under the current selection for that
+selection alone: every pixel elsewhere in the sprite drawing one of them is
+repointed at a different slot holding the same color, so the frame comes out
+looking identical while the reserved indices become free to edit on their own.
+
+- **The art does not change.** A contested index is handed a destination in
+  cheapest-first order: a slot already holding that exact color (free), a slot
+  no sprite on the palette draws with (costs a color, not a slot), or a fresh
+  duplicate appended to the end (grows `numc`, and `bitspix` with it when the
+  count crosses the depth). Only a palette with no room left falls back to the
+  nearest unreserved color, and the status line says so when it happens.
+- **A recycled slot is one nothing draws with anywhere.** Both image chains are
+  scanned for the palette before any slot is called dead, so repurposing one
+  cannot recolor a frame you are not looking at.
+- Works with any selection — marquee, lasso, or magic wand, including one built
+  up with Ctrl-add. Scope is the selected sprite; a palette is shared across
+  frames, so run it per frame to isolate a whole animation.
+- The slot planner is pure and covered by `palette_math_test`.
+
+### ...and they keep them across the whole animation
+
+Reserving an index on one frame does not finish the job. A palette is shared,
+so recolor reserved index 13 and any *other* frame still drawing 13 on its
+teeth changes with it. **Selection > Isolate Selection Colors Across Frames**
+runs the same isolation over every sprite on the palette, locating the feature
+in each frame with the propagation matcher that already backs *Remap Similar
+Regions* — anipoint-aligned seeds, flood-filled components, filtered on area
+ratio and centroid drift.
+
+- **The plan is computed once, from what every chosen frame contests**, because
+  a shared palette can only have one answer. Planning per frame would hand the
+  same silver two different duplicates and split the ramp.
+- **Frames the matcher finds nothing in are flagged and left off.** In those,
+  every reserved-index pixel reads as "not the feature", so including one would
+  quietly stop its blades following the reserved indices. It still *looks*
+  right — the duplicate is the same color — which is exactly why the preview
+  calls it out rather than letting it pass silently.
+- The preview lists every frame with its feature pixel count and how many
+  pixels would be repointed, with `All` / `None` / `Only Matched` and a
+  per-frame checkbox. The source frame is pinned on.
+- `BuildSelectionPropagateSample` now takes the destination swatch as a
+  parameter instead of reading `g_sel_color`; passing 0 samples the selection's
+  own colors and excludes nothing, which is what isolation needs.
+
+
+### Blood plays at MK2's speed, and the scene cannot retime it
+
+A spray is not part of the character's animation. `create_blood_proc` spawns a
+**separate process** that animates itself out of `MKBLOOD.ASM` while the
+character carries on at whatever speed its move is authored at. Letting the
+scene's Ticks/frame reach a blood row previewed an effect the machine will
+never play, whichever way the number was pushed.
+
+- **A blood row now owns its rate.** It is created pinned, and pinned harder
+  than the `T/f` box pins anything: the global does not reach it and **`All`
+  does not override it** — `All` exists to override pinning, and sweeping a
+  spray back onto the scene's clock by accident is the thing being prevented.
+  Ticking that row's own `Global` box is the one way back, per row, deliberate.
+- **Sprays import at 4 ticks a frame**, not 1. `MKBLOOD.ASM` does not have a
+  single speed — the frame waits handed to `framew` are 6 (×12), 4 (×7), 3
+  (×6), and 5 and 1 once each — but the generic `spawn_drip` spawner that most
+  spray procs go through passes an ani speed of **4** in all but one place
+  (`movi 000040002h,a5`), which makes 4 both the drip spawner's rate and the
+  most common single value in the file. A run that wants 3 or 6 gets it from
+  the row's own `T/f`, and keeps it.
+  - The old objection to importing at the real speed was that a quantised run
+    can no longer be walked onto the exact tick of the hit. That stopped being
+    true with the change below: the run is laid from the spawning frame's tick
+    **outward** rather than off a grid, so frame 0 is on the hit whatever the
+    hold is. What 1 actually bought was a spray playing four times too fast
+    against every scene at the default hold.
+- This reverses v3.33.0's *"Sprays follow the global again"*. That entry was
+  right about the mechanics it fixed — a scheduled row has to have its
+  `Show@`/`Hide@` re-laid or a retime does nothing visible — and wrong about
+  who owns the number. The mechanics still apply when a spray is retimed from
+  its own `T/f`.
+- **Retiming the scene still slides a spray**, to wherever the hit it was
+  spawned on ended up. Speed and placement are separate questions: it keeps its
+  rate and follows its frame. The global `Ticks/frame` says how many rows it
+  is not reaching, and each row's `T/f` says which kind of pinned it is.
+- Round-trips through `.WAX` as `slot.N.own_rate`; older projects read back
+  `false`, which is where their sprays were when they were saved. It travels
+  with **Append Project** — a spray merged into another scene is still a spray.
+
 ### A blood spray came adrift of the hit that caused it
 
 Right-click a frame, Start Blood Here, and the spray was written onto the tick
