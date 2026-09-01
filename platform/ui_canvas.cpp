@@ -2723,11 +2723,9 @@ static void WorldAppendSeqScrSequenceAsm(std::string &out,
         std::string sprite = WorldMarkedAsmToken(img ? img_name_string(img) : "",
                                                  fallback);
         /* Emitted in MK2's position sign, not the editor's anipoint sign.
-           Not a constant negation: X always flips (multi_adjust_xy's own
-           b_fliph negation cancels the preview's X mirror), Y flips only for
-           frames that are not V-flipped. See the contract at the head of this
-           export. */
-        int out_dx = -dx;
+           PER FRAME ON BOTH AXES -- see the contract at the head of this
+           export for why X is not the unconditional negation it used to be. */
+        int out_dx = (frame_mirror & kWorldFrameMirrorX) ? dx : -dx;
         int out_dy = (frame_mirror & kWorldFrameMirrorY) ? dy : -dy;
         for (int t = 0; t < hold; t++) {
             WorldAppendFrameFlipOps(out, &emitted_mirror, frame_mirror);
@@ -2844,11 +2842,14 @@ std::string WorldBuildSeqScrAsmExport(int record_index)
     out += ";   as printed; do not negate them again when transcribing.\n";
     out += ";   The editor holds the same placement as an ANIPOINT offset, drawing\n";
     out += ";   at anchor - anieff(ani + offset). Converting is NOT a flat sign\n";
-    out += ";   flip: X always inverts, but Y inverts only for frames that are not\n";
-    out += ";   V-flipped, because anieff already mirrors Y on the ones that are\n";
-    out += ";   and the engine never mirrors dY itself. That is why a lane of\n";
-    out += ";   V-flipped frames reads through unchanged and an unflipped one does\n";
-    out += ";   not, and why a constant rule inverts one or the other.\n";
+    out += ";   flip and it is not one rule for both axes: it is PER FRAME, off\n";
+    out += ";   that entry own flip --  dX = flipx ? +dAX : -dAX  and\n";
+    out += ";   dY = flipv ? +dAY : -dAY  -- because the engine mirrors only the\n";
+    out += ";   ANIPOINT and adds the offset to the position separately. X was an\n";
+    out += ";   unconditional negation here until it was traced: b_fliph at the\n";
+    out += ";   moment the offset applies is the CHARACTER facing, not the entry\n";
+    out += ";   flip, so the per-entry mirror was never cancelled and every\n";
+    out += ";   flipX entry landed 2*dAX away.\n";
     out += "; They are ABSOLUTE offsets from the anchor. ani_adjustxy is cumulative,\n";
     out += ";   so it wants the difference between consecutive rows, not the rows.\n\n";
 
@@ -3190,6 +3191,11 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
         state.paused = true;
         state.timer = 0.0f;
     }
+    /* Before anything reads a tick: a spray is timed off the frame that spawned
+       it, and that frame moves whenever the scene is retimed. Doing it here
+       rather than in each of the dozen edits that can move it means none of
+       them can be missed. */
+    WorldMarkedResyncSpawnedRows(state);
     if (!state.paused)
         state.timer += delta_time;
     float step = 1.0f / kMk2TickHz;
@@ -3295,15 +3301,7 @@ static int WorldMarkedEntryMotionStartTick(WorldMarkedSequenceState &state,
 {
     if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_idx < 0)
         return 0;
-    int visible_from = 0;
-    int visible_until = 0;
-    if (frame_idx < (int)state.visible_from[slot].size())
-        visible_from = state.visible_from[slot][frame_idx];
-    if (frame_idx < (int)state.visible_until[slot].size())
-        visible_until = state.visible_until[slot][frame_idx];
-    if (visible_from > 0 || visible_until > 0)
-        return visible_from;
-    return WorldMarkedTickForFrame(state, slot, frame_count, frame_idx);
+    return WorldMarkedPreviewTickForFrame(state, slot, frame_count, frame_idx);
 }
 
 static int WorldMarkedEntryMotionElapsed(WorldMarkedSequenceState &state,
@@ -4796,7 +4794,7 @@ static void WorldDrawEmbeddedScriptTable(WorldMarkedSequenceState &state,
             if (ImGui::Selectable(row_label, current)) {
                 state.paused = true;
                 state.timer = 0.0f;
-                state.frame = WorldMarkedTickForFrame(state, slot, n, fi);
+                state.frame = WorldMarkedPreviewTickForFrame(state, slot, n, fi);
                 lane.frame_pos = fi;
                 if (fi < (int)lane.frames.size())
                     WorldSyncEditorSelectionToSprite(lane.doc, lane.doc_idx,
@@ -5423,7 +5421,7 @@ static void SeqScrDrawScriptTable(WorldMarkedSequenceState &state,
             if (ImGui::Selectable(row_label, current)) {
                 state.paused = true;
                 state.timer = 0.0f;
-                state.frame = WorldMarkedTickForFrame(state, slot, n, fi);
+                state.frame = WorldMarkedPreviewTickForFrame(state, slot, n, fi);
                 lane.frame_pos = fi;
             }
 
@@ -6176,6 +6174,34 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                 : "Off the global: this row stays at %d no matter what the\n"
                   "scene's Ticks/frame is set to. Tick this to hand it back.",
                 follow ? ClampTimelineHold(state.default_hold) : shown);
+    }
+
+    /* A spray is timed off a frame of another row, and it will move on its own
+       when that frame does. A link you cannot see is a row that retimes itself
+       for no visible reason, so say what it is following and offer the one
+       thing that stops it. */
+    {
+        int slot = lane.delay_slot;
+        int src = state.spawn_slot[slot];
+        if (src >= 0 && src < kWorldMarkedMaxTabs) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("follows R%d.%d", src, state.spawn_entry[slot] + 1);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "This row was spawned on entry %d of row %d and starts on\n"
+                    "that frame's tick (%d). Retime anything that moves that\n"
+                    "frame -- the global Ticks/frame, either row's T/f, a single\n"
+                    "frame's Delay -- and this run moves with it.\n\n"
+                    "Editing this row's own Show@/Hide@ breaks the link, and so\n"
+                    "does Unlink.",
+                    state.spawn_entry[slot] + 1, src, state.spawn_tick[slot]);
+            ImGui::SameLine(0.0f, 4.0f);
+            if (ImGui::SmallButton("Unlink##world_lane_unspawn"))
+                state.spawn_slot[slot] = -1;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Leave this run on the ticks it is on now and stop\n"
+                                  "following the frame it was spawned from.");
+        }
     }
 
     ImGui::SameLine();
@@ -7091,9 +7117,15 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
     /* When the spray starts, and where. The tick is the one clicking that
        thumbnail would jump to; the offset is the entry's effective local
        delta at that tick, so the blood sits on the same anipoint the frame
-       is drawn from -- motion and all. */
+       is drawn from -- motion and all.
+
+       PREVIEW tick, not the lane-local sum. On a scheduled source row -- one
+       carrying Show@/Hide@, which is any spray, any Build Chain lane, and any
+       row merged in from another project -- the local sum counts from zero
+       however late the row really fires, so the spray was landing at the top
+       of the scene instead of on the hit. */
     int n_src = (int)src_lane.frames.size();
-    int start_tick = WorldMarkedTickForFrame(state, src_slot, n_src, src_entry);
+    int start_tick = WorldMarkedPreviewTickForFrame(state, src_slot, n_src, src_entry);
     int anchor_dx = 0, anchor_dy = 0;
     WorldMarkedEffectiveLocalDelta(state, src_slot, n_src, src_entry, false,
                                    start_tick, &anchor_dx, &anchor_dy);
@@ -7135,6 +7167,13 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
        does need to run at a different rate from the hit it came from. */
     state.slot_hold[slot] = hold;
     state.slot_hold_custom[slot] = false;
+    /* Tied to the frame it came off, not to the tick that frame happens to sit
+       on today. Retime the scene and WorldMarkedResyncSpawnedRows walks the
+       spray back onto the hit; move the spray by hand and the tie is dropped.
+       Written after WorldMarkedClearSequenceState, which clears it. */
+    state.spawn_slot[slot] = src_slot;
+    state.spawn_entry[slot] = src_entry;
+    state.spawn_tick[slot] = start_tick;
     int t = start_tick;
     for (int i = 0; i < n; i++) {
         state.frame_delays[slot][i] = hold;
@@ -7163,8 +7202,9 @@ bool WorldMarkedCreateBloodLane(WorldMarkedSequenceState &state,
 
     snprintf(msg, sizeof(msg),
              "Blood row: %s x%d from %s, starting at tick %d on this frame's "
-             "anipoint at %d tick%s per frame. Drag any frame to move the "
-             "whole spray.",
+             "anipoint at %d tick%s per frame. It follows that frame -- retime "
+             "the scene and it moves with it. Drag any frame to move the whole "
+             "spray.",
              run.stem.c_str(), n, run.doc_name.c_str(), start_tick,
              hold, hold == 1 ? "" : "s");
     if (out_msg) *out_msg = msg;
@@ -7220,11 +7260,12 @@ static void WorldDrawBloodRunPicker(WorldMarkedSequenceState &state,
         }
     }
 
-    int start_tick = WorldMarkedTickForFrame(state, lane.delay_slot,
-                                             (int)lane.frames.size(), entry);
+    int start_tick = WorldMarkedPreviewTickForFrame(state, lane.delay_slot,
+                                                    (int)lane.frames.size(), entry);
     const int hold = ClampTimelineHold(kWorldBloodTicksPerFrame);
     ImGui::TextDisabled("Starts at tick %d, %d tick%s per frame, plays once.",
                         start_tick, hold, hold == 1 ? "" : "s");
+    ImGui::TextDisabled("Follows this frame -- retime the scene and it moves.");
 
     ImGui::SetNextItemWidth(220.0f);
     ImGui::InputTextWithHint("##blood_filter", "filter (spill, guts, ...)",
@@ -7464,8 +7505,8 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
             WorldFrameSelClear();
             state.paused = true;
             state.timer = 0.0f;
-            state.frame = WorldMarkedTickForFrame(state, lane.delay_slot,
-                                                  (int)lane.frames.size(), fi);
+            state.frame = WorldMarkedPreviewTickForFrame(state, lane.delay_slot,
+                                                         (int)lane.frames.size(), fi);
             lane.frame_pos = fi;
             action.clicked = true;
             action.doc_idx = lane.doc_idx;
@@ -7485,8 +7526,8 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
            that matches what create_blood_proc takes. */
         if (ImGui::BeginPopupContextItem("##world_thumb_ctx")) {
             ImGui::TextDisabled("Entry %d, tick %d", fi + 1,
-                                WorldMarkedTickForFrame(state, lane.delay_slot,
-                                                        (int)lane.frames.size(), fi));
+                                WorldMarkedPreviewTickForFrame(state, lane.delay_slot,
+                                                               (int)lane.frames.size(), fi));
             ImGui::Separator();
             if (ImGui::BeginMenu("Start Blood Here")) {
                 WorldDrawBloodRunPicker(state, lanes, lane, fi);
@@ -7495,7 +7536,11 @@ WorldMarkedLaneThumbClick WorldDrawMarkedLaneThumbnails(WorldMarkedSequenceState
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("Add a row playing a blood run once, from this frame's\n"
                                   "tick and on its anipoint -- the authoring twin of\n"
-                                  "create_blood_proc's [y,x] offset from the victim.");
+                                  "create_blood_proc's [y,x] offset from the victim.\n\n"
+                                  "The spray stays tied to THIS frame: change the scene's\n"
+                                  "Ticks/frame, this row's T/f or this frame's Delay and\n"
+                                  "the run moves to wherever the frame ended up. Move the\n"
+                                  "spray's own Show@ by hand and the tie is dropped.");
             ImGui::EndPopup();
         }
         if (!dragging_frame && ImGui::IsItemHovered()) {
@@ -7613,9 +7658,19 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
     out += ";   Use them as printed; do not negate them again when transcribing.\n";
     out += ";   World View holds the same placement as an ANIPOINT offset, drawing\n";
     out += ";   at anchor - anieff(ani + dA, size, flip). Converting is NOT a flat\n";
-    out += ";   sign flip: X always inverts, Y only for frames that are not\n";
-    out += ";   V-flipped, since anieff already mirrors Y on the ones that are and\n";
-    out += ";   the engine never mirrors dY itself.\n";
+    out += ";   sign flip and it is NOT one rule for both axes: it is PER FRAME,\n";
+    out += ";   off that entry own flip, on BOTH axes --\n";
+    out += ";       dX = flipx ? +dAX : -dAX\n";
+    out += ";       dY = flipv ? +dAY : -dAY\n";
+    out += ";   because the engine mirrors only the ANIPOINT (ani2) and adds dX/dY\n";
+    out += ";   to the position separately. Already applied below; use as printed.\n";
+    out += "; ORDERING THIS DEPENDS ON: emit ani_adjustxy at BASE facing, BEFORE\n";
+    out += ";   the entry own ani_flip, exactly as the rows below are emitted.\n";
+    out += ";   multi_adjust_xy negates dX against whatever b_fliph is at that\n";
+    out += ";   moment; at base facing that is the CHARACTER facing, which is the\n";
+    out += ";   mirror these values are meant to get. Apply an offset while a\n";
+    out += ";   per-entry flipX is still set and it is negated a second time,\n";
+    out += ";   landing that entry 2*dAX away.\n";
     char conv_line[160];
     snprintf(conv_line, sizeof(conv_line),
              ";   anieff = %s, %s.\n",
@@ -7981,20 +8036,29 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 }
                 /* ani_adjustxy, INLINE and already in MK2's sign, so the
                    lane assembles as-is and nobody has to difference the
-                   *_local_anipts table by hand. Same conversion as that
-                   table: X always negates, Y only when the frame is not
-                   V-flipped.
+                   *_local_anipts table by hand. It MUST use the same
+                   conversion as that table - per frame, off this entry's own
+                   flip, on both axes. It did not, and the export shipped
+                   internally inconsistent: the anipts table said
+                   `ani_adjustxy -1,8' for a flipX entry while the lane body
+                   two lines above it emitted -125,8. Transcribing the lane -
+                   which is the half people actually paste - reintroduced the
+                   whole 2*dAX error the table had just been fixed for.
 
-                   ORDER MATTERS. multi_adjust_xy negates dx against whatever
-                   b_fliph is set at that moment, and dAX is in FACING space -
-                   mirrored by the character's facing alone, never by a
-                   per-entry flipX. So drop X back to base first, apply the
-                   offset there, and let the flip ops below put the entry's
-                   own mirror on. Emitting it while a per-entry flipX was
-                   still set lands that entry 2*dAX away. */
+                   ORDER MATTERS, and it is the reason the rule is per frame.
+                   multi_adjust_xy negates dx against whatever b_fliph is set
+                   at that moment, and dAX is in FACING space - mirrored by
+                   the character's facing alone, never by a per-entry flipX.
+                   So this drops X back to base first (the WorldAppendFrameFlipOps
+                   call below with flipX masked out), applies the offset there,
+                   and lets the flip ops put the entry's own mirror on after.
+                   Because the offset therefore lands at BASE facing, the
+                   per-entry mirror is never cancelled by the engine, and this
+                   has to cancel it here instead. */
                 {
+                    bool row_fliph = (frame_mirror & kWorldFrameMirrorX) != 0;
                     bool row_flipv = (frame_mirror & kWorldFrameMirrorY) != 0;
-                    int row_dx = -eff_dx;
+                    int row_dx = row_fliph ? eff_dx : -eff_dx;
                     int row_dy = row_flipv ? eff_dy : -eff_dy;
                     if (row_dx != prev_lane_dx || row_dy != prev_lane_dy) {
                         WorldAppendFrameFlipOps(out, &emitted_mirror,
@@ -8075,25 +8139,40 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 }
                 out += "\n";
 
-                /* Into MK2's position sign. NOT a constant negation -- that
-                   is the trap this export fell into, and it inverts a whole
-                   lane's descent.
+                /* Into MK2's position sign. PER FRAME, ON BOTH AXES, off
+                   that entry's own flip.
 
                    The preview draws at anchor - anieff(ani + dA, size, flip),
                    so the drawn offset from the anchor is -dA unflipped and
                    +dA flipped: anieff mirrors about size, and the size term
                    cancels in the difference, which is why this holds for both
-                   mirror conventions.
+                   mirror conventions. The engine mirrors only the ANIPOINT
+                   (ani2: anix_eff = sizex - anix) and adds dX to the position
+                   separately, so on each axis the offset inverts with the
+                   flip:
 
-                   X: multi_adjust_xy negates dX itself under b_fliph, and
-                      that exactly cancels the preview's own X mirror. So X is
-                      an unconditional negation, flipped or not.
-                   Y: the engine never touches dY -- multi_adjust_xy mirrors
-                      a0 only -- so the V-flip stays ours to resolve here. A
-                      V-flipped frame already agrees with MK2 and passes
-                      through; an unflipped one negates. */
+                       dX = flipx ? +dAX : -dAX
+                       dY = flipv ? +dAY : -dAY
+
+                   X USED TO BE AN UNCONDITIONAL NEGATION, on the reasoning
+                   that multi_adjust_xy negates dX under b_fliph and that
+                   cancels the preview's X mirror. The cancellation is real but
+                   it never happens, because b_fliph at that moment is the
+                   CHARACTER'S FACING, not this entry's flip: the emitted lane
+                   drops to base facing, applies ani_adjustxy, and only then
+                   toggles ani_flip (see WorldAppendFrameFlipOps, and the
+                   ordering note in the contract). So the per-entry mirror went
+                   uncancelled and every flipX entry landed 2*dAX away.
+
+                   It hid because unflipped entries read the same under both
+                   rules, so any lane without a flipX in it verified clean. It
+                   was caught by tracing the DRAWN centre rather than the
+                   anchor: flip transitions jumped 96-140px under the old rule
+                   and zero under this one, and the engine's drawn box then
+                   matched the preview's to a constant offset on every entry. */
+                bool frame_fliph = (frame_mirror & kWorldFrameMirrorX) != 0;
                 bool frame_flipv = (frame_mirror & kWorldFrameMirrorY) != 0;
-                int out_dx = -eff_dx;
+                int out_dx = frame_fliph ? eff_dx : -eff_dx;
                 int out_dy = frame_flipv ? eff_dy : -eff_dy;
                 local_table += "\t.word\t";
                 local_table += std::to_string(out_dx);
@@ -8124,7 +8203,8 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                 if (lane_has_dual) {
                     dual_table += "\t.word\t";
                     if (dual && !hidden) {
-                        dual_table += std::to_string(-eff_dual_dx);
+                        dual_table += std::to_string(frame_fliph ? eff_dual_dx
+                                                                 : -eff_dual_dx);
                         dual_table += ",";
                         dual_table += std::to_string(frame_flipv ? eff_dual_dy
                                                                 : -eff_dual_dy);
@@ -8719,6 +8799,72 @@ static void WorldMarkedRetimeSchedule(WorldMarkedSequenceState &state, int slot,
     }
 }
 
+/* Follow the hit.
+
+   A spawned row -- a blood spray -- has no start time of its own. It fires on
+   the tick of the frame it was dropped on, and that tick is DERIVED: change
+   the scene's Ticks/frame, or that one row's, or one frame's Delay, and the
+   frame moves. A schedule left where it was first written is then early or
+   late by however much the row above it stretched, which is how a spray that
+   was placed exactly on the hit ended up playing somewhere else entirely --
+   at 1 tick a frame against a scene at 4, back at the top of it.
+
+   Only a row that still looks like the one we laid down is moved:
+     - the row it was spawned off has to still be there,
+     - its first window has to still be on the tick we last placed it,
+     - and the run has to still be exactly uniform at the row's hold.
+   Anything else means the timing has since been authored by hand -- a typed
+   Show@, a Build Chain pass -- and the link is dropped rather than fought.
+   That is also how you deliberately break it: move the spray, and it stays
+   where you put it.
+
+   Idempotent, and called once a frame, so it does not matter which of the
+   dozen edits that can move a frame's tick is the one that happened. A spray
+   spawned off another spray settles one level per frame. */
+void WorldMarkedResyncSpawnedRows(WorldMarkedSequenceState &state)
+{
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
+        int src = state.spawn_slot[slot];
+        if (src < 0 || src >= kWorldMarkedMaxTabs || src == slot) continue;
+
+        int n_src = (int)state.sequence_frames[src].size();
+        int n = (int)state.sequence_frames[slot].size();
+        /* Nothing to follow this pass -- a row can read empty for a frame
+           while it is being rebuilt. Left alone rather than unlinked: a slot
+           that really is being reused clears its dependants itself, in
+           WorldMarkedClearSequenceState. */
+        if (n_src <= 0 || n <= 0) continue;
+
+        std::vector<int> &from = state.visible_from[slot];
+        std::vector<int> &until = state.visible_until[slot];
+        if ((int)from.size() < n || (int)until.size() < n) continue;
+
+        int base = from[0];
+        if (state.spawn_tick[slot] >= 0 && base != state.spawn_tick[slot]) {
+            state.spawn_slot[slot] = -1;  /* moved by hand since we placed it */
+            continue;
+        }
+        int hold = WorldMarkedSlotHold(state, slot);
+        bool ours = true;
+        for (int i = 0; i < n && ours; i++)
+            ours = from[i] == base + i * hold &&
+                   until[i] == base + (i + 1) * hold;
+        if (!ours) {
+            state.spawn_slot[slot] = -1;
+            continue;
+        }
+
+        int want = WorldMarkedPreviewTickForFrame(state, src, n_src,
+                                                  state.spawn_entry[slot]);
+        state.spawn_tick[slot] = want;
+        if (want == base) continue;
+        for (int i = 0; i < n; i++) {
+            from[i] = ClampWorldMarkedVisibleFrom(want + i * hold);
+            until[i] = ClampWorldMarkedVisibleUntil(want + (i + 1) * hold);
+        }
+    }
+}
+
 void WorldMarkedSetSlotHold(WorldMarkedSequenceState &state, int slot,
                             int ticks, bool custom)
 {
@@ -8899,6 +9045,26 @@ int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
     for (int i = 0; i < frame_idx; i++)
         tick += ClampTimelineHold(state.frame_delays[slot][i]);
     return tick;
+}
+
+int WorldMarkedPreviewTickForFrame(WorldMarkedSequenceState &state, int slot,
+                                   int frame_count, int frame_idx)
+{
+    EnsureWorldMarkedFrameDelays(state, slot, frame_count);
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs || frame_count <= 0) return 0;
+    if (frame_idx < 0) frame_idx = 0;
+    if (frame_idx >= frame_count) frame_idx = frame_count - 1;
+    /* A scheduled entry states its own tick, and that tick is absolute. The
+       lane-local sum is only the answer for a row driven by the tick clock
+       alone -- on a scheduled row it counts from zero and lands the caller at
+       the top of the scene however late the row really fires. */
+    int from = 0, until = 0;
+    if (frame_idx < (int)state.visible_from[slot].size())
+        from = state.visible_from[slot][frame_idx];
+    if (frame_idx < (int)state.visible_until[slot].size())
+        until = state.visible_until[slot][frame_idx];
+    if (from > 0 || until > 0) return from;
+    return WorldMarkedTickForFrame(state, slot, frame_count, frame_idx);
 }
 
 int WorldMarkedSequenceTicks(WorldMarkedSequenceState &state, int slot, int frame_count)
@@ -9654,6 +9820,15 @@ void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
     state.lane_rigid[slot] = false;
     state.slot_hold[slot] = ClampTimelineHold(state.default_hold);
     state.slot_hold_custom[slot] = false;
+    /* Whatever this row used to be spawned against, it is not that any more --
+       and neither is anything that was spawned off IT. This slot is about to
+       hold a different animation; a spray still following entry 6 of it would
+       start tracking a frame it has never seen. */
+    state.spawn_slot[slot] = -1;
+    state.spawn_entry[slot] = -1;
+    state.spawn_tick[slot] = -1;
+    for (int s = 0; s < kWorldMarkedMaxTabs; s++)
+        if (state.spawn_slot[s] == slot) state.spawn_slot[s] = -1;
 }
 
 /* frame_doc[slot] stores a doc TAB INDEX per entry, not a Document* — the
@@ -10079,6 +10254,11 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
     state.hold_end[dst_slot] = state.hold_end[src_slot];
     state.pingpong_delay[dst_slot] = state.pingpong_delay[src_slot];
     state.stop_tick[dst_slot] = state.stop_tick[src_slot];
+    /* Not the spray we placed: it keeps the windows it was copied with, and
+       has nothing of its own to follow. */
+    state.spawn_slot[dst_slot] = -1;
+    state.spawn_entry[dst_slot] = -1;
+    state.spawn_tick[dst_slot] = -1;
     bool *src_mirror = WorldMarkedMirrorFlag(state, src_slot);
     bool *dst_mirror = WorldMarkedMirrorFlag(state, dst_slot);
     if (src_mirror && dst_mirror)
@@ -10162,6 +10342,12 @@ bool WorldMarkedCopySlotFrom(WorldMarkedSequenceState &state, int dst_slot,
     state.stop_tick[dst_slot] = src.stop_tick[src_slot];
     state.slot_hold[dst_slot] = src.slot_hold[src_slot];
     state.slot_hold_custom[dst_slot] = src.slot_hold_custom[src_slot];
+    /* Rows merged in from another project land in whatever slots are free, so
+       a spawn link read out of that file names rows that are not these. The
+       run keeps the schedule it was saved with; it just stops following. */
+    state.spawn_slot[dst_slot] = -1;
+    state.spawn_entry[dst_slot] = -1;
+    state.spawn_tick[dst_slot] = -1;
     bool *src_mirror = WorldMarkedMirrorFlag(src, src_slot);
     bool *dst_mirror = WorldMarkedMirrorFlag(state, dst_slot);
     if (src_mirror && dst_mirror) *dst_mirror = *src_mirror;
@@ -10229,6 +10415,11 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
     state.hold_end[dst_slot] = state.hold_end[src_slot];
     state.pingpong_delay[dst_slot] = state.pingpong_delay[src_slot];
     state.stop_tick[dst_slot] = state.stop_tick[src_slot];
+    /* Not the spray we placed: it keeps the windows it was copied with, and
+       has nothing of its own to follow. */
+    state.spawn_slot[dst_slot] = -1;
+    state.spawn_entry[dst_slot] = -1;
+    state.spawn_tick[dst_slot] = -1;
     bool *src_mirror = WorldMarkedMirrorFlag(state, src_slot);
     bool *dst_mirror = WorldMarkedMirrorFlag(state, dst_slot);
     if (src_mirror && dst_mirror)

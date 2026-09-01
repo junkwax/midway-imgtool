@@ -10,6 +10,47 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### A blood spray came adrift of the hit that caused it
+
+Right-click a frame, Start Blood Here, and the spray was written onto the tick
+that frame sat on **at that moment** — and then left there. Nothing about the
+tick of a hit is fixed: it is the sum of the delays before it, so the scene's
+Ticks/frame, that row's own T/f and any single frame's Delay all move it. Slow
+the scene down and the frame walks away from the spray, which stays put and
+ends up playing against the top of the animation instead of against the hit.
+
+- **A spray now follows the frame it was spawned on.** The row records which
+  row and entry it came off, and `WorldMarkedResyncSpawnedRows` re-lays its
+  `Show@`/`Hide@` run from that frame's current tick once a frame — so both
+  the start and the end of the run move with any retiming, from either end.
+- **Only a spray that still looks like the one we placed is moved**: the row it
+  came off still exists, the first window is still on the tick we last wrote,
+  and the run is still exactly uniform at the row's hold. Type a `Show@` by
+  hand, run Build Chain over it, or press the new **Unlink** on the row and the
+  link is dropped rather than fought — the run stays exactly where you put it.
+- **The row says what it is following** (`follows R7.6`) next to its `T/f`, so
+  a run that retimes itself is not doing it for invisible reasons.
+- The link round-trips through `.WAX` as `slot.N.spawn_slot` / `spawn_entry` /
+  `spawn_tick`, and goes through the same saved-slot remap as everything else.
+  Projects saved before this read back free-standing, keeping the schedule they
+  were saved with. Rows merged in by **Append Project** land in whatever rows
+  are free, so their links are dropped rather than pointed at the wrong row.
+
+### The tick a frame plays on was reported as its lane-local count
+
+`visible_from`/`visible_until` hold **absolute preview ticks**, but the tick
+shown for a frame — and jumped to when you clicked one — was the sum of the
+delays before it inside its own row. On a **scheduled** row those disagree: any
+spray, any Build Chain lane, any row merged in from another project starts its
+local count at zero however late in the scene it really fires.
+
+- **`WorldMarkedPreviewTickForFrame`** answers with the entry's own scheduled
+  tick when it has one and falls back to the lane-local sum when it does not.
+  Clicking a frame in the strip or in either frame list now seeks to the tick
+  it actually plays on, and the right-click menu prints that same tick.
+- This is what put a spray spawned off another scheduled row at the very start
+  of the scene: it was anchored to a tick that row never plays on.
+
 ### World View projects are `.WAX`
 
 The project file the World View saves — the whole workspace: open IMGs, marked

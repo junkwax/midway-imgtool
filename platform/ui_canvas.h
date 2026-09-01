@@ -509,6 +509,9 @@ struct WorldMarkedSequenceState {
             subframe_swap_tick[i] = 0;
             subframe_waterline_y[i] = 0;
             subframe_fine_source[i] = -1;
+            spawn_slot[i] = -1;
+            spawn_entry[i] = -1;
+            spawn_tick[i] = -1;
         }
         hold_end[kWorldDummyDecapSlot] = true;
     }
@@ -672,6 +675,22 @@ struct WorldMarkedSequenceState {
     int subframe_swap_tick[kWorldMarkedMaxTabs] = {};
     int subframe_waterline_y[kWorldMarkedMaxTabs] = {};   /* absolute world Y; 0 = unset */
     int subframe_fine_source[kWorldMarkedMaxTabs] = {};   /* IMG index used to look up fine subframes; -1 = unset */
+    /* A SPAWNED row is one this tool placed against a frame of another row --
+       a blood spray, dropped on the tick of the hit that caused it. It is not
+       a free-standing lane with a start time of its own: the tick of that hit
+       is derived timing, and it moves whenever the row it came off is retimed
+       (the global Ticks/frame, that row's own T/f, a single frame's Delay).
+       A spray whose Show@/Hide@ run stayed where it was put came adrift of
+       the hit the moment anything changed the scene's speed.
+
+       spawn_slot/spawn_entry name the frame; spawn_tick is the tick the row's
+       schedule was last laid from, which is how an untouched spray is told
+       from one the user has since moved by hand -- move it and the link is
+       dropped rather than fought. -1 in spawn_slot means free-standing, which
+       is every row that was not spawned. See WorldMarkedResyncSpawnedRows. */
+    int spawn_slot[kWorldMarkedMaxTabs];
+    int spawn_entry[kWorldMarkedMaxTabs];
+    int spawn_tick[kWorldMarkedMaxTabs];
 };
 
 struct WorldMarkedLane {
@@ -1032,6 +1051,18 @@ int WorldMarkedBakeEntryOffsets(WorldMarkedSequenceState &state,
                                 int slot, int entry, int *out_conflicts);
 int WorldMarkedTickForFrame(WorldMarkedSequenceState &state, int slot,
                             int frame_count, int frame_idx);
+/* The PREVIEW tick one entry actually lands on, which is not always the sum of
+   the delays before it: a scheduled row -- anything carrying Show@/Hide@ --
+   holds absolute preview ticks per entry, and its lane-local count starts at
+   zero however late in the scene the row really fires. Use this anywhere a
+   tick is shown to the user or handed to something that has to line up with
+   the scene clock. */
+int WorldMarkedPreviewTickForFrame(WorldMarkedSequenceState &state, int slot,
+                                   int frame_count, int frame_idx);
+/* Re-lay every spawned row's schedule from the frame it was spawned against,
+   so a spray follows the hit through any retiming. Cheap and idempotent;
+   called once a frame from WorldUpdateMarkedLanePlayback. */
+void WorldMarkedResyncSpawnedRows(WorldMarkedSequenceState &state);
 int WorldMarkedSequenceTicks(WorldMarkedSequenceState &state, int slot, int frame_count);
 int WorldMarkedFrameForTick(WorldMarkedSequenceState &state, int slot,
                             int frame_count, int tick, bool hold_final);

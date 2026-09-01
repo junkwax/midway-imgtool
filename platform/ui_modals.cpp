@@ -3315,6 +3315,16 @@ static void WaxWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
     WaxWriteBool(f, key, state.slot_hold_custom[slot]);
     snprintf(key, sizeof(key), "slot.%d.hold", slot);
     WaxWriteInt(f, key, state.slot_hold[slot]);
+    /* The frame this row was spawned against -- a blood spray and the hit that
+       caused it. Absent in projects saved before sprays followed their frame;
+       those read back free-standing, keeping the exact schedule they were
+       saved with, which is what they did. */
+    snprintf(key, sizeof(key), "slot.%d.spawn_slot", slot);
+    WaxWriteInt(f, key, state.spawn_slot[slot]);
+    snprintf(key, sizeof(key), "slot.%d.spawn_entry", slot);
+    WaxWriteInt(f, key, state.spawn_entry[slot]);
+    snprintf(key, sizeof(key), "slot.%d.spawn_tick", slot);
+    WaxWriteInt(f, key, state.spawn_tick[slot]);
     snprintf(key, sizeof(key), "slot.%d.mirror", slot);
     {
         WorldMarkedSequenceState &mutable_state =
@@ -3404,6 +3414,7 @@ static void WaxReadSlot(const std::unordered_map<std::string, std::string> &kv,
                         WorldMarkedSequenceState &state,
                         int saved_slot,
                         int slot,
+                        int saved_source_tabs,
                         const std::vector<int> &doc_map)
 {
     std::string prefix = "slot." + std::to_string(saved_slot) + ".";
@@ -3417,6 +3428,15 @@ static void WaxReadSlot(const std::unordered_map<std::string, std::string> &kv,
     bool had_slot_hold = kv.count(prefix + "hold") != 0;
     state.slot_hold[slot] = ClampTimelineHold(
         WaxGetInt(kv, prefix + "hold", state.default_hold));
+    /* The row a spray follows is stored by slot, so it goes through the same
+       remap as every other saved slot index -- a project written with ten
+       marked rows names its specials ten lower than this build does. */
+    int spawn_saved = WaxGetInt(kv, prefix + "spawn_slot", -1);
+    state.spawn_slot[slot] = spawn_saved < 0
+                           ? -1
+                           : WaxMapSavedSlot(spawn_saved, saved_source_tabs);
+    state.spawn_entry[slot] = WaxGetInt(kv, prefix + "spawn_entry", -1);
+    state.spawn_tick[slot] = WaxGetInt(kv, prefix + "spawn_tick", -1);
     bool *mirror = WorldMarkedMirrorFlag(state, slot);
     if (mirror) *mirror = WaxGetBool(kv, prefix + "mirror", *mirror);
 
@@ -3625,7 +3645,22 @@ static bool AppendWorldProjectFile(const char *path)
 
     /* An IMG this project needs that is ALREADY open is reused rather than
        opened twice -- two tabs of one file would give the merged rows a
-       different document to the ones already on screen. */
+       different document to the ones already on screen.
+
+       The marked flags are deliberately NOT applied here, and that is the
+       whole difference from a load. WaxApplyMarkedIndices CLEARS every mark in
+       the document before setting the saved ones, and marked rows are built
+       per document from exactly those flags. Two .WAX variants of one lane
+       almost always share their IMGs, so applying them wiped the open scene's
+       marks on every shared document -- which is why appending looked like it
+       had simply loaded the file instead of adding to it. On a document that
+       was NOT already open it is just as wrong the other way: the marks would
+       raise a second, document-derived row beside the one copied in.
+
+       The merged rows do not need them. They come across as split lanes with
+       their own explicit frame lists, which WorldAppendMarkedSplitLanes reads
+       straight out of sequence_frames. */
+    const unsigned int restore_doc_uid = document_uid(document_active_index());
     int doc_count = WaxGetInt(kv, "doc.count", 0);
     std::vector<int> doc_map((size_t)(doc_count > 0 ? doc_count : 0), -1);
     int missing_docs = 0;
@@ -3642,7 +3677,15 @@ static bool AppendWorldProjectFile(const char *path)
         Document *doc = document_get(idx);
         if (!doc || doc->imgcnt == 0) { missing_docs++; continue; }
         doc_map[(size_t)i] = idx;
-        WaxApplyMarkedIndices(doc, WaxGetVec(kv, WaxKey("doc", i, "marked")));
+    }
+    /* OpenImgFile activates whatever it opens, so without this the scene jumps
+       to the merged project's last IMG -- the tab you were working in is no
+       longer the one in front. Resolved by uid because opening tabs shifts
+       indices. */
+    {
+        int restore_idx = document_index_of_uid(restore_doc_uid);
+        if (restore_idx >= 0 && restore_idx != document_active_index())
+            ActivateDocumentTab(restore_idx);
     }
 
     /* Read the whole project into a scratch state, then lift only its rows
@@ -3657,7 +3700,7 @@ static bool AppendWorldProjectFile(const char *path)
     for (int saved = 0; saved < slot_count; saved++) {
         int slot = WaxMapSavedSlot(saved, saved_source_tabs);
         if (slot < 0) continue;
-        WaxReadSlot(kv, incoming, saved, slot, doc_map);
+        WaxReadSlot(kv, incoming, saved, slot, saved_source_tabs, doc_map);
     }
 
     WorldMarkedSequenceState &live = g_world_marked_state;
@@ -3843,7 +3886,7 @@ static bool LoadWorldProjectFile(const char *path)
     for (int saved = 0; saved < slot_count; saved++) {
         int slot = WaxMapSavedSlot(saved, saved_source_tabs);
         if (slot < 0) continue;
-        WaxReadSlot(kv, loaded_state, saved, slot, doc_map);
+        WaxReadSlot(kv, loaded_state, saved, slot, saved_source_tabs, doc_map);
     }
 
     int split_count = WaxGetInt(kv, "split.count", 0);
