@@ -946,14 +946,15 @@ void OpenRenameImage(void);  /* forward decl — used by DuplicateImage */
 
 /* Flood fill helper — 4-connected stack-based fill */
 /* Smart eraser: removes the clicked chroma color (and anything within
-   `tolerance` palette-index distance of it) by setting it to index 0
-   (transparency). In `contiguous` mode it floods from the click site; in
-   global mode every matching pixel in the image is wiped.
+   `tolerance` COLOR distance of it — not palette-index distance, which
+   caught unrelated slots) by setting it to index 0 (transparency). In
+   `contiguous` mode it floods from the click site; in global mode every
+   matching pixel in the image is wiped.
    When `defringe` is set, after the chroma pass each transparent pixel
    that touches a still-opaque pixel scans its 8-neighborhood and replaces
-   the opaque neighbor with the average of its own non-chroma neighbors —
-   this kills the 1-pixel blue-spill halo that survives digitized actor
-   bluescreen removal. */
+   the opaque neighbor with whichever of its own non-chroma neighbors sits
+   nearest their average color — this kills the 1-pixel blue-spill halo that
+   survives digitized actor bluescreen removal. */
 /* Free all images, palettes, and sequence/script data.  Resets all counters
    and selections.  Ported from img_clearall — called before img_load. */
 /* Swap to the alternate (second) image list.  Purely swaps globals —

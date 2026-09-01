@@ -10,6 +10,40 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### Tolerance means color, not slot number
+
+Clicking a black background with the magic wand at any tolerance above 0 used
+to eat chunks of the sprite as well. The wand was comparing *palette index
+numbers* — `index 8` against `index 12` — and in an indexed palette adjacent
+slots hold unrelated colors, so raising the tolerance to catch a background
+split across several black slots also swept in whatever the sprite happened to
+store nearby, usually its own dark shading. The **paint bucket**, **smart
+eraser** and **smart remap** sliders all worked the same way and had the same
+problem.
+
+- All four tolerances are now a distance between the **colors** those slots
+  hold, measured on the 15-bit palette words. A background split across
+  duplicate black slots is caught whole at tolerance 0 — the case that used to
+  force the slider up in the first place — and slots that merely sit next to
+  each other in the palette are never matched.
+- **Transparent and opaque pixels never match each other.** Slot 0 is
+  transparent even though the color it stores is almost always black, so
+  clicking the transparent background can no longer pull in the sprite's black
+  outline, and vice versa.
+- The smart eraser's **defringe** used to replace a spill pixel with the
+  *average of its neighbours' index numbers* — the slot halfway between two
+  unrelated colors, which is a third unrelated color. It now averages the
+  neighbours' colors and adopts whichever neighbour sits nearest that average,
+  so the replacement is always a color already drawn at that edge.
+- Tolerance 0 means exactly the color clicked, and every 2 notches widen the
+  match by one 5-bit step per channel. The wand's slider still runs to 64,
+  where the match is deliberately near-universal.
+- If a background still leaks into a black outline it touches, that is the
+  flood fill following connected pixels, not the tolerance — leave **C**
+  (contiguous) checked and the leak stays local.
+- `PaletteToleranceDistSq` / `PaletteIndexWithinTolerance` are pure and covered
+  by `palette_math_test`.
+
 ### The blades keep their indices to themselves
 
 Selecting Baraka's blades and recoloring the swatch used to recolor his teeth

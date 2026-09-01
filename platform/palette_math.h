@@ -65,6 +65,29 @@ int FindNearestMergedSlot(const PAL *target, int base_count,
                           const unsigned short *added, int added_count,
                           unsigned short color_word, bool perceptual);
 
+/* ---- Tool tolerance ----
+   The index-image tools (magic wand, paint bucket, smart eraser, smart remap)
+   all ask the same question: "is this pixel close enough to the one the user
+   clicked?" Answering it by subtracting palette INDEX numbers is wrong — the
+   slots either side of a background's black hold whatever the artist put
+   there, usually the sprite's own dark shading — so the comparison belongs in
+   color space.
+
+   PaletteToleranceDistSq maps a tool's tolerance slider onto a squared
+   distance in 5-bit channel space: the slider is a radius at half scale, so
+   0 means "exactly this color" and each 2 notches widen the match by one
+   5-bit step per channel. (The widest meaningful radius is 31*sqrt(3), about
+   54, so even a slider pinned at 64 stops short of matching everything.) */
+int PaletteToleranceDistSq(int tolerance);
+
+/* True when slot `ci` is within `tolerance` of slot `target_ci`, by color.
+   Slot 0 is transparent whatever color it stores — almost always black — so a
+   match never crosses between transparent and opaque, which is what kept the
+   wand from eating a sprite's black outline when asked for its transparent
+   background. Falls back to comparing index numbers only when `pal` is
+   missing or empty and there are no colors to compare. */
+bool PaletteIndexWithinTolerance(PAL *pal, int target_ci, int ci, int tolerance);
+
 /* ---- Palette index isolation ----
    Work out how to give one region of a sprite exclusive ownership of the
    palette indices it draws with, so those indices can be recolored without

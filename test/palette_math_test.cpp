@@ -326,6 +326,75 @@ int main(void)
         CHECK(PaletteBppTooSmall(9, 4));
     }
 
+    /* ---- PaletteToleranceDistSq / PaletteIndexWithinTolerance ----
+       The bug these replace: the wand, bucket, eraser and remap all compared
+       palette INDEX numbers, so grabbing a black background at any tolerance
+       above 0 also grabbed whatever unrelated colors sat in the adjacent
+       slots — usually the sprite's own dark shading. */
+    {
+        /* 0 transparent (stores black, as palettes almost always do),
+           1 and 2 exact-duplicate blacks the background is split across,
+           3 an all-but-black, 4 a mid grey, 5 pure red — the last two sit
+           right next to the blacks in index order and nowhere near them in
+           color, which is exactly what index arithmetic got wrong. */
+        unsigned short words[6] = {
+            mkword(0, 0, 0),      /* 0 transparent */
+            mkword(0, 0, 0),      /* 1 black */
+            mkword(0, 0, 0),      /* 2 black, duplicate slot */
+            mkword(1, 0, 1),      /* 3 all-but-black */
+            mkword(16, 16, 16),   /* 4 mid grey */
+            mkword(31, 0, 0),     /* 5 red */
+        };
+        unsigned char data[12];
+        fill_words(data, words, 6);
+        PAL pal {};
+        pal.data_p = data;
+        pal.numc = 6;
+
+        /* The slider is a radius at half scale. */
+        CHECK(PaletteToleranceDistSq(0) == 0);
+        CHECK(PaletteToleranceDistSq(2) == 1);    /* radius 1 */
+        CHECK(PaletteToleranceDistSq(16) == 64);  /* radius 8 */
+        CHECK(PaletteToleranceDistSq(-4) == 0);   /* clamped */
+
+        /* A background split across duplicate black slots is caught whole at
+           tolerance 0 — needing to raise the tolerance for this is what used
+           to drag the sprite in. */
+        CHECK(PaletteIndexWithinTolerance(&pal, 1, 2, 0));
+        CHECK(PaletteIndexWithinTolerance(&pal, 2, 1, 0));
+
+        /* Tolerance 0 still means exactly this color: the all-but-black slot
+           is 2 away and needs the slider off zero. */
+        CHECK(!PaletteIndexWithinTolerance(&pal, 1, 3, 0));
+        CHECK(PaletteIndexWithinTolerance(&pal, 1, 3, 4));
+
+        /* The neighbouring-index grey and red are not matched at anything the
+           0..16 sliders can produce, nor at half the wand's range. Under the
+           old index compare both fell inside a tolerance of 4. */
+        CHECK(!PaletteIndexWithinTolerance(&pal, 1, 4, 16));
+        CHECK(!PaletteIndexWithinTolerance(&pal, 1, 5, 16));
+        CHECK(!PaletteIndexWithinTolerance(&pal, 1, 4, 32));
+        CHECK(!PaletteIndexWithinTolerance(&pal, 1, 5, 32));
+
+        /* Widening does still reach: the wand's top end is deliberately
+           near-universal, the way a maxed tolerance is everywhere else. */
+        CHECK(PaletteIndexWithinTolerance(&pal, 1, 4, 64));
+
+        /* Transparent never matches opaque, however wide the tolerance and
+           however identical the stored colors — slots 0 and 1 are both black
+           here. This is what stopped the wand eating a sprite's outline when
+           asked for its transparent background. */
+        CHECK(!PaletteIndexWithinTolerance(&pal, 0, 1, 64));
+        CHECK(!PaletteIndexWithinTolerance(&pal, 1, 0, 64));
+        CHECK(PaletteIndexWithinTolerance(&pal, 0, 0, 0));
+
+        /* No palette: fall back to the old index comparison rather than
+           matching everything — but keep the transparency guard. */
+        CHECK(PaletteIndexWithinTolerance(nullptr, 4, 6, 2));
+        CHECK(!PaletteIndexWithinTolerance(nullptr, 4, 8, 2));
+        CHECK(!PaletteIndexWithinTolerance(nullptr, 0, 1, 64));
+    }
+
     isolation_checks();
 
     if (g_fails == 0) {

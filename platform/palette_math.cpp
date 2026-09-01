@@ -147,6 +147,33 @@ int FindNearestPaletteSlot(const PAL *pal, unsigned short color_word)
     return best;
 }
 
+int PaletteToleranceDistSq(int tolerance)
+{
+    if (tolerance < 0) tolerance = 0;
+    if (tolerance > 255) tolerance = 255;
+    /* Slider is a radius at half scale, squared for comparison against
+       PaletteColorDistance5. */
+    return (tolerance * tolerance) / 4;
+}
+
+bool PaletteIndexWithinTolerance(PAL *pal, int target_ci, int ci, int tolerance)
+{
+    /* Transparency is a property of the slot number, not of the color the
+       slot holds: 0 is transparent even though it almost always stores
+       black. Matching across that line turns a background pick into a hole
+       in the sprite, so it is never allowed however wide the tolerance. */
+    if ((ci == 0) != (target_ci == 0)) return false;
+    if (ci == target_ci) return true;
+    if (!pal || !pal->data_p || pal->numc <= 0) {
+        int d = ci - target_ci;
+        if (d < 0) d = -d;
+        return d <= tolerance;
+    }
+    return PaletteColorDistance5(pal_word_or_black(pal, target_ci),
+                                 pal_word_or_black(pal, ci))
+               <= PaletteToleranceDistSq(tolerance);
+}
+
 void PlanPaletteIsolation(const unsigned char *words, int numc,
                           const bool *reserved, const bool *contested,
                           const bool *live, int max_numc,

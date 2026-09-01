@@ -12640,9 +12640,14 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                 g_remap_target_color = *pix;
                             }
                             if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && g_remap_target_color != -1) {
-                                int diff = (int)*pix - g_remap_target_color;
-                                if (diff < 0) diff = -diff;
-                                if (diff <= g_remap_tolerance) {
+                                /* Tolerance is a color distance, not a gap
+                                   between slot numbers, and the stroke never
+                                   crosses the transparent/opaque line. See
+                                   PaletteIndexWithinTolerance. */
+                                if (PaletteIndexWithinTolerance(get_pal(cimg->palnum),
+                                                                g_remap_target_color,
+                                                                (int)*pix,
+                                                                g_remap_tolerance)) {
                                     if (g_pixel_undo_img != g_doc->ilselected) {
                                         free(g_pixel_undo); g_pixel_undo = NULL;
                                         unsigned short s = (cimg->w + 3) & ~3;
@@ -12893,7 +12898,18 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                             int stride = (sw + 3) & ~3;
                             unsigned char* pdata = (unsigned char*)simg->data_p;
                             int target_color = pdata[my * stride + mx];
+                            /* Tolerance is a COLOR distance, not a distance
+                               between palette index numbers — see
+                               PaletteIndexWithinTolerance. Index arithmetic
+                               dragged the sprite's own dark shading into the
+                               selection whenever the wand was asked to grab a
+                               black background. */
+                            PAL *spal = get_pal(simg->palnum);
                             int tol = g_wand_tolerance;
+                            auto wand_match = [&](int ci) -> bool {
+                                return PaletteIndexWithinTolerance(spal, target_color,
+                                                                   ci, tol);
+                            };
                             selection_begin_add_drag(sw, sh, ImGui::GetIO().KeyCtrl);
 
                             g_grid_sel.active = true;
@@ -12927,9 +12943,8 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                         int nx = cx + dx[i];
                                         int ny = cy + dy[i];
                                         if (nx >= 0 && nx < sw && ny >= 0 && ny < sh) {
-                                            int diff = (int)pdata[ny * stride + nx] - target_color;
-                                            if (diff < 0) diff = -diff;
-                                            if (!g_grid_sel.pixel_mask[ny * sw + nx] && diff <= tol) {
+                                            if (!g_grid_sel.pixel_mask[ny * sw + nx] &&
+                                                wand_match(pdata[ny * stride + nx])) {
                                                 g_grid_sel.pixel_mask[ny * sw + nx] = true;
                                                 stack.push_back({nx, ny});
                                             }
@@ -12941,9 +12956,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                 bool first = true;
                                 for (int y = 0; y < sh; y++) {
                                     for (int x = 0; x < sw; x++) {
-                                        int diff = (int)pdata[y * stride + x] - target_color;
-                                        if (diff < 0) diff = -diff;
-                                        if (diff <= tol) {
+                                        if (wand_match(pdata[y * stride + x])) {
                                             g_grid_sel.pixel_mask[y * sw + x] = true;
                                             if (first) {
                                                 min_x = max_x = x; min_y = max_y = y;
@@ -13479,10 +13492,12 @@ int PaintBucketFill(IMG *img, int sx, int sy, unsigned char new_color, int toler
     unsigned char target = pixels[sy * stride + sx];
     if (target == new_color) return 0;
 
+    /* Tolerance is a color distance, not a gap between slot numbers, and a
+       fill never crosses the transparent/opaque line. See
+       PaletteIndexWithinTolerance. */
+    PAL *pal = get_pal(img->palnum);
     auto in_range = [&](unsigned char v) {
-        int d = (int)v - (int)target;
-        if (d < 0) d = -d;
-        return d <= tolerance;
+        return PaletteIndexWithinTolerance(pal, target, v, tolerance);
     };
 
     int changed = 0;
@@ -13539,10 +13554,13 @@ void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous, bool d
     int target = pix[sy * stride + sx];
     if (target == 0) return; /* clicked on existing transparent */
 
+    /* Tolerance is a color distance, not a gap between slot numbers: a chroma
+       key spread over several near-identical blue slots is caught at
+       tolerance 0, and the sprite's unrelated neighbours in the palette are
+       never caught at all. See PaletteIndexWithinTolerance. */
+    PAL *pal = get_pal(img->palnum);
     auto in_range = [&](unsigned char v) {
-        int d = (int)v - target;
-        if (d < 0) d = -d;
-        return d <= tolerance;
+        return PaletteIndexWithinTolerance(pal, target, v, tolerance);
     };
 
     /* Mark which pixels we'll erase, so defringe can scan against the
@@ -13596,12 +13614,16 @@ void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous, bool d
                     }
                 }
                 if (!touches) continue;
-                /* Average palette indices of safe (non-killed, non-zero,
-                   not-itself-the-chroma) neighbors. This is a coarse proxy
-                   for picking the nearest "skin/fabric" color in the
-                   indexed palette — gives a much cleaner edge than just
-                   leaving the blue-spill pixel alone. */
-                int sum = 0, n = 0;
+                /* Average the COLORS of the safe (non-killed, non-zero,
+                   not-itself-the-chroma) neighbors, then adopt whichever of
+                   those neighbors sits nearest that average. This used to
+                   average the palette INDEX numbers, which lands on whatever
+                   color happens to occupy the slot halfway between two
+                   unrelated ones — a spill pixel between skin and cloth could
+                   come back as neither. Picking from among the neighbors also
+                   guarantees the replacement is a color already drawn here. */
+                int sr = 0, sg = 0, sb = 0, n = 0;
+                unsigned char cand[8];
                 for (int dy = -1; dy <= 1; dy++) {
                     for (int dx = -1; dx <= 1; dx++) {
                         if (!dx && !dy) continue;
@@ -13611,11 +13633,26 @@ void SmartErase(IMG *img, int sx, int sy, int tolerance, bool contiguous, bool d
                         unsigned char nv = pix[ny * stride + nx];
                         if (nv == 0) continue;
                         if (in_range(nv)) continue;
-                        sum += nv; n++;
+                        unsigned short nw = pal_word_or_black(pal, nv);
+                        sr += (nw >> 10) & 0x1F;
+                        sg += (nw >>  5) & 0x1F;
+                        sb +=  nw        & 0x1F;
+                        cand[n] = nv; n++;
                     }
                 }
                 if (n > 0) {
-                    defringe_writes.push_back({y * stride + x, (unsigned char)(sum / n)});
+                    unsigned short avg = (unsigned short)
+                        ((((sr + n / 2) / n) << 10) |
+                         (((sg + n / 2) / n) <<  5) |
+                          ((sb + n / 2) / n));
+                    unsigned char best = cand[0];
+                    int best_dist = 0x7FFFFFFF;
+                    for (int i = 0; i < n; i++) {
+                        int d = PaletteColorDistance5(avg,
+                                                      pal_word_or_black(pal, cand[i]));
+                        if (d < best_dist) { best_dist = d; best = cand[i]; }
+                    }
+                    defringe_writes.push_back({y * stride + x, best});
                 }
             }
         }

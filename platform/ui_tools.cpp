@@ -196,13 +196,15 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Variant brush radius");
         } else if (g_active_tool == ActiveTool::PaintBucket) {
             ImGui::SliderInt("##bucket_tol", &g_bucket_tolerance, 0, 16);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Paint bucket tolerance");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Paint bucket color tolerance.\n0 fills only the exact color clicked;\nhigher values also take nearby shades.\nTransparent and opaque pixels never mix.");
             ImGui::SetCursorPosX(left_x);
             ImGui::Checkbox("C##bucket", &g_bucket_contiguous);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Contiguous fill");
         } else if (g_active_tool == ActiveTool::MagicWand) {
             ImGui::SliderInt("##wand_tol", &g_wand_tolerance, 0, 64);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Magic Wand strength");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Magic Wand color tolerance.\n0 selects only the exact color clicked;\nhigher values pull in nearby shades.\nTransparent and opaque pixels never mix.");
             ImGui::SetCursorPosX(left_x);
             ImGui::Checkbox("C##wand", &g_wand_contiguous);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Contiguous selection");
@@ -211,7 +213,8 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clone brush radius");
         } else if (g_active_tool == ActiveTool::BackgroundEraser) {
             ImGui::SliderInt("##eraser_tol", &g_eraser_tolerance, 0, 16);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart eraser tolerance");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Smart eraser color tolerance.\n0 erases only the exact color clicked;\nhigher values also take nearby shades.");
             ImGui::SetCursorPosX(left_x);
             ImGui::Checkbox("C##eraser", &g_eraser_contiguous);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Contiguous erase");
@@ -220,7 +223,8 @@ void DrawLeftToolbar(float work_y, float work_h, float bottom_reserved_h)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Defringe edge pixels");
         } else if (g_active_tool == ActiveTool::SmartRemap) {
             ImGui::SliderInt("##remap_tol", &g_remap_tolerance, 0, 16);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smart remap tolerance");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Smart remap color tolerance.\n0 repaints only the exact color clicked;\nhigher values also take nearby shades.\nTransparent and opaque pixels never mix.");
         } else if (g_active_tool == ActiveTool::Blur) {
             ImGui::SliderInt("##blur_brush", &g_blur_brush, 1, 16);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blur brush radius");
