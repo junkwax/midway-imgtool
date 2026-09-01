@@ -3309,6 +3309,12 @@ static void WaxWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
        false, which is the old behaviour. */
     snprintf(key, sizeof(key), "slot.%d.rigid", slot);
     WaxWriteBool(f, key, state.lane_rigid[slot]);
+    /* Preview magnification. Written as an int rather than a 2x flag so the
+       format does not have to change if the row control ever offers more, and
+       absent in older projects -- those read back as 1, which is what they
+       were drawn at. */
+    snprintf(key, sizeof(key), "slot.%d.zoom", slot);
+    WaxWriteInt(f, key, state.lane_zoom[slot]);
     /* Only meaningful with hold_custom set; written either way so the pair
        reads straight out of the file. */
     snprintf(key, sizeof(key), "slot.%d.hold_custom", slot);
@@ -3427,6 +3433,12 @@ static void WaxReadSlot(const std::unordered_map<std::string, std::string> &kv,
     state.lane_order[slot] = WaxGetInt(kv, prefix + "order", -1);
     state.hold_end[slot] = WaxGetBool(kv, prefix + "hold_end", state.hold_end[slot]);
     state.lane_rigid[slot] = WaxGetBool(kv, prefix + "rigid", false);
+    /* Clamped on the way in: a project written by a build with a higher
+       ceiling must not scale a row off the canvas here. */
+    state.lane_zoom[slot] = WaxGetInt(kv, prefix + "zoom", 1);
+    if (state.lane_zoom[slot] < 1) state.lane_zoom[slot] = 1;
+    if (state.lane_zoom[slot] > kWorldMarkedMaxZoom)
+        state.lane_zoom[slot] = kWorldMarkedMaxZoom;
     /* Absent in older projects: those rows follow the global, which is what
        they did when they were saved. */
     state.slot_hold_custom[slot] = WaxGetBool(kv, prefix + "hold_custom", false);
@@ -3526,6 +3538,7 @@ static bool SaveWorldProjectFile(const char *path)
     WaxWriteInt(f, "world.origin_x", g_world_state.origin_x);
     WaxWriteInt(f, "world.origin_y", g_world_state.origin_y);
     WaxWriteBool(f, "world.onion", g_world_state.onion);
+    WaxWriteBool(f, "world.show_anipoint", g_world_state.show_anipoint);
 
     WaxWriteBool(f, "state.marked_play", state.marked_play);
     /* Constant, and written only so a reader of the file does not have to
@@ -3845,6 +3858,8 @@ static bool LoadWorldProjectFile(const char *path)
     loaded_world.origin_x = WaxGetInt(kv, "world.origin_x", loaded_world.origin_x);
     loaded_world.origin_y = WaxGetInt(kv, "world.origin_y", loaded_world.origin_y);
     loaded_world.onion = WaxGetBool(kv, "world.onion", loaded_world.onion);
+    loaded_world.show_anipoint =
+        WaxGetBool(kv, "world.show_anipoint", loaded_world.show_anipoint);
 
     WorldMarkedSequenceState loaded_state;
     loaded_state.marked_play = WaxGetBool(kv, "state.marked_play", true);

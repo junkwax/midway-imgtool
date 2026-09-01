@@ -97,11 +97,13 @@ static void world_index_to_rgb(Document *doc, const unsigned char *pd,
 int WorldBlitSpriteRgba(Document *doc, IMG *img, unsigned char alpha,
                         bool mirror_x, bool mirror_y,
                         int dst_x, int dst_y,
-                        unsigned char *rgba, int rgba_w, int rgba_h)
+                        unsigned char *rgba, int rgba_w, int rgba_h,
+                        int zoom)
 {
     if (!doc || !img || !img->data_p || img->w == 0 || img->h == 0)
         return 0;
     if (!rgba || rgba_w <= 0 || rgba_h <= 0) return 0;
+    if (zoom < 1) zoom = 1;
 
     PAL *pal = doc_get_pal(doc, img->palnum);
     const unsigned char *pd = pal ? (const unsigned char *)pal->data_p : NULL;
@@ -111,20 +113,27 @@ int WorldBlitSpriteRgba(Document *doc, IMG *img, unsigned char alpha,
     int stride = (sw + 3) & ~3;
     const unsigned char *src = (const unsigned char *)img->data_p;
 
-    /* Clip the sprite rect against the buffer once instead of per pixel. */
+    /* Clip the sprite rect against the buffer once instead of per pixel. The
+       rect is the ZOOMED one -- x/y below walk destination pixels and divide
+       back down to the source, so a 2x sprite clips at twice the extent and
+       still reads the right art pixel at every step. */
+    int dw = sw * zoom;
+    int dh = sh * zoom;
     int x0 = dst_x < 0 ? -dst_x : 0;
     int y0 = dst_y < 0 ? -dst_y : 0;
-    int x1 = sw, y1 = sh;
+    int x1 = dw, y1 = dh;
     if (dst_x + x1 > rgba_w) x1 = rgba_w - dst_x;
     if (dst_y + y1 > rgba_h) y1 = rgba_h - dst_y;
     if (x0 >= x1 || y0 >= y1) return 0;
 
     int written = 0;
     for (int y = y0; y < y1; y++) {
-        int sy = mirror_y ? (sh - 1 - y) : y;
+        int ry = y / zoom;
+        int sy = mirror_y ? (sh - 1 - ry) : ry;
         unsigned char *drow = rgba + (size_t)(dst_y + y) * rgba_w * 4;
         for (int x = x0; x < x1; x++) {
-            int sx = mirror_x ? (sw - 1 - x) : x;
+            int rx = x / zoom;
+            int sx = mirror_x ? (sw - 1 - rx) : rx;
             unsigned char ci = src[sy * stride + sx];
             if (ci == 0) continue;   /* index 0 is the transparent key */
 

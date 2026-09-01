@@ -10,6 +10,61 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### The World View panel reads as a header and rows
+
+The Frame Sequence strip sat on the same near-black as the rows below it, so
+the controls that act on the whole scene and the controls that act on one row
+each ran together into a single column. The header now has its own ground and
+a rule under it, and its three menus say what they are: **File**, **Overlays**
+and **ASM** are spelled out next to their icons instead of being a folder, a
+stack and a chevron you had to hover to tell apart. Row buttons stay
+icon-only — they repeat once per row, and the header is where the vocabulary
+gets taught.
+
+Every row now starts with its visibility eye, at a fixed left edge. Hiding and
+showing lanes is one column to run down instead of a target that shifted with
+whatever else the row was carrying; the row's own **ASM** copy button follows
+it.
+
+### The anchor marker can be turned off
+
+The grey crosshair and yellow dot at the shared anchor sit exactly where a
+fatality's contact frames land, and in World View they were drawn no matter
+what — the **Anipt** toggle on the canvas tab strip only ever reached the
+single-sprite view. It now controls the marked scene and the Anim workspace
+too, and the same switch is repeated as **Anchor** in the panel's Overlays
+menu, since a docked panel hides the tab strip that carried it. It hides the
+marker only: nothing about placement changes. The setting is saved in the
+`.WAX` (older projects load with the marker on, as they were drawn).
+
+
+### World View rows can be previewed at 2x
+
+Each World View row has a **2x** box next to Mirror. Tick it and that row is
+drawn at double size, pixel-doubled about its **anipoint** — the sprite grows
+where it stands rather than sliding as it scales, so a magnified row stays
+lined up with the rows it has to hit.
+
+It is a display setting and touches nothing else: the IMG, its anipoints and
+the exported ASM tables are all untouched, and the game still draws the art
+1:1. A row previewed above 1x says so in a comment in its exported table, so a
+draft read later cannot be mistaken for scaled art.
+
+Rows are magnified one at a time, which is the point — zooming the canvas
+magnifies the fighter a 20x14 spark has to line up against as well.
+
+The measurements stay honest. Boundary colours and the `y=` readout are
+divided back down to 1:1, so a magnified row cannot go red for hanging off a
+playfield it actually fits, and its `y=` is still the sprite's real extent.
+Dragging is unaffected — a drag moves the anchor, and the anchor does not
+scale. Link-mode picking and the PNG export follow the screen instead, so a
+zoomed row is grabbed where it is drawn and exports zoomed.
+
+The factor rides along when a row is duplicated, split or merged in from
+another project, and is saved in the `.WAX` (older projects load at 1x, which
+is what they were drawn at).
+
+
 ### Indexed gradients shift as one ramp
 
 The Indexed Gradient dialog's per-stop color wheel is gone. In its place, one

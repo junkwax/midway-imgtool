@@ -128,6 +128,55 @@ int main(void)
     CHECK(WorldBlitSpriteRgba(g_doc, img, 255, false, false, 0, kBufH,
                               buf.data(), kBufW, kBufH) == 0);
 
+    /* ---- Zoom: each source pixel becomes a zoom x zoom block ----
+       The World View's per-row magnification goes through the export too, so
+       a PNG of a zoomed scene is the scene that was on screen. */
+    std::fill(buf.begin(), buf.end(), 0);
+    written = WorldBlitSpriteRgba(g_doc, img, 255, false, false, 0, 0,
+                                  buf.data(), kBufW, kBufH, 2);
+    CHECK(written == 16);                     /* 4 opaque source pixels x 4 */
+    CHECK(IsRed(At(buf, 0, 0)));              /* source (0,0) fills 2x2 */
+    CHECK(IsRed(At(buf, 1, 0)));
+    CHECK(IsRed(At(buf, 0, 1)));
+    CHECK(IsRed(At(buf, 1, 1)));
+    CHECK(IsClear(At(buf, 2, 0)));            /* index 0 stays a 2x2 hole */
+    CHECK(IsClear(At(buf, 3, 1)));
+    CHECK(IsBlue(At(buf, 4, 0)));             /* source (2,0) */
+    CHECK(IsBlue(At(buf, 5, 1)));
+    CHECK(IsBlue(At(buf, 0, 2)));             /* source (0,1), second row */
+    CHECK(IsRed(At(buf, 3, 3)));              /* source (1,1) */
+    CHECK(IsClear(At(buf, 0, 4)));            /* nothing past 2*h rows */
+
+    /* Mirroring reads the source reversed, not the blown-up block. */
+    std::fill(buf.begin(), buf.end(), 0);
+    WorldBlitSpriteRgba(g_doc, img, 255, true, false, 0, 0,
+                        buf.data(), kBufW, kBufH, 2);
+    CHECK(IsBlue(At(buf, 0, 0)));             /* row0 reversed: 2 0 1 */
+    CHECK(IsBlue(At(buf, 1, 1)));
+    CHECK(IsClear(At(buf, 2, 0)));
+    CHECK(IsRed(At(buf, 4, 0)));
+    CHECK(IsRed(At(buf, 5, 1)));
+
+    /* A zoomed sprite clips against the buffer at its ZOOMED extent: only the
+       left half of source column 0 fits, four rows deep. */
+    std::fill(buf.begin(), buf.end(), 0);
+    CHECK(WorldBlitSpriteRgba(g_doc, img, 255, false, false, kBufW - 1, 0,
+                              buf.data(), kBufW, kBufH, 2) == 4);
+    CHECK(IsRed(At(buf, kBufW - 1, 0)));
+    CHECK(IsRed(At(buf, kBufW - 1, 1)));
+    CHECK(IsBlue(At(buf, kBufW - 1, 2)));
+    CHECK(IsBlue(At(buf, kBufW - 1, 3)));
+    CHECK(IsClear(At(buf, kBufW - 1, 4)));
+
+    /* Zoom 0 and negative zoom are treated as 1 rather than dividing by 0. */
+    std::fill(buf.begin(), buf.end(), 0);
+    CHECK(WorldBlitSpriteRgba(g_doc, img, 255, false, false, 0, 0,
+                              buf.data(), kBufW, kBufH, 0) == 4);
+    CHECK(IsClear(At(buf, 1, 0)));
+    std::fill(buf.begin(), buf.end(), 0);
+    CHECK(WorldBlitSpriteRgba(g_doc, img, 255, false, false, 0, 0,
+                              buf.data(), kBufW, kBufH, -3) == 4);
+
     /* ---- Painter's order: a later opaque sprite replaces an earlier one ---- */
     std::fill(buf.begin(), buf.end(), 0);
     WorldBlitSpriteRgba(g_doc, img, 255, false, false, 0, 0,

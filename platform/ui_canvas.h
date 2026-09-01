@@ -39,6 +39,15 @@ enum {
    visible-until value can't spray tens of thousands of files. */
 enum { kWorldPngSequenceMaxFrames = 600 };
 
+/* Ceiling on a row's preview magnification. Whole numbers only: the sprite is
+   drawn by pixel replication, so 2x is four real pixels per art pixel and
+   still reads as the original art -- a fractional zoom would resample it and
+   stop being a faithful look at what is in the IMG.
+
+   The row control offers 2x; this is the clamp every read goes through, so a
+   project file naming a larger factor cannot scale a row off the canvas. */
+enum { kWorldMarkedMaxZoom = 4 };
+
 /* Ticks a blood frame holds. This is the rate MK2 plays blood at, not a
    preview convenience, and it is NOT the scene's Ticks/frame: a spray is its
    own object with its own clock -- create_blood_proc spawns a process that
@@ -529,6 +538,7 @@ struct WorldMarkedSequenceState {
             spawn_entry[i] = -1;
             spawn_tick[i] = -1;
             lane_own_rate[i] = false;
+            lane_zoom[i] = 1;
         }
         hold_end[kWorldDummyDecapSlot] = true;
     }
@@ -640,6 +650,19 @@ struct WorldMarkedSequenceState {
        does the same on any row; this makes it the default for rows that are
        only ever moved as a unit. */
     bool lane_rigid[kWorldMarkedMaxTabs] = {};
+    /* Preview magnification for this row: 1 = normal, 2 = double, up to
+       kWorldMarkedMaxZoom. A DISPLAY setting and nothing else -- it scales
+       what the world draws (and what the PNG export composites, so the file
+       matches the screen), and touches neither the IMG nor the anipoints nor
+       the exported tables. Blow a 20x14 spark up to look at its shape without
+       zooming the whole canvas and losing the fighter next to it.
+
+       The sprite grows about its ANIPOINT, not its top-left: the anchor is the
+       one point the game places, so a row scaled here stays where it was --
+       feet on the floor, hand on the hilt -- instead of sliding as it grows.
+       Which is also why dragging still works unchanged: a drag moves the
+       anchor, and the anchor is zoom-independent. */
+    int lane_zoom[kWorldMarkedMaxTabs];
     std::vector<int> frame_mirror[kWorldMarkedMaxTabs]; /* per-frame flip bits: X=ani_flip, Y=ani_flip_v */
     std::vector<int> frame_z[kWorldMarkedMaxTabs];      /* per-entry draw priority; higher draws on top */
     std::vector<int> dual_on[kWorldMarkedMaxTabs];      /* per-entry second sprite instance enabled */
@@ -1055,6 +1078,11 @@ void WorldMarkedSetSlotHold(WorldMarkedSequenceState &state, int slot,
 /* The hold this row actually runs at -- pinned or not. Falls back to the
    global only for a row whose hold was never set. */
 int WorldMarkedSlotHold(const WorldMarkedSequenceState &state, int slot);
+/* This row's preview magnification, clamped to 1..kWorldMarkedMaxZoom. Never
+   returns 0, so it is safe to multiply a size or divide a source coordinate
+   by. Read this rather than lane_zoom[] directly -- a project written by a
+   build with a larger ceiling would otherwise scale a row off the canvas. */
+int WorldMarkedLaneZoom(const WorldMarkedSequenceState &state, int slot);
 
 /* ---- Merging a second project into the open scene ----------------------
    Load replaces the workspace; these two let another .WAX be laid on top of

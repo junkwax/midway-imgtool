@@ -3239,6 +3239,15 @@ bool WorldUpdateMarkedLanePlayback(WorldMarkedSequenceState &state,
     return have_image;
 }
 
+int WorldMarkedLaneZoom(const WorldMarkedSequenceState &state, int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return 1;
+    int zoom = state.lane_zoom[slot];
+    if (zoom < 1) return 1;
+    if (zoom > kWorldMarkedMaxZoom) return kWorldMarkedMaxZoom;
+    return zoom;
+}
+
 static unsigned char WorldMarkedLaneAlpha(int slot)
 {
     static const unsigned char kAlpha[] =
@@ -3488,6 +3497,14 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
         bool *bad_y_anchor = dual ? &render_info.dual_bad_y_anchor[slot]
                                   : &render_info.lane_bad_y_anchor[slot];
 
+        /* Row magnification is a display setting, so it multiplies the canvas
+           scale and nothing else: the anipoint offset is scaled by the same
+           factor as the sprite, which pins the anchor and grows the art around
+           it. Scaling only the size would slide the sprite off its anchor by
+           (zoom-1) x the anipoint. */
+        float zoom = (float)WorldMarkedLaneZoom(state, state_slot);
+        float draw_scale = layout.scale * zoom;
+
         Document *frame_doc = (frame_idx < (int)lane.frame_docs.size() &&
                               lane.frame_docs[frame_idx])
                             ? lane.frame_docs[frame_idx] : lane.doc;
@@ -3505,14 +3522,14 @@ void WorldDrawMarkedLaneSprites(ImDrawList *dl, WorldMarkedSequenceState &state,
             int ay = (int)(short)img->aniy + local_dy;
             if (WorldBadYAnchor(img, ay))
                 *bad_y_anchor = true;
-            float spw = img->w * layout.scale;
-            float sph = img->h * layout.scale;
+            float spw = img->w * draw_scale;
+            float sph = img->h * draw_scale;
             float left = layout.origin_x -
                 anipoint_effective(ax, (int)img->w, mirror_x,
-                                   g_mirror_convention) * layout.scale;
+                                   g_mirror_convention) * draw_scale;
             float top = layout.origin_y -
                 anipoint_effective(ay, (int)img->h, mirror_y,
-                                   g_mirror_convention) * layout.scale;
+                                   g_mirror_convention) * draw_scale;
             ImVec2 spos(left, top);
             ImVec2 uv0(mirror_x ? 1.0f : 0.0f,
                        mirror_y ? 1.0f : 0.0f);
@@ -3594,6 +3611,11 @@ int WorldComposeMarkedSceneRgba(WorldMarkedSequenceState &state,
                                        job.dual, lane.tick,
                                        &local_dx, &local_dy);
 
+        /* The row's preview magnification comes along, so a PNG of a zoomed
+           scene is the scene that was on screen. Same rule as the draw: the
+           anipoint scales with the sprite, keeping the anchor put. */
+        int zoom = WorldMarkedLaneZoom(state, state_slot);
+
         Document *frame_doc = (frame_idx < (int)lane.frame_docs.size() &&
                               lane.frame_docs[frame_idx])
                             ? lane.frame_docs[frame_idx] : lane.doc;
@@ -3609,17 +3631,17 @@ int WorldComposeMarkedSceneRgba(WorldMarkedSequenceState &state,
             int ay = (int)(short)img->aniy + local_dy;
             int left = origin_x - anipoint_effective(ax, (int)img->w,
                                                     job.mirror_x,
-                                                    g_mirror_convention);
+                                                    g_mirror_convention) * zoom;
             int top  = origin_y - anipoint_effective(ay, (int)img->h,
                                                     job.mirror_y,
-                                                    g_mirror_convention);
+                                                    g_mirror_convention) * zoom;
             /* Lane alpha exists to keep overlapping lanes readable while
                editing. An export defaults to opaque so the PNG matches what
                the hardware would actually draw. */
             unsigned char alpha = use_lane_alpha ? WorldMarkedLaneAlpha(job.slot) : 255;
             if (WorldBlitSpriteRgba(pdoc, img, alpha,
                                     job.mirror_x, job.mirror_y, left, top,
-                                    out.data(), world_w, world_h) > 0)
+                                    out.data(), world_w, world_h, zoom) > 0)
                 drawn++;
         }
     }
@@ -3646,16 +3668,29 @@ static ImVec2 WorldBoundaryPointToScreen(const WorldCanvasLayout &layout,
                   layout.pos.y + (float)y * layout.scale);
 }
 
+/* `zoom` is the row's preview magnification, and it is divided back OUT: this
+   rect is the sprite's footprint in game pixels, and it is what decides
+   green/yellow/red and what the status line prints as y=. A magnifying glass
+   must not turn a sprite that fits the playfield red, nor report a 40-pixel
+   sprite as 80 tall.
+
+   The divide is about the ANCHOR rather than the canvas corner, because the
+   anchor is the point the zoom grows from -- scaling from the corner would
+   walk the rect across the world as well as shrink it. */
 static WorldBoundaryRect WorldBoundaryRectFromScreen(ImVec2 rect_min,
                                                      ImVec2 rect_max,
-                                                     const WorldCanvasLayout &layout)
+                                                     const WorldCanvasLayout &layout,
+                                                     int zoom = 1)
 {
     float scale = layout.scale > 0.0f ? layout.scale : 1.0f;
+    float zscale = scale * (zoom >= 1 ? (float)zoom : 1.0f);
+    float world_ox = (layout.origin_x - layout.pos.x) / scale;
+    float world_oy = (layout.origin_y - layout.pos.y) / scale;
     WorldBoundaryRect r;
-    r.left = (int)std::floor((rect_min.x - layout.pos.x) / scale + 0.0001f);
-    r.top = (int)std::floor((rect_min.y - layout.pos.y) / scale + 0.0001f);
-    r.right = (int)std::ceil((rect_max.x - layout.pos.x) / scale - 0.0001f) - 1;
-    r.bottom = (int)std::ceil((rect_max.y - layout.pos.y) / scale - 0.0001f) - 1;
+    r.left = (int)std::floor(world_ox + (rect_min.x - layout.origin_x) / zscale + 0.0001f);
+    r.top = (int)std::floor(world_oy + (rect_min.y - layout.origin_y) / zscale + 0.0001f);
+    r.right = (int)std::ceil(world_ox + (rect_max.x - layout.origin_x) / zscale - 0.0001f) - 1;
+    r.bottom = (int)std::ceil(world_oy + (rect_max.y - layout.origin_y) / zscale - 0.0001f) - 1;
     return r;
 }
 
@@ -3721,9 +3756,11 @@ static void WorldDrawBoundaryGuides(ImDrawList *dl,
                 0.0f, 0, 1.8f);
 }
 
+/* `zoom` is the row's preview magnification -- see WorldBoundaryRectFromScreen
+   for why it is divided out rather than measured. */
 static bool WorldBoundaryInfoForRect(const WorldMarkedLaneRenderInfo &render_info,
                                      const WorldCanvasLayout &layout,
-                                     int slot, bool dual,
+                                     int slot, bool dual, int zoom,
                                      WorldBoundaryRect *out_rect,
                                      WorldBoundaryClass *out_class)
 {
@@ -3737,7 +3774,7 @@ static bool WorldBoundaryInfoForRect(const WorldMarkedLaneRenderInfo &render_inf
                      : render_info.lane_rect_max[slot];
     bool bad_y = dual ? render_info.dual_bad_y_anchor[slot]
                       : render_info.lane_bad_y_anchor[slot];
-    WorldBoundaryRect rect = WorldBoundaryRectFromScreen(mn, mx, layout);
+    WorldBoundaryRect rect = WorldBoundaryRectFromScreen(mn, mx, layout, zoom);
     WorldBoundaryClass cls = WorldBoundaryClassify(rect, bad_y);
     if (out_rect) *out_rect = rect;
     if (out_class) *out_class = cls;
@@ -3767,6 +3804,7 @@ static void WorldDrawBoundaryStatus(ImDrawList *dl,
             WorldBoundaryRect rect;
             WorldBoundaryClass cls;
             if (!WorldBoundaryInfoForRect(render_info, layout, slot, dual,
+                                          WorldMarkedLaneZoom(state, lanes[slot].delay_slot),
                                           &rect, &cls))
                 continue;
             if (cls == WorldBoundary_Red) red_count++;
@@ -3832,6 +3870,7 @@ static void WorldDrawMarkedBoundaryOverlay(ImDrawList *dl,
             WorldBoundaryRect rect;
             WorldBoundaryClass cls;
             if (!WorldBoundaryInfoForRect(render_info, layout, slot, dual,
+                                          WorldMarkedLaneZoom(state, lanes[slot].delay_slot),
                                           &rect, &cls))
                 continue;
             if (cls == WorldBoundary_Green)
@@ -3916,10 +3955,13 @@ void WorldDrawMarkedLaneStatus(ImDrawList *dl, WorldMarkedSequenceState &state,
         bool *mirror_flag = WorldMarkedMirrorFlag(state, lane.delay_slot);
         char y_buf[48] = "";
         if (render_info.lane_rect_valid[slot]) {
+            /* Reported at 1:1 whatever the row is previewed at -- this is the
+               number an anipoint is judged against. */
             WorldBoundaryRect rect =
                 WorldBoundaryRectFromScreen(render_info.lane_rect_min[slot],
                                             render_info.lane_rect_max[slot],
-                                            layout);
+                                            layout,
+                                            WorldMarkedLaneZoom(state, lane.delay_slot));
             snprintf(y_buf, sizeof(y_buf), " y=%d..%d",
                      rect.top, rect.bottom);
         }
@@ -3984,12 +4026,19 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
     /* Straight onto the cleared canvas, so the stage replaces the flat black
        and every guide, figure and sprite below still draws over it. */
     WorldDrawReferenceBackground(dl, result.layout, world);
-    dl->AddLine(ImVec2(origin_x - 8, origin_y),
-                ImVec2(origin_x + 8, origin_y),
-                IM_COL32(120, 120, 120, 255));
-    dl->AddLine(ImVec2(origin_x, origin_y - 8),
-                ImVec2(origin_x, origin_y + 8),
-                IM_COL32(120, 120, 120, 255));
+    /* The shared anchor marker, on the same "Anipt" toggle the single-sprite
+       path already read. It sits exactly where a fatality's contact frames
+       land, so while judging one of those it is the thing in the way rather
+       than the thing you need -- and until now the marked scene drew it
+       unconditionally, so the toggle appeared to do nothing here. */
+    if (world.show_anipoint) {
+        dl->AddLine(ImVec2(origin_x - 8, origin_y),
+                    ImVec2(origin_x + 8, origin_y),
+                    IM_COL32(120, 120, 120, 255));
+        dl->AddLine(ImVec2(origin_x, origin_y - 8),
+                    ImVec2(origin_x, origin_y + 8),
+                    IM_COL32(120, 120, 120, 255));
+    }
 
     /* Behind the lanes so an effect that lands on the figure reads as landing
        on it, not behind it. */
@@ -3997,8 +4046,9 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
 
     WorldDrawMarkedLaneSprites(dl, state, lanes, result.layout,
                                result.render_info);
-    dl->AddCircle(ImVec2(origin_x, origin_y), 4.0f,
-                  IM_COL32(255, 200, 0, 255), 0, 1.5f);
+    if (world.show_anipoint)
+        dl->AddCircle(ImVec2(origin_x, origin_y), 4.0f,
+                      IM_COL32(255, 200, 0, 255), 0, 1.5f);
     WorldDrawMarkedBoundaryOverlay(dl, state, lanes, result.render_info,
                                    result.layout);
     if (state.draw_sprite_borders) {
@@ -4523,7 +4573,7 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
        Was called "Export...", which described half of what is in here -- Load
        Project reads a file rather than writing one, and nobody looks for that
        under Export. */
-    if (WorldHeaderMenu(g_icon_font_loaded ? ICON_FOLDER "##world_menu_export"
+    if (WorldHeaderMenu(g_icon_font_loaded ? ICON_FOLDER " File##world_menu_export"
                                            : "File##world_menu_export",
                         "##world_export_popup",
                         "FILE\n\n"
@@ -4570,8 +4620,8 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     /* ---- Overlays: everything in the scene that is not a marked row ---- */
     bool lanes_marked = state.dummy_decap_body || !state.split_lanes.empty();
     if (WorldHeaderMenu(g_icon_font_loaded
-                            ? (lanes_marked ? ICON_LAYERS "*##world_menu_overlays"
-                                            : ICON_LAYERS "##world_menu_overlays")
+                            ? (lanes_marked ? ICON_LAYERS " Overlays *##world_menu_overlays"
+                                            : ICON_LAYERS " Overlays##world_menu_overlays")
                             : (lanes_marked ? "Overlays *##world_menu_overlays"
                                             : "Overlays##world_menu_overlays"),
                         "##world_overlays_popup",
@@ -4589,6 +4639,16 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
             ImGui::SetTooltip("Draw TV-safe World View guides: green is 0..399 x 0..253,\n"
                               "yellow extends to DMA X 511 while vertically safe,\n"
                               "red is outside those limits.");
+        /* Same flag as "Anipt" on the canvas tab strip. It is repeated here
+           because the anchor is scene furniture like everything else in this
+           menu, and a docked panel hides the strip that carried the only
+           switch. */
+        ImGui::Checkbox("Anchor##world_marked_anchor", &g_world_state.show_anipoint);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw the grey crosshair and yellow dot at the shared\n"
+                              "anchor. Turn it off when the marker sits on top of\n"
+                              "the frames you are trying to judge -- this hides\n"
+                              "the marker only, nothing moves.");
 
         ImGui::Separator();
         ImGui::Checkbox("Reference##world_reference", &g_world_state.show_reference);
@@ -4675,7 +4735,7 @@ WorldMarkedPanelAction WorldDrawMarkedPanelHeader(WorldMarkedSequenceState &stat
     ImGui::SameLine();
 
     /* ---- ASM: the generated animation tables ---- */
-    if (WorldHeaderMenu(g_icon_font_loaded ? ICON_CODE "##world_menu_asm"
+    if (WorldHeaderMenu(g_icon_font_loaded ? ICON_CODE " ASM##world_menu_asm"
                                            : "ASM##world_menu_asm",
                         "##world_asm_popup",
                         "ASM\n\n"
@@ -5534,9 +5594,40 @@ WorldMarkedPanelResult WorldDrawMarkedPanel(WorldMarkedSequenceState &state,
                           ImVec2(layout.width, layout.height), true,
                           ImGuiWindowFlags_HorizontalScrollbar |
                           ImGuiWindowFlags_AlwaysHorizontalScrollbar)) {
+        /* The header used to sit on exactly the near-black the rows sit on,
+           so the strip that acts on the WHOLE scene and the strips that each
+           act on one row read as one undifferentiated column -- and the first
+           row's Separator was the only thing marking where the scene-wide
+           controls stopped. Give the header its own ground and a rule under
+           it, and the boundary is visible before it is read.
+
+           Drawn on a split channel because the band's height is only known
+           after the header has submitted: the picked-frames group is
+           conditional and adds a whole line. */
+        ImDrawList *panel_dl = ImGui::GetWindowDrawList();
+        float band_x0 = ImGui::GetWindowPos().x;
+        float band_x1 = band_x0 + ImGui::GetWindowSize().x;
+        /* Y follows the content so the band scrolls away with the header it
+           sits behind; X is the child's own screen edges so a wide row
+           scrolling sideways does not drag the band off with it. */
+        float band_y0 = ImGui::GetCursorScreenPos().y -
+                        ImGui::GetStyle().WindowPadding.y;
+        panel_dl->ChannelsSplit(2);
+        panel_dl->ChannelsSetCurrent(1);
+
         result.header =
             WorldDrawMarkedPanelHeader(state, lanes, dummy_decap_missing,
                                        selected_img, active_doc_idx);
+
+        float band_y1 = ImGui::GetCursorScreenPos().y -
+                        ImGui::GetStyle().ItemSpacing.y * 0.5f;
+        panel_dl->ChannelsSetCurrent(0);
+        panel_dl->AddRectFilled(ImVec2(band_x0, band_y0),
+                                ImVec2(band_x1, band_y1),
+                                IM_COL32(34, 38, 52, 255));
+        panel_dl->AddLine(ImVec2(band_x0, band_y1), ImVec2(band_x1, band_y1),
+                          IM_COL32(84, 92, 118, 255));
+        panel_dl->ChannelsMerge();
 
         /* The header stays whatever the scene holds; only the rows below it
            are missing, so say so here rather than in place of the strip. */
@@ -6044,12 +6135,31 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
                          ? lane.label.c_str()
                          : (lane.doc && lane.doc->fname_s[0] ? lane.doc->fname_s : "Untitled");
 
-    /* This row's own animation table, ahead of the eye so it reads as
-       something the row produces rather than something done to it. The
-       header's ASM... menu emits the WHOLE scene as one draft, which is the
-       wrong unit when a lane is being iterated on its own -- a fatality is
-       built one actor at a time, and pasting five tables to get at one is how
-       the wrong lane ends up in a character file. */
+    /* The eye is the first thing on every row, at a fixed x, so hiding and
+       showing lanes is one column to run down rather than a target that
+       shifts with whatever else the row happens to carry. Everything past it
+       is per-row work; this one is how you decide whether the row is in the
+       scene at all. */
+    bool row_visible = state.lane_visible[lane.delay_slot];
+    const char *eye = g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT;
+    if (!row_visible)
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.38f);
+    if (ImGui::SmallButton(eye)) {
+        state.lane_visible[lane.delay_slot] = !state.lane_visible[lane.delay_slot];
+    }
+    if (!row_visible)
+        ImGui::PopStyleVar();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(row_visible
+            ? "Hide this World View row while testing other animations."
+            : "Show this World View row.");
+    ImGui::SameLine();
+
+    /* This row's own animation table. The header's ASM menu emits the WHOLE
+       scene as one draft, which is the wrong unit when a lane is being
+       iterated on its own -- a fatality is built one actor at a time, and
+       pasting five tables to get at one is how the wrong lane ends up in a
+       character file. */
     {
         std::vector<WorldMarkedLane> one;
         one.push_back(lane);
@@ -6066,24 +6176,9 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Copy JUST this row's animation table, with its\n"
                               "local-anipoint table, to the clipboard.\n\n"
-                              "ASM... on the strip above does the whole scene,\n"
+                              "ASM on the strip above does the whole scene,\n"
                               "and can also view, save or load one.");
-        ImGui::SameLine();
     }
-
-    bool row_visible = state.lane_visible[lane.delay_slot];
-    const char *eye = g_icon_font_loaded ? ICON_VIS : ICON_VIS_TXT;
-    if (!row_visible)
-        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.38f);
-    if (ImGui::SmallButton(eye)) {
-        state.lane_visible[lane.delay_slot] = !state.lane_visible[lane.delay_slot];
-    }
-    if (!row_visible)
-        ImGui::PopStyleVar();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(row_visible
-            ? "Hide this World View row while testing other animations."
-            : "Show this World View row.");
 
     /* Order and removal. Rows are rebuilt every frame from tab order plus the
        split list, so "move up" swaps the rank the slot carries rather than
@@ -6292,6 +6387,30 @@ bool WorldDrawMarkedLaneControls(WorldMarkedSequenceState &state,
     if (mirror_flag) {
         ImGui::SameLine();
         ImGui::Checkbox("Mirror##world_lane_mirror", mirror_flag);
+    }
+    /* Draw this row twice the size. Sits with Mirror because it is the same
+       kind of thing -- how the row is SHOWN, not what it is. A 20x14 spark or
+       a chopped hand is unreadable at 1x against a 400x254 playfield, and
+       zooming the canvas magnifies the fighter it has to line up against
+       too. */
+    {
+        int slot = lane.delay_slot;
+        bool doubled = WorldMarkedLaneZoom(state, slot) >= 2;
+        ImGui::SameLine();
+        if (ImGui::Checkbox("2x##world_lane_zoom", &doubled))
+            state.lane_zoom[slot] = doubled ? 2 : 1;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Draw this row at double size, pixel-doubled about its\n"
+                "anipoint -- so the sprite grows where it stands instead of\n"
+                "sliding as it scales.\n\n"
+                "Display only. Nothing here touches the IMG, its anipoints or\n"
+                "the exported ASM tables; the game still draws the art 1:1.\n"
+                "Dragging is unchanged -- a drag moves the anchor, and the\n"
+                "anchor does not scale -- and the boundary colours and the\n"
+                "y= readout still measure the real 1:1 sprite, so magnifying\n"
+                "a row cannot turn it red. A PNG export follows the screen:\n"
+                "a zoomed row exports zoomed.");
     }
     /* Z is usually a property of the row: draw priority is "which lane is in
        front", and a lane whose Z changes halfway pops through the one it
@@ -7873,6 +7992,22 @@ std::string WorldBuildMarkedAsm(WorldMarkedSequenceState &state,
                        "row's first\n;   tick, so the motion steps in jumps of "
                        "sleep*v rather than smoothly.\n";
         }
+        /* The preview zoom is a magnifying glass, not a transform: it never
+           reaches the table. Say so in the file, because a row authored while
+           magnified looks nothing like what these numbers draw, and somebody
+           reading the draft later has no other way to know. */
+        {
+            int lane_zoom = WorldMarkedLaneZoom(state, lane.delay_slot);
+            if (lane_zoom > 1) {
+                char zoom_line[192];
+                snprintf(zoom_line, sizeof(zoom_line),
+                         "; NOTE: World View is PREVIEWING this row at %dx. That is a\n"
+                         ";   display setting only -- the offsets below are 1:1 game\n"
+                         ";   pixels, and the hardware draws the art unscaled.\n",
+                         lane_zoom);
+                out += zoom_line;
+            }
+        }
 
         out += anim_label;
         out += "\n";
@@ -8436,10 +8571,16 @@ void WorldHandleMarkedLaneDrag(ImDrawList *dl, WorldMarkedSequenceState &state,
                                ? (*piece_docs)[(size_t)pi] : fdoc;
                 IMG *img = doc_get_img(pdoc, (*pieces)[(size_t)pi]);
                 if (!img) continue;
-                float left = world_layout.origin_x - ((int)(short)img->anix + dx) * world_layout.scale;
-                float top = world_layout.origin_y - ((int)(short)img->aniy + dy) * world_layout.scale;
-                float right = left + (float)img->w * world_layout.scale;
-                float bottom = top + (float)img->h * world_layout.scale;
+                /* Magnified rows are picked at the size they are drawn --
+                   otherwise link mode grabs a 1x rectangle sitting inside a
+                   sprite four times its area, and clicking the visible art
+                   misses. */
+                float piece_scale = world_layout.scale *
+                                    (float)WorldMarkedLaneZoom(state, ss);
+                float left = world_layout.origin_x - ((int)(short)img->anix + dx) * piece_scale;
+                float top = world_layout.origin_y - ((int)(short)img->aniy + dy) * piece_scale;
+                float right = left + (float)img->w * piece_scale;
+                float bottom = top + (float)img->h * piece_scale;
                 if (p.x >= left && p.x <= right && p.y >= top && p.y <= bottom) {
                     hit.img = img;
                     hit.doc = pdoc;
@@ -9867,6 +10008,10 @@ void WorldMarkedClearSequenceState(WorldMarkedSequenceState &state, int slot)
     state.pingpong_delay[slot] = 0;
     state.stop_tick[slot] = 0;
     state.lane_rigid[slot] = false;
+    /* Magnification belongs to the animation that was in this slot, not to the
+       slot. A new row arriving into a lane someone had left at 2x would be
+       drawn double with nothing on screen saying why. */
+    state.lane_zoom[slot] = 1;
     state.slot_hold[slot] = ClampTimelineHold(state.default_hold);
     state.slot_hold_custom[slot] = false;
     /* Whatever this row used to be spawned against, it is not that any more --
@@ -10304,6 +10449,9 @@ bool WorldMarkedSplitLaneAtFrame(WorldMarkedSequenceState &state,
     state.hold_end[dst_slot] = state.hold_end[src_slot];
     state.pingpong_delay[dst_slot] = state.pingpong_delay[src_slot];
     state.stop_tick[dst_slot] = state.stop_tick[src_slot];
+    /* The two halves of a split run are the same animation seen at the same
+       size -- a tail that snapped back to 1x would read as a different move. */
+    state.lane_zoom[dst_slot] = state.lane_zoom[src_slot];
     /* Not the spray we placed: it keeps the windows it was copied with, and
        has nothing of its own to follow. The hold is not copied along either --
        these paths never did -- so it cannot claim a rate of its own. */
@@ -10390,6 +10538,7 @@ bool WorldMarkedCopySlotFrom(WorldMarkedSequenceState &state, int dst_slot,
     state.lane_visible[dst_slot] = src.lane_visible[src_slot];
     state.hold_end[dst_slot] = src.hold_end[src_slot];
     state.lane_rigid[dst_slot] = src.lane_rigid[src_slot];
+    state.lane_zoom[dst_slot] = WorldMarkedLaneZoom(src, src_slot);
     state.pingpong_delay[dst_slot] = src.pingpong_delay[src_slot];
     state.stop_tick[dst_slot] = src.stop_tick[src_slot];
     state.slot_hold[dst_slot] = src.slot_hold[src_slot];
@@ -10470,6 +10619,9 @@ static bool WorldMarkedDuplicateSlot(WorldMarkedSequenceState &state,
     state.hold_end[dst_slot] = state.hold_end[src_slot];
     state.pingpong_delay[dst_slot] = state.pingpong_delay[src_slot];
     state.stop_tick[dst_slot] = state.stop_tick[src_slot];
+    /* A duplicate is the same animation, so it comes up at the same size --
+       otherwise the copy sits behind the original at half its footprint. */
+    state.lane_zoom[dst_slot] = state.lane_zoom[src_slot];
     /* Not the spray we placed: it keeps the windows it was copied with, and
        has nothing of its own to follow. The hold is not copied along either --
        these paths never did -- so it cannot claim a rate of its own. */
@@ -20330,12 +20482,18 @@ static WorldMarkedSceneResult SeqScrDrawScene(WorldMarkedSequenceState &state,
                       ImVec2(world_pos.x + result.layout.width,
                              world_pos.y + result.layout.height),
                       IM_COL32(0, 0, 0, 255));
-    dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy), IM_COL32(120, 120, 120, 255));
-    dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8), IM_COL32(120, 120, 120, 255));
+    /* Anchor marker, on the shared "Anipt" toggle -- see WorldDrawMarkedScene. */
+    if (g_world_state.show_anipoint) {
+        dl->AddLine(ImVec2(ox - 8, oy), ImVec2(ox + 8, oy),
+                    IM_COL32(120, 120, 120, 255));
+        dl->AddLine(ImVec2(ox, oy - 8), ImVec2(ox, oy + 8),
+                    IM_COL32(120, 120, 120, 255));
+    }
 
     WorldDrawMarkedLaneSprites(dl, state, lanes, result.layout,
                                result.render_info);
-    dl->AddCircle(ImVec2(ox, oy), 4.0f, IM_COL32(255, 200, 0, 255), 0, 1.5f);
+    if (g_world_state.show_anipoint)
+        dl->AddCircle(ImVec2(ox, oy), 4.0f, IM_COL32(255, 200, 0, 255), 0, 1.5f);
 
     /* Dragging a sprite edits dX/dY, which are real ENTRY fields, so it stays.
        The panel rect is parked off-screen: this mode has no floating panel for

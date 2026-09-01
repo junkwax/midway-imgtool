@@ -37,8 +37,16 @@ void ClearWorldTempTextures(void);
    the on-screen draw blends its lane alpha. Mirror flags flip the source read
    the way the draw list's flipped UVs do.
 
-   Returns the number of pixels actually written. */
+   `zoom` replicates each source pixel into a zoom x zoom block, matching the
+   World View's per-row magnification so an exported PNG looks like the screen
+   it came from. It is a whole-number nearest-neighbour blow-up and never a
+   resample; anything below 1 is treated as 1. `dst_x`/`dst_y` still place the
+   sprite's top-left corner -- the caller scales its own anchor maths.
+
+   Returns the number of pixels actually written, counted in DESTINATION
+   pixels, so a 2x blit reports four times what a 1x one does. */
 int WorldBlitSpriteRgba(Document *doc, IMG *img, unsigned char alpha,
                         bool mirror_x, bool mirror_y,
                         int dst_x, int dst_y,
-                        unsigned char *rgba, int rgba_w, int rgba_h);
+                        unsigned char *rgba, int rgba_w, int rgba_h,
+                        int zoom = 1);
