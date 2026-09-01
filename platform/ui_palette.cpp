@@ -73,7 +73,10 @@ static bool g_show_indexed_gradient = false;
 static float g_indexed_gradient_colors[11][3] = {};
 static bool g_indexed_gradient_color_set[11] = {};
 static int g_indexed_gradient_color_count = 2;
-static int g_indexed_gradient_active_stop = 0;   /* stop the color wheel edits */
+static float g_indexed_gradient_shift_base[11][3] = {};  /* ramp before the shift */
+static int g_indexed_gradient_hue = 0;
+static int g_indexed_gradient_sat = 0;
+static int g_indexed_gradient_light = 0;
 static int g_indexed_gradient_palette_idx = -1;
 static bool g_indexed_gradient_targets[256] = {};
 static unsigned char g_indexed_gradient_baseline[512] = {};
@@ -89,6 +92,62 @@ static bool g_indexed_gradient_presets_loaded = false;
 static bool g_indexed_gradient_applied = false;
 static bool g_indexed_gradient_open_name_popup = false;
 static char g_indexed_gradient_preset_name[96] = {};
+
+/* Hue/saturation/lightness offsets that move every loaded stop at once.
+ *
+ * The offsets are absolute, not incremental, so they are applied to a snapshot
+ * of the ramp rather than to the live colors: dragging hue to +40 and back to 0
+ * lands exactly where it started, with no drift from repeated rounding.
+ * Anything that rewrites the stops themselves (editing one, loading a preset,
+ * seeding from the palette) re-bases the snapshot and zeroes the offsets. */
+static void CaptureIndexedGradientShiftBase(void)
+{
+    memcpy(g_indexed_gradient_shift_base, g_indexed_gradient_colors,
+           sizeof(g_indexed_gradient_shift_base));
+    g_indexed_gradient_hue = 0;
+    g_indexed_gradient_sat = 0;
+    g_indexed_gradient_light = 0;
+}
+
+static void ApplyIndexedGradientShift(void)
+{
+    /* Runs the stops through the same RGB555 HSL math the palette sliders use.
+       The ramp is quantized to 15-bit words on Apply anyway, so shifting in
+       that space costs nothing and keeps one implementation of the math. */
+    unsigned char base_words[11 * 2] = {};
+    unsigned char out_words[11 * 2] = {};
+    unsigned char out_rgb[11 * 3] = {};
+    bool mask[11] = {};
+    int n = g_indexed_gradient_color_count;
+    if (n > 11) n = 11;
+    for (int i = 0; i < n; i++) {
+        int c[3];
+        for (int k = 0; k < 3; k++) {
+            c[k] = (int)lroundf(g_indexed_gradient_shift_base[i][k] * 255.0f);
+            if (c[k] < 0) c[k] = 0;
+            if (c[k] > 255) c[k] = 255;
+        }
+        unsigned short word = (unsigned short)(((c[0] >> 3) << 10) |
+                                               ((c[1] >> 3) << 5) |
+                                                (c[2] >> 3));
+        base_words[i * 2] = (unsigned char)(word & 0xff);
+        base_words[i * 2 + 1] = (unsigned char)(word >> 8);
+        /* Stops with no color chosen yet stay black instead of being lifted
+           off zero by a lightness offset. */
+        mask[i] = g_indexed_gradient_color_set[i];
+    }
+    HslAdjustPaletteWordsFromBaseline(base_words, n, mask,
+                                      g_indexed_gradient_hue,
+                                      g_indexed_gradient_sat,
+                                      g_indexed_gradient_light,
+                                      out_words, out_rgb);
+    for (int i = 0; i < n; i++) {
+        if (!g_indexed_gradient_color_set[i]) continue;
+        for (int k = 0; k < 3; k++)
+            g_indexed_gradient_colors[i][k] = out_rgb[i * 3 + k] / 255.0f;
+    }
+    g_indexed_gradient_applied = false;
+}
 
 static std::string IndexedGradientPresetPath(void)
 {
@@ -164,7 +223,7 @@ static void SelectIndexedGradientPreset(const IndexedGradientPreset &preset)
         g_indexed_gradient_colors[i][2] = preset.colors[i].z;
         g_indexed_gradient_color_set[i] = true;
     }
-    g_indexed_gradient_active_stop = 0;
+    CaptureIndexedGradientShiftBase();
     g_indexed_gradient_applied = false;
 }
 
@@ -3842,6 +3901,8 @@ void DrawPaletteSingleColorDialog(void)
     ImGui::End();
 }
 
+static bool PaletteHueDial(const char *id, int *hue_deg, float diameter);
+
 void OpenIndexedGradientDialog(void)
 {
     PAL *pal = (g_doc && g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
@@ -3855,9 +3916,9 @@ void OpenIndexedGradientDialog(void)
     for (int i = 1; i < g_indexed_gradient_palette_count; i++)
         g_indexed_gradient_targets[i] = g_palette_selection[i];
     g_indexed_gradient_color_count = 2;
-    g_indexed_gradient_active_stop = 0;
     memset(g_indexed_gradient_colors, 0, sizeof(g_indexed_gradient_colors));
     memset(g_indexed_gradient_color_set, 0, sizeof(g_indexed_gradient_color_set));
+    CaptureIndexedGradientShiftBase();
     g_indexed_gradient_applied = false;
     LoadIndexedGradientPresets();
     g_show_indexed_gradient = true;
@@ -3985,8 +4046,7 @@ static void ReverseIndexedGradient(void)
         g_indexed_gradient_color_set[i] = g_indexed_gradient_color_set[j];
         g_indexed_gradient_color_set[j] = set;
     }
-    g_indexed_gradient_active_stop = g_indexed_gradient_color_count - 1 -
-                                     g_indexed_gradient_active_stop;
+    CaptureIndexedGradientShiftBase();
     g_indexed_gradient_applied = false;
 }
 
@@ -4032,7 +4092,7 @@ static int BuildIndexedGradientFromPalette(void)
         g_indexed_gradient_color_set[i] = true;
     }
     g_indexed_gradient_color_count = n;
-    if (g_indexed_gradient_active_stop >= n) g_indexed_gradient_active_stop = n - 1;
+    CaptureIndexedGradientShiftBase();
     g_indexed_gradient_applied = false;
     return n;
 }
@@ -4143,28 +4203,20 @@ void DrawIndexedGradientDialog(void)
     }
     ImGui::Separator();
     bool all_set = true;
-    /* Stops on the left, one always-open color wheel on the right. The wheel
-       edits whichever stop is selected, so picking a ramp color no longer
-       means opening (and losing) a popup per stop. */
+    /* Stops on the left, whole-ramp controls on the right. */
     ImGui::BeginGroup();
     ImGui::Text("Gradient colors (%d / 11)", g_indexed_gradient_color_count);
     for (int i = 0; i < g_indexed_gradient_color_count; i++) {
         ImGui::PushID(i);
-        char stop_label[8];
-        snprintf(stop_label, sizeof(stop_label), "%d", i + 1);
-        if (ImGui::RadioButton(stop_label, g_indexed_gradient_active_stop == i))
-            g_indexed_gradient_active_stop = i;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Edit stop %d with the color wheel.", i + 1);
-        ImGui::SameLine(46.0f);
+        ImGui::Text("%d", i + 1); ImGui::SameLine();
         ImGui::SetNextItemWidth(250);
         bool color_changed = ImGui::ColorEdit3("##color", g_indexed_gradient_colors[i],
                                                ImGuiColorEditFlags_PickerHueWheel |
                                                ImGuiColorEditFlags_DisplayRGB);
-        if (color_changed || ImGui::IsItemActivated()) {
+        if (color_changed || ImGui::IsItemActivated())
             g_indexed_gradient_color_set[i] = true;
-            g_indexed_gradient_active_stop = i;
-        }
+        /* A hand-picked stop becomes the new base for the whole-ramp shift. */
+        if (color_changed) CaptureIndexedGradientShiftBase();
         if (!g_indexed_gradient_color_set[i]) {
             all_set = false;
             ImGui::SameLine(); ImGui::TextDisabled("empty");
@@ -4177,7 +4229,7 @@ void DrawIndexedGradientDialog(void)
                     g_indexed_gradient_color_set[j] = g_indexed_gradient_color_set[j + 1];
                 }
                 g_indexed_gradient_color_count--; i--;
-                if (g_indexed_gradient_active_stop > i + 1) g_indexed_gradient_active_stop--;
+                CaptureIndexedGradientShiftBase();
             }
         }
         ImGui::PopID();
@@ -4187,8 +4239,8 @@ void DrawIndexedGradientDialog(void)
         memset(g_indexed_gradient_colors[g_indexed_gradient_color_count], 0,
                sizeof(g_indexed_gradient_colors[g_indexed_gradient_color_count]));
         g_indexed_gradient_color_set[g_indexed_gradient_color_count] = false;
-        g_indexed_gradient_active_stop = g_indexed_gradient_color_count;
         g_indexed_gradient_color_count++;
+        CaptureIndexedGradientShiftBase();
     }
     if (g_indexed_gradient_color_count >= 11) ImGui::EndDisabled();
     ImGui::SameLine();
@@ -4208,26 +4260,52 @@ void DrawIndexedGradientDialog(void)
         ImGui::SetTooltip("Sample the palette colors this gradient targets, darkest to lightest, into the current number of stops.");
     ImGui::EndGroup();
 
-    ImGui::SameLine(0.0f, 16.0f);
+    /* One hue rotation and two bipolar offsets that move every loaded stop
+       together, so a saved ramp can be recolored as a unit instead of swatch
+       by swatch. Same controls, and the same math, as the palette H/S/L bar. */
+    ImGui::SameLine(0.0f, 18.0f);
     ImGui::BeginGroup();
-    if (g_indexed_gradient_active_stop >= g_indexed_gradient_color_count)
-        g_indexed_gradient_active_stop = g_indexed_gradient_color_count - 1;
-    if (g_indexed_gradient_active_stop < 0) g_indexed_gradient_active_stop = 0;
-    int active = g_indexed_gradient_active_stop;
-    ImGui::Text("Stop %d of %d", active + 1, g_indexed_gradient_color_count);
-    ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::ColorPicker3("##gradient_wheel", g_indexed_gradient_colors[active],
-                            ImGuiColorEditFlags_PickerHueWheel |
-                            ImGuiColorEditFlags_DisplayRGB |
-                            ImGuiColorEditFlags_NoSidePreview |
-                            ImGuiColorEditFlags_NoLabel))
-        g_indexed_gradient_color_set[active] = true;
-    /* The whole ramp, so a wheel edit can be judged against its neighbours. */
+    const float shift_w = 150.0f;
+    ImGui::TextUnformatted("Shift all stops");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Hue, saturation and lightness offsets applied to every\n"
+                          "gradient stop at once, measured from the ramp as it stood\n"
+                          "before the shift. Editing one swatch re-bases them.");
+    if (PaletteHueDial("##gradient_hue_dial", &g_indexed_gradient_hue, shift_w))
+        ApplyIndexedGradientShift();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Rotate the hue of every stop. Drag to spin;\n"
+                          "Shift drags without the 5-degree snap;\n"
+                          "double-click recenters.");
+    ImGui::SetNextItemWidth(shift_w);
+    if (ImGui::DragInt("##gradient_hue", &g_indexed_gradient_hue, 1.0f, -180, 180, "%d\xc2\xb0"))
+        ApplyIndexedGradientShift();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Exact hue rotation. Ctrl+click to type a value.");
+    ImGui::SetNextItemWidth(shift_w);
+    if (ImGui::SliderInt("##gradient_sat", &g_indexed_gradient_sat, -100, 100, "S %d%%"))
+        ApplyIndexedGradientShift();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Saturation: -100 = grayscale, +100 = fully saturated.");
+    ImGui::SetNextItemWidth(shift_w);
+    if (ImGui::SliderInt("##gradient_light", &g_indexed_gradient_light, -100, 100, "L %d%%"))
+        ApplyIndexedGradientShift();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Lightness: -100 = black, +100 = white.");
+    if (ImGui::SmallButton("Reset shift")) {
+        g_indexed_gradient_hue = 0;
+        g_indexed_gradient_sat = 0;
+        g_indexed_gradient_light = 0;
+        ApplyIndexedGradientShift();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Zero the offsets and put the stops back where they were.");
+    /* The ramp itself, so a shift can be judged without leaving the row. */
     {
-        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
         ImDrawList *dl = ImGui::GetWindowDrawList();
         ImVec2 p = ImGui::GetCursorScreenPos();
-        const float bar_w = 200.0f, bar_h = 18.0f;
+        const float bar_h = 18.0f;
         const int slices = 64;
         int n = g_indexed_gradient_color_count;
         for (int i = 0; i < slices; i++) {
@@ -4241,29 +4319,21 @@ void DrawIndexedGradientDialog(void)
             c.x = g_indexed_gradient_colors[seg][0] + (g_indexed_gradient_colors[seg + 1][0] - g_indexed_gradient_colors[seg][0]) * f;
             c.y = g_indexed_gradient_colors[seg][1] + (g_indexed_gradient_colors[seg + 1][1] - g_indexed_gradient_colors[seg][1]) * f;
             c.z = g_indexed_gradient_colors[seg][2] + (g_indexed_gradient_colors[seg + 1][2] - g_indexed_gradient_colors[seg][2]) * f;
-            float x0 = p.x + bar_w * (float)i / (float)slices;
-            float x1 = p.x + bar_w * (float)(i + 1) / (float)slices;
+            float x0 = p.x + shift_w * (float)i / (float)slices;
+            float x1 = p.x + shift_w * (float)(i + 1) / (float)slices;
             dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1 + 1.0f, p.y + bar_h),
                               ImGui::ColorConvertFloat4ToU32(c));
         }
-        dl->AddRect(p, ImVec2(p.x + bar_w, p.y + bar_h), IM_COL32(150, 150, 150, 255));
-        /* Marker for where the edited stop sits along the ramp. */
-        float tx = p.x + bar_w * (n > 1 ? (float)active / (float)(n - 1) : 0.0f);
-        if (tx > p.x + bar_w - 4.0f) tx = p.x + bar_w - 4.0f;
-        if (tx < p.x + 4.0f) tx = p.x + 4.0f;
-        dl->AddTriangleFilled(ImVec2(tx, p.y + bar_h * 0.5f),
-                              ImVec2(tx - 5.0f, p.y + bar_h + 6.0f),
-                              ImVec2(tx + 5.0f, p.y + bar_h + 6.0f),
-                              IM_COL32(255, 220, 90, 255));
-        ImGui::Dummy(ImVec2(bar_w, bar_h + 8.0f));
+        dl->AddRect(p, ImVec2(p.x + shift_w, p.y + bar_h), IM_COL32(150, 150, 150, 255));
+        ImGui::Dummy(ImVec2(shift_w, bar_h));
     }
     ImGui::EndGroup();
 
-    /* Recompute after the wheel so a color set this frame previews at once. */
+    /* Recompute after the shift so a color set this frame previews at once. */
     all_set = true;
     for (int i = 0; i < g_indexed_gradient_color_count; i++)
         if (!g_indexed_gradient_color_set[i]) all_set = false;
-    ImGui::TextDisabled("Pick a stop on the left, then set its color with the wheel. All colors must be chosen before Apply.");
+    ImGui::TextDisabled("Click a swatch to set one color; the H/S/L controls move the whole ramp. All colors must be chosen before Apply.");
     ImGui::SeparatorText("Preview");
     SDL_Texture *preview = all_set ? BuildIndexedGradientPreview() : NULL;
     IMG *preview_img = get_img(g_indexed_gradient_image_idx);

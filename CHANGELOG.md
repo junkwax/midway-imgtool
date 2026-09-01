@@ -10,6 +10,28 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### Indexed gradients shift as one ramp
+
+The Indexed Gradient dialog's per-stop color wheel is gone. In its place, one
+hue dial and two bipolar sliders move **every** loaded stop together, so a
+saved ramp can be recolored as a unit instead of swatch by swatch — take a
+fire ramp to ice by dragging hue, or knock a whole ramp back with **L**
+without touching the relationships between its stops.
+
+The offsets are absolute, not incremental: they apply to a snapshot of the
+ramp taken before the shift, so dragging hue out to +40 and back to 0 lands
+exactly where it started with no drift from repeated rounding. **Reset shift**
+zeroes them. Anything that rewrites the stops themselves — editing one swatch,
+loading a preset, reversing, seeding from the palette, adding or removing a
+stop — re-bases the snapshot, so the next shift measures from what is on
+screen.
+
+It is the same math as the palette H/S/L bar, run in RGB555. Stops with no
+color chosen yet are masked out rather than being lifted off black by a
+lightness offset, and each stop keeps its own always-open swatch on the left
+for setting one color by hand.
+
+
 ## [v3.34.0] — Tolerance means color; the blades keep their indices; blood keeps MK2's clock
 
 ### Tolerance means color, not slot number
