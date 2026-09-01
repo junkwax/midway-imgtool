@@ -10,6 +10,8 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+## [v3.35.0] — The header is not a row; the anchor can go; rows zoom and ramps shift as one
+
 ### The World View panel reads as a header and rows
 
 The Frame Sequence strip sat on the same near-black as the rows below it, so
