@@ -10,6 +10,8 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+## [v3.34.0] — Tolerance means color; the blades keep their indices; blood keeps MK2's clock
+
 ### Tolerance means color, not slot number
 
 Clicking a black background with the magic wand at any tolerance above 0 used
