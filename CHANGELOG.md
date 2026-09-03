@@ -10,6 +10,52 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### World View's playfield can be a solid colour
+
+The World View playfield cleared to black and nothing else, which is what an
+MK2 screen shows with no stage drawn — and the worst possible ground for
+judging dark art, a black-edged silhouette, or a stray fringe pixel left
+behind by a cut. The Image canvas has had a flat-key backdrop for a while;
+World View now has the same switch.
+
+A **Fill** button joins Onion / Borders / Anipt on the canvas tab strip and
+opens a colour picker, with **Pink**, **Green** and **Blue** presets — the
+same three keys the Image canvas offers, so a colour judged in one view can be
+matched in the other without eyeballing it — and **Black** to go back to the
+stock clear. Picking a colour switches the fill on; the checkbox turns it off.
+The same controls repeat under **Overlays > Background...** in the panel, since
+a docked panel hides the tab strip.
+
+The fill is drawn *under* a loaded stage rather than instead of it. A BDD
+covers only the bands its modules were packed into, and the bare canvas around
+them — a stage's floor is a runtime layer and is not in these files — is
+exactly where a flat colour earns its place.
+
+View only, like the rest of the World View backdrop: it never reaches a saved
+IMG, and a World View PNG still exports on transparency. The colour and its
+on/off state are saved in the `.WAX`; projects written before this load with
+the fill off, drawn as they were.
+
+### A grouped tab's X closes the whole group
+
+A collapsed name-stem tab stands for every file behind it, but its close button
+only shut the one member it was fronting — the tab stayed put with its `(N)`
+counting down, and the same X had to be found again for each file. It now
+closes every file in the group. A lone tab, or an expanded member, still
+closes just itself; a dirty file in the group still stops at the
+unsaved-changes prompt.
+
+### Frames put away in the Animation tab stay away
+
+The Animation sidebar's frame browser opens the rest of a character's numbered
+set the first time it sees one — open `CAGE3.IMG` and `CAGE1`–`CAGE10` come
+with it. The guard that kept this to once per stem re-armed whenever the active
+file's stem changed, so closing a frame tab and letting focus fall back to a
+sibling re-tripped the auto-open and the tab reappeared. A stem is now recorded
+the first time it is seen and never auto-opened again in that session, and a
+tab closing is never itself a reason to open files. **Reload** in the browser
+is still the way to pull a closed sibling back.
+
 ## [v3.35.0] — The header is not a row; the anchor can go; rows zoom and ramps shift as one
 
 ### The World View panel reads as a header and rows

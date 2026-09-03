@@ -3115,6 +3115,15 @@ static void WaxWriteBool(FILE *f, const char *key, bool value)
     WaxWriteInt(f, key, value ? 1 : 0);
 }
 
+/* One channel of an ImGui 0..1 colour as the 0-255 byte a project file
+   stores. Rounds rather than truncates so a colour survives a save/load
+   round trip unchanged. */
+static int WaxColorByte(float v)
+{
+    int b = (int)(v * 255.0f + 0.5f);
+    return b < 0 ? 0 : (b > 255 ? 255 : b);
+}
+
 static void WaxWriteVec(FILE *f, const std::string &key,
                         const std::vector<int> &values)
 {
@@ -3539,6 +3548,14 @@ static bool SaveWorldProjectFile(const char *path)
     WaxWriteInt(f, "world.origin_y", g_world_state.origin_y);
     WaxWriteBool(f, "world.onion", g_world_state.onion);
     WaxWriteBool(f, "world.show_anipoint", g_world_state.show_anipoint);
+    /* The stage background is a loaded BDD and is deliberately not carried in
+       a project; the solid fill is three numbers, so it is. Written as 0-255
+       channels because that is how anyone reading the file thinks about a
+       colour, not as the 0..1 floats the picker works in. */
+    WaxWriteBool(f, "world.bg_solid", g_world_state.bg_solid);
+    WaxWriteInt(f, "world.bg_solid_r", WaxColorByte(g_world_state.bg_solid_col[0]));
+    WaxWriteInt(f, "world.bg_solid_g", WaxColorByte(g_world_state.bg_solid_col[1]));
+    WaxWriteInt(f, "world.bg_solid_b", WaxColorByte(g_world_state.bg_solid_col[2]));
 
     WaxWriteBool(f, "state.marked_play", state.marked_play);
     /* Constant, and written only so a reader of the file does not have to
@@ -3860,6 +3877,16 @@ static bool LoadWorldProjectFile(const char *path)
     loaded_world.onion = WaxGetBool(kv, "world.onion", loaded_world.onion);
     loaded_world.show_anipoint =
         WaxGetBool(kv, "world.show_anipoint", loaded_world.show_anipoint);
+    loaded_world.bg_solid = WaxGetBool(kv, "world.bg_solid", loaded_world.bg_solid);
+    static const char *kSolidKeys[3] = { "world.bg_solid_r", "world.bg_solid_g",
+                                         "world.bg_solid_b" };
+    for (int c = 0; c < 3; c++) {
+        int byte = WaxGetInt(kv, kSolidKeys[c],
+                             WaxColorByte(loaded_world.bg_solid_col[c]));
+        if (byte < 0) byte = 0;
+        if (byte > 255) byte = 255;
+        loaded_world.bg_solid_col[c] = (float)byte / 255.0f;
+    }
 
     WorldMarkedSequenceState loaded_state;
     loaded_state.marked_play = WaxGetBool(kv, "state.marked_play", true);

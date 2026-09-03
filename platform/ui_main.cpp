@@ -4407,9 +4407,11 @@ float DrawDocumentTabBar(float y, float sw)
         ImGuiWindowFlags_NoBackground);
 
     /* Clicks are recorded as document uids, not slot indices: a drag-reorder in
-       the same frame renumbers the slots before the click is acted on. */
+       the same frame renumbers the slots before the click is acted on. A
+       collapsed group's X enqueues every member, so close_uid had to become a
+       list. */
     unsigned int activate_uid = 0;
-    unsigned int close_uid = 0;
+    std::vector<unsigned int> close_uids;
     bool new_tab = false;
     int active = document_active_index();
     /* Set while any stem has more than one file behind it. Tab order no
@@ -4577,8 +4579,21 @@ float DrawDocumentTabBar(float y, float sw)
                 }
                 if (visible)
                     ImGui::EndTabItem();
-                if (!open)
-                    close_uid = doc->uid;
+                if (!open) {
+                    /* The X on a COLLAPSED group closes every file behind it,
+                       not just the one it happens to be fronting -- otherwise
+                       the group tab stays put with its "(N)" ticking down and
+                       the same button has to be hunted N times. An expanded
+                       member, or a lone file, closes only itself. */
+                    if (grouped && !expanded) {
+                        for (int m : g.members) {
+                            Document *md = document_get(m);
+                            if (md) close_uids.push_back(md->uid);
+                        }
+                    } else {
+                        close_uids.push_back(doc->uid);
+                    }
+                }
             }
         }
 
@@ -4635,9 +4650,21 @@ float DrawDocumentTabBar(float y, float sw)
         int idx = document_index_of_uid(activate_uid);
         if (idx >= 0) ActivateDocumentTab(idx);
     }
-    if (close_uid) {
-        int idx = document_index_of_uid(close_uid);
-        if (idx >= 0) RequestCloseDocumentTab(idx);
+    /* Resolved by uid each step because every close renumbers the tabs behind
+       it. RequestCloseDocumentTab closes a clean file on the spot and routes a
+       dirty one through the unsaved-changes prompt; that prompt only holds one
+       tab, so a dirty group member past the first is left for the next click. */
+    if (!close_uids.empty()) {
+        bool prompted = false;
+        for (unsigned int uid : close_uids) {
+            int idx = document_index_of_uid(uid);
+            if (idx < 0) continue;
+            Document *cd = document_get(idx);
+            bool dirty = cd && cd->dirty;
+            if (dirty && prompted) continue;
+            if (dirty) prompted = true;
+            RequestCloseDocumentTab(idx);
+        }
     }
     if (new_tab) {
         document_new_tab();
@@ -4654,7 +4681,7 @@ float DrawDocumentTabBar(float y, float sw)
        already drove the selection, since ImGui applies a click one frame
        later and reading it early would bounce the document straight back. */
     if (tab_bar_ptr && !force_select && !reordered && !new_tab &&
-        !activate_uid && !close_uid && tab_bar_ptr->SelectedTabId != 0) {
+        !activate_uid && close_uids.empty() && tab_bar_ptr->SelectedTabId != 0) {
         for (int i = 0; i < (int)doc_tab_ids.size(); i++) {
             if (doc_tab_ids[(size_t)i] != tab_bar_ptr->SelectedTabId) continue;
             if (i != document_active_index()) ActivateDocumentTab(i);

@@ -155,6 +155,22 @@ struct WorldViewState {
     int bg_y = 0;
     int bg_alpha = 255;
     int bg_module = -1;
+
+    /* ---- Solid canvas fill ----
+       The playfield clears to black because that is what an MK2 screen shows
+       with nothing drawn on it. Black is also the worst ground to judge dark
+       art or a stray fringe pixel against, which is why the Image canvas has
+       carried a flat-key backdrop for a while; this is the same switch for
+       the World View playfield.
+
+       It sits UNDER the stage rather than instead of it. A BDD covers only
+       the bands its modules were packed into, and the bare canvas it leaves
+       around them is exactly where a flat colour earns its place.
+
+       View only, like the rest of this block: it never reaches a saved IMG,
+       and a World View PNG still exports on transparency. */
+    bool bg_solid = false;
+    float bg_solid_col[3] = {1.0f, 0.0f, 1.0f};   /* magenta key */
 };
 
 /* Two-sprite anipoint staging workspace.  The selected target is adjusted
@@ -192,6 +208,10 @@ void WorldDrawReferenceFigure(ImDrawList *dl, const WorldCanvasLayout &layout,
    state.bg_enabled is false or no stage is loaded. */
 void WorldDrawReferenceBackground(ImDrawList *dl, const WorldCanvasLayout &layout,
                                   const WorldViewState &state);
+
+/* Colour a World View playfield clears to before anything is drawn on it:
+   black, or state.bg_solid_col when the solid fill is switched on. */
+ImU32 WorldCanvasFillColor(const WorldViewState &state);
 
 /* Position the loaded stage so module `module_idx` is centred in the playfield
    with its bottom edge on state.floor_y. No-op on an out-of-range index. */

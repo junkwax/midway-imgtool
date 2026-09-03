@@ -1445,6 +1445,15 @@ void WorldBgSnapToModule(WorldViewState &state, const BddBackground &bg,
     state.bg_module = module_idx;
 }
 
+ImU32 WorldCanvasFillColor(const WorldViewState &state)
+{
+    if (!state.bg_solid) return IM_COL32(0, 0, 0, 255);
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(state.bg_solid_col[0],
+                                                 state.bg_solid_col[1],
+                                                 state.bg_solid_col[2],
+                                                 1.0f));
+}
+
 void WorldDrawReferenceBackground(ImDrawList *dl, const WorldCanvasLayout &layout,
                                   const WorldViewState &state)
 {
@@ -4022,8 +4031,8 @@ WorldMarkedSceneResult WorldDrawMarkedScene(WorldMarkedSequenceState &state,
     dl->AddRectFilled(world_pos,
                       ImVec2(world_pos.x + world_width,
                              world_pos.y + world_height),
-                      IM_COL32(0, 0, 0, 255));
-    /* Straight onto the cleared canvas, so the stage replaces the flat black
+                      WorldCanvasFillColor(world));
+    /* Straight onto the cleared canvas, so the stage replaces the flat fill
        and every guide, figure and sprite below still draws over it. */
     WorldDrawReferenceBackground(dl, result.layout, world);
     /* The shared anchor marker, on the same "Anipt" toggle the single-sprite
@@ -4370,6 +4379,53 @@ static void WorldDrawReferenceConfig(void)
                         "to the shared anchor, in world pixels.");
 }
 
+/* Solid-fill controls. Shared by the panel's Background submenu and the canvas
+   strip's Fill button so the two cannot drift apart -- the strip is the only
+   door in single-sprite World View, where there is no panel to hold a menu.
+
+   Picking a colour switches the fill on. An edit that changed nothing on
+   screen until you found a separate checkbox is a control that looks broken,
+   and "off" is one click away on the checkbox either way. */
+static void WorldDrawSolidFillControls(void)
+{
+    WorldViewState &world = g_world_state;
+
+    ImGui::Checkbox("Solid colour##world_bg_solid", &world.bg_solid);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Clear the playfield to a flat colour instead of black.\n"
+                          "Drawn under the stage, so it also fills the bands a\n"
+                          "BDD leaves bare.");
+
+    ImGui::SetNextItemWidth(200.0f);
+    /* 0-255 channels, not 0..1 floats: every other colour in this tool is a
+       byte triple, and a key is a number you type rather than nudge. */
+    if (ImGui::ColorEdit3("##world_bg_solid_col", world.bg_solid_col,
+                          ImGuiColorEditFlags_Uint8 |
+                          ImGuiColorEditFlags_DisplayRGB))
+        world.bg_solid = true;
+
+    /* The same three keys the Image canvas's backdrop offers, so a colour
+       judged there can be matched here without eyeballing it. */
+    for (int m = CanvasBackdrop_Pink; m < CanvasBackdrop_Count; m++) {
+        if (m > CanvasBackdrop_Pink) ImGui::SameLine();
+        char label[48];
+        snprintf(label, sizeof(label), "%s##world_bg_key%d",
+                 CanvasBackdropName(m), m);
+        if (ImGui::SmallButton(label)) {
+            ImVec4 key = ImGui::ColorConvertU32ToFloat4(CanvasBackdropColor(m));
+            world.bg_solid_col[0] = key.x;
+            world.bg_solid_col[1] = key.y;
+            world.bg_solid_col[2] = key.z;
+            world.bg_solid = true;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Black##world_bg_key_black"))
+        world.bg_solid = false;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Back to the stock playfield clear.");
+}
+
 /* Stage-background placement. `action` carries the load request back out: the
    file dialog must not open while this popup still owns the ID stack. */
 static void WorldDrawBackgroundConfig(WorldMarkedPanelAction &action)
@@ -4377,6 +4433,10 @@ static void WorldDrawBackgroundConfig(WorldMarkedPanelAction &action)
     BddBackground &bg = WorldBackground();
     WorldViewState &world = g_world_state;
 
+    ImGui::TextDisabled("Canvas fill");
+    WorldDrawSolidFillControls();
+
+    ImGui::Separator();
     ImGui::TextDisabled("Reference background (view only -- never saved)");
     if (ImGui::Button("Load BDD...##world_bg_load")) {
         action.request_load_bg = true;
@@ -11620,7 +11680,7 @@ bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(wpos, ImVec2(wpos.x + ww, wpos.y + wh),
-                      IM_COL32(0, 0, 0, 255));
+                      WorldCanvasFillColor(g_world_state));
     WorldDrawReferenceBackground(dl, layout, g_world_state);
 
     float ox = layout.origin_x;
@@ -12257,6 +12317,38 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                              "Outline each sprite's bounds.");
                 world_toggle("Anipt", &g_world_state.show_anipoint,
                              "Draw the shared anchor crosshair.");
+                /* The playfield's own backdrop, alongside the Image canvas's
+                   BG button and tinted by the same rule as its neighbours.
+                   It OPENS the picker rather than toggling, because the
+                   colour is the point: an on/off here with the colour only
+                   reachable from the panel's Overlays menu would strand
+                   single-sprite World View -- that mode draws no panel -- with
+                   whatever key was last set. */
+                {
+                    bool fill_on = g_world_state.bg_solid;
+                    if (fill_on) {
+                        ImGui::PushStyleColor(ImGuiCol_Tab,
+                            ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
+                        ImGui::PushStyleColor(ImGuiCol_TabHovered,
+                            ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
+                    }
+                    bool fill_clicked = ImGui::TabItemButton("Fill",
+                        ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip);
+                    if (fill_on) ImGui::PopStyleColor(2);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Clear the playfield to a flat colour instead of\n"
+                                          "black, so dark art and stray fringe pixels are\n"
+                                          "readable. Click to pick the colour.\n"
+                                          "Currently %s.", fill_on ? "on" : "off");
+                    if (fill_clicked) ImGui::OpenPopup("##world_fill_popup");
+                    /* Opened and begun inside the tab bar on purpose: BeginTabBar
+                       pushes its own ID, so a BeginPopup after EndTabBar would be
+                       looking for a different ID than the one OpenPopup made. */
+                    if (ImGui::BeginPopup("##world_fill_popup")) {
+                        WorldDrawSolidFillControls();
+                        ImGui::EndPopup();
+                    }
+                }
                 if (world_toggle("Marked", &g_world_marked_state.marked_play,
                                  "Play every marked row as its own lane instead\n"
                                  "of showing the selected sprite alone."))
@@ -19901,21 +19993,36 @@ void DrawSeqScrFrameBrowser(float avail_h)
     static int s_lib_doc_idx = -2;
     static unsigned int s_lib_imgcnt = 0;
     static int s_lib_tab_count = -1;
-    static std::string s_lib_opened_stem;
+    /* Stems whose numbered set has already been auto-opened this session. A
+       list, not a single "last stem": the old single slot re-armed itself
+       every time the active file's stem changed, so closing a frame tab and
+       letting the active document fall back to a sibling tripped the auto-open
+       again and the tab the user just shut kept reappearing. */
+    static std::vector<std::string> s_lib_autoopened_stems;
     int active_doc_idx = document_active_index();
+    int tab_count_now = document_tab_count();
+    /* A close is the one change we must never answer by opening files. */
+    bool tab_closed = s_lib_tab_count >= 0 && tab_count_now < s_lib_tab_count;
     bool stale = s_lib_doc_idx != active_doc_idx ||
                  s_lib_imgcnt != (g_doc ? g_doc->imgcnt : 0u) ||
-                 s_lib_tab_count != document_tab_count();
+                 s_lib_tab_count != tab_count_now;
     if (stale) {
-        /* Auto-open the rest of the set once per stem: the point of the
-           browser is that opening CAGE3 gives you CAGE1-10, but re-opening on
-           every tab switch would thrash the tab bar. */
         SeqScrRebuildFrameLibrary(false);
-        if (!g_seqscr_frame_lib.stem.empty() &&
-            g_seqscr_frame_lib.stem != s_lib_opened_stem &&
-            g_seqscr_frame_lib.open_files < (int)g_seqscr_frame_lib.files.size()) {
-            s_lib_opened_stem = g_seqscr_frame_lib.stem;
-            SeqScrRebuildFrameLibrary(true);
+        const std::string &stem = g_seqscr_frame_lib.stem;
+        bool seen = false;
+        for (const std::string &s : s_lib_autoopened_stems)
+            if (s == stem) { seen = true; break; }
+        /* Auto-open the rest of the set the first time a stem shows up: the
+           point of the browser is that opening CAGE3 gives you CAGE1-10. Only
+           the first time, and never as a reaction to a tab closing -- putting
+           frames away has to stick. The stem is recorded on first sight even
+           when nothing needed opening, so a later close cannot re-trigger it.
+           "Reload" stays the way to pull a closed sibling back. */
+        if (!tab_closed && !stem.empty() && !seen) {
+            s_lib_autoopened_stems.push_back(stem);
+            if (g_seqscr_frame_lib.open_files <
+                (int)g_seqscr_frame_lib.files.size())
+                SeqScrRebuildFrameLibrary(true);
         }
         s_lib_doc_idx = document_active_index();
         s_lib_imgcnt = g_doc ? g_doc->imgcnt : 0u;
@@ -19962,7 +20069,6 @@ void DrawSeqScrFrameBrowser(float avail_h)
     ImGui::SameLine();
     if (ImGui::SmallButton("Reload##seqscr_lib_reload")) {
         SeqScrRebuildFrameLibrary(true);
-        s_lib_opened_stem = g_seqscr_frame_lib.stem;
         s_lib_tab_count = document_tab_count();
     }
     if (ImGui::IsItemHovered())
