@@ -127,4 +127,34 @@ bool MaterialMeanColor(const unsigned char *rgb, const unsigned char *mask,
                        int w, int h, unsigned char material_id,
                        unsigned char *out_r, unsigned char *out_g, unsigned char *out_b);
 
+/* One contiguous run of palette entries (indices [start, start+count)) that
+ * share a chrominance direction — the shape every ramp palette_ramp.h
+ * validates against has (RAID1.IMG's REDS/FLESH/GRAYS, concatenated
+ * verbatim into RADRED_P). Lets a caller offer an EXISTING palette's own
+ * material blocks as match targets — see ramp_remap.h's
+ * AssembleFromExistingPalette — instead of asking someone to find index
+ * ranges by eye. */
+struct PaletteRampBlock {
+    int start;
+    int count;
+};
+
+/* Scan `words[1..numc)` (index 0 skipped — conventionally transparent) and
+ * split it into contiguous PaletteRampBlocks by the same hue-direction rule
+ * FloodFillMaterial and ClassifyMaterialsByHue use: an entry whose own
+ * chrominance magnitude is below `p.noise_floor` never breaks a block (a
+ * material's ramp runs through near-black same as everywhere else), and a
+ * block's reference direction is its own first entry with real chroma —
+ * fixed once set, not a per-step drifting average — so a slow hue drift
+ * within one genuinely separate block cannot be mistaken for a continuous
+ * run through several.
+ *
+ * This is a proposal, not a ground truth: real palettes were hand-built by
+ * an artist, and a hue-only heuristic will occasionally split or merge a
+ * block a person would not have. Writes up to `max_blocks` into `out`;
+ * returns the count written. */
+int DetectPaletteRampBlocks(const unsigned short *words, int numc,
+                            const MaterialSeedParams &p,
+                            PaletteRampBlock *out, int max_blocks);
+
 #endif /* PLATFORM_MATERIAL_MASK_H */

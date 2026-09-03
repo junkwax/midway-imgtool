@@ -5,7 +5,7 @@
 enum class FileDialogMode {
     OpenImg, AppendImg, OpenLod, SaveImg, ExportTga, LoadLbm, SaveLbm,
     SaveMarkedLbm, LoadTga, SaveTga, ImportPng, ImportPngMatch,
-    ImportSpriteSheetMatch, ImportGif, ExportPng, ExportGif, ExportPalette,
+    ImportSpriteSheetMatch, ImportGif, ImportDigitized, ExportPng, ExportGif, ExportPalette,
     ImportPalette, WriteAniLst, WriteTbl, CompareTbl, WriteIrw, LoadAsmAnim,
     SaveAsmAnim, LoadWorldProject, AppendWorldProject, SaveWorldProject, ExportWorldPng,
     ExportWorldPngSeq, LoadWorldBdd

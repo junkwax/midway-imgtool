@@ -47,6 +47,13 @@ inline bool hue_matches(const Chroma &candidate, const Chroma &ref,
     return cos_similarity(candidate, ref) >= cos_threshold;
 }
 
+inline double cos_threshold_from_tolerance(double tolerance_deg)
+{
+    const double clamped = tolerance_deg < 0.0 ? 0.0
+                          : (tolerance_deg > 180.0 ? 180.0 : tolerance_deg);
+    return std::cos(clamped * 3.14159265358979323846 / 180.0);
+}
+
 } /* namespace */
 
 MaterialSeedParams MaterialSeedParamsDefault(void)
@@ -76,9 +83,7 @@ int FloodFillMaterial(const unsigned char *rgb, const unsigned char *alpha,
     double cos_threshold = -2.0;   /* always passes when erasing (unused) */
     if (!erasing) {
         seed_c = chroma_of(rgb[seed_i * 3 + 0], rgb[seed_i * 3 + 1], rgb[seed_i * 3 + 2]);
-        const double clamped_deg = p.tolerance_deg < 0.0 ? 0.0
-                                  : (p.tolerance_deg > 180.0 ? 180.0 : p.tolerance_deg);
-        cos_threshold = std::cos(clamped_deg * 3.14159265358979323846 / 180.0);
+        cos_threshold = cos_threshold_from_tolerance(p.tolerance_deg);
         if (out_mask[seed_i] != 0) return 0;   /* seed already claimed */
     }
 
@@ -124,9 +129,7 @@ int ClassifyMaterialsByHue(const unsigned char *rgb, const unsigned char *alpha,
     std::memset(out_mask, 0, n);
     if (!refs || ref_count <= 0) return 0;
 
-    const double clamped_deg = p.tolerance_deg < 0.0 ? 0.0
-                              : (p.tolerance_deg > 180.0 ? 180.0 : p.tolerance_deg);
-    const double cos_threshold = std::cos(clamped_deg * 3.14159265358979323846 / 180.0);
+    const double cos_threshold = cos_threshold_from_tolerance(p.tolerance_deg);
 
     std::vector<Chroma> ref_chroma(ref_count);
     for (int k = 0; k < ref_count; k++)
@@ -172,4 +175,39 @@ bool MaterialMeanColor(const unsigned char *rgb, const unsigned char *mask,
     if (out_g) *out_g = (unsigned char)std::lround(sg / count);
     if (out_b) *out_b = (unsigned char)std::lround(sb / count);
     return true;
+}
+
+int DetectPaletteRampBlocks(const unsigned short *words, int numc,
+                            const MaterialSeedParams &p,
+                            PaletteRampBlock *out, int max_blocks)
+{
+    if (!words || !out || numc <= 1 || max_blocks <= 0) return 0;
+
+    const double cos_threshold = cos_threshold_from_tolerance(p.tolerance_deg);
+
+    int count = 0;
+    int block_start = 1;
+    Chroma ref{};
+    bool ref_set = false;
+
+    for (int i = 1; i < numc; i++) {
+        const int r5 = (words[i] >> 10) & 0x1F, g5 = (words[i] >> 5) & 0x1F, b5 = words[i] & 0x1F;
+        const Chroma c = chroma_of(r5, g5, b5);   /* cosine is scale-invariant: 5-bit is fine */
+
+        if (!ref_set) {
+            if (c.mag < p.noise_floor) continue;   /* low-chroma prefix: absorbed, no reference yet */
+            ref = c; ref_set = true;
+            continue;   /* this entry establishes the block's reference */
+        }
+        if (c.mag < p.noise_floor) continue;
+        if (cos_similarity(c, ref) >= cos_threshold) continue;
+
+        if (count < max_blocks) { out[count].start = block_start; out[count].count = i - block_start; count++; }
+        block_start = i;
+        ref = c; ref_set = true;
+    }
+    if (count < max_blocks && block_start < numc) {
+        out[count].start = block_start; out[count].count = numc - block_start; count++;
+    }
+    return count;
 }

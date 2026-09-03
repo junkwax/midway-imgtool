@@ -33,6 +33,7 @@
 #include "mk2_hitbox.h"
 #include "mk2_fatality.h"
 #include "ui_bodysplit.h"
+#include "digitize_import.h"
 #include "ui_autochop.h"
 #include "ui_stamp_erase.h"
 #include "dma_pack.h"
@@ -1134,6 +1135,13 @@ void DrawMainLayout(void)
                 if (ImGui::MenuItem("PNG (Match to Active Palette)...")) OpenFileDialog(FileDialogMode::ImportPngMatch);
                 if (ImGui::MenuItem("Sprite Sheet (Match Palette)...")) OpenFileDialog(FileDialogMode::ImportSpriteSheetMatch);
                 if (ImGui::MenuItem("GIF File..."))                 OpenFileDialog(FileDialogMode::ImportGif);
+                if (ImGui::MenuItem("Digitized Frame(s)..."))       OpenFileDialog(FileDialogMode::ImportDigitized);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Turn video-extracted PNGs into an IMG + shared palette the way\n"
+                    "Midway built a digitized character: key the backdrop out, split\n"
+                    "the art into material regions (cloth, skin, ...), fit one\n"
+                    "luminance ramp per material, then remap every frame onto it.\n"
+                    "Ctrl/Shift-click to pick every frame of one animation at once.");
                 if (ImGui::MenuItem("Palette..."))                  OpenFileDialog(FileDialogMode::ImportPalette);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Load LBM", "Alt+L"))  OpenFileDialog(FileDialogMode::LoadLbm);
@@ -3402,6 +3410,7 @@ void DrawMainLayout(void)
     DrawAutoChopDialog();
 
     DrawBodySplitDialog();
+    DrawDigitizeImportDialog();
 
     DrawResizeSpriteDialog();
     DrawCanvasSizeDialog();

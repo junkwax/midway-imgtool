@@ -108,6 +108,11 @@ set(IMGTOOL_SOURCES
     platform/strike_bind.cpp
     platform/ui_bodysplit.cpp
     platform/body_split.cpp
+    platform/digitize_import.cpp
+    platform/digitize_matte.cpp
+    platform/material_mask.cpp
+    platform/palette_ramp.cpp
+    platform/ramp_remap.cpp
     platform/world_render.cpp
     platform/bdd_bg.cpp
     platform/anipoint.cpp
@@ -335,6 +340,22 @@ else()
     target_compile_definitions(image_ops_test PRIVATE SDL_MAIN_HANDLED)
 endif()
 add_test(NAME image_ops COMMAND image_ops_test)
+
+# ramp_remap calls RampColorWord, so it links palette_ramp too.
+add_executable(ramp_remap_test
+    test/ramp_remap_test.cpp
+    platform/ramp_remap.cpp
+    platform/palette_ramp.cpp
+)
+target_include_directories(ramp_remap_test PRIVATE platform)
+target_link_libraries(ramp_remap_test PRIVATE SDL2::SDL2)
+if(MSVC)
+    target_compile_options(ramp_remap_test PRIVATE /W3)
+    target_compile_definitions(ramp_remap_test PRIVATE _CRT_SECURE_NO_WARNINGS SDL_MAIN_HANDLED)
+else()
+    target_compile_definitions(ramp_remap_test PRIVATE SDL_MAIN_HANDLED)
+endif()
+add_test(NAME ramp_remap COMMAND ramp_remap_test)
 
 # canvas_ops reads palette words when planning a cross-palette paste, so it
 # links palette_math alongside.

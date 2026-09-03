@@ -216,6 +216,71 @@ static void mean_color_fails_for_an_id_with_no_pixels(void)
     CHECK(!ok);
 }
 
+/* ---- DetectPaletteRampBlocks ---- */
+
+static unsigned short mkword(int r5, int g5, int b5)
+{
+    return (unsigned short)(((r5 & 0x1F) << 10) | ((g5 & 0x1F) << 5) | (b5 & 0x1F));
+}
+
+static void detects_a_clean_split_between_two_chromatic_blocks(void)
+{
+    unsigned short words[7] = {
+        mkword(0,0,0),                                  /* 0: transparent */
+        mkword(20,0,0), mkword(25,0,0), mkword(31,0,0),  /* 1-3: red ramp */
+        mkword(0,0,20), mkword(0,0,25), mkword(0,0,31),  /* 4-6: blue ramp */
+    };
+    MaterialSeedParams p = MaterialSeedParamsDefault();
+    PaletteRampBlock blocks[8];
+    int n = DetectPaletteRampBlocks(words, 7, p, blocks, 8);
+    CHECK(n == 2);
+    CHECK(blocks[0].start == 1 && blocks[0].count == 3);
+    CHECK(blocks[1].start == 4 && blocks[1].count == 3);
+}
+
+static void a_leading_gray_run_is_absorbed_into_the_block_that_follows_it(void)
+{
+    /* Pure grays (r==g==b) carry zero chroma, so they never themselves
+       establish a block's reference direction -- they ride along with
+       whichever real hue shows up next, the same way a material's own
+       near-black shading does inside FloodFillMaterial. */
+    unsigned short words[6] = {
+        mkword(0,0,0),
+        mkword(0,0,0), mkword(10,10,10), mkword(20,20,20),   /* 1-3: gray prefix */
+        mkword(20,0,0), mkword(31,0,0),                      /* 4-5: red */
+    };
+    MaterialSeedParams p = MaterialSeedParamsDefault();
+    PaletteRampBlock blocks[8];
+    int n = DetectPaletteRampBlocks(words, 6, p, blocks, 8);
+    CHECK(n == 1);
+    CHECK(blocks[0].start == 1 && blocks[0].count == 5);
+}
+
+static void an_all_gray_palette_is_one_block(void)
+{
+    unsigned short words[4] = { mkword(0,0,0), mkword(0,0,0), mkword(10,10,10), mkword(31,31,31) };
+    MaterialSeedParams p = MaterialSeedParamsDefault();
+    PaletteRampBlock blocks[8];
+    int n = DetectPaletteRampBlocks(words, 4, p, blocks, 8);
+    CHECK(n == 1);
+    CHECK(blocks[0].start == 1 && blocks[0].count == 3);
+}
+
+static void detection_stops_at_max_blocks(void)
+{
+    unsigned short words[6] = {
+        mkword(0,0,0),
+        mkword(31,0,0), mkword(0,31,0), mkword(0,0,31),
+        mkword(31,31,0), mkword(0,31,31),
+    };
+    MaterialSeedParams p = MaterialSeedParamsDefault();
+    PaletteRampBlock blocks[2];
+    int n = DetectPaletteRampBlocks(words, 6, p, blocks, 2);
+    CHECK(n == 2);
+    CHECK(blocks[0].start == 1 && blocks[0].count == 1);
+    CHECK(blocks[1].start == 2 && blocks[1].count == 1);
+}
+
 int main(void)
 {
     fills_across_shading_but_stops_at_a_different_hue();
@@ -230,6 +295,10 @@ int main(void)
     classify_overwrites_rather_than_accumulates();
     mean_color_averages_only_the_requested_id();
     mean_color_fails_for_an_id_with_no_pixels();
+    detects_a_clean_split_between_two_chromatic_blocks();
+    a_leading_gray_run_is_absorbed_into_the_block_that_follows_it();
+    an_all_gray_palette_is_one_block();
+    detection_stops_at_max_blocks();
 
     if (g_fails) {
         std::fprintf(stderr, "%d check(s) failed\n", g_fails);

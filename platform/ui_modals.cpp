@@ -51,6 +51,7 @@
 #include "lod_parser.h"
 #include "mk2_hitbox.h"
 #include "mk2_fatality.h"
+#include "digitize_import.h"
 #include "ui_modals.h"
 
 // Externs for globals accessed in this file
@@ -155,7 +156,8 @@ static bool FileDialogSupportsMultiSelect(FileDialogMode mode)
     return mode == FileDialogMode::ImportPng ||
            mode == FileDialogMode::ImportPngMatch ||
            mode == FileDialogMode::ImportSpriteSheetMatch ||
-           mode == FileDialogMode::ImportGif;
+           mode == FileDialogMode::ImportGif ||
+           mode == FileDialogMode::ImportDigitized;
 }
 
 /* Group file-dialog modes into categories so each remembers its own last
@@ -995,6 +997,7 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::ExportWorldPng:
         case FileDialogMode::ExportWorldPngSeq: return "PNG";
         case FileDialogMode::ImportSpriteSheetMatch: return "";
+        case FileDialogMode::ImportDigitized: return "PNG";
         case FileDialogMode::ImportGif:
         case FileDialogMode::ExportGif: return "GIF";
         case FileDialogMode::ExportPalette: return g_palette_export_act ? "ACT" : "PAL";
@@ -1340,6 +1343,7 @@ void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::ImportPngMatch) title = "Import PNG (Match Palette)";
     else if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) title = "Import Sprite Sheet (Match Palette)";
     else if (g_file_dialog_mode == FileDialogMode::ImportGif) title = "Import GIF File";
+    else if (g_file_dialog_mode == FileDialogMode::ImportDigitized) title = "Import Digitized Frame(s)";
     else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
     else if (g_file_dialog_mode == FileDialogMode::ExportGif) title = "Export Animated GIF";
     else if (g_file_dialog_mode == FileDialogMode::ExportPalette) title = "Export Palette";
@@ -1649,6 +1653,7 @@ void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::ImportPngMatch ||
                                 g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch ||
                                 g_file_dialog_mode == FileDialogMode::ImportGif ||
+                                g_file_dialog_mode == FileDialogMode::ImportDigitized ||
                                 g_file_dialog_mode == FileDialogMode::ExportPng) ? "OK" :
                                (g_file_dialog_mode == FileDialogMode::OpenImg ||
                                 g_file_dialog_mode == FileDialogMode::AppendImg ||
@@ -1780,6 +1785,11 @@ void DrawFileDialog() {
                     g_restore_msg_timer = 4.0f;
                 }
                 if (added > 0) mark_dirty();
+            } else if (g_file_dialog_mode == FileDialogMode::ImportDigitized) {
+                std::vector<std::string> paths;
+                for (const std::string &file : selected_files)
+                    paths.push_back(PathCombine(g_file_dialog_dir, file));
+                OpenDigitizeImportDialog(paths);
             } else if (g_file_dialog_mode == FileDialogMode::ImportGif) {
                 unsigned int before_count = g_doc->imgcnt;
                 for (const std::string &file : selected_files) {
