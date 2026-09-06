@@ -887,6 +887,11 @@ void OpenSpriteCleanupDialog(void);
 void DrawSpriteCleanupDialog(void);
 void OpenOpacityGradientDialog(void);
 void DrawOpacityGradientDialog(void);
+/* Sweep a direction across a sprite and write NEW palette indices off a ramp
+   laid into free slots — how a 2bpp sprite becomes a 6bpp one without losing
+   its own shading. See the block comment in ui_modals.cpp. */
+void OpenSpriteRampGradientDialog(void);
+void DrawSpriteRampGradientDialog(void);
 void OpenInnerStrokeDialog(void);
 void DrawInnerStrokeDialog(void);
 void DrawDeleteImagesConfirm(void);

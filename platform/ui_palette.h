@@ -125,6 +125,23 @@ void ApplyPalette(int pal_idx);
 void OpenPaletteReduceDialog(int bpp);
 void OpenPaletteSingleColorDialog(void);
 void OpenIndexedGradientDialog(void);
+
+/* ---- Saved gradient ramps -------------------------------------------
+   The 2-11 stop ramps the Indexed Color Gradient stores in the user profile
+   (indexed_gradients.txt). They are not that dialog's private property: the
+   Sprite Ramp Gradient spends the same ramps on sprite indices instead of
+   palette slots, and an artist who saved "torch" once should find it in both
+   places. Stops are RGB floats 0..1, in ramp order. */
+void EnsureGradientPresetsLoaded(void);
+int  GradientPresetCount(void);
+const char *GradientPresetName(int idx);
+/* Copies at most `max_stops` stops into `out_rgb` (3 floats each). Returns
+   stops written, 0 for a bad index. */
+int  GradientPresetStops(int idx, float *out_rgb, int max_stops);
+/* Add or replace by name, then rewrite the file. False if the file could not
+   be written — the in-memory list is still updated. */
+bool SaveGradientPreset(const char *name, const float *stops_rgb, int stop_count);
+
 void InvalidatePaletteUsage(void);
 bool ensure_palette_numc(PAL *pal, int min_numc);
 void CleanupSelectedPalette(void);

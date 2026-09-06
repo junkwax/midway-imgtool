@@ -1326,6 +1326,11 @@ void DrawMainLayout(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Fit the palette colors selected before opening into a custom\n"
                 "2-11 color ramp. Sprite pixel indices remain unchanged.");
+            if (ImGui::MenuItem("Sprite Ramp Gradient...", NULL, false, g_doc->ilselected >= 0)) OpenSpriteRampGradientDialog();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Spread a low-depth sprite across a longer ramp: the gradient\n"
+                "writes new pixel indices off free palette slots, so a 2bpp\n"
+                "sprite comes out up to 6bpp with its own shading intact.");
             if (ImGui::MenuItem("3-Tone Inner Stroke...", NULL, false, g_doc->ilselected >= 0)) OpenInnerStrokeDialog();
             if (ImGui::BeginMenu("Transform Selected", g_doc->ilselected >= 0)) {
                 DrawSpriteTransformMenuItems();
@@ -2555,6 +2560,7 @@ void DrawMainLayout(void)
                 if (ImGui::MenuItem("Resize Selected Sprite...")) { OpenResizeSpriteDialog(); }
                 if (ImGui::MenuItem("Canvas Size...")) { OpenCanvasSizeDialog(); }
                 if (ImGui::MenuItem("Opacity Gradient...")) { OpenOpacityGradientDialog(); }
+                if (ImGui::MenuItem("Sprite Ramp Gradient...")) { OpenSpriteRampGradientDialog(); }
                 if (g_doc->ilselected < 0) ImGui::EndDisabled();
                 {
                     int marked = CountMarkedImages();
@@ -3415,6 +3421,7 @@ void DrawMainLayout(void)
     DrawResizeSpriteDialog();
     DrawCanvasSizeDialog();
     DrawOpacityGradientDialog();
+    DrawSpriteRampGradientDialog();
     DrawInnerStrokeDialog();
     DrawSpriteCleanupDialog();
     DrawStampEraseDialog();

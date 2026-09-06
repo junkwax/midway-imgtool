@@ -10,6 +10,48 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### A 2bpp sprite can be spread across a 6bpp gradient
+
+Neither gradient tool could change a sprite's bit depth. The Opacity Gradient
+sweeps a direction and decides whether each pixel lives; the Indexed Color
+Gradient fits a ramp onto the palette slots the art already uses. A 2bpp sprite
+has three opaque indices before either one runs and three after, so its shading
+has three steps and stays that way.
+
+**Image > Sprite Ramp Gradient...** is the third corner: it sweeps a direction
+and writes a *new index* off a ramp long enough to change what the sprite packs
+at. LOAD2 picks a sprite's depth from the largest index the art actually uses
+(`do_superbpp`, modelled in `dma_pack.h`), so laying a 60-colour ramp into free
+palette slots and repainting into it is exactly what makes a 2bpp sprite 6bpp.
+
+The art keeps its own modelling. Each pixel's tone — where its index sits in
+the sprite's luminance range — occupies a **window** of the ramp, and the sweep
+slides that window from one end to the other. **Shading width** sets how wide
+the window is: at 1 the gradient washes the silhouette flat, one colour per
+position; at the full ramp the sprite re-shades in place with no travel left;
+in between, the light and dark survive and travel together.
+
+The ramp lands in indices no sprite drawing on the palette references, found
+lowest-first so the sweep costs as little depth as it can, and checked against
+every palette in play when marked sprites span more than one. Asking for more
+colours than fit under the target depth is refused rather than quietly shipping
+a 7bpp sprite. The dialog says where the block landed and what the result packs
+at, before and after.
+
+The seven directions and the silhouette-following feather match the Opacity
+Gradient's exactly, so a fade and a rim ramp of the same width cover the same
+pixels. Dithering is not decoration here: a position lands between two ramp
+entries far more often than on one, and rounding bands visibly across a large
+area — the Checker and Bayer screens interleave the two entries the way the
+era's art did. Stops are the same 2-11 colour ramps the Indexed Color Gradient
+saves, read from and written to the same profile store, so a ramp saved in one
+tool shows up in the other. **From Sprite** seeds them from the art's own
+tones, darkest to lightest.
+
+Works on the selected sprite or every marked one, with a live preview and a
+single undo step. Per-pixel maths lives in `platform/sprite_gradient.{h,cpp}`,
+unit-tested in `test/sprite_gradient_test.cpp`.
+
 ### World View's playfield can be a solid colour
 
 The World View playfield cleared to black and nothing else, which is what an

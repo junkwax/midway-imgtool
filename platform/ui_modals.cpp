@@ -44,6 +44,7 @@
 #include "anipoint.h"
 #include "anipoint_edit.h"
 #include "img_util.h"
+#include "sprite_gradient.h"
 #include "sprite_resize_ops.h"
 #include "img_io.h"
 #include "imgui_overlay.h"
@@ -8258,6 +8259,801 @@ void DrawOpacityGradientDialog(void)
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(90, 0)))
         g_show_opacity_gradient = false;
+
+    ImGui::EndPopup();
+}
+
+/* ---- Sprite Ramp Gradient -------------------------------------------
+
+   The Opacity Gradient sweeps a direction across a sprite and decides whether
+   each pixel lives. The Indexed Color Gradient fits a ramp onto the palette
+   slots the art already uses. This is the third corner: sweep a direction, and
+   write a new INDEX — off a ramp long enough that the sprite changes bit
+   depth on the way.
+
+   A 2bpp sprite has three opaque indices, so its shading has three steps and
+   no gradient tool can give it more. Lay a 60-color ramp into free palette
+   slots and slide the sprite's three tones along it as a function of position,
+   and the same art comes out 6bpp with its modeling intact. See
+   sprite_gradient.h for what shade_span means; the pure module owns all of the
+   per-pixel math, and this file owns only the document work — which slots are
+   free, which palettes get the ramp, undo, and the preview. */
+
+static int clamp_bpp_range(int bpp)
+{
+    if (bpp < 1) return 1;
+    if (bpp > 8) return 8;
+    return bpp;
+}
+
+static bool  g_show_sprite_ramp = false;
+static bool  g_sprite_ramp_marked = false;
+static int   g_sprite_ramp_direction = kSpriteGradientTopBottom;
+static int   g_sprite_ramp_bpp = 6;
+static int   g_sprite_ramp_count = 32;
+static int   g_sprite_ramp_shade_span = 8;
+static int   g_sprite_ramp_start_pct = 0;
+static int   g_sprite_ramp_end_pct = 100;
+static int   g_sprite_ramp_dither = kSpriteGradientDitherBayer;
+static int   g_sprite_ramp_seed = 17;
+static bool  g_sprite_ramp_content_bounds = true;
+static bool  g_sprite_ramp_limit_depth = false;
+static int   g_sprite_ramp_depth_px = 8;
+static int   g_sprite_ramp_edge_px = 5;
+static bool  g_sprite_ramp_live_preview = true;
+static float g_sprite_ramp_stops[11][3] = {};
+static int   g_sprite_ramp_stop_count = 2;
+static char  g_sprite_ramp_preset_name[96] = {};
+static bool  g_sprite_ramp_open_name_popup = false;
+static SDL_Texture *g_sprite_ramp_preview_tex = NULL;
+static int   g_sprite_ramp_preview_w = 0;
+static int   g_sprite_ramp_preview_h = 0;
+
+struct SpriteRampTargets {
+    std::vector<int> images;
+    std::vector<int> palettes;
+};
+
+/* Which sprites the Apply will touch, and the distinct palettes behind them.
+   Marked mode can span palettes, so the ramp has to land on an index block
+   that is free in all of them at once. */
+static SpriteRampTargets SpriteRampCollectTargets(void)
+{
+    SpriteRampTargets t;
+    if (!g_doc) return t;
+    auto add = [&](int idx, IMG *img) {
+        if (!img || !img->data_p || img->w == 0 || img->h == 0) return;
+        t.images.push_back(idx);
+        int pal = (int)img->palnum;
+        for (int p : t.palettes)
+            if (p == pal) return;
+        t.palettes.push_back(pal);
+    };
+    if (g_sprite_ramp_marked) {
+        int idx = 0;
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++)
+            if (img->flags & 1) add(idx, img);
+    } else if (g_doc->ilselected >= 0) {
+        add(g_doc->ilselected, get_img(g_doc->ilselected));
+    }
+    return t;
+}
+
+/* Every index drawn by any sprite sharing one of the target palettes.
+   The targets' OWN indices count as used: a band-limited sweep leaves the
+   pixels past the band exactly as they were, and those still need their old
+   colors to mean what they meant. */
+static void SpriteRampUsedIndices(const SpriteRampTargets &t, bool used[256])
+{
+    memset(used, 0, sizeof(bool) * 256);
+    used[0] = true;
+    if (!g_doc) return;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p) {
+        if (!img->data_p || img->w == 0 || img->h == 0) continue;
+        bool shares = false;
+        for (int p : t.palettes)
+            if ((int)img->palnum == p) { shares = true; break; }
+        if (!shares) continue;
+        int stride = ((int)img->w + 3) & ~3;
+        const unsigned char *pix = (const unsigned char *)img->data_p;
+        for (int y = 0; y < (int)img->h; y++)
+            for (int x = 0; x < (int)img->w; x++)
+                used[pix[(size_t)y * stride + x]] = true;
+    }
+}
+
+struct SpriteRampLayout {
+    bool ok = false;
+    int  max_index = 63;   /* the depth ceiling the ramp must fit under */
+    int  free_run = 0;     /* longest run of free indices under that ceiling */
+    int  count = 0;        /* ramp entries actually placed */
+    int  start = -1;       /* first index of the block */
+    const char *why = "";  /* why not, when !ok */
+};
+
+static SpriteRampLayout SpriteRampResolveLayout(const SpriteRampTargets &t)
+{
+    SpriteRampLayout lay;
+    lay.max_index = (1 << clamp_bpp_range(g_sprite_ramp_bpp)) - 1;
+    if (t.images.empty()) {
+        lay.why = "No sprite selected.";
+        return lay;
+    }
+    bool used[256];
+    SpriteRampUsedIndices(t, used);
+    lay.free_run = SpriteGradientLargestFreeRun(used, lay.max_index);
+    if (lay.free_run < 2) {
+        lay.why = "No free index block under this depth. Raise the target depth, "
+                  "or free slots the palette's sprites no longer draw with.";
+        return lay;
+    }
+    lay.count = g_sprite_ramp_count;
+    if (lay.count > lay.free_run) lay.count = lay.free_run;
+    if (lay.count < 2) lay.count = 2;
+    lay.start = SpriteGradientFindRampBlock(used, lay.count, lay.max_index);
+    if (lay.start < 0) {
+        lay.why = "The free slots under this depth are not contiguous enough for "
+                  "this many ramp colors.";
+        return lay;
+    }
+    lay.ok = true;
+    return lay;
+}
+
+static SpriteGradientOptions SpriteRampOptions(const SpriteRampLayout &lay)
+{
+    SpriteGradientOptions o;
+    o.direction = g_sprite_ramp_direction;
+    o.ramp_start = lay.start;
+    o.ramp_count = lay.count;
+    o.shade_span = g_sprite_ramp_shade_span;
+    o.start_pct = g_sprite_ramp_start_pct;
+    o.end_pct = g_sprite_ramp_end_pct;
+    o.dither = g_sprite_ramp_dither;
+    o.seed = g_sprite_ramp_seed;
+    o.content_bounds = g_sprite_ramp_content_bounds;
+    o.band_px = (g_sprite_ramp_direction == kSpriteGradientEdgeInward)
+              ? g_sprite_ramp_edge_px
+              : (g_sprite_ramp_limit_depth ? g_sprite_ramp_depth_px : 0);
+    return o;
+}
+
+static void SpriteRampBuildWords(const SpriteRampLayout &lay,
+                                 unsigned short *out_words)
+{
+    float stops[11 * 3];
+    int n = g_sprite_ramp_stop_count;
+    if (n < 2) n = 2;
+    if (n > 11) n = 11;
+    for (int i = 0; i < n; i++)
+        for (int c = 0; c < 3; c++)
+            stops[i * 3 + c] = g_sprite_ramp_stops[i][c];
+    SpriteGradientBuildRamp(stops, n, lay.count, out_words);
+}
+
+static int SpriteRampPaletteWords(PAL *pal, unsigned short words[256])
+{
+    memset(words, 0, sizeof(unsigned short) * 256);
+    if (!pal || !pal->data_p) return 0;
+    int n = (int)pal->numc > 256 ? 256 : (int)pal->numc;
+    const unsigned char *d = (const unsigned char *)pal->data_p;
+    for (int i = 0; i < n; i++)
+        words[i] = (unsigned short)(d[i * 2] | (d[i * 2 + 1] << 8));
+    return n;
+}
+
+struct SpriteRampStats {
+    int images = 0;
+    int changed = 0;
+    int max_index = 0;
+};
+
+/* Both the preview count and the real apply, so what the dialog reports is
+   what Apply does. `apply` writes pixels; the caller has already pushed undo
+   and written the ramp into the palettes when it passes true. */
+static SpriteRampStats SpriteRampScan(const SpriteRampTargets &t,
+                                      const SpriteRampLayout &lay,
+                                      bool apply, std::vector<int> *changed_indices)
+{
+    SpriteRampStats stats;
+    if (!g_doc || !lay.ok) return stats;
+    SpriteGradientOptions opt = SpriteRampOptions(lay);
+
+    for (int idx : t.images) {
+        IMG *img = get_img(idx);
+        if (!img || !img->data_p || img->w == 0 || img->h == 0) continue;
+        unsigned short pal_words[256];
+        int pal_numc = SpriteRampPaletteWords(get_pal((int)img->palnum), pal_words);
+        int w = (int)img->w, h = (int)img->h;
+        int stride = (w + 3) & ~3;
+        unsigned char *pix = (unsigned char *)img->data_p;
+
+        SpriteGradientPlan plan;
+        if (!SpriteGradientPlanBuild(pix, w, h, stride, pal_words, pal_numc,
+                                     opt, &plan))
+            continue;
+
+        int max_idx = SpriteGradientMaxIndex(pix, plan, idx);
+        if (max_idx > stats.max_index) stats.max_index = max_idx;
+        stats.images++;
+
+        int changed;
+        if (apply) {
+            changed = SpriteGradientApply(pix, plan, idx);
+        } else {
+            changed = 0;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    unsigned char ci = pix[(size_t)y * stride + x];
+                    if (ci == 0) continue;
+                    if (SpriteGradientIndexAt(plan, x, y, ci, idx) != (int)ci)
+                        changed++;
+                }
+            }
+        }
+        stats.changed += changed;
+        if (apply && changed > 0 && changed_indices)
+            changed_indices->push_back(idx);
+    }
+    return stats;
+}
+
+static void SpriteRampFreePreview(void)
+{
+    if (g_sprite_ramp_preview_tex) {
+        SDL_DestroyTexture(g_sprite_ramp_preview_tex);
+        g_sprite_ramp_preview_tex = NULL;
+    }
+    g_sprite_ramp_preview_w = 0;
+    g_sprite_ramp_preview_h = 0;
+}
+
+/* The ramp colors do not exist in the palette until Apply, so the preview
+   resolves indices against the palette WITH the pending ramp overlaid. */
+static SDL_Texture *SpriteRampBuildPreview(IMG *img, int image_idx,
+                                           const SpriteRampLayout &lay,
+                                           const unsigned short *ramp_words)
+{
+    if (!img || !img->data_p || img->w == 0 || img->h == 0 || !g_imgui_renderer)
+        return NULL;
+    int w = (int)img->w, h = (int)img->h;
+    if (!g_sprite_ramp_preview_tex ||
+        g_sprite_ramp_preview_w != w || g_sprite_ramp_preview_h != h) {
+        SpriteRampFreePreview();
+        g_sprite_ramp_preview_tex =
+            SDL_CreateTexture(g_imgui_renderer, SDL_PIXELFORMAT_ARGB8888,
+                              SDL_TEXTUREACCESS_STREAMING, w, h);
+        if (!g_sprite_ramp_preview_tex) return NULL;
+        SDL_SetTextureBlendMode(g_sprite_ramp_preview_tex, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_sprite_ramp_preview_tex, SDL_ScaleModeNearest);
+        g_sprite_ramp_preview_w = w;
+        g_sprite_ramp_preview_h = h;
+    }
+
+    unsigned short pal_words[256];
+    int pal_numc = SpriteRampPaletteWords(get_pal((int)img->palnum), pal_words);
+    int stride = (w + 3) & ~3;
+    const unsigned char *sp = (const unsigned char *)img->data_p;
+
+    SpriteGradientPlan plan;
+    bool have_plan = SpriteGradientPlanBuild(sp, w, h, stride, pal_words, pal_numc,
+                                             SpriteRampOptions(lay), &plan);
+
+    void *pixels; int pitch;
+    if (SDL_LockTexture(g_sprite_ramp_preview_tex, NULL, &pixels, &pitch) != 0)
+        return NULL;
+    for (int y = 0; y < h; y++) {
+        Uint32 *dst = (Uint32 *)((unsigned char *)pixels + (size_t)y * pitch);
+        for (int x = 0; x < w; x++) {
+            unsigned char ci = sp[(size_t)y * stride + x];
+            if (ci == 0) { dst[x] = 0; continue; }
+            int ni = have_plan ? SpriteGradientIndexAt(plan, x, y, ci, image_idx)
+                               : (int)ci;
+            unsigned short word;
+            if (lay.ok && ni >= lay.start && ni < lay.start + lay.count)
+                word = ramp_words[ni - lay.start];
+            else
+                word = pal_words[ni & 0xff];
+            Uint32 r = (Uint32)(((word >> 10) & 0x1F) * 255 / 31);
+            Uint32 g = (Uint32)(((word >>  5) & 0x1F) * 255 / 31);
+            Uint32 b = (Uint32)(( word        & 0x1F) * 255 / 31);
+            dst[x] = (0xFFu << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+    SDL_UnlockTexture(g_sprite_ramp_preview_tex);
+    return g_sprite_ramp_preview_tex;
+}
+
+/* Seed the stops from the sprite's own tones, darkest to lightest, so the
+   dialog opens on a ramp that already looks like the art and the artist tints
+   from there instead of from black. */
+static int SpriteRampSeedStopsFromSprite(IMG *img)
+{
+    if (!img || !img->data_p) return 0;
+    unsigned short pal_words[256];
+    int pal_numc = SpriteRampPaletteWords(get_pal((int)img->palnum), pal_words);
+    float lut[256];
+    int tones = SpriteGradientBuildShadeLut((const unsigned char *)img->data_p,
+                                            (int)img->w, (int)img->h,
+                                            (((int)img->w + 3) & ~3),
+                                            pal_words, pal_numc, lut);
+    if (tones == 0) return 0;
+
+    struct Tone { float shade; int index; };
+    std::vector<Tone> tone_list;
+    for (int i = 1; i < 256; i++)
+        if (lut[i] >= 0.0f) tone_list.push_back({ lut[i], i });
+    std::sort(tone_list.begin(), tone_list.end(),
+              [](const Tone &a, const Tone &b) { return a.shade < b.shade; });
+
+    int n = (int)tone_list.size();
+    if (n > 11) n = 11;
+    if (n < 2) {
+        /* One tone gives no ramp: run it to black so there is something to
+           slide along. */
+        unsigned short word = pal_words[tone_list[0].index];
+        g_sprite_ramp_stops[0][0] = g_sprite_ramp_stops[0][1] = g_sprite_ramp_stops[0][2] = 0.0f;
+        g_sprite_ramp_stops[1][0] = (float)((word >> 10) & 0x1F) / 31.0f;
+        g_sprite_ramp_stops[1][1] = (float)((word >>  5) & 0x1F) / 31.0f;
+        g_sprite_ramp_stops[1][2] = (float)( word        & 0x1F) / 31.0f;
+        g_sprite_ramp_stop_count = 2;
+        return 2;
+    }
+    for (int i = 0; i < n; i++) {
+        int si = (int)lroundf((float)i / (float)(n - 1) *
+                              (float)(tone_list.size() - 1));
+        unsigned short word = pal_words[tone_list[si].index];
+        g_sprite_ramp_stops[i][0] = (float)((word >> 10) & 0x1F) / 31.0f;
+        g_sprite_ramp_stops[i][1] = (float)((word >>  5) & 0x1F) / 31.0f;
+        g_sprite_ramp_stops[i][2] = (float)( word        & 0x1F) / 31.0f;
+    }
+    g_sprite_ramp_stop_count = n;
+    return n;
+}
+
+/* The ramp as it will actually be quantized: one block per index, not a smooth
+   bar. At 8 colors the steps are the point, and a smooth bar would hide them. */
+static void SpriteRampDrawBar(const SpriteRampLayout &lay,
+                              const unsigned short *words, float width, float height)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    int n = lay.ok ? lay.count : 0;
+    if (n <= 0) {
+        dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), IM_COL32(40, 40, 40, 255));
+    }
+    for (int i = 0; i < n; i++) {
+        float x0 = p.x + width * (float)i / (float)n;
+        float x1 = p.x + width * (float)(i + 1) / (float)n;
+        unsigned short word = words[i];
+        dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1 + 1.0f, p.y + height),
+                          IM_COL32(((word >> 10) & 0x1F) * 255 / 31,
+                                   ((word >>  5) & 0x1F) * 255 / 31,
+                                   ( word        & 0x1F) * 255 / 31, 255));
+    }
+    dl->AddRect(p, ImVec2(p.x + width, p.y + height), IM_COL32(150, 150, 150, 255));
+    ImGui::Dummy(ImVec2(width, height));
+}
+
+void OpenSpriteRampGradientDialog(void)
+{
+    if (!g_doc || g_doc->ilselected < 0) return;
+    IMG *img = get_img(g_doc->ilselected);
+    if (!img) return;
+
+    SpriteRampSeedStopsFromSprite(img);
+    EnsureGradientPresetsLoaded();
+
+    /* Open on the widest ramp the sprite's palette can actually hold at the
+       target depth — going wide is the whole reason to reach for this tool. */
+    SpriteRampTargets t;
+    t.images.push_back(g_doc->ilselected);
+    t.palettes.push_back((int)img->palnum);
+    bool used[256];
+    SpriteRampUsedIndices(t, used);
+    int run = SpriteGradientLargestFreeRun(used, (1 << clamp_bpp_range(g_sprite_ramp_bpp)) - 1);
+    if (run >= 2) g_sprite_ramp_count = run;
+    if (g_sprite_ramp_shade_span > g_sprite_ramp_count)
+        g_sprite_ramp_shade_span = g_sprite_ramp_count;
+
+    g_show_sprite_ramp = true;
+}
+
+void DrawSpriteRampGradientDialog(void)
+{
+    if (g_show_sprite_ramp)
+        ImGui::OpenPopup("Sprite Ramp Gradient");
+    if (!ImGui::BeginPopupModal("Sprite Ramp Gradient", &g_show_sprite_ramp,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        SpriteRampFreePreview();
+        return;
+    }
+
+    IMG *selected = (g_doc && g_doc->ilselected >= 0)
+                  ? get_img(g_doc->ilselected) : NULL;
+    if (!selected || !selected->data_p || selected->w == 0 || selected->h == 0) {
+        ImGui::TextDisabled("Select a sprite with pixels first.");
+        if (ImGui::Button("Close", ImVec2(90, 0))) g_show_sprite_ramp = false;
+        ImGui::EndPopup();
+        return;
+    }
+
+    int marked_count = CountMarkedImages();
+    if (marked_count == 0 && g_sprite_ramp_marked) g_sprite_ramp_marked = false;
+
+    SpriteRampTargets targets = SpriteRampCollectTargets();
+    SpriteRampLayout lay = SpriteRampResolveLayout(targets);
+    /* Show the ramp the palette can actually hold, not the one that was asked
+       for: raising the depth and lowering it again must not leave the sliders
+       claiming a width the block never had. */
+    if (lay.ok) {
+        g_sprite_ramp_count = lay.count;
+        if (g_sprite_ramp_shade_span > lay.count) g_sprite_ramp_shade_span = lay.count;
+    }
+
+    /* What the art is now, so the depth change is legible. */
+    {
+        unsigned short pal_words[256];
+        int pal_numc = SpriteRampPaletteWords(get_pal((int)selected->palnum), pal_words);
+        float lut[256];
+        int tones = SpriteGradientBuildShadeLut(
+            (const unsigned char *)selected->data_p, (int)selected->w,
+            (int)selected->h, (((int)selected->w + 3) & ~3),
+            pal_words, pal_numc, lut);
+        int max_idx = 0;
+        for (int i = 1; i < 256; i++) if (lut[i] >= 0.0f) max_idx = i;
+        ImGui::Text("%s  %dx%d — %d tone%s, highest index #%d (packs at %d bpp)",
+                    selected->n_s, selected->w, selected->h,
+                    tones, tones == 1 ? "" : "s", max_idx,
+                    PaletteBppForColorCount(max_idx + 1));
+    }
+
+    ImGui::SeparatorText("Ramp");
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::SliderInt("Target depth", &g_sprite_ramp_bpp, 2, 8, "%d bpp");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The depth the sprite should pack at afterwards. The ramp\n"
+                          "must fit below index %d, because LOAD2 picks the depth\n"
+                          "from the largest index the art actually uses.",
+                          (1 << clamp_bpp_range(g_sprite_ramp_bpp)));
+
+    int run_cap = lay.free_run > 1 ? lay.free_run : 2;
+    ImGui::SetNextItemWidth(190.0f);
+    if (ImGui::SliderInt("Ramp colors", &g_sprite_ramp_count, 2, run_cap, "%d"))
+        if (g_sprite_ramp_shade_span > g_sprite_ramp_count)
+            g_sprite_ramp_shade_span = g_sprite_ramp_count;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How many palette indices the gradient spans. More colors\n"
+                          "means a smoother sweep and a bigger palette footprint.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fill")) g_sprite_ramp_count = run_cap;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Take every free slot under the target depth (%d).", run_cap);
+
+    if (lay.ok) {
+        ImGui::TextDisabled("Ramp lands at #%d-#%d, free in %d palette%s. Result packs at %d bpp.",
+                            lay.start, lay.start + lay.count - 1,
+                            (int)targets.palettes.size(),
+                            targets.palettes.size() == 1 ? "" : "s",
+                            PaletteBppForColorCount(lay.start + lay.count));
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "%s", lay.why);
+    }
+
+    unsigned short ramp_words[256] = {};
+    if (lay.ok) SpriteRampBuildWords(lay, ramp_words);
+
+    /* Saved ramps, the same store the Indexed Color Gradient writes. */
+    int preset_count = GradientPresetCount();
+    if (preset_count > 0) {
+        ImGui::TextUnformatted("Saved:");
+        const float sw = 40.0f, sh = 20.0f;
+        for (int pi = 0; pi < preset_count; pi++) {
+            float stops[11 * 3];
+            int n = GradientPresetStops(pi, stops, 11);
+            if (n < 2) continue;
+            ImGui::SameLine();
+            ImGui::PushID(pi);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            if (ImGui::InvisibleButton("##preset", ImVec2(sw, sh))) {
+                for (int i = 0; i < n; i++)
+                    for (int c = 0; c < 3; c++)
+                        g_sprite_ramp_stops[i][c] = stops[i * 3 + c];
+                g_sprite_ramp_stop_count = n;
+            }
+            bool hovered = ImGui::IsItemHovered();
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            const int slices = 16;
+            for (int i = 0; i < slices; i++) {
+                float t = (float)i / (float)(slices - 1);
+                float scaled = t * (float)(n - 1);
+                int seg = (int)floorf(scaled);
+                if (seg > n - 2) seg = n - 2;
+                float f = scaled - (float)seg;
+                ImVec4 c(0, 0, 0, 1);
+                c.x = stops[seg * 3 + 0] + (stops[(seg + 1) * 3 + 0] - stops[seg * 3 + 0]) * f;
+                c.y = stops[seg * 3 + 1] + (stops[(seg + 1) * 3 + 1] - stops[seg * 3 + 1]) * f;
+                c.z = stops[seg * 3 + 2] + (stops[(seg + 1) * 3 + 2] - stops[seg * 3 + 2]) * f;
+                dl->AddRectFilled(ImVec2(p.x + sw * i / slices, p.y),
+                                  ImVec2(p.x + sw * (i + 1) / slices + 1.0f, p.y + sh),
+                                  ImGui::ColorConvertFloat4ToU32(c));
+            }
+            dl->AddRect(p, ImVec2(p.x + sw, p.y + sh),
+                        hovered ? IM_COL32(255, 220, 90, 255) : IM_COL32(150, 150, 150, 255));
+            if (hovered)
+                ImGui::SetTooltip("Use %s (%d stops)", GradientPresetName(pi), n);
+            ImGui::PopID();
+        }
+    }
+
+    for (int i = 0; i < g_sprite_ramp_stop_count; i++) {
+        ImGui::PushID(100 + i);
+        ImGui::Text("%d", i + 1);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(230.0f);
+        ImGui::ColorEdit3("##stop", g_sprite_ramp_stops[i],
+                          ImGuiColorEditFlags_PickerHueWheel |
+                          ImGuiColorEditFlags_DisplayRGB);
+        if (g_sprite_ramp_stop_count > 2) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remove")) {
+                for (int j = i; j + 1 < g_sprite_ramp_stop_count; j++)
+                    memcpy(g_sprite_ramp_stops[j], g_sprite_ramp_stops[j + 1],
+                           sizeof(g_sprite_ramp_stops[j]));
+                g_sprite_ramp_stop_count--;
+                i--;
+            }
+        }
+        ImGui::PopID();
+    }
+    ImGui::BeginDisabled(g_sprite_ramp_stop_count >= 11);
+    if (ImGui::Button("Add stop")) {
+        memcpy(g_sprite_ramp_stops[g_sprite_ramp_stop_count],
+               g_sprite_ramp_stops[g_sprite_ramp_stop_count - 1],
+               sizeof(g_sprite_ramp_stops[0]));
+        g_sprite_ramp_stop_count++;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Reverse")) {
+        for (int i = 0, j = g_sprite_ramp_stop_count - 1; i < j; i++, j--) {
+            float tmp[3];
+            memcpy(tmp, g_sprite_ramp_stops[i], sizeof(tmp));
+            memcpy(g_sprite_ramp_stops[i], g_sprite_ramp_stops[j], sizeof(tmp));
+            memcpy(g_sprite_ramp_stops[j], tmp, sizeof(tmp));
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("From Sprite")) SpriteRampSeedStopsFromSprite(selected);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Re-seed the stops from this sprite's own tones,\n"
+                          "darkest to lightest.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!lay.ok);
+    if (ImGui::Button("Save Ramp...")) {
+        g_sprite_ramp_preset_name[0] = '\0';
+        g_sprite_ramp_open_name_popup = true;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Save these stops to your profile. The Indexed Color\n"
+                          "Gradient reads the same saved ramps.");
+
+    SpriteRampDrawBar(lay, ramp_words, 300.0f, 22.0f);
+
+    ImGui::SeparatorText("Sweep");
+    const char *directions[] = {
+        "Left to Right", "Right to Left", "Top to Bottom", "Bottom to Top",
+        "Center to Edge", "Edge to Center", "Edge Inward (outline first)"
+    };
+    ImGui::SetNextItemWidth(230.0f);
+    ImGui::Combo("Direction", &g_sprite_ramp_direction, directions,
+                 (int)(sizeof(directions) / sizeof(directions[0])));
+
+    bool edge_mode = (g_sprite_ramp_direction == kSpriteGradientEdgeInward);
+    if (edge_mode) {
+        ImGui::SetNextItemWidth(190.0f);
+        ImGui::SliderInt("Feather width", &g_sprite_ramp_edge_px, 1, 32, "%d px");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How far in from the outline the ramp reaches. Distance\n"
+                              "follows the silhouette, not the bounding box, and\n"
+                              "anything deeper keeps the index it had.");
+    } else {
+        ImGui::Checkbox("Use opaque content bounds", &g_sprite_ramp_content_bounds);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Span the sweep over the art's own bounds instead of the\n"
+                              "padded canvas.");
+        ImGui::Checkbox("Limit sweep depth", &g_sprite_ramp_limit_depth);
+        if (g_sprite_ramp_limit_depth) {
+            ImGui::SetNextItemWidth(190.0f);
+            ImGui::SliderInt("Sweep depth", &g_sprite_ramp_depth_px, 1, 128, "%d px");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Keep the ramp near the edge it starts from. Pixels\n"
+                                  "deeper than this keep their original index.");
+        }
+    }
+
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::SliderInt("Sweep from", &g_sprite_ramp_start_pct, 0, 100, "%d%%");
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::SliderInt("Sweep to", &g_sprite_ramp_end_pct, 0, 100, "%d%%");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Which part of the ramp the sweep actually crosses, as a\n"
+                          "percentage of the travel the shading window has. Equal\n"
+                          "values park the window and dither between two entries.");
+    if (ImGui::SmallButton("Swap ends")) {
+        int t = g_sprite_ramp_start_pct;
+        g_sprite_ramp_start_pct = g_sprite_ramp_end_pct;
+        g_sprite_ramp_end_pct = t;
+    }
+
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::SliderInt("Shading width", &g_sprite_ramp_shade_span, 1,
+                     lay.ok ? lay.count : 2, "%d of ramp");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How many ramp entries the sprite's own light and dark\n"
+                          "occupy. 1 washes the art flat, one color per position.\n"
+                          "The full ramp re-shades in place with no sweep left.\n"
+                          "In between, the modeling survives and slides.");
+
+    const char *dithers[] = { "None (banded)", "Noise", "Checker (2x2)", "Bayer (4x4)" };
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::Combo("Dither", &g_sprite_ramp_dither, dithers,
+                 (int)(sizeof(dithers) / sizeof(dithers[0])));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A position between two ramp entries has to resolve to one\n"
+                          "index. Rounding bands; the ordered screens interleave the\n"
+                          "two entries the way this era's art did.");
+    if (g_sprite_ramp_dither == kSpriteGradientDitherNoise) {
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputInt("Pattern seed", &g_sprite_ramp_seed, 1, 17);
+    }
+
+    ImGui::BeginDisabled(marked_count == 0);
+    ImGui::Checkbox("Apply to marked sprites", &g_sprite_ramp_marked);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Every marked sprite gets the same ramp and the same sweep,\n"
+                          "each measured against its own bounds. %d marked.", marked_count);
+
+    ImGui::Checkbox("Live preview", &g_sprite_ramp_live_preview);
+    /* In marked mode the selected sprite need not be one of the targets, and
+       previewing a sprite Apply will not touch is worse than no preview. */
+    int preview_idx = g_doc->ilselected;
+    if (!targets.images.empty()) {
+        bool selected_is_target = false;
+        for (int idx : targets.images)
+            if (idx == g_doc->ilselected) { selected_is_target = true; break; }
+        if (!selected_is_target) preview_idx = targets.images.front();
+    }
+    IMG *preview_img = get_img(preview_idx);
+    if (!preview_img) preview_img = selected;
+    if (g_sprite_ramp_live_preview && lay.ok) {
+        SDL_Texture *tex = SpriteRampBuildPreview(preview_img, preview_idx,
+                                                  lay, ramp_words);
+        if (tex) {
+            if (preview_idx != g_doc->ilselected)
+                ImGui::TextDisabled("Previewing %s", preview_img->n_s);
+            const float BOX = 220.0f;
+            float sw_px = (float)preview_img->w, sh_px = (float)preview_img->h;
+            float scale = BOX / (sw_px > sh_px ? sw_px : sh_px);
+            ImVec2 draw_sz(sw_px * scale, sh_px * scale);
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            const float CHK = 8.0f;
+            for (float yy = 0; yy < draw_sz.y; yy += CHK) {
+                for (float xx = 0; xx < draw_sz.x; xx += CHK) {
+                    bool dark = ((int)(xx / CHK) + (int)(yy / CHK)) & 1;
+                    ImVec2 a(p0.x + xx, p0.y + yy);
+                    ImVec2 b(p0.x + (xx + CHK > draw_sz.x ? draw_sz.x : xx + CHK),
+                             p0.y + (yy + CHK > draw_sz.y ? draw_sz.y : yy + CHK));
+                    dl->AddRectFilled(a, b, dark ? IM_COL32(60, 60, 60, 255)
+                                                 : IM_COL32(90, 90, 90, 255));
+                }
+            }
+            ImGui::Image((ImTextureID)(intptr_t)tex, draw_sz);
+        }
+    } else {
+        SpriteRampFreePreview();
+    }
+
+    SpriteRampStats preview = SpriteRampScan(targets, lay, false, NULL);
+    ImGui::Separator();
+    ImGui::Text("%d sprite%s, %d px repainted, highest index #%d (%d bpp)",
+                preview.images, preview.images == 1 ? "" : "s",
+                preview.changed, preview.max_index,
+                PaletteBppForColorCount(preview.max_index + 1));
+
+    bool can_apply = lay.ok && preview.changed > 0;
+    ImGui::BeginDisabled(!can_apply);
+    if (ImGui::Button("Apply", ImVec2(110, 0))) {
+        if (doc_undo_push()) {
+            /* Palette first: the ramp has to exist before any pixel points at
+               it. A palette that cannot grow to hold the block stops the whole
+               apply — repainting pixels onto indices a palette does not have
+               would leave the art pointing at black. */
+            bool palettes_ready = true;
+            for (int pal_idx : targets.palettes) {
+                PAL *pal = get_pal(pal_idx);
+                if (!pal || !ensure_palette_numc(pal, lay.start + lay.count)) {
+                    palettes_ready = false;
+                    break;
+                }
+                unsigned char *pd = (unsigned char *)pal->data_p;
+                for (int i = 0; i < lay.count; i++) {
+                    pd[(lay.start + i) * 2 + 0] = (unsigned char)(ramp_words[i] & 0xff);
+                    pd[(lay.start + i) * 2 + 1] = (unsigned char)(ramp_words[i] >> 8);
+                }
+                if (PaletteBppTooSmall(pal->bitspix, (int)pal->numc))
+                    pal->bitspix = (unsigned char)PaletteBppForColorCount((int)pal->numc);
+            }
+
+            if (!palettes_ready) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Could not grow a palette to hold the ramp; nothing was "
+                         "repainted. Undo to drop the partial ramp.");
+                g_restore_msg_timer = 5.0f;
+            } else {
+                std::vector<int> changed_indices;
+                SpriteRampStats applied = SpriteRampScan(targets, lay, true, &changed_indices);
+                for (int pal_idx : targets.palettes) ApplyPalette(pal_idx);
+                save_palette_baseline();
+                InvalidatePaletteSync();
+                g_img_tex_idx = -2;
+                for (int idx : changed_indices) InvalidateThumb(idx);
+                mark_dirty();
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Ramp gradient repainted %d px on %d sprite%s into #%d-#%d (%d bpp).",
+                         applied.changed, applied.images,
+                         applied.images == 1 ? "" : "s",
+                         lay.start, lay.start + lay.count - 1,
+                         PaletteBppForColorCount(applied.max_index + 1));
+                g_restore_msg_timer = 5.0f;
+            }
+        }
+        g_show_sprite_ramp = false;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(90, 0))) g_show_sprite_ramp = false;
+
+    if (g_sprite_ramp_open_name_popup) {
+        ImGui::OpenPopup("Name Ramp");
+        g_sprite_ramp_open_name_popup = false;
+    }
+    if (ImGui::BeginPopupModal("Name Ramp", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Name this ramp:");
+        ImGui::SetNextItemWidth(300.0f);
+        bool submitted = ImGui::InputText("##ramp_name", g_sprite_ramp_preset_name,
+                                          sizeof(g_sprite_ramp_preset_name),
+                                          ImGuiInputTextFlags_EnterReturnsTrue |
+                                          ImGuiInputTextFlags_AutoSelectAll);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
+        char *begin = g_sprite_ramp_preset_name;
+        while (*begin && isspace((unsigned char)*begin)) begin++;
+        char *end = begin + strlen(begin);
+        while (end > begin && isspace((unsigned char)end[-1])) *--end = '\0';
+        for (char *p = begin; *p; p++) if (*p == '|') *p = '-';
+        bool has_name = *begin != '\0';
+        ImGui::BeginDisabled(!has_name);
+        if (ImGui::Button("Save", ImVec2(100, 0)) || (submitted && has_name)) {
+            float stops[11 * 3];
+            for (int i = 0; i < g_sprite_ramp_stop_count; i++)
+                for (int c = 0; c < 3; c++)
+                    stops[i * 3 + c] = g_sprite_ramp_stops[i][c];
+            bool ok = SaveGradientPreset(begin, stops, g_sprite_ramp_stop_count);
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     ok ? "Saved ramp '%s'."
+                        : "Kept ramp '%s' for this session; the preset file could not be written.",
+                     begin);
+            g_restore_msg_timer = 4.0f;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 
     ImGui::EndPopup();
 }

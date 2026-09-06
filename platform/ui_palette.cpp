@@ -227,6 +227,70 @@ static void SelectIndexedGradientPreset(const IndexedGradientPreset &preset)
     g_indexed_gradient_applied = false;
 }
 
+/* ---- Saved gradient ramps, shared with the Sprite Ramp Gradient ------
+   Declared in ui_palette.h. The store stays private to this file; these hand
+   out plain floats so no other module has to know about ImVec4 or the file
+   format. */
+
+void EnsureGradientPresetsLoaded(void)
+{
+    LoadIndexedGradientPresets();
+}
+
+int GradientPresetCount(void)
+{
+    LoadIndexedGradientPresets();
+    return (int)g_indexed_gradient_presets.size();
+}
+
+const char *GradientPresetName(int idx)
+{
+    LoadIndexedGradientPresets();
+    if (idx < 0 || idx >= (int)g_indexed_gradient_presets.size()) return "";
+    return g_indexed_gradient_presets[idx].name.c_str();
+}
+
+int GradientPresetStops(int idx, float *out_rgb, int max_stops)
+{
+    LoadIndexedGradientPresets();
+    if (!out_rgb || max_stops <= 0) return 0;
+    if (idx < 0 || idx >= (int)g_indexed_gradient_presets.size()) return 0;
+    const std::vector<ImVec4> &colors = g_indexed_gradient_presets[idx].colors;
+    int n = (int)colors.size();
+    if (n > max_stops) n = max_stops;
+    for (int i = 0; i < n; i++) {
+        out_rgb[i * 3 + 0] = colors[i].x;
+        out_rgb[i * 3 + 1] = colors[i].y;
+        out_rgb[i * 3 + 2] = colors[i].z;
+    }
+    return n;
+}
+
+bool SaveGradientPreset(const char *name, const float *stops_rgb, int stop_count)
+{
+    LoadIndexedGradientPresets();
+    if (!name || !*name || !stops_rgb || stop_count < 2 || stop_count > 11)
+        return false;
+
+    IndexedGradientPreset preset;
+    preset.name = name;
+    for (int i = 0; i < stop_count; i++)
+        preset.colors.push_back(ImVec4(stops_rgb[i * 3 + 0],
+                                       stops_rgb[i * 3 + 1],
+                                       stops_rgb[i * 3 + 2], 1.0f));
+
+    /* Saving the same name twice replaces the ramp rather than stacking a
+       second swatch the artist cannot tell apart. */
+    for (IndexedGradientPreset &existing : g_indexed_gradient_presets) {
+        if (existing.name == preset.name) {
+            existing.colors = preset.colors;
+            return SaveIndexedGradientPresets();
+        }
+    }
+    g_indexed_gradient_presets.push_back(std::move(preset));
+    return SaveIndexedGradientPresets();
+}
+
 /* g_show_histogram is defined in ui_state.cpp */
 static float g_histogram_data[256] = {0};
 static float g_histogram_max = 0.0f;
