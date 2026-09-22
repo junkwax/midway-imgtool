@@ -114,6 +114,10 @@ set(IMGTOOL_SOURCES
     platform/palette_ramp.cpp
     platform/ramp_remap.cpp
     platform/sprite_gradient.cpp
+    platform/palette_transfer.cpp
+    platform/ui_ramp_transfer.cpp
+    platform/ui_alt_costume.cpp
+    platform/ui_palette_preview.cpp
     platform/world_render.cpp
     platform/bdd_bg.cpp
     platform/anipoint.cpp
@@ -293,7 +297,8 @@ add_test(NAME world_blit COMMAND world_blit_test)
 foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_level
                   anipoint_mirror tbl_diff img_util body_split gif_trim dma_pack
                   stamp_erase bdd_bg document reaction_class strike_bind
-                  digitize_matte palette_ramp material_mask sprite_gradient)
+                  digitize_matte palette_ramp material_mask sprite_gradient
+                  palette_transfer)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp

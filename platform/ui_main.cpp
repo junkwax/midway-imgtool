@@ -34,6 +34,8 @@
 #include "mk2_fatality.h"
 #include "ui_bodysplit.h"
 #include "digitize_import.h"
+#include "ui_ramp_transfer.h"
+#include "ui_alt_costume.h"
 #include "ui_autochop.h"
 #include "ui_stamp_erase.h"
 #include "dma_pack.h"
@@ -1573,6 +1575,18 @@ void DrawMainLayout(void)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Mark the source palette, select the target palette.\n"
                 "Sprites using the target are remapped to the nearest source colors.");
+            if (ImGui::MenuItem("Transfer to Palette by Ramps...", NULL, false, g_doc->ilselected >= 0))
+                OpenRampTransferDialog();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Move the selected sprite's frames onto another palette whose\n"
+                "ramps sit in different slots (e.g. MK3 art onto an MK2 palette).\n"
+                "Each ramp maps onto its paired ramp, so shading survives and no\n"
+                "color jumps between arms, skin and outfit.");
+            if (ImGui::MenuItem("Alternate Costume..."))       OpenAltCostumeDialog();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Copy the palette and recolor only the ramps you pick (the\n"
+                "cloth, a trim) to a new color, keeping their shading: how the\n"
+                "red and blue versions of a costume differ.");
             if (ImGui::MenuItem("Merge Duplicate Palettes"))      MergeDuplicatePalettes();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "Finds byte-identical palettes and remaps sprites using later\n"
@@ -3406,6 +3420,9 @@ void DrawMainLayout(void)
     DrawPaletteSingleColorDialog();
 
     DrawIndexedGradientDialog();
+
+    DrawRampTransferDialog();
+    DrawAltCostumeDialog();
 
     DrawPaletteReduceDialog();
 

@@ -286,3 +286,40 @@ double RampPopulationRMS(const RampSample *samples, int n,
     if (tw <= 0.0) return 0.0;
     return std::sqrt(se / tw);
 }
+
+int ColorizeRamp(const RampColor *in, int count,
+                 unsigned char r8, unsigned char g8, unsigned char b8,
+                 double strength, RampColor *out)
+{
+    if (!in || !out || count <= 0) return 0;
+    if (strength < 0.0) strength = 0.0;
+    if (strength > 1.0) strength = 1.0;
+
+    const double t[3] = { (double)r8, (double)g8, (double)b8 };
+    const double ty = 0.30 * t[0] + 0.59 * t[1] + 0.11 * t[2];
+
+    for (int i = 0; i < count; i++) {
+        const RampColor c = in[i];
+        const double src[3] = {
+            (double)((c.r << 3) | (c.r >> 2)),
+            (double)((c.g << 3) | (c.g >> 2)),
+            (double)((c.b << 3) | (c.b >> 2)),
+        };
+        const double y = 0.30 * src[0] + 0.59 * src[1] + 0.11 * src[2];
+
+        RampColor o;
+        unsigned char *ch[3] = { &o.r, &o.g, &o.b };
+        for (int k = 0; k < 3; k++) {
+            double v;
+            if (ty <= 0.0)         v = y;                                   /* black pick: gray ramp */
+            else if (y <= ty)      v = t[k] * (y / ty);                     /* black -> pick */
+            else if (ty >= 255.0)  v = y;
+            else                   v = 255.0 - (255.0 - t[k]) * ((255.0 - y) / (255.0 - ty));  /* pick -> white */
+            v = src[k] + (v - src[k]) * strength;
+            int q = (int)std::lround(v * 31.0 / 255.0);
+            *ch[k] = (unsigned char)(q < 0 ? 0 : (q > 31 ? 31 : q));
+        }
+        out[i] = o;
+    }
+    return count;
+}

@@ -114,4 +114,22 @@ int FitRampLloyd(const RampSample *samples, int n, int count,
 double RampPopulationRMS(const RampSample *samples, int n,
                          const RampColor *ramp, int count);
 
+/* Recolor a fitted ramp to a hue the footage never had, the documentary's
+   luminance/chrominance split run backwards: each entry KEEPS its own
+   luminance (the footage's shading) and takes its chroma from `r8,g8,b8`.
+
+   The ramp walks black -> the picked color -> white by luminance: an entry as
+   bright as the picked color becomes exactly it, darker entries scale toward
+   black, brighter ones toward white. That keeps every channel in range with
+   no clipping, and it is the shape the shipped ramps have (REDS, RADBLU_P's
+   cloth): saturation peaks mid-ramp and falls off into shadow and highlight.
+   Because luminance is preserved, frames already remapped against the
+   untinted ramp (ramp_remap.h picks by luminance) keep the same indices.
+
+   `strength` 0..1 blends from the original entry (0) to the recolored one
+   (1). `in` and `out` may alias. Returns `count`. */
+int ColorizeRamp(const RampColor *in, int count,
+                 unsigned char r8, unsigned char g8, unsigned char b8,
+                 double strength, RampColor *out);
+
 #endif /* PLATFORM_PALETTE_RAMP_H */

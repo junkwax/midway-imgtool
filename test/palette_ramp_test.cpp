@@ -169,8 +169,65 @@ static void rms_empty_population_is_zero(void)
     CHECK(RampPopulationRMS(zero, 1, ramp, 1) == 0.0);
 }
 
+/* ---- ColorizeRamp ---- */
+
+static double luma5(RampColor c)
+{
+    const int r = (c.r << 3) | (c.r >> 2), g = (c.g << 3) | (c.g >> 2), b = (c.b << 3) | (c.b >> 2);
+    return 0.30 * r + 0.59 * g + 0.11 * b;
+}
+
+static void colorize_keeps_each_entrys_luminance(void)
+{
+    RampColor gray[8];
+    for (int i = 0; i < 8; i++) { int v = 2 + i * 4; gray[i] = { (unsigned char)v, (unsigned char)v, (unsigned char)v }; }
+    RampColor out[8];
+    CHECK(ColorizeRamp(gray, 8, 40, 90, 220, 1.0, out) == 8);
+    for (int i = 0; i < 8; i++)
+        CHECK(std::fabs(luma5(out[i]) - luma5(gray[i])) < 9.0);   /* within 5-bit rounding */
+    for (int i = 1; i < 8; i++) CHECK(luma5(out[i]) >= luma5(out[i - 1]));   /* order survives */
+}
+
+static void colorize_takes_the_picked_hue(void)
+{
+    RampColor gray[3] = { {8, 8, 8}, {14, 14, 14}, {22, 22, 22} };
+    RampColor out[3];
+    ColorizeRamp(gray, 3, 30, 60, 230, 1.0, out);   /* a blue */
+    for (int i = 0; i < 3; i++) CHECK(out[i].b > out[i].g && out[i].g >= out[i].r);
+}
+
+static void colorize_pins_black_and_white_and_hits_the_pick_at_its_brightness(void)
+{
+    RampColor ends[2] = { {0, 0, 0}, {31, 31, 31} };
+    RampColor out[2];
+    ColorizeRamp(ends, 2, 200, 40, 40, 1.0, out);
+    CHECK(out[0].r == 0 && out[0].g == 0 && out[0].b == 0);
+    CHECK(out[1].r == 31 && out[1].g == 31 && out[1].b == 31);
+
+    /* An entry exactly as bright as the pick comes out as the pick. */
+    RampColor pick5 = { 25, 5, 5 };
+    const int pr = (25 << 3) | (25 >> 2), pg = (5 << 3) | (5 >> 2);
+    RampColor out1;
+    ColorizeRamp(&pick5, 1, (unsigned char)pr, (unsigned char)pg, (unsigned char)pg, 1.0, &out1);
+    CHECK(out1.r == 25 && out1.g == 5 && out1.b == 5);
+}
+
+static void colorize_strength_zero_is_identity_and_aliasing_works(void)
+{
+    RampColor ramp[3] = { {3, 9, 4}, {12, 20, 9}, {28, 30, 20} };
+    RampColor copy[3] = { ramp[0], ramp[1], ramp[2] };
+    ColorizeRamp(ramp, 3, 255, 0, 0, 0.0, ramp);
+    for (int i = 0; i < 3; i++)
+        CHECK(ramp[i].r == copy[i].r && ramp[i].g == copy[i].g && ramp[i].b == copy[i].b);
+    CHECK(ColorizeRamp(nullptr, 3, 1, 2, 3, 1.0, ramp) == 0);
+}
+
 int main(void)
 {
+    colorize_keeps_each_entrys_luminance();
+    colorize_takes_the_picked_hue();
+    colorize_pins_black_and_white_and_hits_the_pick_at_its_brightness();
+    colorize_strength_zero_is_identity_and_aliasing_works();
     colorword_checks();
     linear_reproduces_even_gray_ramp();
     linear_asking_for_more_than_the_population_has_dedups();

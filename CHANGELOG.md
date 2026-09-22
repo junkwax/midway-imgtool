@@ -10,6 +10,49 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### Sprites can move onto a palette whose ramps sit elsewhere
+
+**Palette > Transfer to Palette by Ramps...** moves a sprite's frames onto a
+different palette laid out differently, the MK3-art-on-an-MK2-palette case where
+the same character keeps its arms, skin and outfit in different slots with a
+different number of shades. Inherit Colors from Marked matched by nearest color
+over the whole palette, so a bright outfit highlight could land in the skin ramp.
+
+Both palettes are split into ramps and each source ramp is paired with the
+target ramp of the same hue. You can change any pairing from a dropdown. Every
+shade then maps only within its paired ramp. **Relative** stretches the ramp's
+darkest-to-lightest range onto the target's, for games that light a material
+differently. **Match brightness** takes the nearest shade outright. Slots outside
+any ramp fall back to the nearest color. The dialog shows a before/after preview
+of the selected sprite and a pixel count per ramp. It applies to the selected,
+marked or all sprites on the source palette in one undo step, and leaves both
+palettes untouched. Mapping logic lives in `platform/palette_transfer.{h,cpp}`,
+unit-tested in `test/palette_transfer_test.cpp`.
+
+### Digitized footage can be colored, and any palette can get an alternate costume
+
+Midway split each digitized frame into brightness and color, built one ramp per
+material, and made costume variants by swapping a single ramp. RADRED_P and
+RADBLU_P share 46 of their 64 slots. The Digitize Import wizard already covered
+the first two steps. These two changes cover recoloring.
+
+**Recolor, per material, in Import Digitized Frame(s).** Tick it, pick a color,
+and that material's ramp keeps the footage's shading while taking the new hue:
+dark shades run toward black, highlights toward white, and a shade as bright as
+the picked color becomes exactly that color. You can film a plain costume and
+color it here. The Result view updates live. Frames are still remapped against
+the untinted ramp, and because brightness is preserved the tint never changes a
+pixel's index. **Amount** blends between the footage color and the new one.
+
+**Palette > Alternate Costume...** copies the selected palette and recolors only
+the ramps you tick, the cloth or a trim, with the same brightness-preserving
+rule. It shows pixel counts per ramp and a before/after preview. The source
+palette and all sprite pixels are left alone. The new palette can be assigned to
+no sprites, the selected one, the marked ones, or every sprite on the source.
+
+The recolor lives in `ColorizeRamp` (`platform/palette_ramp.{h,cpp}`), with
+tests in `test/palette_ramp_test.cpp`.
+
 ### A 2bpp sprite can be spread across a 6bpp gradient
 
 Neither gradient tool could change a sprite's bit depth. The Opacity Gradient
@@ -18,7 +61,7 @@ Gradient fits a ramp onto the palette slots the art already uses. A 2bpp sprite
 has three opaque indices before either one runs and three after, so its shading
 has three steps and stays that way.
 
-**Image > Sprite Ramp Gradient...** is the third corner: it sweeps a direction
+**Operations > Sprite Ramp Gradient...** is the third corner: it sweeps a direction
 and writes a *new index* off a ramp long enough to change what the sprite packs
 at. LOAD2 picks a sprite's depth from the largest index the art actually uses
 (`do_superbpp`, modelled in `dma_pack.h`), so laying a 60-colour ramp into free

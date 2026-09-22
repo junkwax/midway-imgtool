@@ -66,6 +66,15 @@ struct DigitizeMaterial {
        this material is pinned to. Ignored in New-Palette mode. */
     int match_start = 0;
     int match_count = 0;
+
+    /* New-Palette mode only: recolor this material's fitted ramp to a hue
+       the footage never had (palette_ramp.h's ColorizeRamp) — keeps the
+       shading, swaps the color. Applied to the output palette words only;
+       frames are remapped against the untinted ramp, which picks by
+       luminance, so the tint never changes a pixel's index. */
+    bool  tint_on = false;
+    float tint_rgb[3] = { 0.75f, 0.15f, 0.15f };
+    float tint_strength = 1.0f;
 };
 
 enum DigitizePaletteMode { PaletteMode_New = 0, PaletteMode_MatchExisting };
@@ -271,6 +280,34 @@ static void FitAllRamps(void)
     for (size_t i = 0; i < g_session.frames.size(); i++) ProcessFrame((int)i);
 }
 
+/* The palette as it will be written: the assembled words, with every tinted
+   material's span recolored. Match-Existing mode is never tinted — its
+   colors ARE the target palette's. */
+static void BuildOutputWords(unsigned short out[256])
+{
+    std::memcpy(out, g_session.assembled.words, 256 * sizeof(unsigned short));
+    if (g_session.palette_mode != PaletteMode_New) return;
+    for (int s = 0; s < g_session.assembled.span_count; s++) {
+        const AssembledPalette::Span &span = g_session.assembled.spans[s];
+        const DigitizeMaterial *m = nullptr;
+        for (auto &mm : g_session.materials) if (mm.id == span.material_id) { m = &mm; break; }
+        if (!m || !m->tint_on || span.count <= 0 || span.start + span.count > 256) continue;
+        RampColor ramp[RAMP_REMAP_MAX_RAMP_COLORS];
+        const int n = std::min(span.count, RAMP_REMAP_MAX_RAMP_COLORS);
+        for (int k = 0; k < n; k++) {
+            const unsigned short w = out[span.start + k];
+            ramp[k] = { (unsigned char)((w >> 10) & 0x1F), (unsigned char)((w >> 5) & 0x1F),
+                        (unsigned char)(w & 0x1F) };
+        }
+        ColorizeRamp(ramp, n,
+                     (unsigned char)std::lround(m->tint_rgb[0] * 255.0f),
+                     (unsigned char)std::lround(m->tint_rgb[1] * 255.0f),
+                     (unsigned char)std::lround(m->tint_rgb[2] * 255.0f),
+                     m->tint_strength, ramp);
+        for (int k = 0; k < n; k++) out[span.start + k] = RampColorWord(ramp[k]);
+    }
+}
+
 static std::vector<unsigned short> DecodePalWords(const PAL *pal)
 {
     std::vector<unsigned short> words;
@@ -372,10 +409,12 @@ static void CommitImport(void)
         pal->bitspix = (unsigned char)PaletteBppForColorCount(g_session.assembled.numc);
         pal->data_p  = PoolAlloc((size_t)g_session.assembled.numc * 2);
         if (pal->data_p) {
+            unsigned short words[256];
+            BuildOutputWords(words);
             unsigned char *pb = (unsigned char *)pal->data_p;
             for (int i = 0; i < g_session.assembled.numc; i++) {
-                pb[i*2+0] = (unsigned char)(g_session.assembled.words[i] & 0xFF);
-                pb[i*2+1] = (unsigned char)(g_session.assembled.words[i] >> 8);
+                pb[i*2+0] = (unsigned char)(words[i] & 0xFF);
+                pb[i*2+1] = (unsigned char)(words[i] >> 8);
             }
         }
         std::string pname = (g_session.frames.empty() ? std::string("DIGI") : g_session.frames[0].name) + "P";
@@ -522,12 +561,14 @@ static void RebuildViewBuffers(void)
     }
 
     /* ViewResult */
+    unsigned short out_words[256];
+    BuildOutputWords(out_words);
     g_view_rgb.assign(n * 3, 0);
     g_view_alpha.assign(n, 0);
     for (size_t i = 0; i < n; i++) {
         const unsigned char idx = i < f.indices.size() ? f.indices[i] : 0;
         if (idx == 0) continue;
-        const unsigned short w15 = g_session.assembled.words[idx];
+        const unsigned short w15 = out_words[idx];
         const int r5 = (w15 >> 10) & 0x1F, g5 = (w15 >> 5) & 0x1F, b5 = w15 & 0x1F;
         g_view_rgb[i*3+0] = (unsigned char)((r5 << 3) | (r5 >> 2));
         g_view_rgb[i*3+1] = (unsigned char)((g5 << 3) | (g5 >> 2));
@@ -825,6 +866,20 @@ void DrawDigitizeImportDialog(void)
             const char *modes[] = { "Auto", "Linear", "Lloyd" };
             ImGui::SetNextItemWidth(80.0f);
             ImGui::Combo("##fitmode", &m.fit_mode, modes, 3);
+
+            ImGui::Checkbox("Recolor", &m.tint_on);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Keep this material's shading from the footage but give\n"
+                                  "it a new color: every shade keeps its brightness and\n"
+                                  "takes the picked hue, dark shades toward black and\n"
+                                  "highlights toward white. Film a plain costume, color it here.");
+            if (m.tint_on) {
+                ImGui::SameLine();
+                ImGui::ColorEdit3("##tint", m.tint_rgb, ImGuiColorEditFlags_NoInputs);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::SliderFloat("##tintamt", &m.tint_strength, 0.0f, 1.0f, "Amount %.2f");
+            }
         }
         ImGui::PopID();
     }
