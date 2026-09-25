@@ -422,6 +422,8 @@ extern int g_smudge_brush;
 extern int g_smudge_strength;
 extern int g_content_erase_brush;
 extern int g_content_erase_passes;
+/* Radius slider of the active tool if it paints with a round brush, else NULL. */
+int *ActiveToolBrush(void);
 /* Last brush position, so smudge knows which way the stroke is travelling. */
 extern int g_smudge_last_x;
 extern int g_smudge_last_y;
@@ -528,6 +530,11 @@ struct CopiedImage {
     bool           has_palette;
     unsigned short palette_numc;
     unsigned char  palette_data[512];
+    /* The source palette's header, so a paste into another IMG can recreate
+       the palette itself instead of pointing at whatever sits at palnum. */
+    char           palette_name[10];
+    unsigned char  palette_flags;
+    unsigned char  palette_bitspix;
     char           source_name[16];
     char           src_filename[16];
 };
@@ -746,6 +753,13 @@ std::string Mk2BoundStrikeFor(const char *anim_label);
 void selection_begin_add_drag(int sw, int sh, bool add);
 void selection_finish_add_drag(int sw, int sh);
 bool BuildClipboardPaletteMap(const PAL *target_pal, unsigned char map[256]);
+/* The g_doc palette index a sprite copied with palette `src` should use: an
+   identical palette already here (`prefer_idx` first, then a same-named one,
+   then any), otherwise a new copy appended to g_doc (renamed if its name is
+   taken by different colors). -1 when a new palette cannot be allocated. */
+int  ResolvePastedPalette(const PAL *src, int prefer_idx, bool *out_created);
+/* LKALT_P -> LKALT1_P, first name not already used in g_doc (ui_palette.cpp). */
+void make_numbered_pal_name(const char *base, char out[10]);
 bool paste_preview_rgba(unsigned char src_ci, unsigned char dst_ci, const PAL *target_pal, const unsigned char pal_map[256], bool remap_palette, int x, int y, int *r, int *g, int *b, int *a);
 void undo_push(void);
 extern const PasteBlendMode k_paste_blend_modes[14];
@@ -842,6 +856,16 @@ void DrawSpriteTransformMenuItems(void);
 void RequestDeleteImage(int idx);
 int CountMarkedImages(void);
 void RequestDeleteMarkedImages(void);
+/* Split Marked to New IMG (ui_main.cpp). The count includes subframes of
+   marked parents, which move with them; `subframes_out` reports those alone. */
+int  CountSplitMarkedImages(int *subframes_out);
+bool SplitMarkedToImg(const char *full_path);
+/* Copy/Paste Marked (ui_main.cpp): a sprite clipboard, separate from the pixel
+   clipboard, holding whole marked sprites plus the palettes they use. It
+   survives File > New/Open, so marked art can be carried into another IMG. */
+int  CopyMarkedSprites(void);
+int  PasteMarkedSprites(void);
+int  MarkedSpriteClipboardCount(void);
 
 struct SpriteCleanupOptions;
 void LabeledValue(const char *label, const char *fmt, ...);

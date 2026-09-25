@@ -10,6 +10,72 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### Every brush tool shows its size on the canvas
+
+Before, only Pencil drew its brush outline. Variant Paint, Clone Stamp, Blur,
+Smudge and Content-Aware Erase now draw it too. Clone Stamp shows the outline
+before you Alt-click a source. The ring now goes around the outer edge of the
+pixels the brush covers. Before, it cut through the outermost row. `[` and `]`
+resize the brush of any of these tools, not just Pencil and Variant Paint.
+
+### Copied sprites bring their palette into another IMG
+
+**Paste as New Sprite** (Ctrl+Shift+V) now brings the copied sprite's palette
+with it. Before, the new sprite kept the source's palette *number*, so in
+another IMG it drew with whatever palette was at that number, or with none.
+Now, if this IMG already has a palette with the same colors, the sprite uses
+that one. If not, a copy of the palette is added. If the name is already taken
+by a palette with different colors, the copy gets a numbered name
+(LKALT_P -> LKALT1_P).
+
+**Edit > Copy Marked Sprites / Paste Marked Sprites** (also in the sprite
+list's right-click menu) copies every marked sprite, with its subframes and
+the palettes it uses, and pastes them all into another IMG in one step.
+Palettes are matched or added as above. A pasted sprite whose name is already
+in the file gets a CPY suffix. The copy survives File > New and Open, and the
+paste is one undo step.
+
+### Split marked sprites into the next IMG in the series
+
+**File > Split Marked to New IMG...** (also in the Image menu, the sprite
+list's right-click menu, and Bulk Operations) moves the marked sprites into a
+new IMG file. The name it suggests is the next file in the series: from
+CAGE4.IMG it offers CAGE5.IMG, or CAGE6.IMG if CAGE5 already exists. Zero
+padding and the 8.3 limit are kept (CAGE09 -> CAGE10).
+
+- Subframes of a marked parent move with it, the same family Delete Marked
+  asks about.
+- The new file gets only the palettes those sprites use, in their original
+  order. It gets no sequences, scripts or damage table, because those point at
+  the source file's sprites by position.
+- It never overwrites an existing file.
+- The sprites are removed from the open file as one undo step. The open file
+  is marked unsaved and is not saved for you; the new file is already on disk.
+
+### A costume can borrow its colors from another game's palette
+
+The MK2 ninjas share one set of sprites; SCORP_P, SUB_P and REP_P differ only in
+the gear ramp, slots 1-32. Adding UMK3's Rain means a new palette in that layout
+whose gear takes RAIN1_P's purples, which sit at 31-48 in a different number of
+shades. **Palette > Alternate Costume...** now has a second color source,
+**Borrow from palette**, which does that.
+
+Matching the ramps by brightness would turn Rain white. MK2's gear is lit high:
+slots 1-13 are near white and cover ~40% of the gear pixels, while RAIN1's only
+near-white shade is a specular covering 0.5% of UMK3's. So shades are matched by
+**pixel coverage**. The shade covering the brightest 10% of this palette's
+costume pixels takes the color covering the brightest 10% of the reference's,
+blended between neighboring reference shades so that 32 slots stay 32 distinct
+steps. Coverage counts every sprite on the palette and on its costume siblings,
+since RAIN1_P has only two sprites of its own.
+
+Both slot ranges are pre-filled with the slots where a palette differs from its
+close siblings. RAIN1_P's flat fill at 49-63 (the pants, a single color) is
+trimmed off. On NINJAS8 + PURPRAIN this gives 1-32 and 31-48 with no editing. A
+third preview pane shows a reference sprite. The mapping lives in
+`BorrowRampByCoverage` and `FindCostumeRun` (`platform/palette_transfer.{h,cpp}`),
+with tests in `test/palette_transfer_test.cpp`.
+
 ### Sprites can move onto a palette whose ramps sit elsewhere
 
 **Palette > Transfer to Palette by Ramps...** moves a sprite's frames onto a

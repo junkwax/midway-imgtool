@@ -883,8 +883,8 @@ void DrawMainLayout(void)
                             ? ActiveTool::None : ActiveTool::CloneStamp;
     }
     /* [ and ] do double duty depending on context:
-         - Pencil active: [ shrinks brush, ] grows brush (Photoshop convention).
-         - Otherwise:     [ Set Palette for Marked, ] Set for Image
+         - Brush tool active: [ shrinks brush, ] grows brush (Photoshop convention).
+         - Otherwise:         [ Set Palette for Marked, ] Set for Image
                           (matches the menu-item hint advertised next to those entries).
        Other one-key palette shortcuts advertised in the menus:
          *        — Merge Marked Palettes into Selected
@@ -892,8 +892,7 @@ void DrawMainLayout(void)
          Del      — Delete selected palette
        All of these were previously advertised in tooltips but never actually
        wired; they're real shortcuts now. */
-    if (g_active_tool == ActiveTool::Pencil || g_active_tool == ActiveTool::VariantPaint) {
-        int *brush = (g_active_tool == ActiveTool::VariantPaint) ? &g_variant_brush : &g_pencil_brush;
+    if (int *brush = ActiveToolBrush()) {
         if (ImGui::Shortcut(ImGuiKey_LeftBracket,  route))
             { if (*brush > 1)  (*brush)--; }
         if (ImGui::Shortcut(ImGuiKey_RightBracket, route))
@@ -1130,6 +1129,11 @@ void DrawMainLayout(void)
             }
             if (ImGui::MenuItem("Save",    "Ctrl+S")) OpenFileDialog(FileDialogMode::SaveImg);
             if (ImGui::MenuItem("Append"))            OpenFileDialog(FileDialogMode::AppendImg);
+            if (ImGui::MenuItem("Split Marked to New IMG...", NULL, false, CountMarkedImages() > 0))
+                OpenFileDialog(FileDialogMode::SplitMarkedImg);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Move the marked sprites (and their subframes) into a new IMG,\n"
+                                  "named as the next file in the series: CAGE4.IMG -> CAGE5.IMG.");
             if (ImGui::MenuItem("Open LOD..."))       RequestOpenLodDialog();
             ImGui::Separator();
             if (ImGui::BeginMenu("Import")) {
@@ -1211,6 +1215,22 @@ void DrawMainLayout(void)
                 paste_image();
             if (ImGui::MenuItem("Paste as New Sprite", "Ctrl+Shift+V", false, g_clipboard.valid))
                 PasteClipboardAsNewImage();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(
+                "Adds the clipboard as a new sprite. Its palette comes with it:\n"
+                "an identical palette in this IMG is reused, otherwise a copy is added.");
+            if (ImGui::MenuItem("Copy Marked Sprites", NULL, false, CountMarkedImages() > 0))
+                CopyMarkedSprites();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(
+                "Copy every marked sprite (and its subframes) with the palettes they\n"
+                "use. The copy survives File > New and Open, so it can be pasted\n"
+                "into another IMG with Paste Marked Sprites.");
+            {
+                int held = MarkedSpriteClipboardCount();
+                char label[64];
+                if (held > 0) snprintf(label, sizeof(label), "Paste Marked Sprites (%d)", held);
+                else          snprintf(label, sizeof(label), "Paste Marked Sprites");
+                if (ImGui::MenuItem(label, NULL, false, held > 0)) PasteMarkedSprites();
+            }
             ImGui::MenuItem("Add Pasted Colors to Palette", NULL, &g_paste_import_colors);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                 "When the clipboard came from another palette, copy the colors it\n"
@@ -1546,6 +1566,7 @@ void DrawMainLayout(void)
             ImGui::Separator();
             if (ImGui::MenuItem("Rename Marked"))                            OpenRenameMarkedImages();
             if (ImGui::MenuItem("Delete Marked"))                            RequestDeleteMarkedImages();
+            if (ImGui::MenuItem("Split Marked to New IMG..."))               OpenFileDialog(FileDialogMode::SplitMarkedImg);
             if (ImGui::MenuItem("Set Palette for Marked", "["))              SetPaletteOfMarked();
             ImGui::PopStyleVar();
             ImGui::EndMenu();
@@ -2197,6 +2218,17 @@ void DrawMainLayout(void)
                         if (ImGui::MenuItem("Delete"))        RequestDeleteImage(g_doc->ilselected);
                         if (ImGui::MenuItem("Delete Marked", NULL, false, CountMarkedImages() > 0))
                             RequestDeleteMarkedImages();
+                        if (ImGui::MenuItem("Split Marked to New IMG...", NULL, false, CountMarkedImages() > 0))
+                            OpenFileDialog(FileDialogMode::SplitMarkedImg);
+                        if (ImGui::MenuItem("Copy Marked Sprites", NULL, false, CountMarkedImages() > 0))
+                            CopyMarkedSprites();
+                        {
+                            int held = MarkedSpriteClipboardCount();
+                            char label[64];
+                            if (held > 0) snprintf(label, sizeof(label), "Paste Marked Sprites (%d)", held);
+                            else          snprintf(label, sizeof(label), "Paste Marked Sprites");
+                            if (ImGui::MenuItem(label, NULL, false, held > 0)) PasteMarkedSprites();
+                        }
                         ImGui::Separator();
                         if (ImGui::MenuItem("Build TGA"))     OpenFileDialog(FileDialogMode::ExportTga);
                         if (ImGui::MenuItem("Set Palette"))   SetPaletteOfSelected();
@@ -2605,6 +2637,7 @@ void DrawMainLayout(void)
                     if (ImGui::MenuItem("Bulk Resize Marked...")) OpenBulkResizeDialog();
                     if (ImGui::MenuItem("Bulk Rename Marked...")) OpenRenameMarkedImages();
                     if (ImGui::MenuItem("Delete Marked Sprites")) RequestDeleteMarkedImages();
+                    if (ImGui::MenuItem("Split Marked to New IMG...")) OpenFileDialog(FileDialogMode::SplitMarkedImg);
                     if (n_marked_imgs == 0) ImGui::EndDisabled();
                     ImGui::EndMenu();
                 }
@@ -3803,6 +3836,363 @@ void RequestDeleteMarkedImages(void)
     g_pending_delete_base_indices = base;
     g_pending_delete_subframe_indices = extra;
     g_show_delete_images_confirm = true;
+}
+
+
+/* ---- Split Marked to New IMG ----
+ * The marked sprites, plus any subframes of a marked parent (the same family
+ * Delete Marked asks about), in document order. Subframes ride along because
+ * leaving them behind orphans them from the parent they were cut from. */
+static std::vector<int> CollectSplitMarkedIndices(int *subframes_out)
+{
+    std::vector<int> base;
+    int idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if (img->flags & 1) base.push_back(idx);
+    }
+    NormalizeImageDeleteIndices(&base);
+
+    std::vector<int> extra;
+    CollectExtraSubframeIndices(base, &extra, NULL);
+    if (subframes_out) *subframes_out = (int)extra.size();
+    base.insert(base.end(), extra.begin(), extra.end());
+    NormalizeImageDeleteIndices(&base);
+    return base;
+}
+
+int CountSplitMarkedImages(int *subframes_out)
+{
+    return (int)CollectSplitMarkedIndices(subframes_out).size();
+}
+
+static bool CloneBlockForSplit(const void *src, size_t n, void **out)
+{
+    *out = NULL;
+    if (!src || n == 0) return true;
+    *out = malloc(n);
+    if (!*out) return false;
+    memcpy(*out, src, n);
+    return true;
+}
+
+/* A standalone copy of one sprite, detached from any chain. The load-time
+   baseline is dropped: it only serves in-session bulk restore, never the file. */
+static IMG *CloneImgForSplit(const IMG *src)
+{
+    IMG *dst = (IMG *)calloc(1, sizeof(IMG));
+    if (!dst) return NULL;
+    *dst = *src;
+    dst->nxt_p = NULL;
+    dst->data_p = NULL;
+    dst->pttbl_p = NULL;
+    dst->opaltbl_p = NULL;
+    dst->baseline_p = NULL;
+    dst->baseline_w = dst->baseline_h = 0;
+    dst->temp = NULL;
+    dst->layer_p = NULL;
+    size_t px = (size_t)(((unsigned int)src->w + 3) & ~3u) * src->h;
+    if (!CloneBlockForSplit(src->data_p, px, &dst->data_p) ||
+        !CloneBlockForSplit(src->pttbl_p, 40, &dst->pttbl_p) ||
+        !CloneBlockForSplit(src->opaltbl_p, 16, &dst->opaltbl_p) ||
+        !CloneBlockForSplit(src->layer_p, LayerBlockBytesFromHeader(src->layer_p),
+                            &dst->layer_p)) {
+        FreeImg(dst);
+        return NULL;
+    }
+    /* The split file is a fresh start, not a continuation of this selection. */
+    dst->flags &= (unsigned short)~1u;
+    return dst;
+}
+
+/* Move the marked sprites (and their subframes) out of the active document
+ * into a new IMG at `full_path`, then remove them here as one undo step.
+ *
+ * The new file carries only the palettes those sprites use, renumbered in
+ * their original order. It gets no sequences, scripts, or damage table: those
+ * reference the source file's sprites by position and would point at the
+ * wrong frames. The source is left dirty, not saved — the split file is on
+ * disk, and saving the trimmed source is the user's call. */
+bool SplitMarkedToImg(const char *full_path)
+{
+    int subframes = 0;
+    std::vector<int> indices = CollectSplitMarkedIndices(&subframes);
+    if (indices.empty()) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Split: no sprites are marked.");
+        g_restore_msg_timer = 4.0f;
+        return false;
+    }
+
+    std::string path = full_path ? full_path : "";
+    size_t sep = path.find_last_of("\\/");
+    std::string dir  = (sep == std::string::npos) ? std::string(".") : path.substr(0, sep);
+    std::string file = (sep == std::string::npos) ? path : path.substr(sep + 1);
+    if (file.empty() || file.size() > 12) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Split: \"%.40s\" is not a DOS 8.3 name.", file.c_str());
+        g_restore_msg_timer = 5.0f;
+        return false;
+    }
+    /* No overwrite: the likely collision is the next file in the series,
+       which is someone's art. */
+    if (FILE *probe = fopen(path.c_str(), "rb")) {
+        fclose(probe);
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Split: %.40s already exists. Pick a new name.", file.c_str());
+        g_restore_msg_timer = 5.0f;
+        return false;
+    }
+
+    Document split;
+    memset(&split, 0, sizeof(split));
+    split.file_bufscr[0] = split.file_bufscr[1] = 0xFF;
+    split.file_bufscr[2] = split.file_bufscr[3] = 0xFF;
+    split.ilselected = split.il2selected = split.plselected = split.ilpalloaded = -1;
+    split.fileversion = g_doc->fileversion;
+    snprintf(split.fpath_s, sizeof(split.fpath_s), "%s", dir.c_str());
+    for (size_t i = 0; i < file.size(); i++)
+        split.fname_s[i] = (char)toupper((unsigned char)file[i]);
+
+    /* Palettes the moving sprites use, kept in source order. */
+    std::vector<int> pal_map((size_t)g_doc->palcnt, -1);
+    for (int idx : indices) {
+        IMG *img = get_img(idx);
+        if (img && img->palnum < g_doc->palcnt) pal_map[img->palnum] = 0;
+    }
+
+    bool ok = true;
+    PAL **pal_tail = (PAL **)&split.pal_p;
+    int pal_idx = 0;
+    for (PAL *pal = (PAL *)g_doc->pal_p; pal && ok; pal = (PAL *)pal->nxt_p, pal_idx++) {
+        if (pal_map[(size_t)pal_idx] < 0) continue;
+        PAL *copy = (PAL *)calloc(1, sizeof(PAL));
+        if (!copy) { ok = false; break; }
+        *copy = *pal;
+        copy->nxt_p = NULL;
+        copy->temp = NULL;
+        copy->data_p = NULL;
+        if (!CloneBlockForSplit(pal->data_p, (size_t)pal->numc * 2, &copy->data_p)) {
+            FreePal(copy);
+            ok = false;
+            break;
+        }
+        pal_map[(size_t)pal_idx] = (int)split.palcnt;
+        *pal_tail = copy;
+        pal_tail = (PAL **)&copy->nxt_p;
+        split.palcnt++;
+    }
+
+    IMG **img_tail = (IMG **)&split.img_p;
+    for (size_t i = 0; i < indices.size() && ok; i++) {
+        IMG *copy = CloneImgForSplit(get_img(indices[i]));
+        if (!copy) { ok = false; break; }
+        if (copy->palnum < g_doc->palcnt) copy->palnum = (unsigned short)pal_map[copy->palnum];
+        *img_tail = copy;
+        img_tail = (IMG **)&copy->nxt_p;
+        split.imgcnt++;
+    }
+
+    if (ok) {
+        /* SaveImgFile writes whatever g_doc names; point it at the split
+           document just for the write. */
+        Document *source = g_doc;
+        g_doc = &split;
+        SaveImgFile();
+        g_doc = source;
+
+        FILE *check = fopen(path.c_str(), "rb");
+        ok = check != NULL;
+        if (check) fclose(check);
+    }
+
+    for (IMG *img = (IMG *)split.img_p; img; ) {
+        IMG *next = (IMG *)img->nxt_p;
+        FreeImg(img);
+        img = next;
+    }
+    for (PAL *pal = (PAL *)split.pal_p; pal; ) {
+        PAL *next = (PAL *)pal->nxt_p;
+        FreePal(pal);
+        pal = next;
+    }
+
+    if (!ok) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Split: could not write %.40s. Nothing was removed.", file.c_str());
+        g_restore_msg_timer = 5.0f;
+        return false;
+    }
+
+    int moved = DeleteImagesByIndices(indices);
+    mark_dirty();
+    RecentAdd(path);
+    if (subframes > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Split %d sprite%s (%d subframe%s) to %s. Save this file to keep the removal.",
+                 moved, moved == 1 ? "" : "s", subframes, subframes == 1 ? "" : "s",
+                 split.fname_s);
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Split %d sprite%s to %s. Save this file to keep the removal.",
+                 moved, moved == 1 ? "" : "s", split.fname_s);
+    }
+    g_restore_msg_timer = 6.0f;
+    return true;
+}
+
+
+/* ---- Copy / Paste Marked Sprites ----
+ * Detached copies of the marked sprites (plus subframes, same set as Split)
+ * and of each palette they use. Held outside any Document, so File > New or
+ * Open leaves it intact and the sprites can be pasted into another IMG. Each
+ * sprite's palnum indexes s_marked_clip_pals, not a document. */
+static std::vector<IMG *> s_marked_clip_imgs;
+static std::vector<PAL *> s_marked_clip_pals;
+
+static bool ImageNameExists(const char *name);
+
+static void ClearMarkedSpriteClipboard(void)
+{
+    for (IMG *img : s_marked_clip_imgs) FreeImg(img);
+    for (PAL *pal : s_marked_clip_pals) FreePal(pal);
+    s_marked_clip_imgs.clear();
+    s_marked_clip_pals.clear();
+}
+
+int MarkedSpriteClipboardCount(void)
+{
+    return (int)s_marked_clip_imgs.size();
+}
+
+int CopyMarkedSprites(void)
+{
+    int subframes = 0;
+    std::vector<int> indices = CollectSplitMarkedIndices(&subframes);
+    if (indices.empty()) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Copy Marked: no sprites are marked.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    std::vector<IMG *> imgs;
+    std::vector<PAL *> pals;
+    std::vector<int> pal_map((size_t)g_doc->palcnt, -1);
+    bool ok = true;
+    for (size_t i = 0; i < indices.size() && ok; i++) {
+        IMG *src = get_img(indices[i]);
+        IMG *copy = src ? CloneImgForSplit(src) : NULL;
+        if (!copy) { ok = false; break; }
+        imgs.push_back(copy);
+        if (copy->palnum >= g_doc->palcnt) { copy->palnum = 0xFFFF; continue; }
+        int &slot = pal_map[copy->palnum];
+        if (slot < 0) {
+            PAL *pal = get_pal(copy->palnum);
+            PAL *pc = pal ? (PAL *)calloc(1, sizeof(PAL)) : NULL;
+            if (!pc) { ok = false; break; }
+            *pc = *pal;
+            pc->nxt_p = NULL;
+            pc->temp = NULL;
+            pc->data_p = NULL;
+            if (!CloneBlockForSplit(pal->data_p, (size_t)pal->numc * 2, &pc->data_p)) {
+                FreePal(pc);
+                ok = false;
+                break;
+            }
+            slot = (int)pals.size();
+            pals.push_back(pc);
+        }
+        copy->palnum = (unsigned short)slot;
+    }
+
+    if (!ok) {
+        for (IMG *img : imgs) FreeImg(img);
+        for (PAL *pal : pals) FreePal(pal);
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Copy Marked: out of memory.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    ClearMarkedSpriteClipboard();
+    s_marked_clip_imgs.swap(imgs);
+    s_marked_clip_pals.swap(pals);
+
+    int n = (int)s_marked_clip_imgs.size();
+    int np = (int)s_marked_clip_pals.size();
+    if (subframes > 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Copied %d marked sprite%s (%d subframe%s) and %d palette%s. "
+                 "Open or create an IMG and use Paste Marked.",
+                 n, n == 1 ? "" : "s", subframes, subframes == 1 ? "" : "s",
+                 np, np == 1 ? "" : "s");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Copied %d marked sprite%s and %d palette%s. "
+                 "Open or create an IMG and use Paste Marked.",
+                 n, n == 1 ? "" : "s", np, np == 1 ? "" : "s");
+    }
+    g_restore_msg_timer = 5.0f;
+    return n;
+}
+
+/* Append the copied sprites to the active document as one undo step. Each
+   palette is matched to an identical one already here or added as a copy,
+   so the art keeps its colors. Names that clash get a CPY suffix. */
+int PasteMarkedSprites(void)
+{
+    if (s_marked_clip_imgs.empty()) return 0;
+
+    doc_undo_push();   /* adds images and maybe palettes — structural */
+
+    int pals_added = 0;
+    std::vector<int> pal_map(s_marked_clip_pals.size(), -1);
+    for (size_t i = 0; i < s_marked_clip_pals.size(); i++) {
+        bool created = false;
+        pal_map[i] = ResolvePastedPalette(s_marked_clip_pals[i], -1, &created);
+        if (created) pals_added++;
+    }
+
+    int first_new = (int)g_doc->imgcnt;
+    int pasted = 0, renamed = 0;
+    IMG **tail = (IMG **)&g_doc->img_p;
+    while (*tail) tail = (IMG **)&(*tail)->nxt_p;
+    for (IMG *src : s_marked_clip_imgs) {
+        IMG *copy = CloneImgForSplit(src);
+        if (!copy) break;
+        int pal = (copy->palnum < pal_map.size()) ? pal_map[copy->palnum] : -1;
+        copy->palnum = (unsigned short)(pal >= 0 ? pal : 0);
+        char name[16];
+        strncpy(name, copy->n_s, 15);
+        name[15] = '\0';
+        if (ImageNameExists(name)) {
+            MakeDerivedImageName(name, "CPY", copy->n_s);
+            renamed++;
+        }
+        *tail = copy;
+        tail = (IMG **)&copy->nxt_p;
+        g_doc->imgcnt++;
+        pasted++;
+    }
+
+    if (pasted == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Paste Marked: out of memory.");
+        g_restore_msg_timer = 4.0f;
+        return 0;
+    }
+
+    g_doc->ilselected = first_new;
+    g_img_tex_idx = -2;
+    g_zoom_reset = true;
+    g_palette_nav = false;
+    deselect_all();
+    mark_dirty();
+
+    char extra[96] = "";
+    if (renamed > 0)
+        snprintf(extra, sizeof(extra), " %d renamed (name already here).", renamed);
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Pasted %d sprite%s, %d new palette%s.%s",
+             pasted, pasted == 1 ? "" : "s", pals_added, pals_added == 1 ? "" : "s", extra);
+    g_restore_msg_timer = 5.0f;
+    return pasted;
 }
 
 

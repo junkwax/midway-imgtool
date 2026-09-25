@@ -39,6 +39,18 @@ int main(void)
     /* Null IMG -> empty string. */
     CHECK(img_name_string(nullptr) == "");
 
+    /* next_sequential_img_name walks a numbered file series. */
+    CHECK(next_sequential_img_name("CAGE4.IMG") == "CAGE5.IMG");
+    CHECK(next_sequential_img_name("CAGE9.IMG") == "CAGE10.IMG");
+    CHECK(next_sequential_img_name("CAGE09.IMG") == "CAGE10.IMG");   /* padding kept */
+    CHECK(next_sequential_img_name("CAGE007.IMG") == "CAGE008.IMG");
+    CHECK(next_sequential_img_name("CAGE.IMG") == "CAGE2.IMG");      /* unnumbered = #1 */
+    CHECK(next_sequential_img_name("cage4.img") == "cage5.img");     /* case untouched */
+    CHECK(next_sequential_img_name("CAGE4") == "CAGE5.IMG");         /* default ext */
+    CHECK(next_sequential_img_name("CAGE4.IMG", 3) == "CAGE7.IMG");  /* step */
+    CHECK(next_sequential_img_name("ABCDEFG9.IMG") == "ABCDEF10.IMG"); /* 8.3 stem */
+    CHECK(next_sequential_img_name("C:\\ART\\V1.2\\CAGE4.IMG") == "C:\\ART\\V1.2\\CAGE5.IMG");
+
     if (g_fails == 0) {
         std::printf("PASS: img_util helpers behave as specified\n");
         return 0;

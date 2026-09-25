@@ -170,6 +170,7 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::OpenImg:
         case FileDialogMode::AppendImg:
         case FileDialogMode::SaveImg:
+        case FileDialogMode::SplitMarkedImg:
         case FileDialogMode::OpenLod:
         case FileDialogMode::WriteAniLst:
         case FileDialogMode::WriteTbl:
@@ -984,7 +985,8 @@ static const char* GetDialogExtension(FileDialogMode mode)
     switch (mode) {
         case FileDialogMode::OpenImg:
         case FileDialogMode::AppendImg:
-        case FileDialogMode::SaveImg:   return "IMG";
+        case FileDialogMode::SaveImg:
+        case FileDialogMode::SplitMarkedImg: return "IMG";
         case FileDialogMode::OpenLod:   return "LOD";
         case FileDialogMode::LoadLbm:
         case FileDialogMode::SaveLbm:
@@ -1034,6 +1036,7 @@ static bool FileDialogModeWritesNamedFile(FileDialogMode mode)
 {
     switch (mode) {
         case FileDialogMode::SaveImg:
+        case FileDialogMode::SplitMarkedImg:
         case FileDialogMode::SaveLbm:
         case FileDialogMode::SaveTga:
         case FileDialogMode::ExportTga:
@@ -1079,7 +1082,7 @@ static bool FileDialogResolveSaveName(FileDialogMode mode, char *out, size_t out
     /* SaveImg writes through g_doc->fname_s, a DOS 8.3 field capped at 12
        chars. Appending past that truncates the extension itself, so trim the
        stem rather than producing "MYLONGNAME.I". */
-    if (mode == FileDialogMode::SaveImg) {
+    if (mode == FileDialogMode::SaveImg || mode == FileDialogMode::SplitMarkedImg) {
         size_t max_stem = 12 - (ext_len + 1);
         if (stem_len > max_stem) stem_len = max_stem;
     }
@@ -1206,6 +1209,18 @@ void OpenFileDialog(FileDialogMode mode) {
         } else {
             snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "world_view.WAX");
         }
+    } else if (mode == FileDialogMode::SplitMarkedImg) {
+        /* Next file in the series, skipping any that already exist:
+           CAGE4.IMG proposes CAGE5.IMG, or CAGE6.IMG when CAGE5 is taken. */
+        std::string cur = g_doc->fname_s[0] ? std::string(g_doc->fname_s) : std::string("SPLIT.IMG");
+        std::string next;
+        for (int step = 1; step <= 99; step++) {
+            next = next_sequential_img_name(cur, step);
+            FILE *probe = fopen(PathCombine(g_file_dialog_dir, next).c_str(), "rb");
+            if (!probe) break;
+            fclose(probe);
+        }
+        snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s", next.c_str());
     } else if (g_doc->fname_s[0] != '\0') {
         size_t n = 0;
         while (n < 12 && g_doc->fname_s[n] != '\0') n++;
@@ -1331,6 +1346,7 @@ extern "C" void imgui_overlay_open_path(const char *path)
 void DrawFileDialog() {
     const char* title = "Open File";
     if (g_file_dialog_mode == FileDialogMode::SaveImg) title = "Save IMG File";
+    else if (g_file_dialog_mode == FileDialogMode::SplitMarkedImg) title = "Split Marked to New IMG";
     else if (g_file_dialog_mode == FileDialogMode::ExportTga) title = "Export TGA";
     else if (g_file_dialog_mode == FileDialogMode::OpenImg) title = "Open IMG File";
     else if (g_file_dialog_mode == FileDialogMode::AppendImg) title = "Append IMG File";
@@ -1862,6 +1878,8 @@ void DrawFileDialog() {
                 WriteTblFromMarked(full_path.c_str(), g_tbl_base_address, g_tbl_export_mk3_format, g_tbl_export_palette, g_tbl_export_pad_4bit, g_tbl_export_align_16bit, g_tbl_export_dual_bank, g_tbl_export_bank);
             } else if (g_file_dialog_mode == FileDialogMode::CompareTbl) {
                 RunTblCompare(full_path.c_str());
+            } else if (g_file_dialog_mode == FileDialogMode::SplitMarkedImg) {
+                SplitMarkedToImg(full_path.c_str());
             } else if (g_file_dialog_mode == FileDialogMode::WriteIrw) {
                 size_t dot = full_path.find_last_of('.');
                 if (dot == std::string::npos) full_path += ".IRW";
@@ -9638,7 +9656,7 @@ Step 5 -- Zoom: toolbar Z+/Z-, Ctrl+= / Ctrl+-, or Ctrl+mouse wheel zooms.
 
 Step 6 -- Palettes: click a palette in the Palette list to set it on the
   active sprite. [ sets palette for marked sprites, ] for the current one
-  (when no paint tool is active - Pencil reassigns [ and ] to brush size).
+  (when no brush tool is active - brush tools reassign [ and ] to brush size).
 
 Step 7 -- Two IMGs at once: Tab swaps between list 1 and list 2. Open a
   second IMG after pressing Tab, then swap back with Tab.
@@ -9704,7 +9722,8 @@ Tools (toolbar shortcuts):
   (no shortcut)        Smart Remap, Blur, Smudge, Content-Aware Erase
                        (toolbar buttons)
 
-Brush-specific (only fire while Pencil or Variant Paint is active):
+Brush-specific (only fire while Pencil, Variant Paint, Clone Stamp, Blur,
+Smudge or Content-Aware Erase is active):
   [ / ]                Shrink / grow brush radius (1..16)
 
 Palette (only fire when no paint tool is active):

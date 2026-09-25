@@ -1181,7 +1181,10 @@ void DrawCanvasPencilCursor(ImDrawList *dl, ImVec2 img_pos,
     ImVec2 cc(img_pos.x + (pixel_x + 0.5f) * sx,
               img_pos.y + (pixel_y + 0.5f) * sy);
     if (brush > 1) {
-        float rr = (sx + sy) * 0.5f * (brush - 1);
+        /* The stamp covers pixel centres within brush-1 of the centre; add
+           half a pixel so the ring runs along their outer edges instead of
+           cutting through the outermost row. */
+        float rr = (sx + sy) * 0.5f * (brush - 0.5f);
         dl->AddCircle(cc, rr, IM_COL32(0, 0, 0, 200), 0, 3.0f);
         dl->AddCircle(cc, rr, color, 0, 1.5f);
         return;
@@ -13075,41 +13078,37 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 mouse.y >= img_pos.y && mouse.y < img_pos.y + img_sz.y &&
                 !rotate_button_hovered;
 
-            /* Pencil cursor indicator — color tracks the currently-selected
-               palette entry so the user previews what they're about to paint.
-               Index 0 (transparent) falls back to white. Two render modes:
+            /* Brush cursor for every round-brush tool. Pencil and Variant
+               Paint tint it with the selected palette entry so the user
+               previews what they're about to paint; the rest (and index 0,
+               transparent) use white. Two render modes:
                  brush > 1: ring around the round-disc stamp footprint.
                  brush = 1: small offset crosshair so the single target pixel
                             stays visible underneath. The crosshair lives
                             outside the pixel rect itself so it never hides
                             the pixel it points at. */
-            if (g_active_tool == ActiveTool::Pencil && mouse_over_sprite) {
-                int mx = (int)((mouse.x - img_pos.x) / sx);
-                int my = (int)((mouse.y - img_pos.y) / sy);
-                ImU32 col;
-                if (g_sel_color > 0) {
-                    SDL_Color &c = g_palette[g_sel_color];
-                    col = IM_COL32(c.r, c.g, c.b, 230);
-                } else {
-                    col = IM_COL32(255, 255, 255, 200);
+            if (int *brush = ActiveToolBrush()) {
+                if (mouse_over_sprite) {
+                    int mx = (int)((mouse.x - img_pos.x) / sx);
+                    int my = (int)((mouse.y - img_pos.y) / sy);
+                    ImU32 col = IM_COL32(255, 255, 255, 200);
+                    bool tinted = g_active_tool == ActiveTool::Pencil ||
+                                  g_active_tool == ActiveTool::VariantPaint;
+                    if (tinted && g_sel_color > 0) {
+                        SDL_Color &c = g_palette[g_sel_color];
+                        col = IM_COL32(c.r, c.g, c.b, 230);
+                    }
+                    DrawCanvasPencilCursor(dl, img_pos, sx, sy, mx, my,
+                                           *brush, col);
                 }
-                DrawCanvasPencilCursor(dl, img_pos, sx, sy, mx, my,
-                                       g_pencil_brush, col);
             }
 
-            /* Clone Stamp visual aids: source crosshair and destination brush ring. */
+            /* Clone Stamp source crosshair. The destination ring is the
+               shared brush cursor above. */
             if (g_active_tool == ActiveTool::CloneStamp && g_clone_source_set) {
-                bool show_dest_brush = mouse_over_sprite && g_clone_brush > 1;
-                int mx = 0;
-                int my = 0;
-                if (show_dest_brush) {
-                    mx = (int)((mouse.x - img_pos.x) / sx);
-                    my = (int)((mouse.y - img_pos.y) / sy);
-                }
                 DrawCanvasCloneStampAids(dl, img_pos, sx, sy,
                                          g_clone_src_x, g_clone_src_y,
-                                         show_dest_brush, mx, my,
-                                         g_clone_brush);
+                                         false, 0, 0, g_clone_brush);
             }
 
             /* Start a new selection only on a fresh click that lands on the sprite
@@ -16478,6 +16477,92 @@ bool BuildClipboardPaletteMap(const PAL *target_pal, unsigned char map[256])
 }
 
 
+/* Snapshot `pal` (colors and header) into the clipboard, or clear the
+   clipboard's palette when there is none to take. */
+static void clipboard_capture_palette(const PAL *pal)
+{
+    g_clipboard.has_palette = false;
+    g_clipboard.palette_numc = 0;
+    memset(g_clipboard.palette_data, 0, sizeof(g_clipboard.palette_data));
+    memset(g_clipboard.palette_name, 0, sizeof(g_clipboard.palette_name));
+    g_clipboard.palette_flags = 0;
+    g_clipboard.palette_bitspix = 0;
+    if (!pal || !pal->data_p || pal->numc == 0) return;
+    int n = pal->numc;
+    if (n > 256) n = 256;
+    memcpy(g_clipboard.palette_data, pal->data_p, (size_t)n * 2u);
+    g_clipboard.palette_numc = (unsigned short)n;
+    memcpy(g_clipboard.palette_name, pal->n_s, sizeof(g_clipboard.palette_name));
+    g_clipboard.palette_name[sizeof(g_clipboard.palette_name) - 1] = '\0';
+    g_clipboard.palette_flags = pal->flags;
+    g_clipboard.palette_bitspix = pal->bitspix;
+    g_clipboard.has_palette = true;
+}
+
+
+static bool pasted_palette_colors_match(const PAL *a, const PAL *b)
+{
+    if (a->numc != b->numc) return false;
+    if (a->numc == 0) return true;
+    if (!a->data_p || !b->data_p) return a->data_p == b->data_p;
+    return memcmp(a->data_p, b->data_p, (size_t)a->numc * 2u) == 0;
+}
+
+
+int ResolvePastedPalette(const PAL *src, int prefer_idx, bool *out_created)
+{
+    if (out_created) *out_created = false;
+    if (!src) return -1;
+
+    PAL *preferred = (prefer_idx >= 0) ? get_pal(prefer_idx) : NULL;
+    if (preferred && pasted_palette_colors_match(preferred, src)) return prefer_idx;
+
+    int same_colors = -1;
+    int idx = 0;
+    bool name_taken = false;
+    for (PAL *pal = (PAL *)g_doc->pal_p; pal; pal = (PAL *)pal->nxt_p, idx++) {
+        bool same_name = strncmp(pal->n_s, src->n_s, sizeof(pal->n_s)) == 0;
+        if (pasted_palette_colors_match(pal, src)) {
+            if (same_name) return idx;
+            if (same_colors < 0) same_colors = idx;
+        } else if (same_name) {
+            name_taken = true;
+        }
+    }
+    if (same_colors >= 0) return same_colors;
+
+    PAL *dst = AllocPal();          /* appends to g_doc */
+    if (!dst) return -1;
+    int dst_idx = (int)g_doc->palcnt - 1;
+    /* Two bytes a colour, 15-bit packed -- not RGB triplets. */
+    if (src->data_p && src->numc > 0) {
+        size_t bytes = (size_t)src->numc * 2u;
+        dst->data_p = malloc(bytes);
+        if (!dst->data_p) {
+            /* Unlink the empty tail palette rather than leave a 0-color one. */
+            PAL **pp = (PAL **)&g_doc->pal_p;
+            while (*pp && *pp != dst) pp = (PAL **)&(*pp)->nxt_p;
+            if (*pp) *pp = (PAL *)dst->nxt_p;
+            g_doc->palcnt--;
+            FreePal(dst);
+            return -1;
+        }
+        memcpy(dst->data_p, src->data_p, bytes);
+    }
+    dst->numc = src->numc;
+    dst->flags = src->flags;
+    dst->bitspix = src->bitspix ? src->bitspix : 8;
+    if (name_taken || src->n_s[0] == '\0') {
+        make_numbered_pal_name(src->n_s, dst->n_s);
+    } else {
+        memcpy(dst->n_s, src->n_s, sizeof(dst->n_s));
+        dst->n_s[sizeof(dst->n_s) - 1] = '\0';
+    }
+    if (out_created) *out_created = true;
+    return dst_idx;
+}
+
+
 bool selection_contains_pixel(IMG *img, int x, int y)
 {
     if (!img || !g_grid_sel.active) return false;
@@ -16577,19 +16662,7 @@ void copy_image(bool cut)
     g_clipboard.has_opaltbl = img->opaltbl_p != NULL;
     memset(g_clipboard.opaltbl, 0, sizeof(g_clipboard.opaltbl));
     if (img->opaltbl_p) memcpy(g_clipboard.opaltbl, img->opaltbl_p, 16);
-    g_clipboard.has_palette = false;
-    g_clipboard.palette_numc = 0;
-    memset(g_clipboard.palette_data, 0, sizeof(g_clipboard.palette_data));
-    {
-        PAL *clip_pal = get_pal(img->palnum);
-        if (clip_pal && clip_pal->data_p && clip_pal->numc > 0) {
-            int n = clip_pal->numc;
-            if (n > 256) n = 256;
-            memcpy(g_clipboard.palette_data, clip_pal->data_p, (size_t)n * 2u);
-            g_clipboard.palette_numc = (unsigned short)n;
-            g_clipboard.has_palette = true;
-        }
-    }
+    clipboard_capture_palette(get_pal(img->palnum));
     strncpy(g_clipboard.source_name, img->n_s, 15);
     g_clipboard.source_name[15] = '\0';
     strncpy(g_clipboard.src_filename, img->src_filename, sizeof(g_clipboard.src_filename) - 1);
@@ -16680,11 +16753,31 @@ void PasteClipboardAsNewImage(void)
     dst->w = (unsigned short)w;
     dst->h = (unsigned short)h;
     dst->flags = 0;
-    dst->palnum = g_clipboard.has_meta ? g_clipboard.palnum
-                 : (g_doc->plselected >= 0 ? (unsigned short)g_doc->plselected : 0);
-    if (g_doc->palcnt > 0 && dst->palnum >= g_doc->palcnt)
-        dst->palnum = (g_doc->plselected >= 0 && (unsigned)g_doc->plselected < g_doc->palcnt)
-                    ? (unsigned short)g_doc->plselected : 0;
+    /* The palette travels with the clipboard: reuse an identical one here
+       (normally the source palette itself, when pasting into the same IMG),
+       or add a copy. The old palnum alone means nothing in another IMG. */
+    bool pal_created = false;
+    int pal_idx = -1;
+    if (g_clipboard.has_palette) {
+        PAL clip_pal = {};
+        memcpy(clip_pal.n_s, g_clipboard.palette_name, sizeof(clip_pal.n_s));
+        clip_pal.flags = g_clipboard.palette_flags;
+        clip_pal.bitspix = g_clipboard.palette_bitspix;
+        clip_pal.numc = g_clipboard.palette_numc;
+        clip_pal.data_p = g_clipboard.palette_data;
+        pal_idx = ResolvePastedPalette(&clip_pal,
+                                       g_clipboard.has_meta ? (int)g_clipboard.palnum : -1,
+                                       &pal_created);
+    }
+    if (pal_idx >= 0) {
+        dst->palnum = (unsigned short)pal_idx;
+    } else {
+        dst->palnum = g_clipboard.has_meta ? g_clipboard.palnum
+                     : (g_doc->plselected >= 0 ? (unsigned short)g_doc->plselected : 0);
+        if (g_doc->palcnt > 0 && dst->palnum >= g_doc->palcnt)
+            dst->palnum = (g_doc->plselected >= 0 && (unsigned)g_doc->plselected < g_doc->palcnt)
+                        ? (unsigned short)g_doc->plselected : 0;
+    }
     dst->opals = (g_clipboard.has_meta && g_clipboard.has_opaltbl)
         ? g_clipboard.opals : (unsigned short)-1;
     if (g_clipboard.has_meta && g_clipboard.has_opaltbl) {
@@ -16727,9 +16820,16 @@ void PasteClipboardAsNewImage(void)
        nudge instead of letting them walk the image list off the new sprite. */
     g_content_nudge_img = g_doc->ilselected;
     mark_dirty();
-    snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "Pasted clipboard as new sprite: %dx%d. Arrow keys nudge the art "
-             "(Shift = 10px); Esc or another sprite stops.", w, h);
+    if (pal_created) {
+        PAL *np = get_pal(dst->palnum);
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Pasted clipboard as new sprite: %dx%d, with its palette %.9s. "
+                 "Arrow keys nudge the art (Shift = 10px).", w, h, np ? np->n_s : "");
+    } else {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Pasted clipboard as new sprite: %dx%d. Arrow keys nudge the art "
+                 "(Shift = 10px); Esc or another sprite stops.", w, h);
+    }
     g_restore_msg_timer = 5.0f;
 }
 
@@ -17228,16 +17328,7 @@ void apply_pasted_region(void)
             g_clipboard.has_opaltbl = img->opaltbl_p != NULL;
             memset(g_clipboard.opaltbl, 0, sizeof(g_clipboard.opaltbl));
             if (img->opaltbl_p) memcpy(g_clipboard.opaltbl, img->opaltbl_p, 16);
-            g_clipboard.has_palette = false;
-            g_clipboard.palette_numc = 0;
-            memset(g_clipboard.palette_data, 0, sizeof(g_clipboard.palette_data));
-            if (target_pal && target_pal->data_p && target_pal->numc > 0) {
-                int n = target_pal->numc;
-                if (n > 256) n = 256;
-                memcpy(g_clipboard.palette_data, target_pal->data_p, (size_t)n * 2u);
-                g_clipboard.palette_numc = (unsigned short)n;
-                g_clipboard.has_palette = true;
-            }
+            clipboard_capture_palette(target_pal);
             strncpy(g_clipboard.source_name, img->n_s, 15);
             g_clipboard.source_name[15] = '\0';
             strncpy(g_clipboard.src_filename, img->src_filename,

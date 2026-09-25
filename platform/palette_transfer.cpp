@@ -7,6 +7,8 @@
 
 #include <cmath>
 #include <cstring>
+#include <algorithm>
+#include <vector>
 
 namespace {
 
@@ -206,4 +208,147 @@ int ApplyPaletteTransferMap(unsigned char *pixels, int w, int h, int stride,
         }
     }
     return changed;
+}
+
+namespace {
+
+/* Sort `n` colors brightest-first (ties keep list order) and give each the
+   middle of a span of [0,1] proportional to its weight. */
+void coverage_mids(const unsigned short *words, const int *slots, const double *weight,
+                   int n, std::vector<int> &order, std::vector<double> &mid)
+{
+    order.resize(n);
+    for (int i = 0; i < n; i++) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        return luma_of(rgb_of(words[slots[a]])) > luma_of(rgb_of(words[slots[b]]));
+    });
+    double total = 0;
+    for (int i = 0; i < n; i++) total += weight ? std::max(0.0, weight[i]) : 0.0;
+    /* A shade no sprite uses still gets a sliver, so it lands between its
+       neighbours instead of on top of one. */
+    const double eps = total > 0 ? total * 1e-6 : 1.0;
+    std::vector<double> w(n);
+    double sum = 0;
+    for (int i = 0; i < n; i++) {
+        w[i] = (weight ? std::max(0.0, weight[order[i]]) : 0.0) + eps;
+        sum += w[i];
+    }
+    mid.resize(n);
+    double acc = 0;
+    for (int i = 0; i < n; i++) { mid[i] = (acc + w[i] * 0.5) / sum; acc += w[i]; }
+}
+
+} /* namespace */
+
+void BorrowRampByCoverage(const unsigned short *dst_words, const int *dst_slots,
+                          const double *dst_weight, int dst_n,
+                          const unsigned short *ref_words, const int *ref_slots,
+                          const double *ref_weight, int ref_n,
+                          unsigned short *out_words)
+{
+    if (!dst_words || !dst_slots || !ref_words || !ref_slots || !out_words ||
+        dst_n <= 0 || ref_n <= 0) return;
+
+    /* Pool reference slots that hold the same color into one shade. */
+    std::vector<unsigned short> rw;
+    std::vector<double> rwt;
+    for (int i = 0; i < ref_n; i++) {
+        const unsigned short w = ref_words[ref_slots[i]];
+        const double wt = ref_weight ? ref_weight[i] : 0.0;
+        size_t k = 0;
+        while (k < rw.size() && rw[k] != w) k++;
+        if (k == rw.size()) { rw.push_back(w); rwt.push_back(wt); }
+        else rwt[k] += wt;
+    }
+    std::vector<int> ridx(rw.size());
+    for (size_t i = 0; i < ridx.size(); i++) ridx[i] = (int)i;
+    std::vector<int> rorder, dorder;
+    std::vector<double> rmid, dmid;
+    coverage_mids(rw.data(), ridx.data(), ref_weight ? rwt.data() : nullptr,
+                  (int)rw.size(), rorder, rmid);
+    coverage_mids(dst_words, dst_slots, dst_weight, dst_n, dorder, dmid);
+
+    struct Shade { double q; Rgb8 c; };
+    std::vector<Shade> ref(rw.size());
+    for (size_t i = 0; i < ref.size(); i++) ref[i] = { rmid[i], rgb_of(rw[rorder[i]]) };
+
+    for (int i = 0; i < dst_n; i++) {
+        const int slot = dst_slots[dorder[i]];
+        if (slot < 1) continue;
+        const double q = dmid[i];
+        double r = ref.back().c.r, g = ref.back().c.g, b = ref.back().c.b;
+        if (q <= ref.front().q) {
+            r = ref.front().c.r; g = ref.front().c.g; b = ref.front().c.b;
+        } else {
+            for (size_t k = 1; k < ref.size(); k++) {
+                if (q > ref[k].q) continue;
+                const Rgb8 &a = ref[k - 1].c, &z = ref[k].c;
+                const double f = (q - ref[k - 1].q) / (ref[k].q - ref[k - 1].q);
+                r = a.r + (z.r - a.r) * f;
+                g = a.g + (z.g - a.g) * f;
+                b = a.b + (z.b - a.b) * f;
+                break;
+            }
+        }
+        const int r5 = (int)std::lround(r * 31.0 / 255.0);
+        const int g5 = (int)std::lround(g * 31.0 / 255.0);
+        const int b5 = (int)std::lround(b * 31.0 / 255.0);
+        out_words[slot] = (unsigned short)((r5 << 10) | (g5 << 5) | b5);
+    }
+}
+
+int CountSharedSlots(const unsigned short *a, const unsigned short *b, int numc)
+{
+    if (!a || !b) return 0;
+    numc = clamp_numc(numc);
+    int n = 0;
+    for (int i = 1; i < numc; i++) n += a[i] == b[i];
+    return n;
+}
+
+bool IsCostumeSibling(const unsigned short *a, int a_numc,
+                      const unsigned short *b, int b_numc, int first, int last)
+{
+    if (!a || !b || a_numc != b_numc) return false;
+    const int numc = clamp_numc(a_numc);
+    int outside = 0, same = 0;
+    for (int i = 1; i < numc; i++) {
+        if (i >= first && i <= last) continue;
+        outside++;
+        same += a[i] == b[i];
+    }
+    return outside > 0 && same * 2 >= outside;
+}
+
+bool FindCostumeRun(const unsigned short *words, const unsigned short *const *siblings, int nsib,
+                    int numc, int *out_first, int *out_last)
+{
+    if (!words || !siblings || nsib <= 0 || !out_first || !out_last) return false;
+    numc = clamp_numc(numc);
+    std::vector<char> diff(numc + 2, 0);
+    for (int k = 0; k < nsib; k++)
+        if (siblings[k])
+            for (int s = 1; s < numc; s++) diff[s] |= words[s] != siblings[k][s];
+    int best_s = -1, best_e = -2;
+    auto differs = [&](int s) { return s < numc && diff[s]; };
+    for (int i = 1; i < numc;) {
+        if (!differs(i)) { i++; continue; }
+        /* One shared slot with differing ones on both sides is still inside
+           the ramp. */
+        int j = i;
+        while (differs(j + 1) || differs(j + 2)) j += differs(j + 1) ? 1 : 2;
+        if (j - i > best_e - best_s) { best_s = i; best_e = j; }
+        i = j + 1;
+    }
+    if (best_s < 0) return false;
+    /* A flat fill (3+ identical colors) at either end is not part of the ramp. */
+    int run = 1;
+    while (best_e - run >= best_s && words[best_e - run] == words[best_e]) run++;
+    if (run >= 3 && best_e - run >= best_s) best_e -= run;
+    run = 1;
+    while (best_s + run <= best_e && words[best_s + run] == words[best_s]) run++;
+    if (run >= 3 && best_s + run <= best_e) best_s += run;
+    *out_first = best_s;
+    *out_last = best_e;
+    return true;
 }

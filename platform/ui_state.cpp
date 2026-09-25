@@ -103,6 +103,19 @@ int g_smudge_brush = 3;
 int g_smudge_strength = 70;
 int g_content_erase_brush = 4;
 int g_content_erase_passes = 8;
+
+int *ActiveToolBrush(void)
+{
+    switch (g_active_tool) {
+    case ActiveTool::Pencil:       return &g_pencil_brush;
+    case ActiveTool::VariantPaint: return &g_variant_brush;
+    case ActiveTool::CloneStamp:   return &g_clone_brush;
+    case ActiveTool::Blur:         return &g_blur_brush;
+    case ActiveTool::Smudge:       return &g_smudge_brush;
+    case ActiveTool::ContentErase: return &g_content_erase_brush;
+    default:                       return NULL;
+    }
+}
 int g_smudge_last_x = 0;
 int g_smudge_last_y = 0;
 bool g_smudge_have_last = false;

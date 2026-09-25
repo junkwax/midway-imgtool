@@ -338,7 +338,7 @@ static void make_unique_pal_name(char out[10])
    the stem are stripped first so re-duplicating advances the number instead of
    appending. Names are capped at 9 chars (n_s[10]), so the stem is truncated to
    make room for the counter and suffix. Falls back to PAL<n> for blank names. */
-static void make_numbered_pal_name(const char *base, char out[10])
+void make_numbered_pal_name(const char *base, char out[10])
 {
     int len = 0;
     while (len < 9 && base[len] != '\0') len++;
@@ -4830,6 +4830,24 @@ void DrawRightPanelPaletteEditor(float panel_h)
 {
     int n_pals = count_pals();
     if (ImGui::CollapsingHeader("Palettes", ImGuiTreeNodeFlags_DefaultOpen)) {
+        /* A palette no sprite in this file points at is abandoned. Game code
+           can still load one by name (TBL .long PAL_NAME), so this only flags
+           them; nothing is deleted. */
+        const ImVec4 abandoned_col(0.85f, 0.55f, 0.25f, 1.0f);
+        std::vector<bool> pal_used((size_t)(n_pals > 0 ? n_pals : 0), false);
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p)
+            if ((int)img->palnum < n_pals) pal_used[img->palnum] = true;
+        int n_abandoned = 0;
+        for (int i = 0; i < n_pals; i++)
+            if (!pal_used[i]) n_abandoned++;
+        ImGui::Text("%d palette%s", n_pals, n_pals == 1 ? "" : "s");
+        ImGui::SameLine();
+        if (n_abandoned) ImGui::TextColored(abandoned_col, "- %d abandoned", n_abandoned);
+        else             ImGui::TextDisabled("- none abandoned");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Abandoned: no image in this file uses the palette.\n"
+                              "Shown in orange below. Game code may still load it by name.");
+
         float list_h = panel_h * 0.22f;
         if (ImGui::BeginListBox("##pallist", ImVec2(-1, list_h))) {
             if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
@@ -4844,11 +4862,16 @@ void DrawRightPanelPaletteEditor(float panel_h)
                 if (marked) snprintf(label, sizeof(label), "* %s", pal->n_s);
                 else        snprintf(label, sizeof(label), "  %s", pal->n_s);
 
-                if (sel) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
+                bool abandoned = !pal_used[i];
+                bool tinted    = sel || abandoned;
+                if (sel)            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
+                else if (abandoned) ImGui::PushStyleColor(ImGuiCol_Text, abandoned_col);
                 if (ImGui::Selectable(label, sel)) {
                     SelectPalette(i);
                 }
-                if (sel) ImGui::PopStyleColor();
+                if (tinted) ImGui::PopStyleColor();
+                if (abandoned && ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Abandoned: no image uses %s", pal->n_s);
 
                 if (ImGui::BeginPopupContextItem("##palctx")) {
                     if (ImGui::MenuItem("Mark / Unmark"))             pal->flags ^= 1;

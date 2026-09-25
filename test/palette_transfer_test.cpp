@@ -131,8 +131,114 @@ static void apply_rewrites_through_the_map_and_counts_changes(void)
     CHECK(std::memcmp(px, want, 8) == 0);
 }
 
+/* The MK2-Rain case in miniature. The destination ramp is lit high: 4 near
+   white shades covering most of the pixels, then 2 darker. The reference has
+   one white specular that almost nothing uses, then purples. By brightness,
+   the four bright destination shades would all turn white. By coverage they
+   take the purples. */
+static void borrow_matches_by_coverage_not_brightness(void)
+{
+    const unsigned short dst[7] = { 0, W(31,31,31), W(31,31,26), W(31,30,22), W(31,29,18),
+                                    W(20,15,7), W(10,5,2) };
+    const int dslots[6] = { 1, 2, 3, 4, 5, 6 };
+    const double dwt[6] = { 100, 100, 100, 100, 50, 50 };
+    const unsigned short ref[5] = { 0, W(31,31,28), W(17,8,25), W(12,3,11), W(5,0,5) };
+    const int rslots[4] = { 1, 2, 3, 4 };
+    const double rwt[4] = { 1, 300, 300, 100 };
+    unsigned short out[7] = { 0, 0, 0, 0, 0, 0, 0 };
+    BorrowRampByCoverage(dst, dslots, dwt, 6, ref, rslots, rwt, 4, out);
+    CHECK(out[0] == 0);
+    for (int s = 1; s <= 6; s++) {
+        const int r = (out[s] >> 10) & 31, g = (out[s] >> 5) & 31, b = out[s] & 31;
+        /* No near-white shade survives. The top one may lean toward the
+           specular, since it sits between it and the first purple. */
+        CHECK(g < (s == 1 ? 24 : 16));
+        CHECK(b >= g);          /* every shade leans purple */
+        (void)r;
+    }
+    /* Order is kept: brighter destination shade -> brighter result. */
+    for (int s = 1; s < 6; s++) {
+        const int l0 = ((out[s] >> 10) & 31) * 3 + ((out[s] >> 5) & 31) * 6 + (out[s] & 31);
+        const int l1 = ((out[s+1] >> 10) & 31) * 3 + ((out[s+1] >> 5) & 31) * 6 + (out[s+1] & 31);
+        CHECK(l0 >= l1);
+    }
+}
+
+static void borrow_without_weights_spreads_evenly_and_pools_duplicates(void)
+{
+    const unsigned short dst[4] = { 0, W(30,30,30), W(20,20,20), W(10,10,10) };
+    const int dslots[3] = { 1, 2, 3 };
+    /* Slots 3 and 4 hold one color: pooled, it is a single darkest shade. */
+    const unsigned short ref[5] = { 0, W(0,0,30), W(0,0,20), W(0,0,4), W(0,0,4) };
+    const int rslots[4] = { 1, 2, 3, 4 };
+    unsigned short out[4] = { 0, 0, 0, 0 };
+    BorrowRampByCoverage(dst, dslots, nullptr, 3, ref, rslots, nullptr, 4, out);
+    CHECK(out[1] == W(0,0,30));
+    CHECK(out[2] == W(0,0,20));
+    CHECK(out[3] == W(0,0,4));
+}
+
+static void costume_run_is_the_differing_span_minus_a_flat_tail(void)
+{
+    /* Slots 1-3 shared (skin), 4-10 differ, and 8-10 of those are one flat
+       color (RAIN1_P's pants). Slot 1 also differs on its own: a shorter run. */
+    unsigned short a[12], b[12];
+    for (int i = 0; i < 12; i++) a[i] = b[i] = W(i, i, i);
+    a[1] = W(31, 0, 0);
+    a[4] = W(20,5,25); a[5] = W(15,3,20); a[6] = W(10,1,15); a[7] = W(6,0,9);
+    a[8] = a[9] = a[10] = W(0,0,4);
+    const unsigned short *sb[1] = { b }, *sa[1] = { a };
+    int first = -1, last = -1;
+    CHECK(FindCostumeRun(a, sb, 1, 12, &first, &last));
+    CHECK(first == 4);
+    CHECK(last == 7);
+
+    /* A flat pair is short enough to be shading; it stays. */
+    a[10] = W(1,0,3);
+    CHECK(FindCostumeRun(a, sb, 1, 12, &first, &last));
+    CHECK(first == 4 && last == 10);
+
+    CHECK(!FindCostumeRun(a, sa, 1, 12, &first, &last));
+
+    /* One coincidentally shared shade inside the ramp does not split it;
+       two in a row do. */
+    unsigned short c[12];
+    std::memcpy(c, a, sizeof(c));
+    c[6] = b[6];
+    CHECK(FindCostumeRun(c, sb, 1, 12, &first, &last));
+    CHECK(first == 4 && last == 10);
+    c[7] = b[7];
+    CHECK(FindCostumeRun(c, sb, 1, 12, &first, &last));
+    CHECK(first == 8 && last == 10);
+
+    /* ...unless another sibling differs there. The union of every sibling's
+       differences is the ramp (SCORP_P shares 31-32 with REP_P, not SUB_P). */
+    unsigned short d[12];
+    std::memcpy(d, b, sizeof(d));
+    d[6] = W(9, 9, 0); d[7] = W(9, 9, 1);
+    const unsigned short *two[2] = { b, d };
+    CHECK(FindCostumeRun(c, two, 2, 12, &first, &last));
+    CHECK(first == 4 && last == 10);
+}
+
+static void siblings_share_most_slots_outside_the_costume(void)
+{
+    unsigned short a[8], b[8], c[8];
+    for (int i = 0; i < 8; i++) a[i] = b[i] = c[i] = W(i, 0, 0);
+    b[1] = b[2] = b[3] = W(0, 0, 31);             /* costume 1-3 differs */
+    for (int i = 1; i < 8; i++) c[i] = W(0, i, 0);  /* unrelated */
+    CHECK(IsCostumeSibling(a, 8, b, 8, 1, 3));
+    CHECK(!IsCostumeSibling(a, 8, c, 8, 1, 3));
+    CHECK(!IsCostumeSibling(a, 8, b, 7, 1, 3));
+    CHECK(CountSharedSlots(a, b, 8) == 4);
+}
+
 int main(void)
 {
+    borrow_matches_by_coverage_not_brightness();
+    borrow_without_weights_spreads_evenly_and_pools_duplicates();
+    costume_run_is_the_differing_span_minus_a_flat_tail();
+    siblings_share_most_slots_outside_the_costume();
     suggests_pairs_by_hue_not_by_position();
     every_slot_lands_inside_its_paired_block();
     relative_mode_stretches_shading_across_the_target_ramp();
