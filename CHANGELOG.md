@@ -10,6 +10,8 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+## [v3.36.0] — Palettes travel between IMGs; costumes borrow their colors; every brush shows its size
+
 ### Copy several palettes and paste them into another IMG
 
 In the Palettes list, Ctrl+click marks or unmarks a palette and Shift+click
