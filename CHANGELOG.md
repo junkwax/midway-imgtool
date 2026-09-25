@@ -90,16 +90,41 @@ Both slot ranges are pre-filled with the slots where a palette differs from its
 close siblings. RAIN1_P's flat fill at 49-63 (the pants, a single color) is
 trimmed off. On NINJAS8 + PURPRAIN this gives 1-32 and 31-48 with no editing.
 Each palette is also shown whole, with the slots outside its range dimmed.
-Hovering a swatch shows its slot number and color. Click a swatch to start the
-range there, or right-click to end it there. A third preview pane shows a
-reference sprite.
+Hovering a swatch shows its slot number and color. Click one swatch to start
+the range and another to end it, in either order. The tooltip says whether the
+next click starts or ends a range. Right-click ends the range at that swatch. A
+third preview pane shows a reference sprite.
 
 A costume can span several ranges on either side. Type them as `1-5, 10-32`,
-or Ctrl+click a swatch to start another range and Ctrl+right-click one to drop
-the range it is in. Kitana's fan color sits inside her cloth ramp, and this
+or Ctrl+click an unselected swatch to start another range (the next plain click
+ends it). Ctrl+click a selected swatch to unselect just that slot, which splits
+its range (10-32 becomes 10-19, 21-32). Ctrl+right-click a swatch to drop the
+whole range it is in. Kitana's fan color sits inside her cloth ramp, and this
 keeps it out. All the ranges are pooled into one ramp before shades are
 matched, so gaps don't change the mapping. Text that doesn't parse turns red,
 and the last valid ranges stay in effect until it does parse.
+
+**Sections.** Borrowing is split into named sections shown as tabs: Costume,
+Skin, Fans and so on. Each section has its own slots on both palettes and is
+borrowed on its own. Sections pair by name, so MK2 Skin (47-62) takes UMK3
+Skin's colors (1-15). Click **+** to add a section, and use the checkbox to
+leave one out. A tab marked `*` is missing slots on one side.
+
+**Saved layouts.** Each palette's sections can be saved with **Save...** as a
+layout, for example `MK2 NINJA` = Costume 1-32, Skin 47-62. A layout remembers
+every palette it has been used on and loads automatically the next time any of
+them is the source or the reference. The Layout dropdown applies one by hand,
+and **Delete** removes it. Layouts are stored one per line in
+`palette_layouts.txt` in the imgtool settings folder
+(`%APPDATA%\midway\imgtool\`), in the format
+`name|colors|palettes|Section=ranges;...` (`platform/palette_layout.{h,cpp}`,
+tested in `test/palette_layout_test.cpp`). Without a layout, the dialog still
+pre-fills a Costume section from the sibling diff. When you switch to another
+reference with the same color count (RAIN1_P to RAIN2_P), the reference
+sections are kept.
+
+The **Colors from** dropdown opens scrolled to the palette already picked. The
+last reference is remembered by name between uses of the dialog.
 
 The new palette gets a name that says what it is, in the 9-character `NAME_P`
 form. When borrowing, it is named after the reference: RAIN1_P gives `RAIN_P`.

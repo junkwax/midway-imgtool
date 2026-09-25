@@ -55,7 +55,7 @@ void PalettePreviewStrip(const std::vector<unsigned short> &words, int start, in
 
 bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
                        const char *selected, int active_first, int active_last,
-                       PalettePick *out)
+                       bool awaiting_end, PalettePick *out)
 {
     const int n = (int)words.size();
     if (n <= 0 || !selected || !out) return false;
@@ -89,20 +89,24 @@ bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
     if (hover < 0) return false;
     const unsigned short w = words[hover];
     ImGui::SetTooltip("Slot %d  (%d,%d,%d)%s\n"
-                      "Click: start range here      Right-click: end it here\n"
-                      "Ctrl+click: add a range      Ctrl+right-click: remove range",
+                      "%s\n"
+                      "%s   Ctrl+right-click: remove range",
                       hover, (w >> 10) & 0x1F, (w >> 5) & 0x1F, w & 0x1F,
-                      hover == active_first ? "  first" : hover == active_last ? "  last" : "");
+                      hover == active_first ? "  first" : hover == active_last ? "  last" : "",
+                      awaiting_end ? "Click: END the range here        Right-click: same"
+                                   : "Click: start a range here, then click its end",
+                      selected[hover] ? "Ctrl+click: unselect this slot  "
+                                      : "Ctrl+click: start another range");
     if (hover < 1) return false;
     const bool ctrl = ImGui::GetIO().KeyCtrl;
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
         if (ctrl) out->add = hover;
-        else if (hover != active_first) out->set_first = hover;
+        else out->click = hover;
     } else if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
         if (ctrl) { if (selected[hover]) out->remove = hover; }
-        else if (hover != active_last) out->set_last = hover;
+        else out->set_last = hover;
     }
-    return out->set_first >= 0 || out->set_last >= 0 || out->add >= 0 || out->remove >= 0;
+    return out->click >= 0 || out->set_last >= 0 || out->add >= 0 || out->remove >= 0;
 }
 
 static SDL_Texture *g_tex[4] = {};

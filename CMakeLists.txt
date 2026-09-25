@@ -115,6 +115,7 @@ set(IMGTOOL_SOURCES
     platform/ramp_remap.cpp
     platform/sprite_gradient.cpp
     platform/palette_transfer.cpp
+    platform/palette_layout.cpp
     platform/ui_ramp_transfer.cpp
     platform/ui_alt_costume.cpp
     platform/ui_palette_preview.cpp
@@ -298,7 +299,7 @@ foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_lev
                   anipoint_mirror tbl_diff img_util body_split gif_trim dma_pack
                   stamp_erase bdd_bg document reaction_class strike_bind
                   digitize_matte palette_ramp material_mask sprite_gradient
-                  palette_transfer)
+                  palette_transfer palette_layout)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp

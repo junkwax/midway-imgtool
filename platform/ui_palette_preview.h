@@ -24,19 +24,21 @@ void PalettePreviewStrip(const std::vector<unsigned short> &words, int start, in
 
 /* What a click on a PalettePickerGrid asked for; -1 fields were not asked. */
 struct PalettePick {
-    int set_first = -1;   /* click: start the active range here */
+    int click = -1;       /* click: first click starts a range, the next ends it */
     int set_last = -1;    /* right-click: end the active range here */
-    int add = -1;         /* Ctrl+click: new one-slot range here */
+    int add = -1;         /* Ctrl+click: new range here, or unselect it if selected */
     int remove = -1;      /* Ctrl+right-click: drop the range holding this slot */
 };
 
 /* The whole of `words` as clickable swatches, 16 to a row. Slots where
    `selected[s]` is zero are dimmed; the active range's ends are outlined in
-   white. Hovering a swatch names its slot and color. Slot 0 is shown but
-   not pickable. Returns true when `out` holds a request. */
+   white. Hovering a swatch names its slot and color, and says what a click
+   will do: `awaiting_end` means a range has been started and the next click
+   ends it. Slot 0 is shown but not pickable. Returns true when `out` holds
+   a request. */
 bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
                        const char *selected, int active_first, int active_last,
-                       PalettePick *out);
+                       bool awaiting_end, PalettePick *out);
 
 /* A labelled, centred, nearest-scaled pane of `img` drawn through `words`
    (after `map`, when given). `slot` picks one of four cached textures so
