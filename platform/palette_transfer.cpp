@@ -6,6 +6,7 @@
 #include "palette_transfer.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <algorithm>
 #include <vector>
@@ -306,18 +307,74 @@ int CountSharedSlots(const unsigned short *a, const unsigned short *b, int numc)
     return n;
 }
 
-bool IsCostumeSibling(const unsigned short *a, int a_numc,
-                      const unsigned short *b, int b_numc, int first, int last)
+bool IsCostumeSiblingMask(const unsigned short *a, int a_numc,
+                          const unsigned short *b, int b_numc, const char *in_costume)
 {
-    if (!a || !b || a_numc != b_numc) return false;
+    if (!a || !b || !in_costume || a_numc != b_numc) return false;
     const int numc = clamp_numc(a_numc);
     int outside = 0, same = 0;
     for (int i = 1; i < numc; i++) {
-        if (i >= first && i <= last) continue;
+        if (in_costume[i]) continue;
         outside++;
         same += a[i] == b[i];
     }
     return outside > 0 && same * 2 >= outside;
+}
+
+bool IsCostumeSibling(const unsigned short *a, int a_numc,
+                      const unsigned short *b, int b_numc, int first, int last)
+{
+    char mask[256] = {};
+    const int numc = clamp_numc(a_numc);
+    for (int i = 1; i < numc; i++) mask[i] = i >= first && i <= last;
+    return IsCostumeSiblingMask(a, a_numc, b, b_numc, mask);
+}
+
+int ParseSlotRanges(const char *text, int numc, TransferBlock *out, int max_out)
+{
+    if (!text || !out) return -1;
+    numc = clamp_numc(numc);
+    int n = 0;
+    const char *p = text;
+    auto skip_sep = [&]() { while (*p == ' ' || *p == ',' || *p == '\t') p++; };
+    auto read_num = [&](int *v) {
+        if (*p < '0' || *p > '9') return false;
+        long x = 0;
+        while (*p >= '0' && *p <= '9') { if (x < 100000) x = x * 10 + (*p - '0'); p++; }
+        *v = (int)x;
+        return true;
+    };
+    for (skip_sep(); *p; skip_sep()) {
+        int a, b;
+        if (!read_num(&a)) return -1;
+        while (*p == ' ') p++;
+        b = a;
+        if (*p == '-') {
+            p++;
+            while (*p == ' ') p++;
+            if (!read_num(&b)) return -1;
+        }
+        if (a > b) { const int t = a; a = b; b = t; }
+        if (a < 1) a = 1;
+        if (b > numc - 1) b = numc - 1;
+        if (a > b) continue;            /* entirely outside the palette */
+        if (n < max_out) out[n++] = { a, b - a + 1 };
+    }
+    return n;
+}
+
+void FormatSlotRanges(const TransferBlock *ranges, int n, char *out, int out_size)
+{
+    if (!out || out_size <= 0) return;
+    out[0] = '\0';
+    int len = 0;
+    for (int i = 0; i < n && len < out_size - 1; i++) {
+        const int a = ranges[i].start, b = ranges[i].start + ranges[i].count - 1;
+        const int w = b > a ? snprintf(out + len, out_size - len, "%s%d-%d", i ? ", " : "", a, b)
+                            : snprintf(out + len, out_size - len, "%s%d", i ? ", " : "", a);
+        if (w < 0) break;
+        len += w;
+    }
 }
 
 bool FindCostumeRun(const unsigned short *words, const unsigned short *const *siblings, int nsib,
@@ -351,4 +408,45 @@ bool FindCostumeRun(const unsigned short *words, const unsigned short *const *si
     *out_first = best_s;
     *out_last = best_e;
     return true;
+}
+
+void CostumeNameStem(const char *pal_name, int max_len, char *out)
+{
+    if (!out) return;
+    out[0] = '\0';
+    if (!pal_name || max_len <= 0) return;
+    char clean[16];
+    int n = 0;
+    for (int i = 0; pal_name[i] && i < 15 && n < 15; i++) {
+        char c = pal_name[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') clean[n++] = c;
+    }
+    if (n >= 2 && clean[n - 2] == '_' && clean[n - 1] == 'P') n -= 2;
+    while (n > 0 && clean[n - 1] >= '0' && clean[n - 1] <= '9') n--;
+    if (n > max_len) n = max_len;
+    while (n > 0 && clean[n - 1] == '_') n--;
+    for (int i = 0; i < n; i++) out[i] = clean[i];
+    out[n] = '\0';
+}
+
+const char *HueTag(int r, int g, int b)
+{
+    const int mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
+    if (mx < 40) return "BLK";
+    if (mx - mn < 30) return mx > 200 ? "WHT" : "GRY";
+    double h;
+    const double d = (double)(mx - mn);
+    if (mx == r)      h = 60.0 * std::fmod((g - b) / d, 6.0);
+    else if (mx == g) h = 60.0 * ((b - r) / d + 2.0);
+    else              h = 60.0 * ((r - g) / d + 4.0);
+    if (h < 0) h += 360.0;
+    if (h < 15 || h >= 340) return "RED";
+    if (h < 40)  return "ORG";
+    if (h < 70)  return "YEL";
+    if (h < 160) return "GRN";
+    if (h < 200) return "CYN";
+    if (h < 255) return "BLU";
+    if (h < 300) return "PUR";
+    return "PNK";
 }

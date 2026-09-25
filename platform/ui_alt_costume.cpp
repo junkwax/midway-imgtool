@@ -41,11 +41,16 @@
 enum AltCostumeRepoint { RepointNone = 0, RepointSelected, RepointMarked, RepointAll };
 enum AltCostumeMode { ModeTint = 0, ModeBorrow };
 
-/* One side of a borrow: a palette, the slot range holding its costume, and
-   how many pixels each of those slots covers across it and its siblings. */
+/* One side of a borrow: a palette, the slot ranges holding its costume, and
+   how many pixels each of those slots covers across it and its siblings.
+   Several ranges because a costume can be broken up: Kitana's fan color
+   sits inside her cloth ramp, so her cloth is e.g. 1-5 plus 10-32. */
 struct BorrowSide {
-    int first = 1, last = 1;
-    std::vector<double> weight;             /* one per slot in [first, last] */
+    std::vector<TransferBlock> ranges;      /* as edited, in order; may overlap */
+    int active = 0;                         /* range the grid's clicks edit */
+    char text[128] = "";                    /* ranges as typed, "1-5, 10-32" */
+    std::vector<int> slots;                 /* ranges flattened: sorted, unique */
+    std::vector<double> weight;             /* one per entry of `slots` */
     long pixels = 0;
     int siblings = 0;                       /* palettes pooled besides this one */
     int preview_img = -1;                   /* a sprite drawn through this layout */
@@ -59,6 +64,7 @@ struct AltCostumeSession {
     float amount = 1.0f;
     int repoint = RepointNone;
     char name[10] = "";
+    bool name_auto = true;                  /* follow the settings until typed over */
     int mode = ModeTint;
 
     std::vector<unsigned short> words;      /* source palette */
@@ -86,10 +92,16 @@ static std::vector<unsigned short> WordsOf(int pal)
 /* Pre-fill a side's range with the costume ramp: the slots where `pal`
    differs from its costume variants. The variants are the palettes (same
    color count) sharing at least 3/4 as many slots as the closest one does. */
+static void SetRanges(BorrowSide &side, const std::vector<TransferBlock> &ranges, int active)
+{
+    side.ranges = ranges;
+    side.active = std::max(0, std::min(active, (int)ranges.size() - 1));
+    FormatSlotRanges(ranges.data(), (int)ranges.size(), side.text, sizeof(side.text));
+}
+
 static void SuggestRange(int pal, const std::vector<unsigned short> &words, BorrowSide &side)
 {
-    side.first = 1;
-    side.last = (int)words.size() - 1;
+    SetRanges(side, { { 1, (int)words.size() - 1 } }, 0);
     std::vector<std::vector<unsigned short>> cand;
     std::vector<int> shared;
     int best = 0, idx = 0;
@@ -108,21 +120,30 @@ static void SuggestRange(int pal, const std::vector<unsigned short> &words, Borr
         if (shared[i] * 4 >= best * 3) sibs.push_back(cand[i].data());
     int f, l;
     if (!sibs.empty() &&
-        FindCostumeRun(words.data(), sibs.data(), (int)sibs.size(), (int)words.size(), &f, &l)) {
-        side.first = f;
-        side.last = l;
-    }
+        FindCostumeRun(words.data(), sibs.data(), (int)sibs.size(), (int)words.size(), &f, &l))
+        SetRanges(side, { { f, l - f + 1 } }, 0);
 }
 
-/* Pixel coverage of each slot in the side's range, over every sprite on
+/* The side's ranges as a per-slot mask (length `n`), clipped to [1, n). */
+static std::vector<char> RangeMask(const BorrowSide &side, int n)
+{
+    std::vector<char> mask(std::max(n, 1), 0);
+    for (const TransferBlock &r : side.ranges)
+        for (int s = std::max(1, r.start); s < r.start + r.count && s < n; s++) mask[s] = 1;
+    return mask;
+}
+
+/* Pixel coverage of each slot in the side's ranges, over every sprite on
    `pal` or on a costume sibling of it — RAIN1_P has two sprites of its own,
    but the UMK3 ninja sprites on SCORP1_P, REP1_P... all show where its gear
    shades land. Also picks the largest such sprite to preview. */
 static void MeasureSide(int pal, const std::vector<unsigned short> &words, BorrowSide &side)
 {
     const int n = (int)words.size();
-    side.first = std::max(1, std::min(side.first, n - 1));
-    side.last = std::max(side.first, std::min(side.last, n - 1));
+    const std::vector<char> mask = RangeMask(side, n);
+    side.slots.clear();
+    for (int s = 1; s < n; s++)
+        if (mask[s]) side.slots.push_back(s);
 
     std::vector<char> pooled;
     side.siblings = 0;
@@ -131,7 +152,7 @@ static void MeasureSide(int pal, const std::vector<unsigned short> &words, Borro
         bool take = idx == pal;
         if (!take && p->data_p) {
             std::vector<unsigned short> w = PalettePreviewWords(p);
-            take = IsCostumeSibling(words.data(), n, w.data(), (int)w.size(), side.first, side.last);
+            take = IsCostumeSiblingMask(words.data(), n, w.data(), (int)w.size(), mask.data());
             side.siblings += take;
         }
         pooled.push_back(take ? 1 : 0);
@@ -151,17 +172,17 @@ static void MeasureSide(int pal, const std::vector<unsigned short> &words, Borro
             for (int x = 0; x < img->w; x++) {
                 const unsigned char v = pix[y * stride + x];
                 slot_px[v]++;
-                in_range += v >= side.first && v <= side.last;
+                in_range += v < n && mask[v];
             }
         /* Prefer a sprite on the palette itself; else the one showing the
            most of the costume. */
         const long score = in_range + (pn == pal ? (1L << 30) : 0);
         if (in_range > 0 && score > best_area) { best_area = score; side.preview_img = idx; }
     }
-    side.weight.assign(side.last - side.first + 1, 0.0);
+    side.weight.clear();
     side.pixels = 0;
-    for (int s = side.first; s <= side.last; s++) {
-        side.weight[s - side.first] = (double)slot_px[s];
+    for (int s : side.slots) {
+        side.weight.push_back((double)slot_px[s]);
         side.pixels += slot_px[s];
     }
 }
@@ -170,16 +191,70 @@ static void Borrow(void)
 {
     g_ac.out_words = g_ac.words;
     if (g_ac.ref_words.size() < 2 || g_ac.words.size() < 2) return;
-    std::vector<int> ds, rs;
-    for (int s = g_ac.dst.first; s <= g_ac.dst.last; s++) ds.push_back(s);
-    for (int s = g_ac.ref.first; s <= g_ac.ref.last; s++) rs.push_back(s);
-    BorrowRampByCoverage(g_ac.words.data(), ds.data(), g_ac.weigh ? g_ac.dst.weight.data() : nullptr,
-                         (int)ds.size(),
-                         g_ac.ref_words.data(), rs.data(), g_ac.weigh ? g_ac.ref.weight.data() : nullptr,
-                         (int)rs.size(), g_ac.out_words.data());
+    if (g_ac.dst.slots.empty() || g_ac.ref.slots.empty()) return;
+    BorrowRampByCoverage(g_ac.words.data(), g_ac.dst.slots.data(),
+                         g_ac.weigh ? g_ac.dst.weight.data() : nullptr, (int)g_ac.dst.slots.size(),
+                         g_ac.ref_words.data(), g_ac.ref.slots.data(),
+                         g_ac.weigh ? g_ac.ref.weight.data() : nullptr, (int)g_ac.ref.slots.size(),
+                         g_ac.out_words.data());
 }
 
 static void Recolor(void);
+
+/* ---- Naming the new palette ---- */
+
+/* Case-blind: RAIN_P and rain_p would be the same label to the toolchain. */
+static bool PalNameTaken(const char *name)
+{
+    auto up = [](char c) { return c >= 'a' && c <= 'z' ? (char)(c - 'a' + 'A') : c; };
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p) {
+        int i = 0;
+        while (i < 10 && up(p->n_s[i]) == up(name[i]) && name[i]) i++;
+        if (i == 10 || up(p->n_s[i]) == up(name[i])) return true;
+    }
+    return false;
+}
+
+/* `name` itself when no loaded palette has it, else the next free numbered
+   form (RAIN_P -> RAIN1_P -> ... the same counter Duplicate Palette uses). */
+static void UniquePalName(const char *name, char out[10])
+{
+    char cand[10];
+    snprintf(cand, sizeof(cand), "%.9s", name);
+    if (!PalNameTaken(cand)) { memcpy(out, cand, 10); return; }
+    make_numbered_pal_name(cand, out);
+}
+
+/* A name that says what the palette is, in the 9-character NAME_P form:
+   borrowing from RAIN1_P gives RAIN_P (then RAIN5_P, if RAIN_P..RAIN4_P are
+   loaded); tinting SCORP_P blue gives SCORBLU_P. */
+static void AutoName(void)
+{
+    char stem[8] = "";
+    PAL *ref = g_ac.mode == ModeBorrow && g_ac.ref_pal >= 0 ? get_pal(g_ac.ref_pal) : NULL;
+    PAL *src = get_pal(g_ac.src_pal);
+    if (ref) {
+        CostumeNameStem(ref->n_s, 7, stem);
+    } else if (src) {
+        char s4[5];
+        CostumeNameStem(src->n_s, 4, s4);
+        snprintf(stem, sizeof(stem), "%s%s", s4,
+                 HueTag((int)std::lround(g_ac.color[0] * 255.0f), (int)std::lround(g_ac.color[1] * 255.0f),
+                        (int)std::lround(g_ac.color[2] * 255.0f)));
+    }
+    if (!stem[0]) snprintf(stem, sizeof(stem), "COSTUME");
+    char cand[10];
+    snprintf(cand, sizeof(cand), "%.7s_P", stem);
+    UniquePalName(cand, g_ac.name);
+}
+
+/* Palette names are A-Z, 0-9 and '_' (ImGuiInputTextFlags_CharsUppercase
+   has already folded a-z). */
+static int PalNameCharFilter(ImGuiInputTextCallbackData *d)
+{
+    const ImWchar c = d->EventChar;
+    return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ? 0 : 1;
+}
 
 static void SetReference(int pal)
 {
@@ -189,6 +264,7 @@ static void SetReference(int pal)
         SuggestRange(pal, g_ac.ref_words, g_ac.ref);
         MeasureSide(pal, g_ac.ref_words, g_ac.ref);
     }
+    if (g_ac.name_auto) AutoName();
     Recolor();
 }
 
@@ -267,7 +343,6 @@ void OpenAltCostumeDialog(void)
     g_ac.open = true;
     g_ac.src_pal = pal;
     g_ac.words = PalettePreviewWords(src);
-    snprintf(g_ac.name, sizeof(g_ac.name), "%.7s_A", src->n_s);
 
     /* Preview the selected sprite when it is on this palette, else the first
        one that is. */
@@ -290,6 +365,7 @@ void OpenAltCostumeDialog(void)
         SuggestRange(prev_ref, g_ac.ref_words, g_ac.ref);
         MeasureSide(prev_ref, g_ac.ref_words, g_ac.ref);
     }
+    AutoName();
 
     Redetect();
 }
@@ -298,6 +374,12 @@ static void Commit(void)
 {
     PAL *src = get_pal(g_ac.src_pal);
     if (!src || g_ac.out_words.empty()) return;
+    /* A typed name that is blank or already loaded gets the next free
+       number rather than a second palette under the same name. */
+    char final_name[10];
+    if (!g_ac.name[0]) AutoName();
+    UniquePalName(g_ac.name, final_name);
+    const bool renamed = std::strncmp(final_name, g_ac.name, 10) != 0;
     if (!doc_undo_push()) return;
 
     PAL *pal = AllocPal();
@@ -306,7 +388,8 @@ static void Commit(void)
     pal->bitspix = src->bitspix;
     pal->numc    = src->numc;
     pal->pad     = 0;
-    snprintf(pal->n_s, sizeof(pal->n_s), "%.9s", g_ac.name[0] ? g_ac.name : "COSTUME");
+    std::memset(pal->n_s, 0, sizeof(pal->n_s));
+    std::memcpy(pal->n_s, final_name, 9);
     const size_t bytes = (size_t)src->numc * 2;
     unsigned char *buf = (unsigned char *)PoolAlloc(bytes);
     if (!buf) return;
@@ -336,27 +419,77 @@ static void Commit(void)
     InvalidatePaletteSync();
     g_img_tex_idx = -2;
     mark_dirty();
-    snprintf(g_restore_msg, sizeof(g_restore_msg), "Created costume palette %.9s from %.9s%s",
-             pal->n_s, src->n_s, repointed ? "; sprites repointed." : ".");
+    snprintf(g_restore_msg, sizeof(g_restore_msg), "Created costume palette %.9s from %.9s%s%s",
+             pal->n_s, src->n_s, renamed ? " (name was taken, numbered)" : "",
+             repointed ? "; sprites repointed." : ".");
     g_restore_msg_timer = 5.0f;
     g_ac.open = false;
 }
 
-/* A slot range can run to 64 shades; PalettePreviewStrip cuts at 24, so lay
-   it out 16 to a row. */
+/* Each of the side's ranges, 16 swatches to a row (PalettePreviewStrip cuts
+   at 24). */
 static void RangeStrip(const std::vector<unsigned short> &words, const BorrowSide &side)
 {
-    for (int s = side.first; s <= side.last; s += 16)
-        PalettePreviewStrip(words, s, std::min(16, side.last - s + 1));
+    for (const TransferBlock &r : side.ranges) {
+        const int last = r.start + r.count - 1;
+        for (int s = r.start; s <= last; s += 16)
+            PalettePreviewStrip(words, s, std::min(16, last - s + 1));
+    }
 }
 
-static bool RangeInput(const char *id, BorrowSide &side, int numc)
+/* The ranges as editable text, "1-5, 10-32". Text that does not parse keeps
+   the last good ranges (and turns red) until it does. */
+static bool RangeText(const char *id, BorrowSide &side, int numc)
 {
-    int v[2] = { side.first, side.last };
-    ImGui::SetNextItemWidth(130.0f);
-    if (!ImGui::InputInt2(id, v)) return false;
-    side.first = std::max(1, std::min(v[0], numc - 1));
-    side.last = std::max(side.first, std::min(v[1], numc - 1));
+    TransferBlock buf[32];
+    const bool bad = ParseSlotRanges(side.text, numc, buf, 32) < 0;
+    if (bad) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 110, 110, 255));
+    ImGui::SetNextItemWidth(170.0f);
+    const bool edited = ImGui::InputText(id, side.text, sizeof(side.text));
+    if (bad) ImGui::PopStyleColor();
+    if (!edited) return false;
+    const int n = ParseSlotRanges(side.text, numc, buf, 32);
+    if (n < 0) return false;
+    side.ranges.assign(buf, buf + n);
+    side.active = std::max(0, n - 1);
+    return true;
+}
+
+/* The whole palette as a picker over the side's ranges. */
+static bool RangeGrid(const char *id, const std::vector<unsigned short> &words, BorrowSide &side)
+{
+    const int n = (int)words.size();
+    const std::vector<char> mask = RangeMask(side, n);
+    const bool has = !side.ranges.empty();
+    const TransferBlock cur = has ? side.ranges[side.active] : TransferBlock{ -1, 0 };
+    PalettePick pick;
+    if (!PalettePickerGrid(id, words, mask.data(), cur.start, cur.start + cur.count - 1, &pick))
+        return false;
+
+    std::vector<TransferBlock> r = side.ranges;
+    int active = side.active;
+    if (pick.add >= 0 || ((pick.set_first >= 0 || pick.set_last >= 0) && !has)) {
+        const int s = pick.add >= 0 ? pick.add : std::max(pick.set_first, pick.set_last);
+        r.push_back({ s, 1 });
+        active = (int)r.size() - 1;
+    } else if (pick.set_first >= 0 || pick.set_last >= 0) {
+        int first = cur.start, last = cur.start + cur.count - 1;
+        if (pick.set_first >= 0) { first = pick.set_first; last = std::max(last, first); }
+        else                     { last = pick.set_last;   first = std::min(first, last); }
+        r[active] = { first, last - first + 1 };
+    } else if (pick.remove >= 0) {
+        /* The active range if it holds the slot, else the latest that does. */
+        auto holds = [&](const TransferBlock &b) {
+            return pick.remove >= b.start && pick.remove < b.start + b.count;
+        };
+        int k = holds(r[active]) ? active : -1;
+        for (int i = (int)r.size() - 1; k < 0 && i >= 0; i--)
+            if (holds(r[i])) k = i;
+        if (k < 0) return false;
+        r.erase(r.begin() + k);
+        if (active >= k) active--;
+    }
+    SetRanges(side, r, active);
     return true;
 }
 
@@ -365,14 +498,15 @@ static void DrawBorrowControls(bool &changed)
     const int n = (int)g_ac.words.size();
     ImGui::TextUnformatted("Recolor slots");
     ImGui::SameLine(110.0f);
-    if (RangeInput("##ac_dst", g_ac.dst, n)) { MeasureSide(g_ac.src_pal, g_ac.words, g_ac.dst); changed = true; }
+    if (RangeText("##ac_dst", g_ac.dst, n)) { MeasureSide(g_ac.src_pal, g_ac.words, g_ac.dst); changed = true; }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-        "First and last slot of this palette's costume ramp. Pre-filled\n"
-        "with the slots that differ from its closest sibling palette\n"
-        "(SCORP_P vs SUB_P: 1-32).");
+        "This palette's costume slots, as ranges: 1-5, 10-32. Pre-filled\n"
+        "with the slots that differ from its closest sibling palettes\n"
+        "(SCORP_P vs SUB_P: 1-32). Leave out another material's slots\n"
+        "inside the ramp, like Kitana's fan color.");
     ImGui::SameLine();
     ImGui::TextDisabled("%ld px across %d palette(s)", g_ac.dst.pixels, g_ac.dst.siblings + 1);
-    if (PalettePickerGrid("##ac_dst_pick", g_ac.words, &g_ac.dst.first, &g_ac.dst.last)) {
+    if (RangeGrid("##ac_dst_pick", g_ac.words, g_ac.dst)) {
         MeasureSide(g_ac.src_pal, g_ac.words, g_ac.dst);
         changed = true;
     }
@@ -398,17 +532,17 @@ static void DrawBorrowControls(bool &changed)
     if (ref && g_ac.ref_words.size() >= 2) {
         ImGui::TextUnformatted("Its slots");
         ImGui::SameLine(110.0f);
-        if (RangeInput("##ac_ref_range", g_ac.ref, (int)g_ac.ref_words.size())) {
+        if (RangeText("##ac_ref_range", g_ac.ref, (int)g_ac.ref_words.size())) {
             MeasureSide(g_ac.ref_pal, g_ac.ref_words, g_ac.ref);
             changed = true;
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-            "The reference palette's costume ramp. Leave out flat fills that\n"
-            "belong to another material: RAIN1_P's 49-63 are all one color,\n"
+            "The reference palette's costume slots, as ranges. Leave out flat\n"
+            "fills and other materials: RAIN1_P's 49-63 are all one color,\n"
             "the pants, and would drag the gear toward black.");
         ImGui::SameLine();
         ImGui::TextDisabled("%ld px across %d palette(s)", g_ac.ref.pixels, g_ac.ref.siblings + 1);
-        if (PalettePickerGrid("##ac_ref_pick", g_ac.ref_words, &g_ac.ref.first, &g_ac.ref.last)) {
+        if (RangeGrid("##ac_ref_pick", g_ac.ref_words, g_ac.ref)) {
             MeasureSide(g_ac.ref_pal, g_ac.ref_words, g_ac.ref);
             changed = true;
         }
@@ -492,7 +626,23 @@ void DrawAltCostumeDialog(void)
     ImGui::Text("From:  %.9s  (%d colors)", src->n_s, (int)g_ac.words.size());
     ImGui::SameLine(280.0f);
     ImGui::SetNextItemWidth(120.0f);
-    ImGui::InputText("New palette name", g_ac.name, sizeof(g_ac.name), ImGuiInputTextFlags_CharsUppercase);
+    if (ImGui::InputText("New palette name", g_ac.name, sizeof(g_ac.name),
+                         ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CallbackCharFilter,
+                         PalNameCharFilter))
+        g_ac.name_auto = false;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Up to 9 characters: A-Z, 0-9, _. Named after the reference\n"
+        "palette (or the source and tint color) until you type your own.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(g_ac.name_auto);
+    if (ImGui::SmallButton("Auto")) { g_ac.name_auto = true; AutoName(); }
+    ImGui::EndDisabled();
+    if (!g_ac.name_auto && g_ac.name[0] && PalNameTaken(g_ac.name)) {
+        char next[10];
+        UniquePalName(g_ac.name, next);
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "taken; saves as %.9s", next);
+    }
 
     ImGui::Separator();
 
@@ -510,7 +660,10 @@ void DrawAltCostumeDialog(void)
     ImGui::Separator();
     if (g_ac.mode == ModeBorrow) DrawBorrowControls(changed);
     else                         DrawTintControls(changed);
-    if (changed) Recolor();
+    if (changed) {
+        Recolor();
+        if (g_ac.name_auto) AutoName();   /* mode or tint color may have changed */
+    }
     ImGui::EndChild();
 
     ImGui::SameLine();
@@ -538,7 +691,8 @@ void DrawAltCostumeDialog(void)
     ImGui::RadioButton("All on source", &g_ac.repoint, RepointAll);
     bool any_picked = false;
     for (char p : g_ac.picked) any_picked |= p != 0;
-    if (g_ac.mode == ModeBorrow) any_picked = g_ac.ref_words.size() >= 2;
+    if (g_ac.mode == ModeBorrow)
+        any_picked = g_ac.ref_words.size() >= 2 && !g_ac.dst.slots.empty() && !g_ac.ref.slots.empty();
     ImGui::BeginDisabled(!any_picked);
     if (ImGui::Button("Create Palette", ImVec2(140, 0))) Commit();
     ImGui::EndDisabled();

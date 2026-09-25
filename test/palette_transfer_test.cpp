@@ -233,8 +233,71 @@ static void siblings_share_most_slots_outside_the_costume(void)
     CHECK(CountSharedSlots(a, b, 8) == 4);
 }
 
+static void slot_ranges_parse_and_format(void)
+{
+    TransferBlock r[8];
+    CHECK(ParseSlotRanges("1-5, 10-32", 64, r, 8) == 2);
+    CHECK(r[0].start == 1 && r[0].count == 5);
+    CHECK(r[1].start == 10 && r[1].count == 23);
+    /* Spaces instead of commas, a single slot, reversed ends, clipping. */
+    CHECK(ParseSlotRanges("  32-10 7 0-3  60-99", 64, r, 8) == 4);
+    CHECK(r[0].start == 10 && r[0].count == 23);
+    CHECK(r[1].start == 7 && r[1].count == 1);
+    CHECK(r[2].start == 1 && r[2].count == 3);
+    CHECK(r[3].start == 60 && r[3].count == 4);
+    CHECK(ParseSlotRanges("", 64, r, 8) == 0);
+    CHECK(ParseSlotRanges("1-", 64, r, 8) == -1);
+    CHECK(ParseSlotRanges("1-5; 9", 64, r, 8) == -1);
+    CHECK(ParseSlotRanges("70-80", 64, r, 8) == 0);   /* past the palette */
+
+    char buf[64];
+    const TransferBlock two[3] = { {1, 5}, {7, 1}, {10, 23} };
+    FormatSlotRanges(two, 3, buf, sizeof(buf));
+    CHECK(std::strcmp(buf, "1-5, 7, 10-32") == 0);
+    CHECK(ParseSlotRanges(buf, 64, r, 8) == 3);
+}
+
+static void sibling_test_ignores_every_costume_range(void)
+{
+    /* Costume at 1-2 and 5-6; the fan color at 3-4 is shared. */
+    unsigned short a[8], b[8];
+    for (int i = 0; i < 8; i++) a[i] = b[i] = W(i, 0, 0);
+    b[1] = b[2] = b[5] = b[6] = W(0, 0, 31);
+    const char mask[8] = { 0, 1, 1, 0, 0, 1, 1, 0 };
+    CHECK(IsCostumeSiblingMask(a, 8, b, 8, mask));
+    /* Once 3-4 differ too, only slot 7 of the three outside matches... */
+    b[3] = b[4] = W(0, 31, 0);
+    CHECK(!IsCostumeSiblingMask(a, 8, b, 8, mask));
+    /* ...unless they are costume as well. */
+    const char wide[8] = { 0, 1, 1, 1, 1, 1, 1, 0 };
+    CHECK(IsCostumeSiblingMask(a, 8, b, 8, wide));
+}
+
+static void costume_names_follow_the_palette_convention(void)
+{
+    char s[16];
+    CostumeNameStem("RAIN1_P", 7, s);   CHECK(std::strcmp(s, "RAIN") == 0);
+    CostumeNameStem("kitana_p", 7, s);  CHECK(std::strcmp(s, "KITANA") == 0);
+    CostumeNameStem("SCORP_P", 4, s);   CHECK(std::strcmp(s, "SCOR") == 0);
+    CostumeNameStem("ORIGP", 7, s);     CHECK(std::strcmp(s, "ORIGP") == 0);
+    CostumeNameStem("LK-ALT 2", 7, s);  CHECK(std::strcmp(s, "LKALT") == 0);
+    CostumeNameStem("SUB_Z_P", 4, s);   CHECK(std::strcmp(s, "SUB") == 0);   /* no dangling '_' */
+    CostumeNameStem("123_P", 7, s);     CHECK(s[0] == 0);
+
+    CHECK(std::strcmp(HueTag(40, 80, 220), "BLU") == 0);
+    CHECK(std::strcmp(HueTag(140, 40, 200), "PUR") == 0);
+    CHECK(std::strcmp(HueTag(220, 30, 30), "RED") == 0);
+    CHECK(std::strcmp(HueTag(40, 200, 60), "GRN") == 0);
+    CHECK(std::strcmp(HueTag(230, 210, 40), "YEL") == 0);
+    CHECK(std::strcmp(HueTag(120, 125, 118), "GRY") == 0);
+    CHECK(std::strcmp(HueTag(10, 10, 20), "BLK") == 0);
+}
+
 int main(void)
 {
+    costume_names_follow_the_palette_convention();
+    slot_ranges_parse_and_format();
+    sibling_test_ignores_every_costume_range();
     borrow_matches_by_coverage_not_brightness();
     borrow_without_weights_spreads_evenly_and_pools_duplicates();
     costume_run_is_the_differing_span_minus_a_flat_tail();

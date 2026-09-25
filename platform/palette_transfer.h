@@ -134,6 +134,38 @@ int CountSharedSlots(const unsigned short *a, const unsigned short *b, int numc)
 bool IsCostumeSibling(const unsigned short *a, int a_numc,
                       const unsigned short *b, int b_numc, int first, int last);
 
+/* The same test when the costume is several ranges: `in_costume[s]` nonzero
+ * (for s < a_numc) marks slot s as costume. Kitana's fans sit inside her
+ * cloth ramp, so her costume is e.g. 1-5 plus 10-32. */
+bool IsCostumeSiblingMask(const unsigned short *a, int a_numc,
+                          const unsigned short *b, int b_numc, const char *in_costume);
+
+/* Parse a slot list typed as "1-5, 10-32", "1-5 10-32" or "7". Ends may be
+ * given in either order; ranges are clipped to [1, numc) and kept in the
+ * order typed (overlaps are allowed; callers flatten to a slot set). Returns
+ * how many ranges were written to `out`, or -1 on anything that is not a
+ * number, '-', ',' or space. */
+int ParseSlotRanges(const char *text, int numc, TransferBlock *out, int max_out);
+
+/* The inverse: "1-5, 10-32" ("7" for a single slot). */
+void FormatSlotRanges(const TransferBlock *ranges, int n, char *out, int out_size);
+
+/* ---- Naming a costume palette ----
+ * Palette names are at most 9 characters (PAL.n_s[10]) and by convention
+ * are uppercase A-Z, 0-9 and '_', ending in "_P" (SCORP_P, RAIN1_P). */
+
+/* The part of `pal_name` a costume made from it should be named after:
+ * uppercased, anything outside A-Z/0-9/_ dropped, then a trailing "_P" and
+ * any digits before it removed, cut to `max_len` characters (plus any '_'
+ * the cut leaves at the end). "RAIN1_P" -> "RAIN", "kitana_p" -> "KITANA".
+ * `out` must hold max_len + 1. */
+void CostumeNameStem(const char *pal_name, int max_len, char *out);
+
+/* A three-letter tag for a color's hue ("RED", "ORG", "YEL", "GRN", "CYN",
+ * "BLU", "PUR", "PNK"), or "GRY" / "WHT" / "BLK" for near-neutral colors.
+ * Takes 8-bit channels. */
+const char *HueTag(int r, int g, int b);
+
 /* The costume ramp of `words`, found by diffing it against `nsib` sibling
  * palettes (each `numc` long): the longest run of slots in [1, numc) that
  * differ from at least one sibling (a single shared slot inside the run does

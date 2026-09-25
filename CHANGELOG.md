@@ -92,7 +92,24 @@ trimmed off. On NINJAS8 + PURPRAIN this gives 1-32 and 31-48 with no editing.
 Each palette is also shown whole, with the slots outside its range dimmed.
 Hovering a swatch shows its slot number and color. Click a swatch to start the
 range there, or right-click to end it there. A third preview pane shows a
-reference sprite. The mapping lives in
+reference sprite.
+
+A costume can span several ranges on either side. Type them as `1-5, 10-32`,
+or Ctrl+click a swatch to start another range and Ctrl+right-click one to drop
+the range it is in. Kitana's fan color sits inside her cloth ramp, and this
+keeps it out. All the ranges are pooled into one ramp before shades are
+matched, so gaps don't change the mapping. Text that doesn't parse turns red,
+and the last valid ranges stay in effect until it does parse.
+
+The new palette gets a name that says what it is, in the 9-character `NAME_P`
+form. When borrowing, it is named after the reference: RAIN1_P gives `RAIN_P`.
+When tinting, it is the source plus the color: SCORP_P tinted blue gives
+`SCORBLU_P`. A name that is already loaded is numbered with the same counter
+Duplicate Palette uses, so with RAIN1_P..RAIN4_P loaded a second Rain becomes
+`RAIN5_P`. The name follows your settings until you type over it. **Auto** puts
+it back. The field accepts only A-Z, 0-9 and `_`. A typed name that is already
+taken shows what it will be saved as, and is numbered when you create the
+palette. The mapping lives in
 `BorrowRampByCoverage` and `FindCostumeRun` (`platform/palette_transfer.{h,cpp}`),
 with tests in `test/palette_transfer_test.cpp`.
 

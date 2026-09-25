@@ -54,10 +54,12 @@ void PalettePreviewStrip(const std::vector<unsigned short> &words, int start, in
 }
 
 bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
-                       int *first, int *last)
+                       const char *selected, int active_first, int active_last,
+                       PalettePick *out)
 {
     const int n = (int)words.size();
-    if (n <= 0 || !first || !last) return false;
+    if (n <= 0 || !selected || !out) return false;
+    *out = PalettePick();
     const float cell = 14.0f;
     const int cols = 16, rows = (n + cols - 1) / cols;
     const ImVec2 o = ImGui::GetCursorScreenPos();
@@ -75,29 +77,32 @@ bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
         const ImVec2 a(o.x + (s % cols) * cell, o.y + (s / cols) * cell);
         const ImVec2 b(a.x + cell - 1.0f, a.y + cell - 1.0f);
         dl->AddRectFilled(a, b, WordColor(words[s]));
-        if (s < *first || s > *last) dl->AddRectFilled(a, b, IM_COL32(20, 20, 24, 170));
-        if (s == *first || s == *last) dl->AddRect(a, b, IM_COL32(255, 255, 255, 255));
+        if (!selected[s]) dl->AddRectFilled(a, b, IM_COL32(20, 20, 24, 170));
+        else if (s != active_first && s != active_last &&
+                 (s == 0 || !selected[s - 1] || s == n - 1 || !selected[s + 1]))
+            dl->AddRect(a, b, IM_COL32(150, 150, 160, 255));   /* another range's end */
+        if (s == active_first || s == active_last) dl->AddRect(a, b, IM_COL32(255, 255, 255, 255));
         if (s == hover) dl->AddRect(ImVec2(a.x - 1, a.y - 1), ImVec2(b.x + 1, b.y + 1),
                                     IM_COL32(255, 220, 60, 255), 0.0f, 0, 2.0f);
     }
 
     if (hover < 0) return false;
     const unsigned short w = words[hover];
-    ImGui::SetTooltip("Slot %d  (%d,%d,%d)%s\nClick: start here   Right-click: end here", hover,
-                      (w >> 10) & 0x1F, (w >> 5) & 0x1F, w & 0x1F,
-                      hover == *first ? "  first" : hover == *last ? "  last" : "");
+    ImGui::SetTooltip("Slot %d  (%d,%d,%d)%s\n"
+                      "Click: start range here      Right-click: end it here\n"
+                      "Ctrl+click: add a range      Ctrl+right-click: remove range",
+                      hover, (w >> 10) & 0x1F, (w >> 5) & 0x1F, w & 0x1F,
+                      hover == active_first ? "  first" : hover == active_last ? "  last" : "");
     if (hover < 1) return false;
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && hover != *first) {
-        *first = hover;
-        if (*last < hover) *last = hover;
-        return true;
+    const bool ctrl = ImGui::GetIO().KeyCtrl;
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+        if (ctrl) out->add = hover;
+        else if (hover != active_first) out->set_first = hover;
+    } else if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        if (ctrl) { if (selected[hover]) out->remove = hover; }
+        else if (hover != active_last) out->set_last = hover;
     }
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && hover != *last) {
-        *last = hover;
-        if (*first > hover) *first = hover;
-        return true;
-    }
-    return false;
+    return out->set_first >= 0 || out->set_last >= 0 || out->add >= 0 || out->remove >= 0;
 }
 
 static SDL_Texture *g_tex[4] = {};
