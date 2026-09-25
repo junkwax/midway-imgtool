@@ -90,8 +90,11 @@ void DrawIndexedGradientDialog(void);
 /* ---- Palette Operations & Helpers ---- */
 void AddNewPalette(void);
 void DuplicatePalette(void);
-void CopyPaletteToClipboard(void);
-void PastePaletteFromClipboard(void);
+int  CountMarkedPalettes(void);
+int  CopyPaletteToClipboard(int fallback_idx = -1,  /* marked palettes, else fallback/selected */
+                            bool only_fallback = false);
+bool PaletteListHasFocus(void);              /* Ctrl+C/V act on whole palettes */
+int  PastePaletteFromClipboard(void); /* appends every copied palette */
 void SelectPalette(int idx);
 void SetPaletteOfSelected(void);
 void SetPaletteOfMarked(void);

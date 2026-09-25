@@ -722,14 +722,11 @@ void DrawMainLayout(void)
         g_clone_offset_set = false;
         g_remap_target_color = -1;
         g_snap_bbox.valid = false;
-        /* Abort any in-progress freehand selection — its coords are in the
-           previous image's pixel space and continuing the drag would mix
-           coordinates across sprites. */
-        g_lasso_points.clear();
-        if (g_grid_sel.dragging) {
-            g_grid_sel.dragging = false;
-            g_grid_sel.active = false;
-        }
+        /* Drop the selection entirely, not just an in-progress drag. It is in
+           the previous image's pixel space: a finished wand/lasso mask was
+           sized for that sprite, and carrying it over left the marching ants
+           (and Del / Ctrl+C / Ctrl+X acting on them) live on every frame. */
+        deselect_all();
         /* Drop multi-swatch selection too. Even if the new image shares a
            palette with the old one, users perceive image-switch as a
            fresh context and a stale yellow border on swatches is
@@ -760,13 +757,22 @@ void DrawMainLayout(void)
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) DoUndo();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route)) DoRedo();
 
-    /* Clipboard */
+    /* Clipboard. After a click in the palette list, plain Ctrl+C / Ctrl+V
+       copy and paste whole palettes (marked ones, else the selected one)
+       instead of pixels; clicking anywhere else hands them back. */
+    bool palette_clip = PaletteListHasFocus();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C, route)) CopySelectionToNewImage();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_X, route)) CutSelectionToNewImage();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_V, route)) PasteClipboardAsNewImage();
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) copy_image(false);
-    if (!io.KeyShift && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) copy_image(true);
-    if (!io.KeyShift && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) paste_image();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, route)) {
+        if (palette_clip) CopyPaletteToClipboard();
+        else              copy_image(false);
+    }
+    if (!palette_clip && !io.KeyShift && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_X, route)) copy_image(true);
+    if (!io.KeyShift && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_V, route)) {
+        if (palette_clip) PastePaletteFromClipboard();
+        else              paste_default();
+    }
 
     /* Adobe-standard selection shortcuts.
 
@@ -933,6 +939,7 @@ void DrawMainLayout(void)
                                  : "Selection was already empty.",
                      cleared, cleared == 1 ? "" : "s");
             g_restore_msg_timer = 3.0f;
+            deselect_all();
         } else if (g_palette_nav) {
             DeletePalette();
         } else {
@@ -1211,7 +1218,14 @@ void DrawMainLayout(void)
                 CopySelectionToNewImage();
             if (ImGui::MenuItem("Cut to New Sprite", "Ctrl+Shift+X", false, g_doc->ilselected >= 0))
                 CutSelectionToNewImage();
-            if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_clipboard.valid && g_doc->ilselected >= 0))
+            if (ImGui::MenuItem("Paste", "Ctrl+V", false,
+                                g_clipboard.valid && (g_clipboard.whole_frame || g_doc->ilselected >= 0)))
+                paste_default();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(
+                "A whole copied/cut sprite pastes as a new sprite;\n"
+                "a marquee selection floats over the current sprite.");
+            if (g_clipboard.valid && g_clipboard.whole_frame &&
+                ImGui::MenuItem("Paste into Sprite", NULL, false, g_doc->ilselected >= 0))
                 paste_image();
             if (ImGui::MenuItem("Paste as New Sprite", "Ctrl+Shift+V", false, g_clipboard.valid))
                 PasteClipboardAsNewImage();

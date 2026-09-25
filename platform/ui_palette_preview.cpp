@@ -53,6 +53,53 @@ void PalettePreviewStrip(const std::vector<unsigned short> &words, int start, in
         ImGui::SetTooltip("%d more slot(s) not shown", count - kMaxShown);
 }
 
+bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
+                       int *first, int *last)
+{
+    const int n = (int)words.size();
+    if (n <= 0 || !first || !last) return false;
+    const float cell = 14.0f;
+    const int cols = 16, rows = (n + cols - 1) / cols;
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(id, ImVec2(cols * cell, rows * cell),
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    int hover = -1;
+    if (ImGui::IsItemHovered()) {
+        const ImVec2 m = ImGui::GetIO().MousePos;
+        const int cx = (int)((m.x - o.x) / cell), cy = (int)((m.y - o.y) / cell);
+        if (cx >= 0 && cx < cols && cy >= 0 && cy < rows && cy * cols + cx < n) hover = cy * cols + cx;
+    }
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    for (int s = 0; s < n; s++) {
+        const ImVec2 a(o.x + (s % cols) * cell, o.y + (s / cols) * cell);
+        const ImVec2 b(a.x + cell - 1.0f, a.y + cell - 1.0f);
+        dl->AddRectFilled(a, b, WordColor(words[s]));
+        if (s < *first || s > *last) dl->AddRectFilled(a, b, IM_COL32(20, 20, 24, 170));
+        if (s == *first || s == *last) dl->AddRect(a, b, IM_COL32(255, 255, 255, 255));
+        if (s == hover) dl->AddRect(ImVec2(a.x - 1, a.y - 1), ImVec2(b.x + 1, b.y + 1),
+                                    IM_COL32(255, 220, 60, 255), 0.0f, 0, 2.0f);
+    }
+
+    if (hover < 0) return false;
+    const unsigned short w = words[hover];
+    ImGui::SetTooltip("Slot %d  (%d,%d,%d)%s\nClick: start here   Right-click: end here", hover,
+                      (w >> 10) & 0x1F, (w >> 5) & 0x1F, w & 0x1F,
+                      hover == *first ? "  first" : hover == *last ? "  last" : "");
+    if (hover < 1) return false;
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && hover != *first) {
+        *first = hover;
+        if (*last < hover) *last = hover;
+        return true;
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && hover != *last) {
+        *last = hover;
+        if (*first > hover) *first = hover;
+        return true;
+    }
+    return false;
+}
+
 static SDL_Texture *g_tex[4] = {};
 static int g_tex_w[4] = {}, g_tex_h[4] = {};
 

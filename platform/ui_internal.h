@@ -311,13 +311,14 @@ bool selection_contains_pixel(IMG *img, int x, int y);
 
 /* ---- Palette Clipboard & Editor ---- */
 struct CopiedPalette {
-    bool           valid;
     unsigned short numc;
     unsigned char  bitspix;
     char           n_s[10];
-    unsigned char *data;     /* numc * 2 bytes, malloc'd */
+    std::vector<unsigned char> data;   /* numc * 2 bytes */
 };
-extern CopiedPalette g_pal_clipboard;
+/* Whole palettes copied from the list (every marked one, or the selected
+   one). Not owned by any document, so it survives switching/opening IMGs. */
+extern std::vector<CopiedPalette> g_pal_clipboard;
 
 extern int  g_sel_color;
 extern bool g_palette_selection[256];
@@ -520,6 +521,7 @@ struct CopiedImage {
     bool           has_meta;
     bool           has_opaque;
     bool           from_cut;
+    bool           whole_frame; /* copied/cut the entire sprite: Ctrl+V pastes as new sprite */
     int            origin_x, origin_y; /* source-local top-left after tight crop */
     unsigned short palnum;
     unsigned short anix, aniy;
@@ -981,6 +983,7 @@ void AsmProcessOppAutoload(void);
 
 void copy_image(bool cut);
 void paste_image(void);
+void paste_default(void);
 void select_all(void);
 void deselect_all(void);
 void invert_selection(void);

@@ -1675,6 +1675,108 @@ static void RemapSelectedColorsToTransparent(PaletteTransparentScope scope, int 
     g_restore_msg_timer = 5.0f;
 }
 
+/* Remove the Ctrl/Shift-selected colors (or the right-clicked one) outright:
+   their pixels in every sprite on this palette become index 0, the palette
+   entries are deleted, and every index above them shifts down to close the
+   gap. Typical use is stripping a sprite-sheet background after import. */
+static void RemoveSelectedColorsFromPalette(int fallback_slot)
+{
+    if (!g_doc) return;
+    int pal_idx = g_doc->plselected;
+    PAL *pal = (pal_idx >= 0) ? get_pal(pal_idx) : NULL;
+    if (!pal || !pal->data_p) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "No palette selected.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    commit_palette_adjustments();
+
+    int old_numc = pal->numc;
+    if (old_numc > 256) old_numc = 256;
+
+    bool targets[256] = { false };
+    int n_targets = 0;
+    for (int i = 1; i < 256; i++) {
+        if (g_palette_selection[i]) { targets[i] = true; n_targets++; }
+    }
+    bool used_fallback = false;
+    if (n_targets == 0 && fallback_slot > 0 && fallback_slot < 256) {
+        targets[fallback_slot] = true;
+        n_targets = 1;
+        used_fallback = true;
+    }
+    if (n_targets == 0) {
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Ctrl+click palette swatches to pick the colors to remove.");
+        g_restore_msg_timer = 4.0f;
+        return;
+    }
+
+    /* Targets become 0; survivors keep their order and slide down. */
+    unsigned char remap[256];
+    int next = 1;
+    remap[0] = 0;
+    for (int i = 1; i < 256; i++) {
+        if (targets[i]) remap[i] = 0;
+        else if (i < old_numc) remap[i] = (unsigned char)next++;
+        else remap[i] = (unsigned char)i;   /* out-of-palette index: leave */
+    }
+    int new_numc = (old_numc > 0) ? next : 0;
+    int removed_slots = old_numc - new_numc;
+
+    doc_undo_push();
+
+    unsigned char *colors = (unsigned char *)pal->data_p;
+    unsigned char old_colors[512] = {0};
+    memcpy(old_colors, colors, (size_t)old_numc * 2);
+    for (int i = 1; i < old_numc; i++) {
+        if (targets[i]) continue;
+        colors[remap[i] * 2 + 0] = old_colors[i * 2 + 0];
+        colors[remap[i] * 2 + 1] = old_colors[i * 2 + 1];
+    }
+    for (int i = new_numc; i < old_numc; i++) {
+        colors[i * 2 + 0] = 0;
+        colors[i * 2 + 1] = 0;
+    }
+    pal->numc = (unsigned short)new_numc;
+
+    int cleared = 0, touched_imgs = 0, idx = 0;
+    for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p, idx++) {
+        if ((int)img->palnum != pal_idx || !img->data_p || img->w == 0 || img->h == 0)
+            continue;
+        int stride = (img->w + 3) & ~3;
+        unsigned char *pix = (unsigned char *)img->data_p;
+        bool touched = false;
+        for (int y = 0; y < img->h; y++) {
+            for (int x = 0; x < img->w; x++) {
+                unsigned char *p = pix + y * stride + x;
+                if (targets[*p]) cleared++;
+                if (remap[*p] != *p) { *p = remap[*p]; touched = true; }
+            }
+        }
+        if (touched) { touched_imgs++; InvalidateThumb(idx); }
+    }
+
+    if (g_sel_color > 0 && g_sel_color < 256) g_sel_color = remap[g_sel_color];
+    memset(g_palette_selection, 0, sizeof(g_palette_selection));
+    if (g_isolate_color > 0) g_isolate_color = -1;
+
+    ApplyPalette(pal_idx);
+    save_palette_baseline();
+    InvalidatePaletteUsage();
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    snprintf(g_restore_msg, sizeof(g_restore_msg),
+             "Removed %d color%s from %.9s (%d pixel%s cleared, %d sprite%s updated)%s.",
+             removed_slots, removed_slots == 1 ? "" : "s", pal->n_s,
+             cleared, cleared == 1 ? "" : "s",
+             touched_imgs, touched_imgs == 1 ? "" : "s",
+             used_fallback ? " - the right-clicked swatch" : "");
+    g_restore_msg_timer = 5.0f;
+}
+
 static int palette_reduce_target_numc(int bpp)
 {
     if (bpp < 4) bpp = 4;
@@ -2321,53 +2423,114 @@ void DuplicatePalette(void)
     g_img_tex_idx = -2;
 }
 
-void CopyPaletteToClipboard(void)
+static bool pal_name_taken(const char *name)
 {
-    PAL *src = (g_doc->plselected >= 0) ? get_pal(g_doc->plselected) : NULL;
-    if (!src || !src->data_p || src->numc == 0) return;
-
-    unsigned int col_sz = (unsigned int)src->numc * 2;
-    unsigned char *buf = (unsigned char *)malloc(col_sz);
-    if (!buf) return;
-    memcpy(buf, src->data_p, col_sz);
-
-    if (g_pal_clipboard.valid && g_pal_clipboard.data) free(g_pal_clipboard.data);
-    g_pal_clipboard.valid   = true;
-    g_pal_clipboard.numc    = src->numc;
-    g_pal_clipboard.bitspix = src->bitspix;
-    memcpy(g_pal_clipboard.n_s, src->n_s, 10);
-    g_pal_clipboard.data    = buf;
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p)
+        if (strncmp(p->n_s, name, 10) == 0) return true;
+    return false;
 }
 
-void PastePaletteFromClipboard(void)
+int CountMarkedPalettes(void)
 {
-    if (!g_pal_clipboard.valid || !g_pal_clipboard.data || g_pal_clipboard.numc == 0) return;
+    int n = 0;
+    for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p)
+        if (p->flags & 1) n++;
+    return n;
+}
 
+/* Copies every marked palette (Ctrl/Shift+click in the list), or just the
+   selected one (or fallback_idx) when nothing is marked; only_fallback
+   ignores the marks. Replaces the previous clipboard. */
+int CopyPaletteToClipboard(int fallback_idx, bool only_fallback)
+{
+    if (fallback_idx < 0) fallback_idx = g_doc->plselected;
+    std::vector<CopiedPalette> clip;
+    bool use_marked = !only_fallback && CountMarkedPalettes() > 0;
+    int idx = 0;
+    for (PAL *src = (PAL *)g_doc->pal_p; src; src = (PAL *)src->nxt_p, idx++) {
+        bool take = use_marked ? (src->flags & 1) != 0 : idx == fallback_idx;
+        if (!take || !src->data_p || src->numc == 0) continue;
+        CopiedPalette c;
+        c.numc    = src->numc;
+        c.bitspix = src->bitspix;
+        memcpy(c.n_s, src->n_s, 10);
+        const unsigned char *d = (const unsigned char *)src->data_p;
+        c.data.assign(d, d + (size_t)src->numc * 2);
+        clip.push_back(c);
+    }
+    if (clip.empty()) return 0;
+    g_pal_clipboard.swap(clip);
+
+    int n = (int)g_pal_clipboard.size();
+    if (n == 1)
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied palette %.9s.",
+                 g_pal_clipboard[0].n_s);
+    else
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Copied %d palettes.", n);
+    g_restore_msg_timer = 3.0f;
+    return n;
+}
+
+/* Appends every clipboard palette to the current document as a new palette.
+   Names are kept verbatim (game code loads palettes by name) unless the
+   target file already has one by that name, in which case it gets a
+   numbered variant. Selects the first pasted palette. */
+int PastePaletteFromClipboard(void)
+{
+    if (g_pal_clipboard.empty()) return 0;
+
+    commit_palette_adjustments();
     doc_undo_push();
-    PAL *pal = (PAL *)AllocPal();
-    if (!pal) return;
+    int first_new = -1, pasted = 0, renamed = 0;
+    for (const CopiedPalette &c : g_pal_clipboard) {
+        if (c.numc == 0 || c.data.size() < (size_t)c.numc * 2) continue;
+        PAL *pal = (PAL *)AllocPal();
+        if (!pal) break;
 
-    pal->flags   = 0;
-    pal->numc    = g_pal_clipboard.numc;
-    /* Keep the source's declared depth, but derive one when the clipboard
-       carries none rather than defaulting every paste to 8bpp. */
-    pal->bitspix = g_pal_clipboard.bitspix
-                 ? g_pal_clipboard.bitspix
-                 : (unsigned char)PaletteBppForColorCount((int)g_pal_clipboard.numc);
-    pal->pad     = 0;
-    memcpy(pal->n_s, g_pal_clipboard.n_s, 10);
+        pal->flags   = 0;
+        pal->numc    = c.numc;
+        /* Keep the source's declared depth, but derive one when the clipboard
+           carries none rather than defaulting every paste to 8bpp. */
+        pal->bitspix = c.bitspix
+                     ? c.bitspix
+                     : (unsigned char)PaletteBppForColorCount((int)c.numc);
+        pal->pad     = 0;
+        /* Blank the new palette's name first so it never clashes with itself. */
+        memset(pal->n_s, 0, 10);
+        char name[10];
+        memcpy(name, c.n_s, 10);
+        name[9] = '\0';
+        if (pal_name_taken(name)) { make_numbered_pal_name(name, name); renamed++; }
+        memcpy(pal->n_s, name, 10);
 
-    unsigned int col_sz = (unsigned int)pal->numc * 2;
-    unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
-    if (!buf) return;
-    pal->data_p = buf;
-    memcpy(buf, g_pal_clipboard.data, col_sz);
+        unsigned int col_sz = (unsigned int)pal->numc * 2;
+        unsigned char *buf = (unsigned char *)PoolAlloc(col_sz);
+        if (!buf) break;
+        pal->data_p = buf;
+        memcpy(buf, c.data.data(), col_sz);
 
-    if (g_doc->palcnt > 0) g_doc->plselected = (int)g_doc->palcnt - 1;
+        if (first_new < 0) first_new = (int)g_doc->palcnt - 1;
+        pasted++;
+    }
+    if (!pasted) return 0;
+
+    g_doc->plselected = first_new;
     ApplyPalette(g_doc->plselected);
     save_palette_baseline();
     reset_palette_adjust_sliders();
     InvalidatePaletteSync();
+    g_img_tex_idx = -2;
+    mark_dirty();
+
+    if (renamed)
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Pasted %d palette%s (%d renamed to avoid a name clash).",
+                 pasted, pasted == 1 ? "" : "s", renamed);
+    else
+        snprintf(g_restore_msg, sizeof(g_restore_msg), "Pasted %d palette%s.",
+                 pasted, pasted == 1 ? "" : "s");
+    g_restore_msg_timer = 3.0f;
+    return pasted;
 }
 
 void SelectPalette(int idx)
@@ -3455,6 +3618,39 @@ void DrawBottomPaletteBar(ImVec2 avail)
                              "Make This Color Transparent (#%d)", i);
 
                 if (targets == 0) ImGui::BeginDisabled();
+                {
+                    char rm_label[72];
+                    if (sel_slots > 0)
+                        snprintf(rm_label, sizeof(rm_label),
+                                 "Remove Selected Colors From All Sprites (%d)", sel_slots);
+                    else
+                        snprintf(rm_label, sizeof(rm_label),
+                                 "Remove Color #%d From All Sprites", i);
+                    if (ImGui::MenuItem(rm_label))
+                        RemoveSelectedColorsFromPalette(i);
+                    if (ImGui::IsItemHovered() && targets > 0)
+                        ImGui::SetTooltip("Pixels using %s become transparent (#0) in every\n"
+                                          "sprite on this palette, and the palette entr%s\n"
+                                          "deleted - higher indices shift down to fill the gap.",
+                                          sel_slots > 0 ? "the selected colors" : "this color",
+                                          targets == 1 ? "y is" : "ies are");
+
+                    char keep_label[72];
+                    if (sel_slots > 0)
+                        snprintf(keep_label, sizeof(keep_label),
+                                 "Make Selected Transparent in All Sprites, Keep Slots (%d)",
+                                 sel_slots);
+                    else
+                        snprintf(keep_label, sizeof(keep_label),
+                                 "Make #%d Transparent in All Sprites, Keep Slot", i);
+                    if (ImGui::MenuItem(keep_label))
+                        RemapSelectedColorsToTransparent(
+                            PaletteTransparentScope::PaletteImages, i);
+                    if (ImGui::IsItemHovered() && targets > 0)
+                        ImGui::SetTooltip("Pixels become transparent (#0) in every sprite on\n"
+                                          "this palette, but the palette entry stays so the\n"
+                                          "slot is free to reuse. No other index shifts.");
+                }
                 if (ImGui::BeginMenu(sub_label)) {
                     if (ImGui::MenuItem("In Current Sprite"))
                         RemapSelectedColorsToTransparent(
@@ -4826,10 +5022,62 @@ void ReverseSelectedPaletteOrder(void)
     g_restore_msg_timer = 4.0f;
 }
 
+/* True from a click in the palette list until a click lands anywhere else.
+   While set, Ctrl+C / Ctrl+V copy and paste whole palettes instead of pixels
+   (ui_main.cpp checks it before its sprite clipboard shortcuts). */
+static bool s_pal_list_focus = false;
+bool PaletteListHasFocus(void) { return s_pal_list_focus; }
+
+/* Copy/paste of whole palettes, shared by the Operations menu and a row's
+   right-click menu (fallback_idx = the row, used when nothing is marked). */
+static void DrawPaletteClipboardMenuItems(int fallback_idx = -1)
+{
+    int n_marked = CountMarkedPalettes();
+    char label[72];
+    if (n_marked > 0)
+        snprintf(label, sizeof(label), "Copy %d Marked Palette%s", n_marked, n_marked == 1 ? "" : "s");
+    else
+        snprintf(label, sizeof(label), "Copy Palette");
+    int src_idx = fallback_idx >= 0 ? fallback_idx : g_doc->plselected;
+    if (ImGui::MenuItem(label, "Ctrl+C", false, n_marked > 0 || src_idx >= 0))
+        CopyPaletteToClipboard(fallback_idx);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Ctrl+click palettes to mark several (Shift+click marks a range),\n"
+                          "then copy them all and paste into another IMG file.\n"
+                          "Ctrl+C / Ctrl+V act on palettes after you click in the palette list.");
+
+    /* With marks present, a right-clicked row can still be copied on its own. */
+    PAL *row = (fallback_idx >= 0 && n_marked > 0) ? get_pal(fallback_idx) : NULL;
+    if (row) {
+        snprintf(label, sizeof(label), "Copy Only %.9s", row->n_s);
+        if (ImGui::MenuItem(label))
+            CopyPaletteToClipboard(fallback_idx, true);
+    }
+
+    int n_clip = (int)g_pal_clipboard.size();
+    if (n_clip > 1) snprintf(label, sizeof(label), "Paste %d Palettes", n_clip);
+    else            snprintf(label, sizeof(label), "Paste Palette");
+    if (ImGui::MenuItem(label, "Ctrl+V", false, n_clip > 0))
+        PastePaletteFromClipboard();
+    if (n_clip > 0 && ImGui::IsItemHovered()) {
+        std::string tip = "Added as new palettes:";
+        for (int k = 0; k < n_clip && k < 16; k++) {
+            char line[48];
+            snprintf(line, sizeof(line), "\n  %.9s (%d colors)",
+                     g_pal_clipboard[k].n_s, (int)g_pal_clipboard[k].numc);
+            tip += line;
+        }
+        if (n_clip > 16) tip += "\n  ...";
+        ImGui::SetTooltip("%s", tip.c_str());
+    }
+}
+
 void DrawRightPanelPaletteEditor(float panel_h)
 {
     int n_pals = count_pals();
-    if (ImGui::CollapsingHeader("Palettes", ImGuiTreeNodeFlags_DefaultOpen)) {
+    bool pal_header_open = ImGui::CollapsingHeader("Palettes", ImGuiTreeNodeFlags_DefaultOpen);
+    if (!pal_header_open) s_pal_list_focus = false;
+    if (pal_header_open) {
         /* A palette no sprite in this file points at is abandoned. Game code
            can still load one by name (TBL .long PAL_NAME), so this only flags
            them; nothing is deleted. */
@@ -4849,8 +5097,10 @@ void DrawRightPanelPaletteEditor(float panel_h)
                               "Shown in orange below. Game code may still load it by name.");
 
         float list_h = panel_h * 0.22f;
+        bool list_hovered = false;
         if (ImGui::BeginListBox("##pallist", ImVec2(-1, list_h))) {
-            if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            list_hovered = ImGui::IsWindowHovered();
+            if (list_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 g_palette_nav = true;
             for (int i = 0; i < n_pals; i++) {
                 PAL *pal = get_pal(i);
@@ -4867,13 +5117,29 @@ void DrawRightPanelPaletteEditor(float panel_h)
                 if (sel)            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
                 else if (abandoned) ImGui::PushStyleColor(ImGuiCol_Text, abandoned_col);
                 if (ImGui::Selectable(label, sel)) {
-                    SelectPalette(i);
+                    /* Ctrl/Shift+click build a multi-selection out of the
+                       existing mark flag (so Copy Palettes, Merge Marked and
+                       the other "marked" tools all see it) without moving the
+                       selected palette or reassigning the sprite. */
+                    ImGuiIO &io = ImGui::GetIO();
+                    if (io.KeyCtrl) {
+                        pal->flags ^= 1;
+                    } else if (io.KeyShift) {
+                        int anchor = g_doc->plselected >= 0 ? g_doc->plselected : i;
+                        int lo = anchor < i ? anchor : i, hi = anchor < i ? i : anchor;
+                        for (int k = lo; k <= hi; k++)
+                            if (PAL *mp = get_pal(k)) mp->flags |= 1;
+                    } else {
+                        SelectPalette(i);
+                    }
                 }
                 if (tinted) ImGui::PopStyleColor();
                 if (abandoned && ImGui::IsItemHovered())
                     ImGui::SetTooltip("Abandoned: no image uses %s", pal->n_s);
 
                 if (ImGui::BeginPopupContextItem("##palctx")) {
+                    DrawPaletteClipboardMenuItems(i);
+                    ImGui::Separator();
                     if (ImGui::MenuItem("Mark / Unmark"))             pal->flags ^= 1;
                     {
                         /* Right-clicking a row targets that row, which is not
@@ -4962,6 +5228,15 @@ void DrawRightPanelPaletteEditor(float panel_h)
             }
             ImGui::EndListBox();
         }
+        /* A click inside a menu this list opened keeps the focus. */
+        bool any_click = ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                         ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+        if (any_click) {
+            if (list_hovered)
+                s_pal_list_focus = true;
+            else if (!ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
+                s_pal_list_focus = false;
+        }
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
         if (ImGui::Button("+##addpal", ImVec2(24, 20))) { AddNewPalette(); }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a new blank 256-color palette");
@@ -5021,13 +5296,7 @@ void DrawRightPanelPaletteEditor(float panel_h)
                                           "leaving every existing index untouched.");
                     ImGui::Separator();
                 }
-                if (ImGui::MenuItem("Copy Palette to Clipboard")) CopyPaletteToClipboard();
-                if (!g_pal_clipboard.valid) ImGui::BeginDisabled();
-                if (ImGui::MenuItem("Paste Palette from Clipboard")) PastePaletteFromClipboard();
-                if (g_pal_clipboard.valid && ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Paste clipboard palette as new (%s, %d colors)",
-                                      g_pal_clipboard.n_s, (int)g_pal_clipboard.numc);
-                if (!g_pal_clipboard.valid) ImGui::EndDisabled();
+                DrawPaletteClipboardMenuItems();
                 ImGui::Separator();
                 if (ImGui::MenuItem("Export Palette...")) OpenFileDialog(FileDialogMode::ExportPalette);
                 ImGui::EndMenu();

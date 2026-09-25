@@ -372,7 +372,10 @@ static void DrawBorrowControls(bool &changed)
         "(SCORP_P vs SUB_P: 1-32).");
     ImGui::SameLine();
     ImGui::TextDisabled("%ld px across %d palette(s)", g_ac.dst.pixels, g_ac.dst.siblings + 1);
-    RangeStrip(g_ac.words, g_ac.dst);
+    if (PalettePickerGrid("##ac_dst_pick", g_ac.words, &g_ac.dst.first, &g_ac.dst.last)) {
+        MeasureSide(g_ac.src_pal, g_ac.words, g_ac.dst);
+        changed = true;
+    }
 
     ImGui::Spacing();
     ImGui::TextUnformatted("Colors from");
@@ -405,7 +408,10 @@ static void DrawBorrowControls(bool &changed)
             "the pants, and would drag the gear toward black.");
         ImGui::SameLine();
         ImGui::TextDisabled("%ld px across %d palette(s)", g_ac.ref.pixels, g_ac.ref.siblings + 1);
-        RangeStrip(g_ac.ref_words, g_ac.ref);
+        if (PalettePickerGrid("##ac_ref_pick", g_ac.ref_words, &g_ac.ref.first, &g_ac.ref.last)) {
+            MeasureSide(g_ac.ref_pal, g_ac.ref_words, g_ac.ref);
+            changed = true;
+        }
 
         ImGui::Spacing();
         changed |= ImGui::Checkbox("Match by pixel coverage", &g_ac.weigh);

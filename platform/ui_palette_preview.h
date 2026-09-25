@@ -22,6 +22,14 @@ void PalettePreviewStrip(const std::vector<unsigned short> &words, int start, in
                          const unsigned char *via_map = nullptr,
                          const std::vector<unsigned short> *map_words = nullptr);
 
+/* The whole of `words` as clickable swatches, 16 to a row, with slots
+   outside [first, last] dimmed. Hovering a swatch names its slot and color.
+   Left-click moves `first` there, right-click moves `last` (either one drags
+   the other along if they would cross). Slot 0 is shown but not pickable.
+   Returns true when the range changed. */
+bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
+                       int *first, int *last);
+
 /* A labelled, centred, nearest-scaled pane of `img` drawn through `words`
    (after `map`, when given). `slot` picks one of four cached textures so
    several panes can coexist in a frame. */

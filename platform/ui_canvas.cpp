@@ -69,6 +69,9 @@ static int  g_selection_add_mask_w = 0;
 static int  g_selection_add_mask_h = 0;
 static std::vector<bool> g_selection_add_mask;
 
+/* True once the current left-button stroke has pushed its undo snapshot. */
+static bool g_stroke_snapshotted = false;
+
 
 WorldViewState &WorldView(void)
 {
@@ -12682,6 +12685,10 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
         }
 
         /* ---- Pencil + eyedropper + fill + pan tools ---- */
+        /* Cleared outside the gate below so a release that happens while the
+           canvas is blocked still ends the stroke. */
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            g_stroke_snapshotted = false;
         if (!canvas_input_blocked && !timeline_composite_preview_active) {
             IMG *cimg = (g_doc->ilselected >= 0) ? get_img(g_doc->ilselected) : NULL;
             bool over = mouse.x >= img_pos.x && mouse.x < img_pos.x + img_sz.x &&
@@ -12751,9 +12758,23 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                            image's pixel buffer on the first frame of left-mouse
                            down for any paint tool. Skipped for Clone Stamp's
                            Alt-click "set source" which doesn't modify pixels. */
-                        bool stroke_begin = ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                        /* A press that starts off the sprite (or on a frame
+                           this branch was gated off, e.g. the click-through
+                           from a closing file dialog) and then drags onto it
+                           never sees IsMouseClicked here, so keying the
+                           snapshot on the click alone let those strokes paint
+                           with nothing to undo. Snapshot on the first frame
+                           the held button reaches the image instead. Bucket
+                           and background eraser only act on a click, so they
+                           keep the click test to avoid empty undo entries. */
+                        bool click_only = g_active_tool == ActiveTool::PaintBucket ||
+                                          g_active_tool == ActiveTool::BackgroundEraser;
+                        bool stroke_begin = (click_only
+                                ? ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                                : (ImGui::IsMouseDown(ImGuiMouseButton_Left) && !g_stroke_snapshotted))
                             && !(g_active_tool == ActiveTool::CloneStamp && io.KeyAlt);
                         if (stroke_begin) {
+                            g_stroke_snapshotted = true;
                             if (g_active_tool == ActiveTool::VariantPaint && g_sel_color > 0)
                                 doc_undo_push();
                             else if (g_active_tool != ActiveTool::VariantPaint)
@@ -16591,6 +16612,7 @@ void copy_image(bool cut)
     ClearPixelClipboard();
 
     int x1 = 0, y1 = 0, x2 = img->w - 1, y2 = img->h - 1;
+    bool whole_frame = true;
 
     /* If grid selection is active, copy only the selected region */
     if (g_grid_sel.active) {
@@ -16602,6 +16624,9 @@ void copy_image(bool cut)
         if (y1 < 0) y1 = 0; if (y1 >= (int)img->h) y1 = img->h - 1;
         if (x2 < 0) x2 = 0; if (x2 >= (int)img->w) x2 = img->w - 1;
         if (y2 < 0) y2 = 0; if (y2 >= (int)img->h) y2 = img->h - 1;
+        /* A Select All rectangle still counts as the whole frame. */
+        whole_frame = !g_grid_sel.is_mask && x1 == 0 && y1 == 0 &&
+                      x2 == (int)img->w - 1 && y2 == (int)img->h - 1;
     }
 
     int w = (x2 - x1) + 1;
@@ -16650,6 +16675,7 @@ void copy_image(bool cut)
     g_clipboard.has_meta = true;
     g_clipboard.has_opaque = false;
     g_clipboard.from_cut = cut;
+    g_clipboard.whole_frame = whole_frame;
     g_clipboard.origin_x = origin_x;
     g_clipboard.origin_y = origin_y;
     g_clipboard.palnum = img->palnum;
@@ -17316,6 +17342,7 @@ void apply_pasted_region(void)
             g_clipboard.has_meta = true;
             g_clipboard.has_opaque = cookie_has_opaque;
             g_clipboard.from_cut = true;
+            g_clipboard.whole_frame = false;
             g_clipboard.origin_x = px;
             g_clipboard.origin_y = py;
             g_clipboard.palnum = img->palnum;
@@ -17359,6 +17386,7 @@ void CaptureCookieCutter(void)
     g_grid_sel.active = false;
     copy_image(false);
     g_grid_sel.active = selection_was_active;
+    g_clipboard.whole_frame = false; /* a stencil, not a frame to paste as new */
     g_cookie_cut_mode = false;
 
     if (!g_clipboard.valid || !g_clipboard.has_opaque) {
@@ -17849,6 +17877,17 @@ void paste_image(void)
        paste; Esc reverts the transform first, then a second Esc cancels
        the paste entirely. */
     xform_begin();
+}
+
+
+/* Ctrl+V: a clipboard holding a whole sprite (copied/cut with no marquee, or
+   with Select All) becomes a new sprite; a partial selection floats over the
+   current sprite. Edit > Paste into Sprite forces the in-place paste. */
+void paste_default(void)
+{
+    if (!g_clipboard.valid) return;
+    if (g_clipboard.whole_frame) PasteClipboardAsNewImage();
+    else paste_image();
 }
 
 

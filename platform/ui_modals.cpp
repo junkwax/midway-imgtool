@@ -9679,7 +9679,10 @@ File:
 Edit:
   Ctrl+Z               Undo (paint stroke, anipoint, hitbox, palette ops)
   Ctrl+Y               Redo
-  Ctrl+C / Ctrl+X / Ctrl+V   Copy / Cut / Paste
+  Ctrl+C / Ctrl+X / Ctrl+V   Copy / Cut / Paste (a whole copied sprite pastes
+                       as a new sprite; Edit > Paste into Sprite overrides)
+                       After a click in the Palettes list, Ctrl+C / Ctrl+V copy
+                       and paste whole palettes (marked ones, else the selected)
   Ctrl+Shift+C         Copy selection to a new sprite
   Ctrl+Shift+X         Cut selection to a new sprite
   Ctrl+Shift+V         Paste clipboard as a new sprite

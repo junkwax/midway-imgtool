@@ -10,6 +10,21 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### Copy several palettes and paste them into another IMG
+
+In the Palettes list, Ctrl+click marks or unmarks a palette and Shift+click
+marks a range. The selected palette and the sprite's palette stay the same.
+**Copy Palettes** copies every marked palette, or the selected one when none are
+marked. **Paste Palettes** adds all of them as new palettes in the IMG file that
+is open now. The clipboard is kept when you open or switch files. Pasted
+palettes keep their names. If the file already has a palette with the same
+name, the pasted one gets a numbered name. Copy and Paste are at the top of
+each palette row's right-click menu and under Operations → Clipboard & Files.
+When palettes are marked, the right-click menu also has **Copy Only <name>**
+for the row you clicked. After you click in the Palettes list, Ctrl+C and
+Ctrl+V copy and paste palettes instead of pixels, until you click somewhere
+else.
+
 ### Every brush tool shows its size on the canvas
 
 Before, only Pencil drew its brush outline. Variant Paint, Clone Stamp, Blur,
@@ -71,8 +86,11 @@ since RAIN1_P has only two sprites of its own.
 
 Both slot ranges are pre-filled with the slots where a palette differs from its
 close siblings. RAIN1_P's flat fill at 49-63 (the pants, a single color) is
-trimmed off. On NINJAS8 + PURPRAIN this gives 1-32 and 31-48 with no editing. A
-third preview pane shows a reference sprite. The mapping lives in
+trimmed off. On NINJAS8 + PURPRAIN this gives 1-32 and 31-48 with no editing.
+Each palette is also shown whole, with the slots outside its range dimmed.
+Hovering a swatch shows its slot number and color. Click a swatch to start the
+range there, or right-click to end it there. A third preview pane shows a
+reference sprite. The mapping lives in
 `BorrowRampByCoverage` and `FindCostumeRun` (`platform/palette_transfer.{h,cpp}`),
 with tests in `test/palette_transfer_test.cpp`.
 

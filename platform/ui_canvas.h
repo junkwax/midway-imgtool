@@ -1321,6 +1321,7 @@ void flip_layer_vertical(SpriteLayer *L);
 void drop_paste_to_layer(void);
 void apply_pasted_region(void);
 void paste_image(void);
+void paste_default(void);
 bool clipboard_secondary_anipoint_in_use(void);
 
 /* Free Transform */

@@ -57,7 +57,7 @@ int          g_undo_count =  0;
 GridSelection g_grid_sel = {false, false, 0, 0, 0, 0, false, 0, 0, {}};
 
 /* ---- Palette Clipboard & Editor ---- */
-CopiedPalette g_pal_clipboard = {false, 0, 0, {0}, NULL};
+std::vector<CopiedPalette> g_pal_clipboard;
 
 int  g_sel_color   = 0;
 bool g_palette_selection[256] = {false};
