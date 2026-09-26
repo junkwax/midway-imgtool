@@ -273,6 +273,31 @@ static void sibling_test_ignores_every_costume_range(void)
     CHECK(IsCostumeSiblingMask(a, 8, b, 8, wide));
 }
 
+static void costume_family_survives_every_pass(void)
+{
+    /* Gear 1-4 and skin 5-6 of 9 slots; 7-8 are the shared outline. */
+    unsigned short orig[9], gear[9], skin[9], both[9], other[9];
+    for (int i = 0; i < 9; i++) orig[i] = W(i, 0, 0);
+    std::memcpy(gear, orig, sizeof(orig));
+    for (int i = 1; i <= 4; i++) gear[i] = W(0, 0, i);
+    std::memcpy(skin, orig, sizeof(orig));
+    skin[5] = skin[6] = W(20, 10, 5);
+    std::memcpy(both, gear, sizeof(gear));
+    both[5] = both[6] = W(20, 10, 5);
+    for (int i = 1; i < 9; i++) other[i] = W(0, i, 0);
+    /* Skin-only pass on the gear palette: outside the skin the original
+       differs in the gear, so the section test drops it... */
+    const char skin_mask[9] = { 0, 0, 0, 0, 0, 1, 1, 0, 0 };
+    CHECK(!IsCostumeSiblingMask(gear, 9, orig, 9, skin_mask));
+    /* ...the family test keeps it, whichever pass came first. */
+    CHECK(IsCostumeFamily(gear, 9, orig, 9));
+    CHECK(IsCostumeFamily(skin, 9, orig, 9));
+    CHECK(IsCostumeFamily(both, 9, orig, 9));
+    CHECK(IsCostumeFamily(both, 9, gear, 9) && IsCostumeFamily(both, 9, skin, 9));
+    CHECK(!IsCostumeFamily(orig, 9, other, 9));
+    CHECK(!IsCostumeFamily(orig, 9, gear, 8));
+}
+
 static void costume_names_follow_the_palette_convention(void)
 {
     char s[16];
@@ -298,6 +323,7 @@ int main(void)
     costume_names_follow_the_palette_convention();
     slot_ranges_parse_and_format();
     sibling_test_ignores_every_costume_range();
+    costume_family_survives_every_pass();
     borrow_matches_by_coverage_not_brightness();
     borrow_without_weights_spreads_evenly_and_pools_duplicates();
     costume_run_is_the_differing_span_minus_a_flat_tail();

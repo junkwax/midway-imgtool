@@ -321,6 +321,14 @@ bool IsCostumeSiblingMask(const unsigned short *a, int a_numc,
     return outside > 0 && same * 2 >= outside;
 }
 
+bool IsCostumeFamily(const unsigned short *a, int a_numc,
+                     const unsigned short *b, int b_numc)
+{
+    if (!a || !b || a_numc != b_numc) return false;
+    const int numc = clamp_numc(a_numc);
+    return numc > 1 && CountSharedSlots(a, b, numc) * 4 >= numc - 1;
+}
+
 bool IsCostumeSibling(const unsigned short *a, int a_numc,
                       const unsigned short *b, int b_numc, int first, int last)
 {

@@ -10,6 +10,33 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### The palette list can be sorted A-Z and can hide inactive palettes
+
+Two checkboxes above the Palettes list. **A-Z** shows the palettes in
+alphabetical order. **Hide inactive** hides abandoned palettes, the orange ones
+no image in the file uses, and shows how many are hidden. The selected palette
+always stays visible. Both are view-only. The file keeps its palette order,
+because sprites point at palettes by position and LOAD2 packs in that order.
+Up/Down and Shift+click range marking follow the order the list shows.
+
+Selecting a frame now scrolls the list so that frame's palette row is at the top,
+already highlighted. When the palette changes some other way, such as the arrow
+keys, the list scrolls only if the row is out of view. Clicking in the list never
+scrolls it.
+
+### Costume borrows shade the same whichever section you do first
+
+Borrowing the costume and then the skin in a second pass, or the other way
+around, could give skin that came out darker or lighter, even with the same
+slots selected. Borrow matches shades by how many pixels each color covers,
+counted over the palette's sprites plus those of its costume siblings. Siblings
+were judged by matching outside the open sections. A Skin-only pass on a palette
+whose costume had already been borrowed therefore dropped every sibling, since
+they all differ in the costume, and the skin was weighted by fewer sprites.
+Siblings are now any palette with the same color count that shares at least a
+quarter of its colors. Every pass sees the same sprites, so the order no longer
+matters.
+
 ## [v3.36.0] — Palettes travel between IMGs; costumes borrow their colors; every brush shows its size
 
 ### Copy several palettes and paste them into another IMG
@@ -123,8 +150,16 @@ pre-fills a Costume section from the sibling diff. When you switch to another
 reference with the same color count (RAIN1_P to RAIN2_P), the reference
 sections are kept.
 
-The **Colors from** dropdown opens scrolled to the palette already picked. The
-last reference is remembered by name between uses of the dialog.
+The **Colors from** dropdown lists palettes A-Z and opens scrolled to the palette
+already picked. The last reference is remembered by name between uses of the
+dialog. Saved layouts are also listed A-Z.
+
+With **Highlight selection** on (the default), the Before pane shows the open
+section's colors in full and dims the rest of the sprite to gray. The Reference
+pane does the same for the reference palette's colors. Hovering a swatch in
+either grid highlights just that color, so you can see where each index is used
+before picking it. In Tint mode, the ticked ramps are highlighted. After is
+never dimmed.
 
 The new palette gets a name that says what it is, in the 9-character `NAME_P`
 form. When borrowing, it is named after the reference: RAIN1_P gives `RAIN_P`.

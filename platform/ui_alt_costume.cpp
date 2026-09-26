@@ -101,6 +101,9 @@ struct AltCostumeSession {
     std::vector<CostumeSection> sections;
     int next_id = 1;
     int select_tab = -1;                    /* section id to bring forward next frame */
+    int shown_tab = -1;                     /* section id whose tab is open */
+    int hover_dst = -1, hover_ref = -1;     /* swatch under the mouse this frame */
+    bool highlight = true;                  /* dim what the selection does not touch */
     SideStats dst_stats, ref_stats;
 
     bool save_dst = true;                   /* which palette the Save Layout popup saves */
@@ -146,6 +149,15 @@ static bool SaveLayouts(void)
     const bool ok = ferror(f) == 0;
     fclose(f);
     return ok;
+}
+
+/* Sort key for names: uppercased, at most `max` characters. */
+static std::string UpperName(const char *s, int max)
+{
+    std::string out;
+    for (int i = 0; i < max && s[i]; i++)
+        out += s[i] >= 'a' && s[i] <= 'z' ? (char)(s[i] - 'a' + 'A') : s[i];
+    return out;
 }
 
 static int LayoutIndex(const char *name)
@@ -236,9 +248,11 @@ static std::vector<char> RangeMask(const SlotSet &side, int n)
 /* Pixel coverage of every section's slots on one palette, over every sprite
    on it or on a costume sibling of it — RAIN1_P has two sprites of its own,
    but the UMK3 ninja sprites on SCORP1_P, REP1_P... all show where its gear
-   shades land. Siblings are judged outside ALL the sections, so a palette
-   differing only in costume and skin still counts. Also picks the largest
-   such sprite to preview. */
+   shades land. Siblings are judged by IsCostumeFamily, not outside the
+   sections: judged outside them, a Skin-only pass on a palette whose gear
+   was already borrowed dropped every sibling (they differ in the gear), so
+   skin came out darker or lighter than doing skin first. Also picks the
+   largest such sprite to preview. */
 static void MeasureSide(bool dst)
 {
     const int pal = SidePal(dst);
@@ -255,7 +269,7 @@ static void MeasureSide(bool dst)
         bool take = idx == pal;
         if (!take && p->data_p && n > 1) {
             std::vector<unsigned short> w = PalettePreviewWords(p);
-            take = IsCostumeSiblingMask(words.data(), n, w.data(), (int)w.size(), any.data());
+            take = IsCostumeFamily(words.data(), n, w.data(), (int)w.size());
             st.siblings += take;
         }
         pooled.push_back(take ? 1 : 0);
@@ -665,16 +679,18 @@ static bool RangeText(const char *id, SlotSet &side, int numc)
 }
 
 /* The whole palette as a picker over one section's ranges. */
-static bool RangeGrid(const char *id, const std::vector<unsigned short> &words, SlotSet &side)
+static bool RangeGrid(const char *id, const std::vector<unsigned short> &words, SlotSet &side,
+                      int *hover_out)
 {
     const int n = (int)words.size();
     const std::vector<char> mask = RangeMask(side, n);
     const bool has = !side.ranges.empty();
     const TransferBlock cur = has ? side.ranges[side.active] : TransferBlock{ -1, 0 };
     PalettePick pick;
-    if (!PalettePickerGrid(id, words, mask.data(), cur.start, cur.start + cur.count - 1,
-                           side.anchor >= 0, &pick))
-        return false;
+    const bool asked = PalettePickerGrid(id, words, mask.data(), cur.start, cur.start + cur.count - 1,
+                                         side.anchor >= 0, &pick);
+    if (hover_out && pick.hover >= 0) *hover_out = pick.hover;
+    if (!asked) return false;
 
     std::vector<TransferBlock> r = side.ranges;
     int active = side.active;
@@ -750,7 +766,12 @@ static void LayoutRow(const char *label, bool dst, bool &changed)
     if (ImGui::BeginCombo("##layout", st.layout[0] ? st.layout : "(no saved layout)",
                           ImGuiComboFlags_HeightLarge)) {
         int shown = 0;
-        for (size_t i = 0; i < g_layouts.size(); i++) {
+        std::vector<int> by_name((size_t)g_layouts.size());
+        for (size_t k = 0; k < by_name.size(); k++) by_name[k] = (int)k;
+        std::stable_sort(by_name.begin(), by_name.end(), [](int a, int b) {
+            return UpperName(g_layouts[a].name.c_str(), 32) < UpperName(g_layouts[b].name.c_str(), 32);
+        });
+        for (int i : by_name) {
             const PaletteLayout &l = g_layouts[i];
             if (l.numc > 0 && numc > 0 && l.numc != numc) continue;
             shown++;
@@ -852,7 +873,7 @@ static void DrawSection(CostumeSection &s, bool &changed)
         "fan color (give the fans their own section instead).");
     ImGui::SameLine();
     ImGui::TextDisabled("%ld px across %d palette(s)", s.dst.pixels, g_ac.dst_stats.siblings + 1);
-    dst_edit |= RangeGrid("##sec_dst_pick", g_ac.words, s.dst);
+    dst_edit |= RangeGrid("##sec_dst_pick", g_ac.words, s.dst, &g_ac.hover_dst);
     if (dst_edit) { MeasureSide(true); changed = true; }
 
     if (has_ref) {
@@ -866,7 +887,7 @@ static void DrawSection(CostumeSection &s, bool &changed)
             "the pants, and would drag the gear toward black.");
         ImGui::SameLine();
         ImGui::TextDisabled("%ld px across %d palette(s)", s.ref.pixels, g_ac.ref_stats.siblings + 1);
-        ref_edit |= RangeGrid("##sec_ref_pick", g_ac.ref_words, s.ref);
+        ref_edit |= RangeGrid("##sec_ref_pick", g_ac.ref_words, s.ref, &g_ac.hover_ref);
         if (ref_edit) { MeasureSide(false); changed = true; }
 
         ImGui::Spacing();
@@ -898,9 +919,15 @@ static void DrawBorrowControls(bool &changed)
     if (ref) snprintf(label, sizeof(label), "%.9s (%d colors)", ref->n_s, (int)ref->numc);
     else     snprintf(label, sizeof(label), "(choose a palette)");
     if (ImGui::BeginCombo("##ac_ref", label, ImGuiComboFlags_HeightLarge)) {
-        int idx = 0;
-        for (PAL *p = (PAL *)g_doc->pal_p; p; p = (PAL *)p->nxt_p, idx++) {
-            if (idx == g_ac.src_pal) continue;
+        /* A-Z by name; the file order means nothing when picking by name. */
+        std::vector<int> by_name;
+        for (int i = 0; i < (int)g_doc->palcnt; i++)
+            if (i != g_ac.src_pal && get_pal(i)) by_name.push_back(i);
+        std::stable_sort(by_name.begin(), by_name.end(), [](int a, int b) {
+            return UpperName(get_pal(a)->n_s, 10) < UpperName(get_pal(b)->n_s, 10);
+        });
+        for (int idx : by_name) {
+            PAL *p = get_pal(idx);
             const bool sel = idx == g_ac.ref_pal;
             char item[48];
             snprintf(item, sizeof(item), "%.9s (%d)##acr%d", p->n_s, (int)p->numc, idx);
@@ -928,6 +955,7 @@ static void DrawBorrowControls(bool &changed)
                      SectionReady(s) ? "" : " *", s.id);
             ImGuiTabItemFlags flags = s.id == g_ac.select_tab ? ImGuiTabItemFlags_SetSelected : 0;
             if (ImGui::BeginTabItem(tab, nullptr, flags)) {
+                g_ac.shown_tab = s.id;
                 ImGui::PushID(s.id);
                 const size_t before = g_ac.sections.size();
                 DrawSection(s, changed);
@@ -1061,6 +1089,7 @@ void DrawAltCostumeDialog(void)
         "section, e.g. UMK3's RAIN1_P onto MK2's ninja layout. Shades are\n"
         "matched by how many pixels they cover, not by brightness.");
     ImGui::Separator();
+    g_ac.hover_dst = g_ac.hover_ref = -1;   /* the grids set these while hovered */
     if (g_ac.mode == ModeBorrow) DrawBorrowControls(changed);
     else                         DrawTintControls(changed);
     if (changed) {
@@ -1074,16 +1103,42 @@ void DrawAltCostumeDialog(void)
     IMG *pv = g_ac.preview_img >= 0 ? get_img(g_ac.preview_img) : NULL;
     IMG *rv = g_ac.mode == ModeBorrow && g_ac.ref_pal >= 0 && g_ac.ref_stats.preview_img >= 0
               ? get_img(g_ac.ref_stats.preview_img) : NULL;
+    ImGui::Checkbox("Highlight selection", &g_ac.highlight);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Before and Reference show the selected colors in full and dim\n"
+        "everything else. Hovering a swatch shows just that one color.");
+
+    /* What Before and Reference highlight: the swatch being hovered, else
+       the open section's slots (Borrow) or the ticked ramps (Tint). */
+    char hl_dst[256] = {}, hl_ref[256] = {};
+    const CostumeSection *open_sec = NULL;
+    for (const CostumeSection &s : g_ac.sections)
+        if (s.id == g_ac.shown_tab) open_sec = &s;
+    if (g_ac.mode == ModeBorrow) {
+        if (g_ac.hover_dst >= 0) hl_dst[g_ac.hover_dst & 255] = 1;
+        else if (open_sec) for (int k : open_sec->dst.slots) hl_dst[k & 255] = 1;
+        if (g_ac.hover_ref >= 0) hl_ref[g_ac.hover_ref & 255] = 1;
+        else if (open_sec) for (int k : open_sec->ref.slots) hl_ref[k & 255] = 1;
+    } else {
+        for (size_t i = 0; i < g_ac.blocks.size(); i++)
+            if (g_ac.picked[i])
+                for (int k = 0; k < g_ac.blocks[i].count; k++) hl_dst[(g_ac.blocks[i].start + k) & 255] = 1;
+    }
+    bool any_dst = false, any_ref = false;
+    for (int k = 1; k < 256; k++) { any_dst |= hl_dst[k] != 0; any_ref |= hl_ref[k] != 0; }
+    const char *dst_mask = g_ac.highlight && any_dst ? hl_dst : nullptr;
+    const char *ref_mask = g_ac.highlight && any_ref ? hl_ref : nullptr;
+
     const int panes = rv ? 3 : 2;
     const float pane_h = (ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * panes) / panes;
     const float pane_w = ImGui::GetContentRegionAvail().x;
     if (pv) {
-        PalettePreviewSprite(2, "Before", pv, g_ac.words, nullptr, pane_w, pane_h);
+        PalettePreviewSprite(2, "Before", pv, g_ac.words, nullptr, pane_w, pane_h, dst_mask);
         PalettePreviewSprite(3, "After", pv, g_ac.out_words, nullptr, pane_w, pane_h);
     } else {
         ImGui::TextDisabled("No sprite uses this palette\nto preview on.");
     }
-    if (rv) PalettePreviewSprite(1, "Reference", rv, g_ac.ref_words, nullptr, pane_w, pane_h);
+    if (rv) PalettePreviewSprite(1, "Reference", rv, g_ac.ref_words, nullptr, pane_w, pane_h, ref_mask);
     ImGui::EndChild();
 
     ImGui::TextUnformatted("Point at the new palette:");

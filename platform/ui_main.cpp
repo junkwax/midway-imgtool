@@ -1079,12 +1079,13 @@ void DrawMainLayout(void)
             StepWorldEmbeddedSeqScrEntry(g_world_marked_state, -1);
     } else if (!g_pasted.active && !content_nudge_armed && !popup_using_keyboard &&
                g_palette_nav && g_doc->palcnt > 0) {
+        /* In the order the list shows them (A-Z, inactive hidden). */
         if (ImGui::Shortcut(ImGuiKey_DownArrow, route)) {
-            SelectPalette((g_doc->plselected + 1) % (int)g_doc->palcnt);
+            SelectPalette(PaletteListStep(g_doc->plselected, 1));
             g_zoom_reset = true;
         }
         if (ImGui::Shortcut(ImGuiKey_UpArrow, route)) {
-            SelectPalette((g_doc->plselected <= 0) ? (int)g_doc->palcnt - 1 : g_doc->plselected - 1);
+            SelectPalette(PaletteListStep(g_doc->plselected, -1));
             g_zoom_reset = true;
         }
     } else if (!g_pasted.active && !content_nudge_armed && !popup_using_keyboard &&
@@ -3102,6 +3103,15 @@ void DrawMainLayout(void)
             !AnipointLink().enabled) {
             g_seqscr_workspace = true;
             g_world_state.enabled = false;
+        }
+        /* Assets edits sprites, which only the Image and World canvases show.
+           Arriving here from Anim, Link or React puts the canvas back on Image
+           so the sprite you pick is the one you see. */
+        if (last_panel_tab != -1 && panel_tab != last_panel_tab &&
+            panel_tab == kPanelTabAssets && !g_world_state.enabled) {
+            g_seqscr_workspace = false;
+            AnipointLink().enabled = false;
+            g_reactions_workspace = false;
         }
         last_panel_tab = panel_tab;
     }

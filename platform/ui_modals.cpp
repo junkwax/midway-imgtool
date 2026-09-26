@@ -844,9 +844,9 @@ void SetActiveDocumentPath(const std::string &full_path)
     memcpy(g_doc->fpath_s, dir.data(), n_dir);
 
     size_t n_file = file.size();
-    if (n_file > 12) n_file = 12;
-    memset(g_doc->fname_s, 0, 13);
-    memset(g_doc->fnametmp_s, 0, 13);
+    if (n_file > sizeof(g_doc->fname_s) - 1) n_file = sizeof(g_doc->fname_s) - 1;
+    memset(g_doc->fname_s, 0, sizeof(g_doc->fname_s));
+    memset(g_doc->fnametmp_s, 0, sizeof(g_doc->fnametmp_s));
     memcpy(g_doc->fname_s, file.data(), n_file);
     memcpy(g_doc->fnametmp_s, file.data(), n_file);
     for (size_t i = 0; i < n_file; i++) {
@@ -1079,10 +1079,9 @@ static bool FileDialogResolveSaveName(FileDialogMode mode, char *out, size_t out
 
     size_t ext_len = strlen(ext);
     size_t stem_len = strlen(base);
-    /* SaveImg writes through g_doc->fname_s, a DOS 8.3 field capped at 12
-       chars. Appending past that truncates the extension itself, so trim the
-       stem rather than producing "MYLONGNAME.I". */
-    if (mode == FileDialogMode::SaveImg || mode == FileDialogMode::SplitMarkedImg) {
+    /* Split refuses names past DOS 8.3 (12 chars). Trim the stem so the
+       appended extension survives rather than producing "MYLONGNAME.I". */
+    if (mode == FileDialogMode::SplitMarkedImg) {
         size_t max_stem = 12 - (ext_len + 1);
         if (stem_len > max_stem) stem_len = max_stem;
     }
@@ -1140,10 +1139,24 @@ void OpenFileDialog(FileDialogMode mode) {
     } else if (is_export && g_doc->ilselected >= 0) {
         IMG *img = get_img(g_doc->ilselected);
         if (img) {
+            /* The sprite's live name. file_name_raw is only filled by a load
+               from disk, so new, imported and renamed sprites seeded a bare
+               ".PNG". Fall back to the document stem if the name is blank. */
             size_t n = 0;
-            while (n < 16 && img->file_name_raw[n] != '\0') {
-                g_file_dialog_file[n] = img->file_name_raw[n];
+            while (n < sizeof(img->n_s) && img->n_s[n] != '\0') {
+                g_file_dialog_file[n] = img->n_s[n];
                 n++;
+            }
+            if (n == 0) {
+                while (n < sizeof(g_doc->fname_s) - 1 && g_doc->fname_s[n] != '\0' &&
+                       g_doc->fname_s[n] != '.') {
+                    g_file_dialog_file[n] = g_doc->fname_s[n];
+                    n++;
+                }
+            }
+            if (n == 0) {
+                memcpy(g_file_dialog_file, "SPRITE", 6);
+                n = 6;
             }
             g_file_dialog_file[n] = '\0';
             const char *ext = GetDialogExtension(mode);
@@ -1223,7 +1236,7 @@ void OpenFileDialog(FileDialogMode mode) {
         snprintf(g_file_dialog_file, sizeof(g_file_dialog_file), "%s", next.c_str());
     } else if (g_doc->fname_s[0] != '\0') {
         size_t n = 0;
-        while (n < 12 && g_doc->fname_s[n] != '\0') n++;
+        while (n < sizeof(g_file_dialog_file) - 1 && g_doc->fname_s[n] != '\0') n++;
         memcpy(g_file_dialog_file, g_doc->fname_s, n);
         g_file_dialog_file[n] = '\0';
     } else {
@@ -1892,8 +1905,8 @@ void DrawFileDialog() {
                 while (p) {
                     if ((p->flags & 1) && p->w > 0 && p->h > 0) {
                         g_doc->ilselected = i;
-                        memset(g_doc->fnametmp_s, 0, 13);
-                        snprintf(g_doc->fnametmp_s, 13, "%.8s.LBM", p->n_s);
+                        memset(g_doc->fnametmp_s, 0, sizeof(g_doc->fnametmp_s));
+                        snprintf(g_doc->fnametmp_s, sizeof(g_doc->fnametmp_s), "%.8s.LBM", p->n_s);
                         SaveLbm(g_doc->fnametmp_s);
                     }
                     p = (IMG *)p->nxt_p;
@@ -1953,7 +1966,7 @@ void DrawFileDialog() {
                         }
 
                         size_t n_file = file.length();
-                        if (n_file > 12) n_file = 12;
+                        if (n_file > sizeof(g_doc->fname_s) - 1) n_file = sizeof(g_doc->fname_s) - 1;
 
                         auto try_load = [&](const std::string &d) -> bool {
                             size_t nd = d.length();
@@ -1961,7 +1974,7 @@ void DrawFileDialog() {
                             memset(g_doc->fpath_s, 0, sizeof(g_doc->fpath_s));
                             memcpy(g_doc->fpath_s, d.c_str(), nd);
 
-                            memset(g_doc->fname_s, 0, 13);
+                            memset(g_doc->fname_s, 0, sizeof(g_doc->fname_s));
                             memcpy(g_doc->fname_s, file.c_str(), n_file);
                             for (size_t j = 0; j < n_file; j++)
                                 g_doc->fname_s[j] = (char)toupper((unsigned char)g_doc->fname_s[j]);
@@ -2009,9 +2022,9 @@ void DrawFileDialog() {
                 memcpy(g_doc->fpath_s, g_file_dialog_dir, n_dir);
                 
                 size_t n_file = strlen(g_file_dialog_file);
-                if (n_file > 12) n_file = 12;
-                memset(g_doc->fname_s, 0, 13);
-                memset(g_doc->fnametmp_s, 0, 13);
+                if (n_file > sizeof(g_doc->fname_s) - 1) n_file = sizeof(g_doc->fname_s) - 1;
+                memset(g_doc->fname_s, 0, sizeof(g_doc->fname_s));
+                memset(g_doc->fnametmp_s, 0, sizeof(g_doc->fnametmp_s));
                 memcpy(g_doc->fname_s, g_file_dialog_file, n_file);
                 memcpy(g_doc->fnametmp_s, g_file_dialog_file, n_file);
                 for (size_t i = 0; i < n_file; i++) {
@@ -2062,7 +2075,7 @@ void DrawFileDialog() {
             ImGui::TextDisabled("%d files selected", (int)g_file_dialog_multi_files.size());
         {
             /* Show the completed name before they commit, so the auto-extension
-               (and any 8.3 stem trim it forced) is never a surprise. */
+               (and any 8.3 stem trim Split forced) is never a surprise. */
             char resolved[sizeof(g_file_dialog_file)];
             if (FileDialogResolveSaveName(g_file_dialog_mode, resolved, sizeof(resolved)))
                 ImGui::TextDisabled("Saves as: %s", resolved);

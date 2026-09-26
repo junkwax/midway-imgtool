@@ -5028,6 +5028,51 @@ void ReverseSelectedPaletteOrder(void)
 static bool s_pal_list_focus = false;
 bool PaletteListHasFocus(void) { return s_pal_list_focus; }
 
+/* How the palette list is shown. View-only: sprites point at palettes by
+   position in the file, so the file's order is never changed. */
+static bool s_pal_sort_alpha = false;      /* A-Z by name instead of file order */
+static bool s_pal_hide_inactive = false;   /* hide palettes no sprite uses */
+
+/* Palette indices in the order the list shows them. The selected palette is
+   always shown, even when inactive, so the selection never vanishes. */
+static std::vector<int> PaletteListOrder(void)
+{
+    const int n = count_pals();
+    std::vector<bool> used((size_t)(n > 0 ? n : 0), false);
+    if (s_pal_hide_inactive)
+        for (IMG *img = (IMG *)g_doc->img_p; img; img = (IMG *)img->nxt_p)
+            if ((int)img->palnum < n) used[img->palnum] = true;
+    std::vector<int> order;
+    order.reserve((size_t)(n > 0 ? n : 0));
+    for (int i = 0; i < n; i++)
+        if (!s_pal_hide_inactive || used[i] || i == g_doc->plselected) order.push_back(i);
+    if (s_pal_sort_alpha) {
+        auto key = [](int i) {
+            std::string s;
+            if (PAL *p = get_pal(i))
+                for (int k = 0; k < 10 && p->n_s[k]; k++) s += (char)toupper((unsigned char)p->n_s[k]);
+            return s;
+        };
+        std::vector<std::string> keys((size_t)n);
+        for (int i : order) keys[(size_t)i] = key(i);
+        std::stable_sort(order.begin(), order.end(),
+                         [&](int a, int b) { return keys[(size_t)a] < keys[(size_t)b]; });
+    }
+    return order;
+}
+
+int PaletteListStep(int cur, int dir)
+{
+    const std::vector<int> order = PaletteListOrder();
+    if (order.empty()) return cur;
+    int pos = -1;
+    for (size_t k = 0; k < order.size(); k++)
+        if (order[k] == cur) { pos = (int)k; break; }
+    const int m = (int)order.size();
+    pos = pos < 0 ? (dir > 0 ? 0 : m - 1) : ((pos + dir) % m + m) % m;
+    return order[(size_t)pos];
+}
+
 /* Copy/paste of whole palettes, shared by the Operations menu and a row's
    right-click menu (fallback_idx = the row, used when nothing is marked). */
 static void DrawPaletteClipboardMenuItems(int fallback_idx = -1)
@@ -5096,15 +5141,56 @@ void DrawRightPanelPaletteEditor(float panel_h)
             ImGui::SetTooltip("Abandoned: no image in this file uses the palette.\n"
                               "Shown in orange below. Game code may still load it by name.");
 
+        ImGui::Checkbox("A-Z##palsort", &s_pal_sort_alpha);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Show the list in alphabetical order.\n"
+                              "Display only: the file keeps its palette order, which\n"
+                              "is what sprites and LOAD2 go by.");
+        ImGui::SameLine();
+        ImGui::Checkbox("Hide inactive##palhide", &s_pal_hide_inactive);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Hide abandoned palettes (the orange ones no image uses).\n"
+                              "The selected palette always stays visible. Nothing is deleted.");
+        const std::vector<int> order = PaletteListOrder();
+        if (s_pal_hide_inactive && (int)order.size() < n_pals) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%d hidden)", n_pals - (int)order.size());
+        }
+
+        /* Selecting a frame brings its palette to the top of the list.
+           Keyed on the frame's own palnum, not plselected, so it works in
+           whichever order this panel and ui_main's selection sync run.
+           Other palette changes (arrow keys, the canvas) only scroll when
+           the row is out of view; a click in the list never scrolls it. */
+        static Document *s_scroll_doc = NULL;
+        static int s_scroll_il = -2, s_scroll_pl = -2;
+        static int s_scroll_to_top = -1;        /* palette row to put at the top */
+        if (g_doc != s_scroll_doc || g_doc->ilselected != s_scroll_il) {
+            IMG *sel_img = g_doc->ilselected >= 0 ? get_img(g_doc->ilselected) : NULL;
+            if (sel_img && (int)sel_img->palnum < n_pals) s_scroll_to_top = (int)sel_img->palnum;
+            s_scroll_doc = g_doc;
+            s_scroll_il = g_doc->ilselected;
+        }
+        const bool pal_moved = g_doc->plselected != s_scroll_pl;
+        s_scroll_pl = g_doc->plselected;
+
         float list_h = panel_h * 0.22f;
         bool list_hovered = false;
         if (ImGui::BeginListBox("##pallist", ImVec2(-1, list_h))) {
             list_hovered = ImGui::IsWindowHovered();
             if (list_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 g_palette_nav = true;
-            for (int i = 0; i < n_pals; i++) {
+            for (size_t row = 0; row < order.size(); row++) {
+                const int i = order[row];
                 PAL *pal = get_pal(i);
                 if (!pal) break;
+                if (i == s_scroll_to_top) {
+                    ImGui::SetScrollHereY(0.0f);
+                    s_scroll_to_top = -1;
+                } else if (pal_moved && i == g_doc->plselected && !list_hovered &&
+                           !ImGui::IsRectVisible(ImVec2(1.0f, ImGui::GetTextLineHeight()))) {
+                    ImGui::SetScrollHereY(0.0f);
+                }
                 bool sel    = (i == g_doc->plselected);
                 bool marked = (pal->flags & 1) != 0;
                 ImGui::PushID(1000 + i);
@@ -5125,10 +5211,15 @@ void DrawRightPanelPaletteEditor(float panel_h)
                     if (io.KeyCtrl) {
                         pal->flags ^= 1;
                     } else if (io.KeyShift) {
-                        int anchor = g_doc->plselected >= 0 ? g_doc->plselected : i;
-                        int lo = anchor < i ? anchor : i, hi = anchor < i ? i : anchor;
-                        for (int k = lo; k <= hi; k++)
-                            if (PAL *mp = get_pal(k)) mp->flags |= 1;
+                        /* The range runs between the rows as shown, so it
+                           follows the A-Z order and skips hidden palettes. */
+                        size_t anchor_row = row;
+                        for (size_t k = 0; k < order.size(); k++)
+                            if (order[k] == g_doc->plselected) { anchor_row = k; break; }
+                        size_t lo = anchor_row < row ? anchor_row : row;
+                        size_t hi = anchor_row < row ? row : anchor_row;
+                        for (size_t k = lo; k <= hi; k++)
+                            if (PAL *mp = get_pal(order[k])) mp->flags |= 1;
                     } else {
                         SelectPalette(i);
                     }

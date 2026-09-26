@@ -75,12 +75,13 @@ typedef struct Document {
     unsigned short file_spare3;
 
     /* ---- File I/O paths ----
-     * Basenames still use the DOS-era 8.3 convention, but modern project
-     * directories are often much longer than the original 64-byte buffer.
+     * Basenames were a 13-byte DOS 8.3 field. Any longer name got cut to 12
+     * chars, which ate the extension ("SCORPION1.IMG" saved as "SCORPION1.IM"),
+     * so the field now holds a full Win32 basename.
      */
     char          fpath_s[1024];
-    char          fname_s[13];
-    char          fnametmp_s[13];
+    char          fname_s[260];
+    char          fnametmp_s[260];
 
     /* UI/document lifecycle state. Stored here so each open IMG tab can be
        dirty/clean independently while legacy code keeps reaching through

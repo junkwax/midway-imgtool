@@ -28,6 +28,7 @@ struct PalettePick {
     int set_last = -1;    /* right-click: end the active range here */
     int add = -1;         /* Ctrl+click: new range here, or unselect it if selected */
     int remove = -1;      /* Ctrl+right-click: drop the range holding this slot */
+    int hover = -1;       /* the swatch under the mouse this frame (not a request) */
 };
 
 /* The whole of `words` as clickable swatches, 16 to a row. Slots where
@@ -42,9 +43,12 @@ bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
 
 /* A labelled, centred, nearest-scaled pane of `img` drawn through `words`
    (after `map`, when given). `slot` picks one of four cached textures so
-   several panes can coexist in a frame. */
+   several panes can coexist in a frame. When `highlight` is given (256
+   entries, indexed by the sprite's own pixel values before `map`), pixels
+   whose entry is zero are drawn as dim gray so the rest stand out. */
 void PalettePreviewSprite(int slot, const char *label, const IMG *img,
                           const std::vector<unsigned short> &words,
-                          const unsigned char *map, float pane_w, float pane_h);
+                          const unsigned char *map, float pane_w, float pane_h,
+                          const char *highlight = nullptr);
 
 #endif /* UI_PALETTE_PREVIEW_H */

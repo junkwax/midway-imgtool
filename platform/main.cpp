@@ -239,9 +239,9 @@ static void set_doc_path_for_file(const char *filepath)
     memcpy(g_doc->fpath_s, dir.data(), n_dir);
 
     size_t n_file = file.size();
-    if (n_file > 12) n_file = 12;
-    memset(g_doc->fname_s, 0, 13);
-    memset(g_doc->fnametmp_s, 0, 13);
+    if (n_file > sizeof(g_doc->fname_s) - 1) n_file = sizeof(g_doc->fname_s) - 1;
+    memset(g_doc->fname_s, 0, sizeof(g_doc->fname_s));
+    memset(g_doc->fnametmp_s, 0, sizeof(g_doc->fnametmp_s));
     memcpy(g_doc->fname_s, file.data(), n_file);
     memcpy(g_doc->fnametmp_s, file.data(), n_file);
     for (size_t i = 0; i < n_file; i++) {
@@ -541,8 +541,8 @@ static int run_headless_cli(int argc, char *argv[]) {
                 memcpy(g_doc->fpath_s, d.c_str(), nd);
 
                 size_t n_file = file.length();
-                if (n_file > 12) n_file = 12;
-                memset(g_doc->fname_s, 0, 13);
+                if (n_file > sizeof(g_doc->fname_s) - 1) n_file = sizeof(g_doc->fname_s) - 1;
+                memset(g_doc->fname_s, 0, sizeof(g_doc->fname_s));
                 memcpy(g_doc->fname_s, file.c_str(), n_file);
                 for (size_t j = 0; j < n_file; j++)
                     g_doc->fname_s[j] = (char)toupper((unsigned char)g_doc->fname_s[j]);

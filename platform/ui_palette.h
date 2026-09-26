@@ -94,6 +94,7 @@ int  CountMarkedPalettes(void);
 int  CopyPaletteToClipboard(int fallback_idx = -1,  /* marked palettes, else fallback/selected */
                             bool only_fallback = false);
 bool PaletteListHasFocus(void);              /* Ctrl+C/V act on whole palettes */
+int  PaletteListStep(int cur, int dir);      /* next palette in the list's shown order (A-Z, hidden) */
 int  PastePaletteFromClipboard(void); /* appends every copied palette */
 void SelectPalette(int idx);
 void SetPaletteOfSelected(void);

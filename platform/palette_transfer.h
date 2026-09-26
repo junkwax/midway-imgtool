@@ -140,6 +140,16 @@ bool IsCostumeSibling(const unsigned short *a, int a_numc,
 bool IsCostumeSiblingMask(const unsigned short *a, int a_numc,
                           const unsigned short *b, int b_numc, const char *in_costume);
 
+/* True when `b` is in `a`'s costume family: same `numc`, and at least a
+ * quarter of slots [1, numc) identical. Unlike the tests above this ignores
+ * which slots are being recolored, so the family stays the same whatever
+ * sections are open and however many costume passes a palette has been
+ * through: SCORP_P with borrowed gear AND borrowed skin still shares its
+ * outline and blacks with SCORP_P. Pooling sprites by it keeps pixel
+ * coverage, and so the borrowed shading, the same in any order. */
+bool IsCostumeFamily(const unsigned short *a, int a_numc,
+                     const unsigned short *b, int b_numc);
+
 /* Parse a slot list typed as "1-5, 10-32", "1-5 10-32" or "7". Ends may be
  * given in either order; ranges are clipped to [1, numc) and kept in the
  * order typed (overlaps are allowed; callers flatten to a slot set). Returns

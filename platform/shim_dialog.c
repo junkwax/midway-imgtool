@@ -146,7 +146,7 @@ static void upcase(char *s)
 
 /* Given a full path like "C:\DOSGames\NINJAS10.IMG", split into
  *   dir  = "C:\DOSGames"   (no trailing backslash)
- *   base = "NINJAS10.IMG"  (must fit in 12 chars + NUL for 8.3)
+ *   base = "NINJAS10.IMG"  (must fit in g_doc->fname_s)
  * Returns 0 on success, 1 if basename too long.
  */
 static int split_path(const char *full, char *dir, size_t dirsz,
@@ -227,20 +227,16 @@ void shim_filereq_impl(void)
     }
 
     char dir[MAX_PATH], base[MAX_PATH];
-    if (split_path(full, dir, sizeof(dir), base, sizeof(base)) != 0) {
-        show_error("Filename too long for the IMG format (max 12 chars, 8.3).");
-        shim_carry = 1;
-        return;
-    }
-    if (strlen(base) > 12) {
-        show_error("Filename too long for the IMG format (max 12 chars, 8.3).");
+    if (split_path(full, dir, sizeof(dir), base, sizeof(base)) != 0 ||
+        strlen(base) >= sizeof(g_doc->fname_s)) {
+        show_error("Filename too long.");
         shim_carry = 1;
         return;
     }
 
     upcase(base);
 
-    /* Write g_doc->fpath_s (zero-padded), g_doc->fname_s + g_doc->fnametmp_s (13 bytes). */
+    /* Write g_doc->fpath_s (zero-padded), g_doc->fname_s + g_doc->fnametmp_s. */
     {
         size_t n = strlen(dir);
         if (n > sizeof(g_doc->fpath_s) - 1) n = sizeof(g_doc->fpath_s) - 1;
@@ -249,8 +245,8 @@ void shim_filereq_impl(void)
     }
     {
         size_t n = strlen(base);
-        memset(g_doc->fname_s,    0, 13);
-        memset(g_doc->fnametmp_s, 0, 13);
+        memset(g_doc->fname_s, 0, sizeof(g_doc->fname_s));
+        memset(g_doc->fnametmp_s, 0, sizeof(g_doc->fnametmp_s));
         memcpy(g_doc->fname_s,    base, n);
         memcpy(g_doc->fnametmp_s, base, n);
     }

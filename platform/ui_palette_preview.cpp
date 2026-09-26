@@ -86,6 +86,7 @@ bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
                                     IM_COL32(255, 220, 60, 255), 0.0f, 0, 2.0f);
     }
 
+    out->hover = hover;
     if (hover < 0) return false;
     const unsigned short w = words[hover];
     ImGui::SetTooltip("Slot %d  (%d,%d,%d)%s\n"
@@ -113,7 +114,7 @@ static SDL_Texture *g_tex[4] = {};
 static int g_tex_w[4] = {}, g_tex_h[4] = {};
 
 static SDL_Texture *SpriteTexture(int slot, const IMG *img, const std::vector<unsigned short> &words,
-                                  const unsigned char *map)
+                                  const unsigned char *map, const char *highlight)
 {
     const int w = img->w, h = img->h;
     if (w <= 0 || h <= 0 || !img->data_p) return nullptr;
@@ -133,13 +134,19 @@ static SDL_Texture *SpriteTexture(int slot, const IMG *img, const std::vector<un
     for (int y = 0; y < h; y++) {
         Uint32 *row = (Uint32 *)((unsigned char *)pixels + (size_t)y * pitch);
         for (int x = 0; x < w; x++) {
-            int ci = src[y * stride + x];
-            if (map) ci = map[ci];
+            const int raw = src[y * stride + x];
+            int ci = map ? map[raw] : raw;
             if (ci == 0 || ci >= (int)words.size()) { row[x] = 0; continue; }
             const unsigned short cw = words[ci];
             const int r5 = (cw >> 10) & 0x1F, g5 = (cw >> 5) & 0x1F, b5 = cw & 0x1F;
-            row[x] = 0xFF000000u | ((Uint32)((r5 << 3) | (r5 >> 2)) << 16) |
-                     ((Uint32)((g5 << 3) | (g5 >> 2)) << 8) | (Uint32)((b5 << 3) | (b5 >> 2));
+            int r = (r5 << 3) | (r5 >> 2), g = (g5 << 3) | (g5 >> 2), b = (b5 << 3) | (b5 >> 2);
+            if (highlight && !highlight[raw]) {
+                /* Not selected: a dim gray of the same brightness, so the
+                   selected pixels stand out but the silhouette still reads. */
+                const int l = (r * 30 + g * 59 + b * 11) / 100;
+                r = g = b = 28 + l / 5;
+            }
+            row[x] = 0xFF000000u | ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
         }
     }
     SDL_UnlockTexture(g_tex[slot]);
@@ -148,7 +155,8 @@ static SDL_Texture *SpriteTexture(int slot, const IMG *img, const std::vector<un
 
 void PalettePreviewSprite(int slot, const char *label, const IMG *img,
                           const std::vector<unsigned short> &words,
-                          const unsigned char *map, float pane_w, float pane_h)
+                          const unsigned char *map, float pane_w, float pane_h,
+                          const char *highlight)
 {
     if (slot < 0 || slot > 3 || !img) return;
     ImGui::BeginGroup();
@@ -161,7 +169,7 @@ void PalettePreviewSprite(int slot, const char *label, const IMG *img,
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(o, ImVec2(o.x + pane_w, o.y + pane_h), IM_COL32(24, 24, 28, 255));
     ImVec2 a(o.x + (pane_w - w * scale) * 0.5f, o.y + (pane_h - h * scale) * 0.5f);
-    SDL_Texture *tex = SpriteTexture(slot, img, words, map);
+    SDL_Texture *tex = SpriteTexture(slot, img, words, map, highlight);
     if (tex) dl->AddImage((ImTextureID)(intptr_t)tex, a, ImVec2(a.x + w * scale, a.y + h * scale));
     ImGui::Dummy(ImVec2(pane_w, pane_h));
     ImGui::EndGroup();
