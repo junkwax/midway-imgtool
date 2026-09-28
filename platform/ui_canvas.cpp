@@ -13,6 +13,7 @@
 #include "palette_math.h"
 #include "ui_palette.h"
 #include "ui_reactions.h"  /* React canvas tab */
+#include "ui_browse.h"     /* Browse canvas tab */
 
 #include "anipoint.h"       /* secondary_anipoint_in_use */
 #include "paint_tools.h"     /* blur / smudge / content-aware erase */
@@ -12204,11 +12205,19 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
            animation staging view, Anim is the SEQSCR sequence/script
            workspace, Link is the focused two-sprite anchor matcher, and React
            lists an opponent's reactions with the anipoints of each frame. */
+        /* Browse gives way to any other workspace that got switched on
+           (Tab, the View menu, the Animation sidebar), so none of those
+           paths has to clear it themselves. */
+        if (g_browse_workspace &&
+            (AnipointLink().enabled || g_reactions_workspace ||
+             g_seqscr_workspace || g_world_state.enabled))
+            g_browse_workspace = false;
         auto current_canvas_mode = []() {
             return AnipointLink().enabled ? 3
                  : g_reactions_workspace ? 4
                  : g_seqscr_workspace ? 2
-                 : g_world_state.enabled ? 1 : 0;
+                 : g_world_state.enabled ? 1
+                 : g_browse_workspace ? 5 : 0;
         };
         int requested_canvas_mode = current_canvas_mode();
         static int last_canvas_mode = -1;
@@ -12228,6 +12237,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 g_seqscr_workspace = false;
                 AnipointLink().enabled = false;
                 g_reactions_workspace = false;
+                g_browse_workspace = false;
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("World", NULL,
@@ -12272,6 +12282,19 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                 ImGui::SetTooltip("Every reaction in a character ASM — the animations that\n"
                                   "happen TO that fighter — with the anipoints of each\n"
                                   "frame in the reaction's sequence.");
+            if (ImGui::BeginTabItem("Browse", NULL,
+                                    sync_canvas_tab && requested_canvas_mode == 5
+                                        ? ImGuiTabItemFlags_SetSelected : 0)) {
+                g_browse_workspace = true;
+                g_world_state.enabled = false;
+                g_seqscr_workspace = false;
+                AnipointLink().enabled = false;
+                g_reactions_workspace = false;
+                ImGui::EndTabItem();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Thumbnail grid of every sprite in this IMG.\n"
+                                  "Click selects, Ctrl-click marks, double-click opens it.");
             /* Backdrop lives here rather than in a menu: it is a per-look
                decision you make while staring at the sprite, and it only
                applies to the Image canvas. */
@@ -12408,6 +12431,9 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
         }
         else if (g_seqscr_workspace) {
             DrawSeqScrWorkspace(avail, img_pos, io);
+        }
+        else if (g_browse_workspace) {
+            DrawBrowseWorkspace(avail, img_pos, io);
         }
         else if (g_world_state.enabled) {
             bool drew_dual_marked = DrawWorldMarkedTabs(avail, img_pos, io);
@@ -17621,7 +17647,8 @@ static void scale_clipboard_to_fit(int max_w, int max_h)
 bool ImageCanvasActive(void)
 {
     return !g_world_state.enabled && !g_seqscr_workspace &&
-           !g_reactions_workspace && !AnipointLink().enabled;
+           !g_reactions_workspace && !AnipointLink().enabled &&
+           !g_browse_workspace;
 }
 
 void select_all(void)

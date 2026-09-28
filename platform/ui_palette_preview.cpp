@@ -5,6 +5,10 @@
  *************************************************************/
 #include <imgui.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
 #include "ui_palette_preview.h"
 #include "ui_internal.h"      /* g_imgui_renderer */
 #include "img_format.h"
@@ -55,40 +59,73 @@ void PalettePreviewStrip(const std::vector<unsigned short> &words, int start, in
 
 bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
                        const char *selected, int active_first, int active_last,
-                       bool awaiting_end, PalettePick *out)
+                       bool awaiting_end, PalettePick *out, const char *const *blocked)
 {
     const int n = (int)words.size();
     if (n <= 0 || !selected || !out) return false;
     *out = PalettePick();
-    const float cell = 14.0f;
-    const int cols = 16, rows = (n + cols - 1) / cols;
+    /* One strip across the window: materials don't start on multiples of 16,
+       so a 16-wide grid split ramps across rows. Only a palette too long for
+       the window at the narrowest swatch wraps. */
+    const float avail = std::max(ImGui::GetContentRegionAvail().x, 64.0f);
+    const float cell = std::max(4.0f, std::min(18.0f, std::floor(avail / n)));
+    const int cols = std::max(1, std::min(n, (int)(avail / cell)));
+    const int rows = (n + cols - 1) / cols;
+    const float cell_h = 18.0f;
+    /* A slot ruler under each row: every 8 slots when they fit, else 16. */
+    const float label_w = ImGui::CalcTextSize("000").x;
+    const int tick = cell * 8 >= label_w + 4 ? 8 : 16;
+    const float ruler_h = ImGui::GetTextLineHeight();
+    const float row_h = cell_h + ruler_h;
     const ImVec2 o = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton(id, ImVec2(cols * cell, rows * cell),
+    ImGui::InvisibleButton(id, ImVec2(cols * cell, rows * row_h),
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     int hover = -1;
     if (ImGui::IsItemHovered()) {
         const ImVec2 m = ImGui::GetIO().MousePos;
-        const int cx = (int)((m.x - o.x) / cell), cy = (int)((m.y - o.y) / cell);
-        if (cx >= 0 && cx < cols && cy >= 0 && cy < rows && cy * cols + cx < n) hover = cy * cols + cx;
+        const int cx = (int)((m.x - o.x) / cell), cy = (int)((m.y - o.y) / row_h);
+        const bool on_swatch = m.y - o.y - cy * row_h < cell_h;
+        if (on_swatch && cx >= 0 && cx < cols && cy >= 0 && cy < rows && cy * cols + cx < n)
+            hover = cy * cols + cx;
     }
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     for (int s = 0; s < n; s++) {
-        const ImVec2 a(o.x + (s % cols) * cell, o.y + (s / cols) * cell);
-        const ImVec2 b(a.x + cell - 1.0f, a.y + cell - 1.0f);
+        const ImVec2 a(o.x + (s % cols) * cell, o.y + (s / cols) * row_h);
+        const ImVec2 b(a.x + cell - (cell > 6 ? 1.0f : 0.0f), a.y + cell_h);
+        const bool taken = blocked && blocked[s] && !selected[s];
         dl->AddRectFilled(a, b, WordColor(words[s]));
-        if (!selected[s]) dl->AddRectFilled(a, b, IM_COL32(20, 20, 24, 170));
-        else if (s != active_first && s != active_last &&
-                 (s == 0 || !selected[s - 1] || s == n - 1 || !selected[s + 1]))
+        if (taken) {
+            /* Another section's: darkened and struck through. */
+            dl->AddRectFilled(a, b, IM_COL32(10, 10, 12, 200));
+            dl->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, a.y), IM_COL32(230, 70, 70, 255), 1.5f);
+        } else if (!selected[s]) {
+            dl->AddRectFilled(a, b, IM_COL32(20, 20, 24, 170));
+        } else if (s != active_first && s != active_last &&
+                   (s == 0 || !selected[s - 1] || s == n - 1 || !selected[s + 1])) {
             dl->AddRect(a, b, IM_COL32(150, 150, 160, 255));   /* another range's end */
+        }
+        if (selected[s]) /* a bar under the selection reads even at 4 px */
+            dl->AddRectFilled(ImVec2(a.x, b.y - 3), b, IM_COL32(255, 255, 255, 220));
         if (s == active_first || s == active_last) dl->AddRect(a, b, IM_COL32(255, 255, 255, 255));
         if (s == hover) dl->AddRect(ImVec2(a.x - 1, a.y - 1), ImVec2(b.x + 1, b.y + 1),
                                     IM_COL32(255, 220, 60, 255), 0.0f, 0, 2.0f);
+        if (s % tick == 0) {
+            char num[8];
+            snprintf(num, sizeof(num), "%d", s);
+            dl->AddLine(ImVec2(a.x, a.y + cell_h), ImVec2(a.x, a.y + cell_h + 3), IM_COL32(140, 140, 150, 255));
+            dl->AddText(ImVec2(a.x + 1, a.y + cell_h + 1), IM_COL32(150, 150, 160, 255), num);
+        }
     }
 
     out->hover = hover;
     if (hover < 0) return false;
     const unsigned short w = words[hover];
+    if (blocked && blocked[hover] && !selected[hover]) {
+        ImGui::SetTooltip("Slot %d  (%d,%d,%d)\nUsed by %s. Untick Block used colors to share it.",
+                          hover, (w >> 10) & 0x1F, (w >> 5) & 0x1F, w & 0x1F, blocked[hover]);
+        return false;
+    }
     ImGui::SetTooltip("Slot %d  (%d,%d,%d)%s\n"
                       "%s\n"
                       "%s   Ctrl+right-click: remove range",

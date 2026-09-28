@@ -797,6 +797,10 @@ extern bool g_seqscr_workspace;
 /* React canvas tab: the opponent's reactions and their per-frame anipoints.
    Mutually exclusive with the other canvas modes, like g_seqscr_workspace. */
 extern bool g_reactions_workspace;
+/* Browse canvas tab: thumbnail grid of every sprite in the IMG. Yields to any
+   other workspace that switches on (see DrawCanvasWindow), so the many places
+   that toggle World/Anim/Link/React never need to know it exists. */
+extern bool g_browse_workspace;
 
 /* True when the plain Image canvas is the view in front -- i.e. none of the
    World / Anim / Link / React workspaces has it. Anything that acts in SPRITE
@@ -1009,6 +1013,7 @@ int ApplyMarkedLikenessToSelected(void);
 
 extern bool g_show_new_img_confirm;
 extern bool g_pending_quit;
+extern bool g_quit_prompt_refocus;
 
 /* ---- Shared modal pending action state ---- */
 enum class PendingAction { None, Quit, OpenDialog, OpenPath, OpenLodDialog, CloseTab };

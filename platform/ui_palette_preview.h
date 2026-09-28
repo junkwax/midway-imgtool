@@ -31,15 +31,20 @@ struct PalettePick {
     int hover = -1;       /* the swatch under the mouse this frame (not a request) */
 };
 
-/* The whole of `words` as clickable swatches, 16 to a row. Slots where
-   `selected[s]` is zero are dimmed; the active range's ends are outlined in
-   white. Hovering a swatch names its slot and color, and says what a click
-   will do: `awaiting_end` means a range has been started and the next click
-   ends it. Slot 0 is shown but not pickable. Returns true when `out` holds
-   a request. */
+/* The whole of `words` as clickable swatches in one strip across the
+   window (wrapping only when too long even at 4 px a swatch), with a slot
+   ruler under it. Slots where `selected[s]` is zero are dimmed and selected
+   ones carry a white bar; the active range's ends are outlined in white.
+   When `blocked` is given (one entry per slot), a slot not selected here
+   whose entry is non-null is struck through as taken by that name and
+   cannot be clicked. Hovering a swatch names its slot and color, and says
+   what a click will do: `awaiting_end` means a range has been started and
+   the next click ends it. Slot 0 is shown but not pickable. Returns true
+   when `out` holds a request. */
 bool PalettePickerGrid(const char *id, const std::vector<unsigned short> &words,
                        const char *selected, int active_first, int active_last,
-                       bool awaiting_end, PalettePick *out);
+                       bool awaiting_end, PalettePick *out,
+                       const char *const *blocked = nullptr);
 
 /* A labelled, centred, nearest-scaled pane of `img` drawn through `words`
    (after `map`, when given). `slot` picks one of four cached textures so

@@ -104,6 +104,7 @@ set(IMGTOOL_SOURCES
     platform/ui_undo.cpp
     platform/ui_autochop.cpp
     platform/ui_reactions.cpp
+    platform/ui_browse.cpp
     platform/reaction_class.cpp
     platform/strike_bind.cpp
     platform/ui_bodysplit.cpp

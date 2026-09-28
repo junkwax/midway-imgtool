@@ -79,8 +79,28 @@ static void layouts_are_found_by_palette_name(void)
     CHECK(!SameLayoutName("Costume", "Costumes"));
 }
 
+static void a_costume_template_round_trips(void)
+{
+    CostumeTemplate t;
+    CHECK(ParseCostumeTemplateLine(
+        "UMK3 TO MK2|64|64|Costume=1-32;Skin=47-62;Trim=33-35, 40|Costume=31-48;Skin=1-15;Trim=16\r\n", &t));
+    CHECK(t.name == "UMK3 TO MK2");
+    CHECK(t.dst_numc == 64 && t.ref_numc == 64);
+    CHECK(t.dst.size() == 3 && t.ref.size() == 3);
+    CHECK(t.dst[2].name == "Trim" && t.dst[2].ranges == "33-35, 40");
+    CHECK(t.ref[1].name == "Skin" && t.ref[1].ranges == "1-15");
+    CHECK(FormatCostumeTemplateLine(t) ==
+          "UMK3 TO MK2|64|64|Costume=1-32;Skin=47-62;Trim=33-35, 40|Costume=31-48;Skin=1-15;Trim=16");
+    /* A layout line (4 fields) is not a template, and vice versa. */
+    CHECK(!ParseCostumeTemplateLine("MK2 NINJA|64|SCORP_P|Costume=1-32", &t));
+    PaletteLayout l;
+    CHECK(!ParsePaletteLayoutLine(FormatCostumeTemplateLine(t).c_str(), &l));
+    CHECK(!ParseCostumeTemplateLine("|64|64|Costume=1|Costume=2", &t));
+}
+
 int main(void)
 {
+    a_costume_template_round_trips();
     a_layout_line_round_trips();
     multi_range_sections_keep_their_commas();
     separators_cannot_break_a_line();

@@ -34,6 +34,24 @@ struct PaletteLayout {
     std::vector<PaletteLayoutSection> sections;
 };
 
+/* A costume template: the sections of BOTH palettes of a borrow, saved
+ * together, e.g. UMK3 ninja -> MK2 ninja with Costume, Skin and Trim on
+ * each. Picked once, it fills the sections for any pair of palettes with
+ * these color counts. Kept in its own file, one per line:
+ *
+ *   UMK3 TO MK2|64|64|Costume=1-32;Skin=47-62|Costume=31-48;Skin=1-15
+ *   name       |this numc|reference numc|this palette's sections|reference's
+ */
+struct CostumeTemplate {
+    std::string name;
+    int dst_numc = 0;                       /* 0 = any */
+    int ref_numc = 0;
+    std::vector<PaletteLayoutSection> dst, ref;
+};
+
+bool ParseCostumeTemplateLine(const char *line, CostumeTemplate *out);
+std::string FormatCostumeTemplateLine(const CostumeTemplate &t);
+
 /* `s` with the separator characters removed and surrounding spaces trimmed,
    cut to `max_len`. */
 std::string CleanLayoutField(const std::string &s, size_t max_len);

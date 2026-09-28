@@ -1,5 +1,6 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_sdl2.h>
 #include <imgui_impl_sdlrenderer2.h>
 #include <SDL.h>
@@ -9321,6 +9322,78 @@ void ModalWatchdog(bool &flag, const char *name)
     ModalWatchdogClear();
 }
 
+static bool QuitPromptShowing(void)
+{
+    return g_show_unsaved_confirm || g_show_mk2_unsaved_confirm ||
+           g_show_mk2_fatality_unsaved_confirm;
+}
+
+/* Centre a quit prompt on appearing, and again whenever the close box is hit
+   while one is already up. A second click on X is the user saying "I can't
+   find the dialog" -- after moving the window to another monitor, say. */
+static void CenterQuitPrompt(void)
+{
+    if (g_quit_prompt_refocus) {
+        g_quit_prompt_refocus = false;
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowFocus();
+    } else {
+        CenterNextModal();
+    }
+}
+
+/* Turn a pending quit (Esc, File > Quit, the window close box) into the next
+   prompt it needs: IMG documents first, then MKSTK.ASM, then the fatality
+   sources -- one at a time. All three used to be free to open together, and
+   the MK2 two were never armed from the close box at all, so dirty MK2 edits
+   made X do nothing, silently, forever. */
+static void ArmQuitPrompt(void)
+{
+    static bool s_deferred_msg = false;
+    if (!g_pending_quit || QuitPromptShowing() ||
+        g_pending_action != PendingAction::None) {
+        s_deferred_msg = false;
+        return;
+    }
+    int dirty_idx = FindDirtyDocumentIndex();
+    bool mk2_dirty = g_mk2_doc.dirty && !g_mk2_doc.source_path.empty();
+    bool fatality_dirty = g_mk2_fatality_doc.dirty && !g_mk2_fatality_doc.files.empty();
+    if (dirty_idx < 0 && !mk2_dirty && !fatality_dirty) return;   /* quits this frame */
+
+    /* A prompt opened over another modal fights it: both call OpenPopup at the
+       root level every frame, each evicts the other, neither ever takes a
+       click, and the app is wedged with a close box that does nothing. The
+       Save dialog is the usual one (the prompt's own Save hands off to it for
+       an unnamed file); dropping it loses nothing, since the prompt offers
+       Save again. Any other dialog has to finish first -- the prompt follows
+       as soon as it closes. */
+    if (ImGui::GetTopMostPopupModal()) {
+        if (g_show_file_dialog) {
+            g_show_file_dialog = false;
+        } else {
+            if (!s_deferred_msg) {
+                snprintf(g_restore_msg, sizeof(g_restore_msg),
+                         "Close the open dialog to finish quitting.");
+                g_restore_msg_timer = 4.0f;
+                s_deferred_msg = true;
+            }
+            return;
+        }
+    }
+    s_deferred_msg = false;
+
+    if (dirty_idx >= 0) {
+        ActivateDocumentTab(dirty_idx);
+        g_pending_action = PendingAction::Quit;
+        g_show_unsaved_confirm = true;
+    } else if (mk2_dirty) {
+        g_show_mk2_unsaved_confirm = true;
+    } else {
+        g_show_mk2_fatality_unsaved_confirm = true;
+    }
+}
+
 void DrawUnsavedChangesConfirm(void)
 
 {
@@ -9334,23 +9407,14 @@ void DrawUnsavedChangesConfirm(void)
         ClearPendingUnsavedAction();
     }
 
-    /* Legacy: g_pending_quit is set by Esc/window-close; treat it as the
-       Quit pending action if nothing else queued. */
-    if (g_pending_quit && g_pending_action == PendingAction::None && !g_show_unsaved_confirm) {
-        int dirty_idx = FindDirtyDocumentIndex();
-        if (dirty_idx >= 0) {
-            ActivateDocumentTab(dirty_idx);
-            g_pending_action = PendingAction::Quit;
-            g_show_unsaved_confirm = true;
-        }
-    }
+    ArmQuitPrompt();
     s_prompt_was_open = g_show_unsaved_confirm;
     if (g_show_unsaved_confirm) ImGui::OpenPopup("Unsaved Changes");
     /* Always (re)centre on appearing. ImGui persists window positions in
        imgui.ini, so a modal that was once dragged off-screen — or that was
        last shown on a bigger display — reopens outside the viewport. It still
        captures input, which locks the app behind a dialog nobody can see. */
-    CenterNextModal();
+    CenterQuitPrompt();
     if (!ImGui::BeginPopupModal("Unsaved Changes", &g_show_unsaved_confirm, ImGuiWindowFlags_AlwaysAutoResize)) {
         ModalWatchdog(g_show_unsaved_confirm, "Unsaved Changes");
         return;
@@ -9418,8 +9482,14 @@ void DrawUnsavedChangesConfirm(void)
 void DrawMk2UnsavedChangesConfirm(void)
 
 {
+    /* Dismissing with the popup's own X is a Cancel; otherwise the quit stays
+       armed and ArmQuitPrompt reopens the prompt next frame. */
+    static bool s_was_open = false;
+    if (s_was_open && !g_show_mk2_unsaved_confirm && g_mk2_doc.dirty)
+        g_pending_quit = false;
+    s_was_open = g_show_mk2_unsaved_confirm;
     if (g_show_mk2_unsaved_confirm) ImGui::OpenPopup("MK2 Hitboxes - Unsaved");
-    CenterNextModal();
+    CenterQuitPrompt();
     if (!ImGui::BeginPopupModal("MK2 Hitboxes - Unsaved", &g_show_mk2_unsaved_confirm,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
 
@@ -9457,8 +9527,12 @@ void DrawMk2UnsavedChangesConfirm(void)
 void DrawMk2FatalityUnsavedChangesConfirm(void)
 
 {
+    static bool s_was_open = false;
+    if (s_was_open && !g_show_mk2_fatality_unsaved_confirm && g_mk2_fatality_doc.dirty)
+        g_pending_quit = false;
+    s_was_open = g_show_mk2_fatality_unsaved_confirm;
     if (g_show_mk2_fatality_unsaved_confirm) ImGui::OpenPopup("MK2 Fatality Lab - Unsaved");
-    CenterNextModal();
+    CenterQuitPrompt();
     if (!ImGui::BeginPopupModal("MK2 Fatality Lab - Unsaved", &g_show_mk2_fatality_unsaved_confirm,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
 

@@ -6,6 +6,7 @@
 #include "img_format.h"     /* IMG, PAL, get_img, get_pal */
 #include "document.h"       /* g_doc */
 #include "ui_internal.h"    /* g_imgui_renderer, g_icon_font_loaded, ICON_*, ZOOM_MAX */
+#include "ui_browse.h"      /* BrowseInvalidateThumb: the grid shares these invalidations */
 #include "world_render.h"   /* BuildWorldSpriteTexture */
 #include "anipoint.h"       /* secondary_anipoint_in_use */
 #include "anipoint_edit.h"  /* set_primary_anipoint_with_sequence */
@@ -184,6 +185,7 @@ TimelineThumb *EnsureThumb(int idx)
 
 void InvalidateThumb(int idx)
 {
+    BrowseInvalidateThumb(idx);
     if (idx < 0 || (size_t)idx >= g_thumb_cache.size()) return;
     if (g_thumb_cache[idx].tex) {
         SDL_DestroyTexture(g_thumb_cache[idx].tex);
@@ -193,6 +195,7 @@ void InvalidateThumb(int idx)
 
 void ClearTimelineThumbCache(void)
 {
+    BrowseClearThumbCache();
     for (auto &t : g_thumb_cache) {
         if (t.tex) SDL_DestroyTexture(t.tex);
     }

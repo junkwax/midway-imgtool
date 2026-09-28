@@ -1314,6 +1314,8 @@ int imgui_overlay_check_unsaved_and_quit(void)
 
 void imgui_overlay_request_quit(void)
 {
+    /* X again while the prompt is up: bring it back into view. */
+    if (g_pending_quit) g_quit_prompt_refocus = true;
     g_pending_quit = true;
 }
 

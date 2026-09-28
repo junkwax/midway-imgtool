@@ -1885,10 +1885,20 @@ void DrawMainLayout(void)
                 /* The path is worth showing on hover even when it is not
                    ambiguous — it answers "which file is this" without a trip
                    through the File menu. */
-                std::string tip = DocFullPathLabel(g_doc);
-                if (tip.empty()) tip = "Not saved to a file yet";
+                std::string full = DocFullPathLabel(g_doc);
+                std::string tip = full.empty() ? "Not saved to a file yet"
+                                               : full + "\n\nClick to copy path";
                 if (g_dirty) tip += "\n\nUnsaved changes — Ctrl+S to save";
                 ImGui::SetTooltip("%s", tip.c_str());
+                if (!full.empty()) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        ImGui::SetClipboardText(full.c_str());
+                        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                                 "Copied path to clipboard.");
+                        g_restore_msg_timer = 3.0f;
+                    }
+                }
             }
         }
         ImGui::PopStyleVar(2);
@@ -1906,7 +1916,7 @@ void DrawMainLayout(void)
        neither the palette strip nor the sprite timeline underneath it. */
     g_world_marked_panel_docked = world_sequence_timeline || g_seqscr_workspace;
     bool hide_bottom_palette = g_world_state.enabled || g_seqscr_workspace ||
-                               g_reactions_workspace;
+                               g_reactions_workspace || g_browse_workspace;
     float bottom_palette_h = hide_bottom_palette ? 0.0f : PALETTE_H;
     float canvas_x = TOOLBAR_W;
     float canvas_y = work_y;

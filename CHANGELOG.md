@@ -24,6 +24,43 @@ already highlighted. When the palette changes some other way, such as the arrow
 keys, the list scrolls only if the row is out of view. Clicking in the list never
 scrolls it.
 
+### Costume templates save both palettes' sections together
+
+A saved layout covers only one palette. A **template** in Alternate Costume's
+Borrow mode saves every section on both palettes at once, for example UMK3
+ninja to MK2 ninja with Costume, Skin and Trim on each. Set the sections once
+and click **Save...** on the new **Template** row. After that, choose the
+template and pick any reference under **Colors from**, such as a UMK3 palette
+you just pasted in. Its sections fill in by themselves, so only the palette
+needs choosing. A template applies to palettes with the color counts it was
+made on. The dropdown lists the templates that fit this palette, and hovering
+one shows each section's slots on both sides. The template in use is
+remembered between uses of the dialog. Templates are stored in
+`costume_templates.txt` in the imgtool preferences folder, next to
+`palette_layouts.txt`.
+
+### Sections can't overlap, and the picker shows the whole palette in one strip
+
+**Block used colors** (on by default, above the section tabs) gives each slot
+to one section per palette. On a section's picker, slots another section
+already has are struck through in red and can't be clicked. Hovering one
+names the section that has it. A range drawn or typed across taken slots
+skips them, so 30-40 with Skin at 33 becomes 30-32, 34-40. Those pieces still
+act as one range: it is outlined from 30 to 40, and clicking to redo it,
+right-clicking to move its end, or Ctrl+right-clicking to remove it covers all
+of the pieces, not just the last one. Untick the box to
+let sections share slots again. If a layout or template saved earlier already
+overlaps, the section says so ("Shares 47-50 with Skin").
+
+The slot picker is now one strip across the dialog instead of a 16-wide grid,
+because materials don't start on multiples of 16. A slot ruler runs under it.
+A white bar marks the selected slots, which keeps them readable when swatches
+get narrow. Only a palette too long for the window wraps.
+
+The **Colors from** dropdown has an **ORIG palettes first** checkbox, on by
+default. It lists palettes with ORIG in the name (ORIGP, ORIG_P...) at the
+top, with the rest A-Z below them.
+
 ### Costume borrows shade the same whichever section you do first
 
 Borrowing the costume and then the skin in a second pass, or the other way

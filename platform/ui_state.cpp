@@ -160,6 +160,7 @@ BddBackground &g_world_bg = WorldBackground();
 bool g_world_marked_panel_docked = false;
 bool g_seqscr_workspace = false;
 bool g_reactions_workspace = false;
+bool g_browse_workspace = false;
 bool g_seqscr_frame_nav = false;
 
 int g_canvas_backdrop = CanvasBackdrop_Checker;
@@ -226,6 +227,7 @@ bool g_request_locate_opp_img = false;
 
 bool g_show_new_img_confirm = false;
 bool g_pending_quit = false;
+bool g_quit_prompt_refocus = false;
 
 /* ---- Shared modal pending action state ---- */
 bool          g_show_unsaved_confirm = false;

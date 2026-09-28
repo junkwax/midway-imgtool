@@ -23,6 +23,39 @@ std::vector<std::string> split(const std::string &s, char sep)
     return out;
 }
 
+/* "Costume=1-32;Skin=47-62" <-> sections. */
+std::vector<PaletteLayoutSection> parse_sections(const std::string &field)
+{
+    std::vector<PaletteLayoutSection> out;
+    for (const std::string &sec : split(field, ';')) {
+        const size_t eq = sec.find('=');
+        if (eq == std::string::npos) continue;
+        PaletteLayoutSection ps;
+        ps.name = CleanLayoutField(sec.substr(0, eq), 15);
+        ps.ranges = sec.substr(eq + 1);
+        const size_t a = ps.ranges.find_first_not_of(' ');
+        ps.ranges = a == std::string::npos ? std::string() : ps.ranges.substr(a);
+        if (!ps.name.empty()) out.push_back(ps);
+    }
+    return out;
+}
+
+std::string format_sections(const std::vector<PaletteLayoutSection> &sections)
+{
+    std::string s;
+    bool first = true;
+    for (const PaletteLayoutSection &sec : sections) {
+        const std::string n = CleanLayoutField(sec.name, 15);
+        if (n.empty()) continue;
+        std::string r;
+        for (char c : sec.ranges)            /* ranges keep ',' but never '|' ';' '=' */
+            if (c != '|' && c != ';' && c != '=' && c != '\r' && c != '\n') r += c;
+        s += (first ? "" : ";") + n + "=" + r;
+        first = false;
+    }
+    return s;
+}
+
 } /* namespace */
 
 std::string CleanLayoutField(const std::string &s, size_t max_len)
@@ -52,16 +85,7 @@ bool ParsePaletteLayoutLine(const char *line, PaletteLayout *out)
         const std::string n = CleanLayoutField(p, 9);
         if (!n.empty()) l.palettes.push_back(n);
     }
-    for (const std::string &sec : split(f[3], ';')) {
-        const size_t eq = sec.find('=');
-        if (eq == std::string::npos) continue;
-        PaletteLayoutSection ps;
-        ps.name = CleanLayoutField(sec.substr(0, eq), 15);
-        ps.ranges = sec.substr(eq + 1);
-        const size_t a = ps.ranges.find_first_not_of(' ');
-        ps.ranges = a == std::string::npos ? std::string() : ps.ranges.substr(a);
-        if (!ps.name.empty()) l.sections.push_back(ps);
-    }
+    l.sections = parse_sections(f[3]);
     *out = l;
     return true;
 }
@@ -76,18 +100,31 @@ std::string FormatPaletteLayoutLine(const PaletteLayout &layout)
         s += (first ? "" : ",") + n;
         first = false;
     }
-    s += "|";
-    first = true;
-    for (const PaletteLayoutSection &sec : layout.sections) {
-        const std::string n = CleanLayoutField(sec.name, 15);
-        if (n.empty()) continue;
-        std::string r;
-        for (char c : sec.ranges)            /* ranges keep ',' but never '|' ';' '=' */
-            if (c != '|' && c != ';' && c != '=' && c != '\r' && c != '\n') r += c;
-        s += (first ? "" : ";") + n + "=" + r;
-        first = false;
-    }
-    return s;
+    return s + "|" + format_sections(layout.sections);
+}
+
+bool ParseCostumeTemplateLine(const char *line, CostumeTemplate *out)
+{
+    if (!line || !out) return false;
+    std::string s(line);
+    while (!s.empty() && (s.back() == '\r' || s.back() == '\n')) s.pop_back();
+    const std::vector<std::string> f = split(s, '|');
+    if (f.size() != 5) return false;
+    CostumeTemplate t;
+    t.name = CleanLayoutField(f[0], 31);
+    if (t.name.empty()) return false;
+    t.dst_numc = std::atoi(f[1].c_str());
+    t.ref_numc = std::atoi(f[2].c_str());
+    t.dst = parse_sections(f[3]);
+    t.ref = parse_sections(f[4]);
+    *out = t;
+    return true;
+}
+
+std::string FormatCostumeTemplateLine(const CostumeTemplate &t)
+{
+    return CleanLayoutField(t.name, 31) + "|" + std::to_string(t.dst_numc) + "|" +
+           std::to_string(t.ref_numc) + "|" + format_sections(t.dst) + "|" + format_sections(t.ref);
 }
 
 bool SameLayoutName(const std::string &a, const std::string &b)
