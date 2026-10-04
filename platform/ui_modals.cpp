@@ -3342,12 +3342,118 @@ static int WaxSlotFrameCount(const WorldMarkedSequenceState &state, int slot)
     return n;
 }
 
+/* Which open tabs the project actually needs, as live tab index -> saved doc
+   index, with -1 for the ones left out.
+
+   A .WAX used to list every open tab, so loading one reopened whatever
+   happened to be on screen when it was saved: a scratch file, an IMG opened
+   to borrow a palette from, the eight sprite files a character ASM pulled in
+   for one lane. Only the documents the scene draws from are written now and
+   the saved indices are compacted over them, so EVERY doc index written to
+   the file has to go through this map -- and a document that is left out must
+   be written with an empty path as well as a -1 index, because
+   WaxResolveDocIndex opens a path it is given whether or not the index
+   resolved, which would reopen exactly the tab this pruned.
+
+   Needed is what the panel would raise a lane from on the next draw, plus
+   whatever the special lanes name:
+     - any document with a marked sprite. WorldAppendMarkedDocumentLanes walks
+       every tab and builds a row from its marks, so such a tab draws itself
+       regardless of what the saved rows say.
+     - the document a row is bound to, for a row that holds frames, and any
+       per-frame doc override on it (a frame dragged in from another file).
+     - split lanes, the dummy body, the embedded SEQSCR lane.
+     - the IMGs an ASM lane resolved its pieces against. Those are normally
+       reopened by AsmProcessAutoload from the ASM file itself, but a piece
+       the user had to locate by hand is only reachable through its tab. */
+static std::vector<int> WaxBuildDocSaveMap(const WorldMarkedSequenceState &state,
+                                           std::vector<int> &saved_order)
+{
+    int count = document_tab_count();
+    if (count < 0) count = 0;
+    std::vector<bool> keep((size_t)count, false);
+    auto need = [&](int idx) {
+        if (idx >= 0 && idx < count) keep[(size_t)idx] = true;
+    };
+
+    for (int i = 0; i < count; i++) {
+        Document *doc = document_get(i);
+        if (!doc) continue;
+        for (IMG *img = (IMG *)doc->img_p; img; img = (IMG *)img->nxt_p) {
+            if (img->flags & 1) { need(i); break; }
+        }
+    }
+
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
+        if (state.sequence_frames[slot].empty() &&
+            state.default_frames[slot].empty())
+            continue;
+        need(WorldMarkedRowDocIndex(state, slot));
+        for (int frame_doc : state.frame_doc[slot])
+            need(frame_doc);
+    }
+
+    for (const WorldMarkedSplitLane &split : state.split_lanes)
+        need(split.doc_idx);
+    need(state.dummy_decap_doc_idx);
+    need(state.embedded_doc_idx);
+
+    if ((g_asm_lane_enabled || g_show_asm_anim) &&
+        g_asm_anim_sel >= 0 && g_asm_anim_sel < (int)g_asm_anims.size()) {
+        for (const AsmAnimFrame &fr : g_asm_anims[(size_t)g_asm_anim_sel].frames)
+            for (unsigned int uid : fr.piece_doc_uid)
+                need(document_index_of_uid(uid));
+    }
+    if (g_asm_opp_enabled &&
+        g_asm_opp_sel >= 0 && g_asm_opp_sel < (int)g_asm_opp_anims.size()) {
+        for (const AsmAnimFrame &fr : g_asm_opp_anims[(size_t)g_asm_opp_sel].frames)
+            for (unsigned int uid : fr.piece_doc_uid)
+                need(document_index_of_uid(uid));
+    }
+
+    std::vector<int> map((size_t)count, -1);
+    saved_order.clear();
+    for (int i = 0; i < count; i++) {
+        if (!keep[(size_t)i]) continue;
+        map[(size_t)i] = (int)saved_order.size();
+        saved_order.push_back(i);
+    }
+    /* Nothing in the scene draws from a file -- an empty World View, or one
+       whose rows all lost their documents. Keep the tab in front so the
+       project still opens on the file the user was looking at rather than on
+       an empty workspace. */
+    if (saved_order.empty()) {
+        int active = document_active_index();
+        if (active >= 0 && active < count) {
+            map[(size_t)active] = 0;
+            saved_order.push_back(active);
+        }
+    }
+    return map;
+}
+
+static int WaxSavedDocIndex(const std::vector<int> &doc_save_map, int live_idx)
+{
+    if (live_idx < 0 || live_idx >= (int)doc_save_map.size()) return -1;
+    return doc_save_map[(size_t)live_idx];
+}
+
+/* Path of a document as the file should name it: empty for one this project
+   does not carry, so loading it cannot pull the tab back in by path. */
+static std::string WaxSavedDocPath(const std::vector<int> &doc_save_map,
+                                   int live_idx)
+{
+    if (WaxSavedDocIndex(doc_save_map, live_idx) < 0) return std::string();
+    return DocFullPath(document_get(live_idx));
+}
+
 static void WaxWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
-                         int slot)
+                         int slot, const std::vector<int> &doc_save_map)
 {
     char key[128];
-    int doc_idx = WorldMarkedRowDocIndex(state, slot);
-    std::string doc_path = DocFullPath(document_get(doc_idx));
+    int live_doc_idx = WorldMarkedRowDocIndex(state, slot);
+    int doc_idx = WaxSavedDocIndex(doc_save_map, live_doc_idx);
+    std::string doc_path = WaxSavedDocPath(doc_save_map, live_doc_idx);
 
     snprintf(key, sizeof(key), "slot.%d.visible", slot);
     WaxWriteBool(f, key, state.lane_visible[slot]);
@@ -3418,8 +3524,18 @@ static void WaxWriteSlot(FILE *f, const WorldMarkedSequenceState &state,
     WaxWriteVec(f, WaxKey("slot", slot, "dual_z"), state.dual_z[slot]);
     /* Per-entry doc override: -1 means "use this row's own doc" (doc_idx
        above), any other value is a doc.count index — a frame dragged in
-       from another row's document. */
-    WaxWriteVec(f, WaxKey("slot", slot, "frame_doc_idx"), state.frame_doc[slot]);
+       from another row's document. Written through the save map like every
+       other doc index here; an override naming a document the project does
+       not carry falls back to -1, i.e. the row's own file. */
+    {
+        std::vector<int> frame_doc_saved;
+        frame_doc_saved.reserve(state.frame_doc[slot].size());
+        for (int live_idx : state.frame_doc[slot])
+            frame_doc_saved.push_back(live_idx < 0
+                                      ? -1
+                                      : WaxSavedDocIndex(doc_save_map, live_idx));
+        WaxWriteVec(f, WaxKey("slot", slot, "frame_doc_idx"), frame_doc_saved);
+    }
     snprintf(key, sizeof(key), "slot.%d.pingpong_delay", slot);
     WaxWriteInt(f, key, state.pingpong_delay[slot]);
     snprintf(key, sizeof(key), "slot.%d.stop_tick", slot);
@@ -3580,6 +3696,11 @@ static bool SaveWorldProjectFile(const char *path)
     }
 
     WorldMarkedSequenceState &state = g_world_marked_state;
+    /* The tabs this project carries, and the live -> saved index map every
+       doc reference below is written through. See WaxBuildDocSaveMap. */
+    std::vector<int> saved_docs;
+    std::vector<int> doc_save_map = WaxBuildDocSaveMap(state, saved_docs);
+
     fprintf(f, "format=imgtool_world_project\n");
     WaxWriteInt(f, "version", 1);
     WaxWriteString(f, "app", "midway-imgtool");
@@ -3616,9 +3737,10 @@ static bool SaveWorldProjectFile(const char *path)
     WaxWriteBool(f, "state.dummy_decap_body", state.dummy_decap_body);
     WaxWriteBool(f, "state.dummy_decap_reset", state.dummy_decap_reset);
     WaxWriteBool(f, "state.dummy_decap_manual", state.dummy_decap_manual);
-    WaxWriteInt(f, "state.dummy_decap_doc_idx", state.dummy_decap_doc_idx);
+    WaxWriteInt(f, "state.dummy_decap_doc_idx",
+                WaxSavedDocIndex(doc_save_map, state.dummy_decap_doc_idx));
     WaxWriteString(f, "state.dummy_decap_doc_path",
-                   DocFullPath(document_get(state.dummy_decap_doc_idx)));
+                   WaxSavedDocPath(doc_save_map, state.dummy_decap_doc_idx));
     WaxWriteString(f, "state.dummy_decap_prefix", state.dummy_decap_prefix);
     WaxWriteBool(f, "state.draw_sprite_borders", state.draw_sprite_borders);
     WaxWriteBool(f, "state.show_boundary_overlay", state.show_boundary_overlay);
@@ -3626,9 +3748,10 @@ static bool SaveWorldProjectFile(const char *path)
     WaxWriteBool(f, "state.embedded_is_script", state.embedded_is_script);
     WaxWriteBool(f, "state.embedded_show_companions", state.embedded_show_companions);
     WaxWriteInt(f, "state.embedded_record_index", state.embedded_record_index);
-    WaxWriteInt(f, "state.embedded_doc_idx", state.embedded_doc_idx);
+    WaxWriteInt(f, "state.embedded_doc_idx",
+                WaxSavedDocIndex(doc_save_map, state.embedded_doc_idx));
     WaxWriteString(f, "state.embedded_doc_path",
-                   DocFullPath(document_get(state.embedded_doc_idx)));
+                   WaxSavedDocPath(doc_save_map, state.embedded_doc_idx));
     WaxWriteString(f, "state.embedded_name", state.embedded_name);
     WaxWriteVec(f, "state.embedded_targets", state.embedded_targets);
     WaxWriteInt(f, "state.embedded_label_count",
@@ -3637,11 +3760,15 @@ static bool SaveWorldProjectFile(const char *path)
         WaxWriteString(f, WaxKey("embedded_label", i, "text").c_str(),
                        state.embedded_frame_labels[(size_t)i]);
 
-    int doc_count = document_tab_count();
-    WaxWriteInt(f, "doc.count", doc_count);
-    WaxWriteInt(f, "doc.active", document_active_index());
-    for (int i = 0; i < doc_count; i++) {
-        Document *doc = document_get(i);
+    /* Only the tabs the scene needs, renumbered 0..doc.count-1 in tab order.
+       The tab that happens to be in front is not itself a reason to carry a
+       file, so a project saved while sitting on an unrelated IMG records no
+       active document and opens on whatever its own rows need. */
+    WaxWriteInt(f, "doc.count", (int)saved_docs.size());
+    WaxWriteInt(f, "doc.active",
+                WaxSavedDocIndex(doc_save_map, document_active_index()));
+    for (int i = 0; i < (int)saved_docs.size(); i++) {
+        Document *doc = document_get(saved_docs[(size_t)i]);
         WaxWriteString(f, WaxKey("doc", i, "path").c_str(), DocFullPath(doc));
         WaxWriteVec(f, WaxKey("doc", i, "marked"), WaxMarkedIndices(doc));
     }
@@ -3669,20 +3796,30 @@ static bool SaveWorldProjectFile(const char *path)
        row count changes, and the slot index alone does not say which is which. */
     WaxWriteInt(f, "slot.source_tabs", kWorldMarkedSourceTabs);
     for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++)
-        WaxWriteSlot(f, state, slot);
+        WaxWriteSlot(f, state, slot, doc_save_map);
 
     WaxWriteInt(f, "split.count", (int)state.split_lanes.size());
     for (int i = 0; i < (int)state.split_lanes.size(); i++) {
         const WorldMarkedSplitLane &split = state.split_lanes[(size_t)i];
         WaxWriteInt(f, WaxKey("split", i, "slot").c_str(), split.slot);
-        WaxWriteInt(f, WaxKey("split", i, "doc_idx").c_str(), split.doc_idx);
+        WaxWriteInt(f, WaxKey("split", i, "doc_idx").c_str(),
+                    WaxSavedDocIndex(doc_save_map, split.doc_idx));
         WaxWriteString(f, WaxKey("split", i, "doc_path").c_str(),
-                       DocFullPath(document_get(split.doc_idx)));
+                       WaxSavedDocPath(doc_save_map, split.doc_idx));
     }
 
     fclose(f);
-    snprintf(g_restore_msg, sizeof(g_restore_msg),
-             "Saved World View project.");
+    /* Say how many tabs went in when that is fewer than are open, so a project
+       saved with eight IMGs on screen does not quietly look like it carries
+       all eight. */
+    int open_tabs = document_tab_count();
+    if ((int)saved_docs.size() < open_tabs)
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Saved World View project (%d of %d IMG%s).",
+                 (int)saved_docs.size(), open_tabs, open_tabs == 1 ? "" : "s");
+    else
+        snprintf(g_restore_msg, sizeof(g_restore_msg),
+                 "Saved World View project.");
     g_restore_msg_timer = 4.0f;
     return true;
 }

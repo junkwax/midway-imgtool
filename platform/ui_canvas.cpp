@@ -2281,6 +2281,49 @@ static void WorldMarkedPruneSplitLanes(WorldMarkedSequenceState &state)
     state.split_lanes = kept;
 }
 
+/* Settle a row that was just REBOUND to another file -- an emptied row that
+   had a frame dropped into it from a row belonging to a different document,
+   so sequence_doc_uid now names that document instead of the one the row was
+   built from. Two things have to follow it, or the row is read as that
+   document's own marked row on the next lane build:
+
+   - default_frames still describes the marked set of the file the row used to
+     hold, and WorldMarkedSyncSequenceOverride compares that snapshot against
+     the new file's marks. Every index that differs reads as "those frames
+     were unmarked, these were newly marked", so the reconcile drops the entry
+     that was just dropped in and appends the new file's whole animation in
+     its place. Re-snapshotting from what the row now holds is what the
+     snapshot means for every other hand-built row.
+   - that file already HAS a base row (the one the frame came from), and only
+     the lowest-numbered slot bound to a document is assigned its lane -- so
+     one of the two rows would silently stop drawing. Registering this one as
+     a split row is the existing answer to "a hand-built sequence that must
+     not be reseeded from a file's marked set": the slot is then skipped by
+     WorldMarkedFindBaseSourceSlot and drawn from its own sequence.
+     WorldMarkedPruneSplitLanes drops the registration again if the row is
+     later emptied, which frees the slot exactly as before. */
+static void WorldMarkedClaimRowAfterRebind(WorldMarkedSequenceState &state,
+                                           int slot)
+{
+    if (slot < 0 || slot >= kWorldMarkedMaxTabs) return;
+    if (state.sequence_frames[slot].empty()) return;
+
+    state.default_frames[slot] = state.sequence_frames[slot];
+
+    /* Only the marked-row slots can hold a split row; the dummy body and the
+       ASM/embedded lanes have their own draw paths and are never assigned by
+       document. */
+    if (slot >= kWorldMarkedSourceTabs) return;
+    if (WorldMarkedSlotReservedForSplit(state, slot)) return;
+    int doc_idx = WorldMarkedRowDocIndex(state, slot);
+    if (doc_idx < 0) return;
+
+    WorldMarkedSplitLane split = {};
+    split.slot = slot;
+    split.doc_idx = doc_idx;
+    state.split_lanes.push_back(split);
+}
+
 bool WorldAppendMarkedSourceLane(WorldMarkedSequenceState &state, int doc_idx,
                                  std::vector<WorldMarkedLane> &lanes,
                                  bool used_source_slots[kWorldMarkedSourceTabs])
@@ -8921,6 +8964,170 @@ static std::vector<WorldSeqArrayRef> WorldMarkedSeqArrays(
     };
 }
 
+/* ---- Image-index fix-ups after the image list changes shape ------------
+   See the header for why these exist. The one rule both share: an index is
+   remapped only when the thing holding it resolves against `doc_idx`. A row
+   bound to another file keeps its indices, and so does an entry sideloaded
+   from another file via frame_doc, even when it sits in a row that is being
+   remapped -- its index belongs to its own document's list. */
+
+/* The document an entry's image index belongs to, as a tab index. -1 in
+   frame_doc means "this row's own doc", which is what the row is bound to. */
+static int WorldMarkedEntryDocIndex(const WorldMarkedSequenceState &state,
+                                    int slot, int entry)
+{
+    int override_idx = entry < (int)state.frame_doc[slot].size()
+                     ? state.frame_doc[slot][entry] : -1;
+    return override_idx >= 0 ? override_idx
+                             : WorldMarkedRowDocIndex(state, slot);
+}
+
+void WorldMarkedRemapAfterImageMove(WorldMarkedSequenceState &state,
+                                    int doc_idx, int from, int to)
+{
+    if (doc_idx < 0 || from == to) return;
+
+    /* Erase-then-insert semantics, the same as RemapIndexForImageMove in
+       ui_main.cpp -- the two must agree or the World View rows and the Image
+       timeline would disagree about where a sprite went. */
+    auto remap = [from, to](int idx) {
+        if (idx < 0) return idx;
+        if (idx == from) return to;
+        if (from < idx && to >= idx) return idx - 1;
+        if (from > idx && to <= idx) return idx + 1;
+        return idx;
+    };
+
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
+        bool row_is_target = WorldMarkedRowDocIndex(state, slot) == doc_idx;
+
+        for (size_t i = 0; i < state.sequence_frames[slot].size(); i++) {
+            if (WorldMarkedEntryDocIndex(state, slot, (int)i) != doc_idx)
+                continue;
+            state.sequence_frames[slot][i] = remap(state.sequence_frames[slot][i]);
+            if (i < state.entry_pieces[slot].size())
+                for (int &piece : state.entry_pieces[slot][i])
+                    piece = remap(piece);
+        }
+
+        if (!row_is_target) continue;
+
+        /* The marked-set snapshot. Deliberately NOT re-sorted into list
+           order: a split or duplicated row's default_frames is a slice of a
+           sequence, and Reset to Defaults replays it in that order. The
+           remapped copy is the same SET the collector will return, so the
+           reconcile in WorldMarkedSyncSequenceOverride drops nothing and
+           appends nothing -- it just writes the order back. */
+        for (int &idx : state.default_frames[slot])
+            idx = remap(idx);
+
+        state.subframe_fine_source[slot] = remap(state.subframe_fine_source[slot]);
+    }
+
+    if (state.embedded_doc_idx == doc_idx)
+        for (int &target : state.embedded_targets)
+            target = remap(target);
+}
+
+void WorldMarkedRemapAfterImageDelete(WorldMarkedSequenceState &state,
+                                      int doc_idx,
+                                      const std::vector<int> &deleted)
+{
+    if (doc_idx < 0 || deleted.empty()) return;
+
+    /* -1 for a sprite that is gone; otherwise the index less however many
+       deleted sprites sat in front of it. */
+    auto remap = [&deleted](int idx) {
+        if (idx < 0) return -1;
+        if (std::binary_search(deleted.begin(), deleted.end(), idx)) return -1;
+        return idx - (int)(std::lower_bound(deleted.begin(), deleted.end(), idx) -
+                           deleted.begin());
+    };
+
+    bool dropped_any = false;
+
+    for (int slot = 0; slot < kWorldMarkedMaxTabs; slot++) {
+        bool row_is_target = WorldMarkedRowDocIndex(state, slot) == doc_idx;
+
+        int n = (int)state.sequence_frames[slot].size();
+        if (n > 0) {
+            EnsureWorldMarkedFrameDelays(state, slot, n);
+
+            std::vector<WorldSeqArrayRef> refs = WorldMarkedSeqArrays(state, slot);
+            std::vector<int> new_seq;
+            std::vector<std::vector<int>> new_vals(refs.size());
+            std::vector<std::vector<int>> new_pieces;
+            std::vector<int> new_fdoc;
+            new_seq.reserve((size_t)n);
+
+            for (int i = 0; i < n; i++) {
+                int entry_doc = WorldMarkedEntryDocIndex(state, slot, i);
+                int frame = state.sequence_frames[slot][i];
+                std::vector<int> pieces = i < (int)state.entry_pieces[slot].size()
+                                        ? state.entry_pieces[slot][(size_t)i]
+                                        : std::vector<int>();
+                if (entry_doc == doc_idx) {
+                    frame = remap(frame);
+                    /* A composite loses only the pieces that are gone; it
+                       survives as long as one is left. */
+                    std::vector<int> kept;
+                    kept.reserve(pieces.size());
+                    for (int piece : pieces) {
+                        int mapped = remap(piece);
+                        if (mapped >= 0) kept.push_back(mapped);
+                    }
+                    pieces.swap(kept);
+                    /* The entry draws its pieces when it has them, so it is
+                       only really gone once nothing is left to draw. */
+                    if (pieces.empty() && frame < 0) {
+                        dropped_any = true;
+                        continue;
+                    }
+                    /* A surviving composite whose own sequence_frames index
+                       was deleted still needs a valid one: its first piece is
+                       the sprite it now draws. */
+                    if (frame < 0) frame = pieces[0];
+                }
+                new_seq.push_back(frame);
+                for (size_t a = 0; a < refs.size(); a++)
+                    new_vals[a].push_back((*refs[a].vec)[(size_t)i]);
+                new_pieces.push_back(pieces);
+                new_fdoc.push_back(i < (int)state.frame_doc[slot].size()
+                                   ? state.frame_doc[slot][(size_t)i] : -1);
+            }
+
+            state.sequence_frames[slot] = new_seq;
+            for (size_t a = 0; a < refs.size(); a++)
+                *refs[a].vec = new_vals[a];
+            state.entry_pieces[slot] = new_pieces;
+            state.frame_doc[slot] = new_fdoc;
+            EnsureWorldMarkedFrameDelays(state, slot, (int)new_seq.size());
+        }
+
+        if (!row_is_target) continue;
+
+        std::vector<int> kept_defaults;
+        kept_defaults.reserve(state.default_frames[slot].size());
+        for (int idx : state.default_frames[slot]) {
+            int mapped = remap(idx);
+            if (mapped >= 0) kept_defaults.push_back(mapped);
+        }
+        state.default_frames[slot].swap(kept_defaults);
+
+        state.subframe_fine_source[slot] = remap(state.subframe_fine_source[slot]);
+    }
+
+    if (state.embedded_doc_idx == doc_idx)
+        for (int &target : state.embedded_targets)
+            target = remap(target);
+
+    /* Selections are entry POSITIONS, so dropping an entry slides them onto
+       their neighbours. Cheaper to clear than to renumber a selection the user
+       made against frames that are no longer there. */
+    if (dropped_any)
+        WorldFrameSelClear();
+}
+
 void WorldMarkedRestart(WorldMarkedSequenceState &state)
 {
     state.timer = 0.0f;
@@ -11495,6 +11702,10 @@ bool WorldMarkedCopySelectionToSlot(WorldMarkedSequenceState &state,
 
     /* An empty destination adopts the source's document binding, the same way
        a move into an empty row does. */
+    bool rebound = !dst_had_frames && first_src_slot >= 0 &&
+                   first_src_slot != dst_slot &&
+                   state.sequence_doc_uid[dst_slot] !=
+                       state.sequence_doc_uid[first_src_slot];
     if (!dst_had_frames && first_src_slot >= 0 && first_src_slot != dst_slot)
         state.sequence_doc_uid[dst_slot] = state.sequence_doc_uid[first_src_slot];
 
@@ -11513,6 +11724,8 @@ bool WorldMarkedCopySelectionToSlot(WorldMarkedSequenceState &state,
     }
 
     EnsureWorldMarkedFrameDelays(state, dst_slot, (int)dst_frames.size());
+    if (rebound)
+        WorldMarkedClaimRowAfterRebind(state, dst_slot);
     if (out_copied) *out_copied = (int)snaps.size();
     state.paused = true;
     state.timer = 0.0f;
@@ -11578,6 +11791,8 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
     if (insert_at < 0) insert_at = 0;
     if (insert_at > (int)dst_frames.size()) insert_at = (int)dst_frames.size();
 
+    bool rebound = !same_slot && !dst_has_frames &&
+                   state.sequence_doc_uid[dst_slot] != state.sequence_doc_uid[src_slot];
     if (!same_slot && !dst_has_frames) {
         state.sequence_doc_uid[dst_slot] = state.sequence_doc_uid[src_slot];
     }
@@ -11600,6 +11815,9 @@ bool WorldMarkedMoveEntryBetweenSlots(WorldMarkedSequenceState &state,
                                         saved_pieces);
     state.frame_doc[dst_slot].insert(state.frame_doc[dst_slot].begin() + insert_at,
                                      insert_doc_idx);
+
+    if (rebound)
+        WorldMarkedClaimRowAfterRebind(state, dst_slot);
 
     state.paused = true;
     state.timer = 0.0f;

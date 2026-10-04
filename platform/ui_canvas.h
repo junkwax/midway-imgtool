@@ -889,6 +889,28 @@ int WorldMarkedRowDocIndex(const WorldMarkedSequenceState &state, int slot);
 void WorldMarkedSetRowDoc(WorldMarkedSequenceState &state, int slot, int doc_idx);
 void WorldMarkedClearRowDoc(WorldMarkedSequenceState &state, int slot);
 
+/* Image-index fix-ups after the document's image LIST changes shape.
+   Every row holds IMAGE INDICES -- sequence_frames, the marked-set snapshot in
+   default_frames, composite piece lists, the fine-subframe source -- so a
+   reorder or a delete in `doc_idx` re-points each of them at whatever sprite
+   now occupies that position. The marked flags travel with the sprites, so the
+   row's marked set moves too, and the reconcile in
+   WorldMarkedSyncSequenceOverride then reads the shifted indices as "frames
+   unmarked, other frames newly marked": it drops entries and appends others,
+   which is how a built animation comes back as a different one.
+
+   These are the World View counterparts of the g_timeline_frames fix-ups in
+   MoveImageToIndex / DeleteImagesByIndices, and must be called from the same
+   places. `deleted` is ascending and duplicate-free (NormalizeImageDeleteIndices
+   order); entries whose only image is gone are dropped with their per-entry
+   edits. Rows bound to other documents are untouched, except for individual
+   entries sideloaded from `doc_idx` via frame_doc. */
+void WorldMarkedRemapAfterImageMove(WorldMarkedSequenceState &state,
+                                    int doc_idx, int from, int to);
+void WorldMarkedRemapAfterImageDelete(WorldMarkedSequenceState &state,
+                                      int doc_idx,
+                                      const std::vector<int> &deleted);
+
 /* Pure string helpers used by the marked World View panel. */
 bool WorldDecapBodyFrameNo(const std::string &name, int *frame_no, std::string *prefix);
 bool WorldDecapBodyPieceInfo(const std::string &name, int *frame_no,

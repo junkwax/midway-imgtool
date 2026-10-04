@@ -10,6 +10,59 @@ included) so the extractor matches.
 
 ## [Unreleased]
 
+### A .WAX carries only the IMGs its scene draws from
+
+Saving a World View project listed every open tab, so loading one reopened
+whatever happened to be on screen when it was saved: the IMG opened to borrow a
+palette from, a scratch file, the eight sprite files a character ASM pulled in
+for one lane. A lane of two or three files came back as a workspace of a dozen,
+and every one of them had to be found on disk or the load reported missing
+files it never needed.
+
+The writer now works out which documents the scene actually draws from and
+writes only those, renumbering the saved doc indices over them. A document is
+carried when it has a marked sprite (the panel builds that file's row from its
+marks on the next draw, whatever the saved rows say), when a row that holds
+frames is bound to it, when a single frame was dragged in from it, and for the
+split lanes, the dummy body, the embedded SEQSCR lane and the IMGs an active
+ASM lane resolved its pieces against. Anything else is left out with an empty
+path as well as a -1 index, since a path alone is enough for a load to pull the
+tab back in. The tab that happens to be in front is not itself a reason to
+carry a file, so a project saved while sitting on an unrelated IMG records no
+active document; one whose rows draw from nothing at all still carries that tab
+rather than saving an empty workspace. The save toast names the count when it
+is fewer than the tabs open.
+
+Existing projects are unaffected on load — the doc list is read by index as
+before, and these are only fewer entries. Resaving one prunes it.
+
+### World View rows survive a sprite reorder and a drop into an emptied row
+
+Two ways a built animation could come back as a different one.
+
+**Reordering or deleting sprites.** A row holds image indices — its frames, its
+marked-set snapshot, its composite pieces, its fine-subframe source. Moving a
+sprite in the image list (drag, Alt+PgUp/PgDn) or deleting one shifted every
+index underneath, and only the Image tab's timeline was fixed up afterwards.
+The marked flags travel with the sprites, so a World View row's marked set
+moved while its sequence did not, and the reconcile read the difference as
+"these frames were unmarked, those were newly marked": it dropped entries and
+appended others, which is what turned a row into something else. Rows bound to
+other open IMGs are left alone, and so is an individual frame sideloaded from
+another IMG — its index belongs to that file's list, not this one. A deleted
+sprite's entry is dropped along with its per-entry timing and offsets; a
+composite keeps the pieces that are still there.
+
+**Dropping a frame into an emptied row.** Dragging a frame from one row into a
+row that had been drained to zero rebinds that row to the dragged frame's IMG.
+It kept the marked-set snapshot of the IMG it used to hold, and it was still a
+candidate to be assigned that IMG's own marked row — so one of the two rows
+bound to the same file stopped drawing and the other was reconciled against a
+snapshot from a different file. The rebound row now re-snapshots from what it
+actually holds and is registered as a hand-built row, which is what already
+keeps a split row from being reseeded. Emptying it again frees the slot exactly
+as before.
+
 ### The palette list can be sorted A-Z and can hide inactive palettes
 
 Two checkboxes above the Palettes list. **A-Z** shows the palettes in

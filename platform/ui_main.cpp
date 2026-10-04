@@ -3656,6 +3656,11 @@ int DeleteImagesByIndices(std::vector<int> indices)
     }
 
     RemapTimelineAfterImageDelete(indices);
+    /* Same fix-up for the World View rows -- see WorldMarkedRemapAfterImageMove
+       in MoveImageToIndex. `indices` is ascending and duplicate-free here
+       (NormalizeImageDeleteIndices), which is what the remap expects. */
+    WorldMarkedRemapAfterImageDelete(g_world_marked_state,
+                                     document_active_index(), indices);
     int deleted_palettes = 0;
     if (!candidate_palettes.empty() && g_doc->palcnt > 0) {
         std::vector<unsigned char> used((size_t)g_doc->palcnt, 0);
@@ -4295,6 +4300,13 @@ bool MoveImageToIndex(int from, int to)
         frame = RemapIndexForImageMove(frame, from, to);
     for (int i = 0; i < 2; i++)
         g_timeline_composite[i] = RemapIndexForImageMove(g_timeline_composite[i], from, to);
+
+    /* World View rows store image indices the same way, and a row left
+       unremapped comes back as a different animation: its marked set moves
+       with the sprites while its sequence does not, so the reconcile reads the
+       difference as frames having been unmarked and others newly marked. */
+    WorldMarkedRemapAfterImageMove(g_world_marked_state, document_active_index(),
+                                   from, to);
 
     /* Thumbnails are cached by image index, so every entry from min(from,to)
        onward now shows the wrong sprite. */
