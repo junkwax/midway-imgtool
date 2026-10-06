@@ -1240,16 +1240,18 @@ void DrawCanvasCloneStampAids(ImDrawList *dl, ImVec2 img_pos,
 
 void DrawCanvasLassoPath(ImDrawList *dl, ImVec2 img_pos,
                          float sx, float sy,
-                         const std::vector<std::pair<int, int>> &points)
+                         const std::vector<std::pair<float, float>> &points)
 {
     if (!dl || points.size() < 2)
         return;
 
+    /* Points are continuous image-space coords (0..w, 0..h), not pixel
+       indices, so no half-pixel offset. */
     std::vector<ImVec2> screen_pts;
     screen_pts.reserve(points.size() + 1);
     for (const auto &p : points) {
-        screen_pts.push_back(ImVec2(img_pos.x + (p.first + 0.5f) * sx,
-                                    img_pos.y + (p.second + 0.5f) * sy));
+        screen_pts.push_back(ImVec2(img_pos.x + p.first * sx,
+                                    img_pos.y + p.second * sy));
     }
     dl->AddPolyline(screen_pts.data(), (int)screen_pts.size(),
                     IM_COL32(255, 0, 255, 220), 0, 1.5f);
@@ -13439,6 +13441,17 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                Geometric mouse_over_sprite still has to be true. */
             bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
             bool ui_blocking = ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive() || any_popup;
+            /* Lasso vertex in continuous image space, clamped to the outer
+               edge of the sprite rather than the last pixel index. */
+            auto lasso_point = [&]() -> std::pair<float, float> {
+                float fx = (mouse.x - img_pos.x) / sx;
+                float fy = (mouse.y - img_pos.y) / sy;
+                if (fx < 0.0f) fx = 0.0f;
+                if (fx > (float)g_img_tex_w) fx = (float)g_img_tex_w;
+                if (fy < 0.0f) fy = 0.0f;
+                if (fy > (float)g_img_tex_h) fy = (float)g_img_tex_h;
+                return {fx, fy};
+            };
             if (!g_pasted.active && (g_active_tool == ActiveTool::Marquee || g_active_tool == ActiveTool::MagicWand || g_active_tool == ActiveTool::Lasso)) {
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
                         && mouse_over_sprite
@@ -13540,7 +13553,7 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                     } else if (g_active_tool == ActiveTool::Lasso) {
                         selection_begin_add_drag(g_img_tex_w, g_img_tex_h, ImGui::GetIO().KeyCtrl);
                         g_lasso_points.clear();
-                        g_lasso_points.push_back({mx, my});
+                        g_lasso_points.push_back(lasso_point());
                         g_grid_sel.active = true;
                         g_grid_sel.dragging = true;
                         g_grid_sel.is_mask = false; /* becomes a mask on release */
@@ -13564,11 +13577,15 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                     if (mx < 0) mx = 0; if (mx >= (int)g_img_tex_w) mx = g_img_tex_w - 1;
                     if (my < 0) my = 0; if (my >= (int)g_img_tex_h) my = g_img_tex_h - 1;
                     if (g_active_tool == ActiveTool::Lasso) {
-                        /* Append point if it moved at least 1 pixel from the last vertex */
+                        /* Append a vertex once the cursor has moved a quarter
+                           pixel. Sub-pixel vertices clamped to the sprite's
+                           outer edge (w, h) let a drag past the border take
+                           the last row/column. */
+                        std::pair<float, float> p = lasso_point();
                         if (g_lasso_points.empty() ||
-                            g_lasso_points.back().first != mx ||
-                            g_lasso_points.back().second != my) {
-                            g_lasso_points.push_back({mx, my});
+                            fabsf(g_lasso_points.back().first - p.first) >= 0.25f ||
+                            fabsf(g_lasso_points.back().second - p.second) >= 0.25f) {
+                            g_lasso_points.push_back(p);
                         }
                     } else {
                         g_grid_sel.x2 = mx;
@@ -13578,17 +13595,22 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                     g_grid_sel.dragging = false;
                     if (g_active_tool == ActiveTool::Lasso && g_doc->ilselected >= 0 && g_lasso_points.size() >= 3) {
                         /* Rasterize the polygon into a pixel mask using a scanline
-                           even-odd test. */
+                           even-odd test at pixel centers. Vertices are continuous
+                           coords in [0,w]x[0,h], so pixel (x,y) is inside when
+                           its center (x+0.5, y+0.5) is. */
                         IMG *simg = get_img(g_doc->ilselected);
                         if (simg && simg->data_p) {
                             int sw = simg->w, sh = simg->h;
-                            int min_x = sw, max_x = -1, min_y = sh, max_y = -1;
+                            float fmin_x = (float)sw, fmax_x = 0.0f;
+                            float fmin_y = (float)sh, fmax_y = 0.0f;
                             for (auto &p : g_lasso_points) {
-                                if (p.first  < min_x) min_x = p.first;
-                                if (p.first  > max_x) max_x = p.first;
-                                if (p.second < min_y) min_y = p.second;
-                                if (p.second > max_y) max_y = p.second;
+                                if (p.first  < fmin_x) fmin_x = p.first;
+                                if (p.first  > fmax_x) fmax_x = p.first;
+                                if (p.second < fmin_y) fmin_y = p.second;
+                                if (p.second > fmax_y) fmax_y = p.second;
                             }
+                            int min_x = (int)floorf(fmin_x), max_x = (int)ceilf(fmax_x) - 1;
+                            int min_y = (int)floorf(fmin_y), max_y = (int)ceilf(fmax_y) - 1;
                             if (min_x < 0) min_x = 0;
                             if (min_y < 0) min_y = 0;
                             if (max_x >= sw) max_x = sw - 1;
@@ -13605,10 +13627,10 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                 float yf = y + 0.5f;
                                 std::vector<float> xs;
                                 for (int i = 0; i < n; i++) {
-                                    float ax = (float)g_lasso_points[i].first;
-                                    float ay = (float)g_lasso_points[i].second;
-                                    float bx = (float)g_lasso_points[(i + 1) % n].first;
-                                    float by = (float)g_lasso_points[(i + 1) % n].second;
+                                    float ax = g_lasso_points[i].first;
+                                    float ay = g_lasso_points[i].second;
+                                    float bx = g_lasso_points[(i + 1) % n].first;
+                                    float by = g_lasso_points[(i + 1) % n].second;
                                     if ((ay <= yf) != (by <= yf)) {
                                         float t = (yf - ay) / (by - ay);
                                         xs.push_back(ax + t * (bx - ax));
@@ -13616,8 +13638,9 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                 }
                                 std::sort(xs.begin(), xs.end());
                                 for (size_t i = 0; i + 1 < xs.size(); i += 2) {
-                                    int x0 = (int)ceilf(xs[i]);
-                                    int x1 = (int)floorf(xs[i + 1]);
+                                    /* Pixel centers x+0.5 within [xa, xb] */
+                                    int x0 = (int)ceilf(xs[i] - 0.5f);
+                                    int x1 = (int)floorf(xs[i + 1] - 0.5f);
                                     if (x0 < min_x) x0 = min_x;
                                     if (x1 > max_x) x1 = max_x;
                                     for (int x = x0; x <= x1; x++) {
@@ -13625,10 +13648,22 @@ void DrawCanvasWindow(float canvas_x, float canvas_y, float canvas_w, float canv
                                     }
                                 }
                             }
-                            g_grid_sel.x1 = min_x;
-                            g_grid_sel.y1 = min_y;
-                            g_grid_sel.x2 = max_x < min_x ? min_x : max_x;
-                            g_grid_sel.y2 = max_y < min_y ? min_y : max_y;
+                            /* Tight bounds of what was actually selected. */
+                            int bx1 = sw, by1 = sh, bx2 = -1, by2 = -1;
+                            for (int y = min_y; y <= max_y; y++) {
+                                for (int x = min_x; x <= max_x; x++) {
+                                    if (!g_grid_sel.pixel_mask[y * sw + x]) continue;
+                                    if (x < bx1) bx1 = x;
+                                    if (x > bx2) bx2 = x;
+                                    if (y < by1) by1 = y;
+                                    if (y > by2) by2 = y;
+                                }
+                            }
+                            if (bx2 < 0) { bx1 = bx2 = min_x; by1 = by2 = min_y; }
+                            g_grid_sel.x1 = bx1;
+                            g_grid_sel.y1 = by1;
+                            g_grid_sel.x2 = bx2;
+                            g_grid_sel.y2 = by2;
                         }
                         g_lasso_points.clear();
                     } else if (g_active_tool == ActiveTool::Lasso) {

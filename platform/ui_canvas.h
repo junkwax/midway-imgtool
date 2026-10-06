@@ -478,7 +478,7 @@ void DrawCanvasCloneStampAids(ImDrawList *dl, ImVec2 img_pos,
                               int brush);
 void DrawCanvasLassoPath(ImDrawList *dl, ImVec2 img_pos,
                          float sx, float sy,
-                         const std::vector<std::pair<int, int>> &points);
+                         const std::vector<std::pair<float, float>> &points);
 void DrawCanvasSelectionOverlay(ImDrawList *dl, ImVec2 img_pos,
                                 float sx, float sy,
                                 int x1, int y1, int x2, int y2,

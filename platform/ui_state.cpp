@@ -122,7 +122,7 @@ bool g_smudge_have_last = false;
 int g_eraser_tolerance = 0;
 bool g_eraser_contiguous = true;
 bool g_eraser_defringe = true;
-std::vector<std::pair<int,int>> g_lasso_points;
+std::vector<std::pair<float,float>> g_lasso_points;
 bool g_show_points = true;
 bool g_show_hitbox = false;
 FlipPreviewMode g_flip_preview = FlipPreviewMode::Off;

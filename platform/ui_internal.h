@@ -432,7 +432,7 @@ extern bool g_smudge_have_last;
 extern int g_eraser_tolerance;
 extern bool g_eraser_contiguous;
 extern bool g_eraser_defringe;
-extern std::vector<std::pair<int,int>> g_lasso_points;
+extern std::vector<std::pair<float,float>> g_lasso_points;
 extern bool g_show_points;
 extern bool g_show_hitbox;
 
