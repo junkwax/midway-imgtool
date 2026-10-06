@@ -103,6 +103,13 @@ struct DigitizeSession {
 
     DigitizePaletteMode palette_mode = PaletteMode_New;
     int match_target_pal = -1;   /* index into g_doc's existing palettes */
+
+    /* Output framing. Each sprite is cut to its own silhouette, and its
+       anipoint is the same floor point in every frame (source pixels; -1 =
+       bottom center), so a move shot from a fixed camera stays registered. */
+    bool trim = true;
+    int anchor_x = -1, anchor_y = -1;
+    std::string palette_name;    /* "" = first frame's name + "P" */
 };
 
 static DigitizeSession g_session;
@@ -123,6 +130,18 @@ static std::string BaseNameNoExt(const std::string &path)
     if (dot != std::string::npos) base = base.substr(0, dot);
     if (base.size() > 15) base = base.substr(0, 15);
     return base.empty() ? std::string("DIGI") : base;
+}
+
+/* The session anchor in a frame's working (downscaled) pixels. */
+static void AnchorInWork(const DigitizeFrame &f, int *ax, int *ay)
+{
+    if (g_session.anchor_x < 0 || g_session.anchor_y < 0 || f.src_w <= 0 || f.src_h <= 0) {
+        *ax = f.work_w / 2;
+        *ay = f.work_h - 1;
+        return;
+    }
+    *ax = (int)std::floor(g_session.anchor_x * (double)f.work_w / f.src_w);
+    *ay = (int)std::floor(g_session.anchor_y * (double)f.work_h / f.src_h);
 }
 
 static void RecomputeMatteForFrame(int idx)
@@ -417,33 +436,54 @@ static void CommitImport(void)
                 pb[i*2+1] = (unsigned char)(words[i] >> 8);
             }
         }
-        std::string pname = (g_session.frames.empty() ? std::string("DIGI") : g_session.frames[0].name) + "P";
+        std::string pname = !g_session.palette_name.empty() ? g_session.palette_name
+            : (g_session.frames.empty() ? std::string("DIGI") : g_session.frames[0].name) + "P";
         snprintf(pal->n_s, sizeof(pal->n_s), "%.9s", pname.c_str());
         pal_idx = (unsigned short)(g_doc->palcnt - 1);
     }
 
-    int created = 0, first_idx = -1;
+    int created = 0, first_idx = -1, empty = 0;
 
     for (auto &f : g_session.frames) {
         if (f.indices.empty() || f.work_w <= 0 || f.work_h <= 0) continue;
+
+        int x0 = 0, y0 = 0, x1 = f.work_w - 1, y1 = f.work_h - 1;
+        if (g_session.trim) {
+            x0 = f.work_w; y0 = f.work_h; x1 = -1; y1 = -1;
+            for (int y = 0; y < f.work_h; y++)
+                for (int x = 0; x < f.work_w; x++)
+                    if (f.indices[(size_t)y * f.work_w + x]) {
+                        x0 = std::min(x0, x); x1 = std::max(x1, x);
+                        y0 = std::min(y0, y); y1 = std::max(y1, y);
+                    }
+            if (x1 < 0) { empty++; continue; }   /* the key took the whole frame */
+        }
+        const int ow = x1 - x0 + 1, oh = y1 - y0 + 1;
+        int ax, ay;
+        AnchorInWork(f, &ax, &ay);
+
         IMG *img = AllocImg();
         if (!img) continue;
-        img->w = (unsigned short)f.work_w;
-        img->h = (unsigned short)f.work_h;
+        img->w = (unsigned short)ow;
+        img->h = (unsigned short)oh;
         img->palnum = pal_idx;
         img->flags = 0;
-        img->anix = 0; img->aniy = 0;
+        /* Anipoints are signed on disk; a floor point outside the trimmed
+           silhouette (a jump, say) is legitimately negative. */
+        img->anix = (unsigned short)(short)(ax - x0);
+        img->aniy = (unsigned short)(short)(ay - y0);
         clear_secondary_anipoint(img);
         img->pttbl_p = NULL;
         img->opals = (unsigned short)-1;
 
-        const int stride = (f.work_w + 3) & ~3;
-        img->data_p = PoolAlloc((size_t)stride * f.work_h);
+        const int stride = (ow + 3) & ~3;
+        img->data_p = PoolAlloc((size_t)stride * oh);
         if (!img->data_p) continue;
         unsigned char *dst = (unsigned char *)img->data_p;
-        std::memset(dst, 0, (size_t)stride * f.work_h);
-        for (int y = 0; y < f.work_h; y++)
-            std::memcpy(dst + (size_t)y * stride, f.indices.data() + (size_t)y * f.work_w, f.work_w);
+        std::memset(dst, 0, (size_t)stride * oh);
+        for (int y = 0; y < oh; y++)
+            std::memcpy(dst + (size_t)y * stride,
+                        f.indices.data() + (size_t)(y0 + y) * f.work_w + x0, ow);
 
         strncpy(img->n_s, f.name.c_str(), 15);
         img->n_s[15] = '\0';
@@ -466,6 +506,11 @@ static void CommitImport(void)
                      "Imported %d digitized frame(s) sharing a new %d-color palette.",
                      created, g_session.assembled.numc);
         }
+        if (empty > 0) {
+            size_t len = strlen(g_restore_msg);
+            snprintf(g_restore_msg + len, sizeof(g_restore_msg) - len,
+                     " %d frame(s) keyed to nothing were skipped.", empty);
+        }
         g_restore_msg_timer = 4.0f;
     } else {
         snprintf(g_restore_msg, sizeof(g_restore_msg), "Nothing to import — no frame had a mapped palette yet.");
@@ -474,20 +519,20 @@ static void CommitImport(void)
     g_session.open = false;
 }
 
-void OpenDigitizeImportDialog(const std::vector<std::string> &paths)
+void OpenDigitizeImportDialogFrames(DigitizeHandoff &&handoff)
 {
     g_session = DigitizeSession();
+    g_session.palette_name = handoff.palette_name;
+    g_session.anchor_x = handoff.anchor_x;
+    g_session.anchor_y = handoff.anchor_y;
 
-    for (const auto &p : paths) {
-        int w = 0, h = 0, ch = 0;
-        unsigned char *data = stbi_load(p.c_str(), &w, &h, &ch, 4);
-        if (!data) continue;
+    for (auto &src : handoff.frames) {
+        if (src.w <= 0 || src.h <= 0 || src.rgba.size() < (size_t)src.w * src.h * 4) continue;
         DigitizeFrame f;
-        f.path = p;
-        f.name = BaseNameNoExt(p);
-        f.src_w = w; f.src_h = h;
-        f.src_rgba.assign(data, data + (size_t)w * h * 4);
-        stbi_image_free(data);
+        f.path = src.name;
+        f.name = src.name.empty() ? std::string("DIGI") : src.name.substr(0, 15);
+        f.src_w = src.w; f.src_h = src.h;
+        f.src_rgba = std::move(src.rgba);
         g_session.frames.push_back(std::move(f));
     }
 
@@ -499,6 +544,23 @@ void OpenDigitizeImportDialog(const std::vector<std::string> &paths)
 
     ProcessFrame(0);
     g_session.open = true;
+}
+
+void OpenDigitizeImportDialog(const std::vector<std::string> &paths)
+{
+    DigitizeHandoff h;
+    for (const auto &p : paths) {
+        int w = 0, hh = 0, ch = 0;
+        unsigned char *data = stbi_load(p.c_str(), &w, &hh, &ch, 4);
+        if (!data) continue;
+        DigitizeSourceFrame f;
+        f.name = BaseNameNoExt(p);
+        f.w = w; f.h = hh;
+        f.rgba.assign(data, data + (size_t)w * hh * 4);
+        stbi_image_free(data);
+        h.frames.push_back(std::move(f));
+    }
+    OpenDigitizeImportDialogFrames(std::move(h));
 }
 
 /* ---- Preview ------------------------------------------------------------ */
@@ -684,6 +746,37 @@ static void DrawDigitizeCanvas(void)
         }
     }
 
+    /* Right-click: the floor point, in any view. Stored in source pixels so
+       it survives a change of downscale. */
+    DigitizeFrame &af = g_session.frames[g_session.active_frame];
+    const bool view_is_source = (g_session.view_mode == ViewSource);
+    if (px >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        if (view_is_source) {
+            g_session.anchor_x = px;
+            g_session.anchor_y = py;
+        } else if (af.work_w > 0 && af.work_h > 0) {
+            g_session.anchor_x = (int)((px + 0.5) * af.src_w / af.work_w);
+            g_session.anchor_y = (int)((py + 0.5) * af.src_h / af.work_h);
+        }
+    }
+
+    {
+        float vx, vy;
+        if (view_is_source) {
+            vx = g_session.anchor_x >= 0 ? g_session.anchor_x + 0.5f : af.src_w * 0.5f;
+            vy = g_session.anchor_y >= 0 ? g_session.anchor_y + 0.5f : af.src_h - 0.5f;
+        } else {
+            int ax, ay;
+            AnchorInWork(af, &ax, &ay);
+            vx = ax + 0.5f; vy = ay + 0.5f;
+        }
+        ImVec2 c(origin.x + vx * scale, origin.y + vy * scale);
+        const ImU32 col = IM_COL32(255, 80, 255, 230);
+        dl->AddLine(ImVec2(c.x - 9, c.y), ImVec2(c.x + 10, c.y), col, 1.5f);
+        dl->AddLine(ImVec2(c.x, c.y - 9), ImVec2(c.x, c.y + 10), col, 1.5f);
+        dl->AddCircle(c, 4.0f, col);
+    }
+
     if (hovered && px >= 0) ImGui::SetTooltip("%d, %d", px, py);
 }
 
@@ -793,6 +886,27 @@ void DrawDigitizeImportDialog(void)
         InvalidateAllMatte();
         ProcessFrame(g_session.active_frame);
     }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Output");
+    ImGui::Checkbox("Trim to silhouette", &g_session.trim);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Cut each sprite to its own opaque bounds, the way the\n"
+                          "shipped art is stored. The anipoint is moved with the\n"
+                          "cut, so frames stay registered to the floor point.");
+    if (g_session.anchor_x >= 0)
+        ImGui::TextDisabled("Floor point %d, %d", g_session.anchor_x, g_session.anchor_y);
+    else
+        ImGui::TextDisabled("Floor point: bottom center");
+    if (g_session.anchor_x >= 0) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##anchor")) { g_session.anchor_x = g_session.anchor_y = -1; }
+    }
+    ImGui::TextDisabled("Right-click the preview to set it.");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Every frame's anipoint is put on this one spot. Click\n"
+                          "the floor between the actor's feet: with a camera that\n"
+                          "never moved, that registers the whole move.");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Target Palette");

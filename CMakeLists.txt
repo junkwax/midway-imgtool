@@ -110,6 +110,8 @@ set(IMGTOOL_SOURCES
     platform/ui_bodysplit.cpp
     platform/body_split.cpp
     platform/digitize_import.cpp
+    platform/video_decode.cpp
+    platform/ui_video_import.cpp
     platform/digitize_matte.cpp
     platform/material_mask.cpp
     platform/palette_ramp.cpp
@@ -168,6 +170,11 @@ target_link_libraries(imgtool-cli PRIVATE
     SDL2::SDL2
     SDL2::SDL2main
 )
+
+# The video importer decodes on a worker thread (ui_video_import.cpp).
+find_package(Threads REQUIRED)
+target_link_libraries(imgtool PRIVATE Threads::Threads)
+target_link_libraries(imgtool-cli PRIVATE Threads::Threads)
 
 # ---- Platform-specific flags -----------------------------------------------
 if(WIN32)
@@ -300,7 +307,7 @@ foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_lev
                   anipoint_mirror tbl_diff img_util body_split gif_trim dma_pack
                   stamp_erase bdd_bg document reaction_class strike_bind
                   digitize_matte palette_ramp material_mask sprite_gradient
-                  palette_transfer palette_layout)
+                  palette_transfer palette_layout video_decode)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp

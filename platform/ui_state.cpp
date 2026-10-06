@@ -81,7 +81,7 @@ bool g_world_png_lane_alpha = false;
 bool g_png_import_match_palette = false;
 
 /* ---- Tools & State ---- */
-ActiveTool g_active_tool = ActiveTool::None;
+ActiveTool g_active_tool = ActiveTool::Marquee; /* a stray click selects, never paints */
 int g_pencil_brush = 1;
 int g_variant_brush = 1;
 int g_bucket_tolerance = 0;

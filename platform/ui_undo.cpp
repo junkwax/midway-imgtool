@@ -313,7 +313,9 @@ void ResetPerDocumentUiState(bool clear_pixel_clipboard)
     g_grid_sel.active = false;
     g_grid_sel.dragging = false;
     g_lasso_points.clear();
-    g_active_tool = ActiveTool::None;
+    /* Opening a file must never arm a paint tool: None paints like the
+       pencil, and the first click on a fresh sprite erased pixels. */
+    g_active_tool = ActiveTool::Marquee;
     g_pasted.active = false;
     g_pasted.dragging = false;
     g_xform.active = false;

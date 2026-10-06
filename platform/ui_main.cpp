@@ -34,6 +34,7 @@
 #include "mk2_fatality.h"
 #include "ui_bodysplit.h"
 #include "digitize_import.h"
+#include "ui_video_import.h"
 #include "ui_ramp_transfer.h"
 #include "ui_alt_costume.h"
 #include "ui_autochop.h"
@@ -704,46 +705,13 @@ static std::string ElidePathLabel(const std::string &prefix,
     return best;
 }
 
-void DrawMainLayout(void)
+/* ---- Global keyboard shortcuts ----
+   Every key here acts on the document or switches/uses an editing tool, so
+   none of them may fire while a modal dialog (or the in-app file browser)
+   is up: a stray letter typed at a dialog used to change tools or edit the
+   sprite sitting behind it. */
+static void HandleGlobalShortcuts(ImGuiIO &io)
 {
-    ImGuiIO &io = ImGui::GetIO();
-    float sw = io.DisplaySize.x;
-    float sh = io.DisplaySize.y;
-
-    /* Reset transient per-image tool state when the selected image changes,
-       so e.g. a Clone Stamp source from sprite A doesn't get re-applied as
-       coords on sprite B (which could OOB-read or just paint garbage). */
-    static int g_prev_ilselected = -2;
-    static Document *g_prev_render_doc = NULL;
-    if (g_doc != g_prev_render_doc || g_doc->ilselected != g_prev_ilselected) {
-        bool doc_changed = (g_doc != g_prev_render_doc);
-        g_prev_render_doc = g_doc;
-        g_clone_source_set = false;
-        g_clone_offset_set = false;
-        g_remap_target_color = -1;
-        g_snap_bbox.valid = false;
-        /* Drop the selection entirely, not just an in-progress drag. It is in
-           the previous image's pixel space: a finished wand/lasso mask was
-           sized for that sprite, and carrying it over left the marching ants
-           (and Del / Ctrl+C / Ctrl+X acting on them) live on every frame. */
-        deselect_all();
-        /* Drop multi-swatch selection too. Even if the new image shares a
-           palette with the old one, users perceive image-switch as a
-           fresh context and a stale yellow border on swatches is
-           confusing. They can Ctrl/Shift-click to rebuild it. */
-        commit_palette_adjustments();
-        memset(g_palette_selection, 0, sizeof(g_palette_selection));
-        if (TimelineCompositeReady() && TimelineCompositeSlot(g_doc->ilselected) < 0)
-            ClearTimelineCompositeSelection();
-        /* The arrow-key nudge belongs to one sprite in one document. Landing on
-           that sprite is how it gets armed (paste / canvas resize set the index
-           just before this runs), so only a move *away* from it disarms. */
-        if (doc_changed || g_content_nudge_img != g_doc->ilselected)
-            g_content_nudge_img = -1;
-        g_prev_ilselected = g_doc->ilselected;
-    }
-
-    /* ---- Global keyboard shortcuts ---- */
     ImGuiInputFlags route = ImGuiInputFlags_RouteGlobal;
     bool popup_using_keyboard =
         g_show_file_dialog ||
@@ -1112,6 +1080,49 @@ void DrawMainLayout(void)
             g_world_state.enabled = !g_world_state.enabled;
         }
     }
+}
+
+void DrawMainLayout(void)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    float sw = io.DisplaySize.x;
+    float sh = io.DisplaySize.y;
+
+    /* Reset transient per-image tool state when the selected image changes,
+       so e.g. a Clone Stamp source from sprite A doesn't get re-applied as
+       coords on sprite B (which could OOB-read or just paint garbage). */
+    static int g_prev_ilselected = -2;
+    static Document *g_prev_render_doc = NULL;
+    if (g_doc != g_prev_render_doc || g_doc->ilselected != g_prev_ilselected) {
+        bool doc_changed = (g_doc != g_prev_render_doc);
+        g_prev_render_doc = g_doc;
+        g_clone_source_set = false;
+        g_clone_offset_set = false;
+        g_remap_target_color = -1;
+        g_snap_bbox.valid = false;
+        /* Drop the selection entirely, not just an in-progress drag. It is in
+           the previous image's pixel space: a finished wand/lasso mask was
+           sized for that sprite, and carrying it over left the marching ants
+           (and Del / Ctrl+C / Ctrl+X acting on them) live on every frame. */
+        deselect_all();
+        /* Drop multi-swatch selection too. Even if the new image shares a
+           palette with the old one, users perceive image-switch as a
+           fresh context and a stale yellow border on swatches is
+           confusing. They can Ctrl/Shift-click to rebuild it. */
+        commit_palette_adjustments();
+        memset(g_palette_selection, 0, sizeof(g_palette_selection));
+        if (TimelineCompositeReady() && TimelineCompositeSlot(g_doc->ilselected) < 0)
+            ClearTimelineCompositeSelection();
+        /* The arrow-key nudge belongs to one sprite in one document. Landing on
+           that sprite is how it gets armed (paste / canvas resize set the index
+           just before this runs), so only a move *away* from it disarms. */
+        if (doc_changed || g_content_nudge_img != g_doc->ilselected)
+            g_content_nudge_img = -1;
+        g_prev_ilselected = g_doc->ilselected;
+    }
+
+    if (!ImGui::GetTopMostPopupModal() && !g_show_file_dialog)
+        HandleGlobalShortcuts(io);
 
     /* ---- Menu bar ---- */
     if (ImGui::BeginMainMenuBar()) {
@@ -1156,6 +1167,12 @@ void DrawMainLayout(void)
                     "the art into material regions (cloth, skin, ...), fit one\n"
                     "luminance ramp per material, then remap every frame onto it.\n"
                     "Ctrl/Shift-click to pick every frame of one animation at once.");
+                if (ImGui::MenuItem("Video (MP4/MOV/AVI)..."))       OpenFileDialog(FileDialogMode::ImportVideo);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                    "Frame-grab a move from video footage: scrub, pick frames\n"
+                    "(a range at every Nth frame, or by hand), crop to the actor,\n"
+                    "click the floor point, then key and palette them in the\n"
+                    "Digitized Frame(s) wizard. Needs ffmpeg installed.");
                 if (ImGui::MenuItem("Palette..."))                  OpenFileDialog(FileDialogMode::ImportPalette);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Load LBM", "Alt+L"))  OpenFileDialog(FileDialogMode::LoadLbm);
@@ -3500,6 +3517,7 @@ void DrawMainLayout(void)
     DrawAutoChopDialog();
 
     DrawBodySplitDialog();
+    DrawVideoImportDialog();
     DrawDigitizeImportDialog();
 
     DrawResizeSpriteDialog();

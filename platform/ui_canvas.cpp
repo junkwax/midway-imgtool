@@ -2231,11 +2231,22 @@ static int WorldMarkedFindBaseSourceSlot(WorldMarkedSequenceState &state,
            genuinely fresh/never-built slot (both empty) apart from one that
            was built and then deliberately emptied (default_frames remains
            the last marked-set snapshot). */
+        /* Never a slot that still HOLDS a row. used_source_slots only covers
+           documents earlier in tab order, so a live row belonging to a later
+           tab looks unused here -- and claiming it reseeds it from this doc's
+           marks, wiping the other row while this one appears as "new". */
+        if (!state.sequence_frames[slot].empty())
+            continue;
         if (WorldMarkedRowDocIndex(state, slot) < 0 || state.default_frames[slot].empty())
             return slot;
     }
+    /* Last resort: a row whose document is no longer open. Its frames index a
+       list that is gone, so nothing can draw it. A row bound to an open
+       document -- even one drained to zero frames -- is never taken. */
     for (int slot = 0; slot < kWorldMarkedSourceTabs; slot++) {
-        if (!used_source_slots[slot] && !WorldMarkedSlotReservedForSplit(state, slot))
+        if (used_source_slots[slot] || WorldMarkedSlotReservedForSplit(state, slot))
+            continue;
+        if (WorldMarkedRowDocIndex(state, slot) < 0)
             return slot;
     }
     return -1;
@@ -9179,6 +9190,33 @@ void StepWorldMarkedSequence(WorldMarkedSequenceState &state, int delta)
     }
 
     state.active_slot = slot;
+
+    /* A one-frame row has nowhere to step to -- stepping it only snapped the
+       scene back to that frame's tick. Step the longest visible row instead,
+       from wherever it is now, so the arrows still walk the scene while the
+       single-frame row (and the editor's selection) stays put. */
+    if (state.sequence_frames[slot].size() == 1) {
+        int longest = -1;
+        size_t longest_n = 1;
+        for (int s = 0; s < kWorldMarkedMaxTabs; s++) {
+            if (!usable_slot(s) || !state.lane_visible[s]) continue;
+            if (WorldMarkedRowDocIndex(state, s) < 0) continue;
+            if (state.sequence_frames[s].size() > longest_n) {
+                longest_n = state.sequence_frames[s].size();
+                longest = s;
+            }
+        }
+        if (longest >= 0) {
+            int ln = (int)longest_n;
+            int cur = WorldMarkedFrameForTick(state, longest, ln, state.frame,
+                                              state.hold_end[longest]);
+            int nxt = (cur + delta) % ln;
+            if (nxt < 0) nxt += ln;
+            state.frame = WorldMarkedTickForFrame(state, longest, ln, nxt);
+            return;
+        }
+    }
+
     int n = (int)state.sequence_frames[slot].size();
     int current = WorldMarkedFrameForTick(state, slot, n, state.frame,
                                            state.hold_end[slot]);
@@ -11879,9 +11917,22 @@ static void rebuild_world_onion_texture(IMG *img, int image_idx)
    them — so testing that flag alone suppresses every canvas gesture instead of
    only the ones a modal should swallow. Interaction is blocked when something
    else is on top of the canvas, which is what !IsWindowHovered() catches. */
+/* Blocked while any modal (or the file browser) is up, and -- latched -- for
+   the rest of any left-button hold that began while blocked. Without the
+   latch, the double-click that opens a file closes the dialog with the button
+   still down, and the next frame the canvas saw a held button over the sprite
+   and painted a pixel. Idempotent within a frame, so every canvas mode can
+   call it. */
 static bool CanvasInputBlocked(const ImGuiIO &io)
 {
-    return io.WantCaptureMouse && !ImGui::IsWindowHovered();
+    static bool s_hold_blocked = false;
+    bool blocked = ImGui::GetTopMostPopupModal() != NULL || g_show_file_dialog ||
+                   (io.WantCaptureMouse && !ImGui::IsWindowHovered());
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        s_hold_blocked = false;
+    else if (blocked)
+        s_hold_blocked = true;
+    return blocked || s_hold_blocked;
 }
 
 bool DrawWorldViewSingleSprite(ImVec2 avail, ImVec2 img_pos, ImGuiIO &io,

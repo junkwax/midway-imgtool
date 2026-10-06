@@ -54,6 +54,7 @@
 #include "mk2_hitbox.h"
 #include "mk2_fatality.h"
 #include "digitize_import.h"
+#include "ui_video_import.h"
 #include "ui_modals.h"
 
 // Externs for globals accessed in this file
@@ -185,6 +186,7 @@ static const char *dialog_category_for_mode(FileDialogMode m)
         case FileDialogMode::ExportWorldPngSeq: return "png";
         case FileDialogMode::ImportGif:
         case FileDialogMode::ExportGif:       return "gif";
+        case FileDialogMode::ImportVideo:     return "video";
         case FileDialogMode::ExportPalette:
         case FileDialogMode::ImportPalette:   return "palette";
         case FileDialogMode::LoadTga:
@@ -1002,6 +1004,7 @@ static const char* GetDialogExtension(FileDialogMode mode)
         case FileDialogMode::ExportWorldPngSeq: return "PNG";
         case FileDialogMode::ImportSpriteSheetMatch: return "";
         case FileDialogMode::ImportDigitized: return "PNG";
+        case FileDialogMode::ImportVideo: return "MP4";
         case FileDialogMode::ImportGif:
         case FileDialogMode::ExportGif: return "GIF";
         case FileDialogMode::ExportPalette: return g_palette_export_act ? "ACT" : "PAL";
@@ -1026,6 +1029,7 @@ static const char* GetDialogListExtensions(FileDialogMode mode)
 {
     if (mode == FileDialogMode::LoadWorldProject ||
         mode == FileDialogMode::AppendWorldProject) return "WAX;WVP";
+    if (mode == FileDialogMode::ImportVideo) return kVideoImportExtensions;
     return GetDialogExtension(mode);
 }
 
@@ -1289,6 +1293,7 @@ void RequestOpenLodDialog(void)
      .lbm → LoadLbm import into the active document
      .png → ImportPng
      .gif → ImportGif
+     .mp4/.mov/... → the video frame grabber
    Unknown extensions toast and return. */
 extern "C" void imgui_overlay_open_path(const char *path)
 {
@@ -1350,6 +1355,9 @@ extern "C" void imgui_overlay_open_path(const char *path)
                   g_gif_import_all, g_gif_trim_transparent, g_gif_trim_tolerance);
         mark_dirty();
         g_img_tex_idx = -2;
+    } else if (VideoImportIsVideoExt(ext)) {
+        ensure_new_doc_if_empty();
+        OpenVideoImportDialog(p);
     } else {
         snprintf(g_restore_msg, sizeof(g_restore_msg),
                  "Unsupported file type: .%s", ext.empty() ? "(none)" : ext.c_str());
@@ -1375,6 +1383,7 @@ void DrawFileDialog() {
     else if (g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch) title = "Import Sprite Sheet (Match Palette)";
     else if (g_file_dialog_mode == FileDialogMode::ImportGif) title = "Import GIF File";
     else if (g_file_dialog_mode == FileDialogMode::ImportDigitized) title = "Import Digitized Frame(s)";
+    else if (g_file_dialog_mode == FileDialogMode::ImportVideo) title = "Import Video File";
     else if (g_file_dialog_mode == FileDialogMode::ExportPng) title = "Export PNG File";
     else if (g_file_dialog_mode == FileDialogMode::ExportGif) title = "Export Animated GIF";
     else if (g_file_dialog_mode == FileDialogMode::ExportPalette) title = "Export Palette";
@@ -1685,6 +1694,7 @@ void DrawFileDialog() {
                                 g_file_dialog_mode == FileDialogMode::ImportSpriteSheetMatch ||
                                 g_file_dialog_mode == FileDialogMode::ImportGif ||
                                 g_file_dialog_mode == FileDialogMode::ImportDigitized ||
+                                g_file_dialog_mode == FileDialogMode::ImportVideo ||
                                 g_file_dialog_mode == FileDialogMode::ExportPng) ? "OK" :
                                (g_file_dialog_mode == FileDialogMode::OpenImg ||
                                 g_file_dialog_mode == FileDialogMode::AppendImg ||
@@ -1821,6 +1831,8 @@ void DrawFileDialog() {
                 for (const std::string &file : selected_files)
                     paths.push_back(PathCombine(g_file_dialog_dir, file));
                 OpenDigitizeImportDialog(paths);
+            } else if (g_file_dialog_mode == FileDialogMode::ImportVideo) {
+                OpenVideoImportDialog(full_path);
             } else if (g_file_dialog_mode == FileDialogMode::ImportGif) {
                 unsigned int before_count = g_doc->imgcnt;
                 for (const std::string &file : selected_files) {
