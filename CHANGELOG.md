@@ -8,7 +8,50 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
-## [Unreleased]
+## [v3.37.0] — Grab moves from video; dialogs can't paint the sprite behind them
+
+### Import Video: grab a move straight from footage
+
+**File → Import → Video (MP4/MOV/AVI)...** opens a frame grabber in front of
+the digitize wizard. Scrub the footage, mark the frames that make up a move
+(a range at every Nth frame, or picked one at a time), crop to the actor and
+click the floor point. The grabbed frames go straight into **Import Digitized
+Frame(s)**, which keys, segments, fits the shared palette and builds the
+sprites. Interlaced tape or DV transfers can be deinterlaced on the way in.
+
+Decoding runs through ffmpeg as a separate program, on a background thread, so
+any format ffmpeg reads works. ffmpeg must be installed: put it on PATH or
+point `IMGTOOL_FFMPEG` at it. Without it the importer says so and does nothing.
+
+### Dialogs no longer let a click or key reach the sprite behind them
+
+Double-clicking a file in the file browser closed the dialog with the mouse
+button still down, and on the next frame the canvas treated that held button
+as a pencil stroke on the newly opened sprite. The canvas now ignores input
+while any modal dialog or the file browser is open, and for the rest of any
+mouse press that started while one was open. Single-key shortcuts (tool
+switches, Delete, Space, M and the rest) also do nothing while a modal is up.
+
+### Opening a file selects the Marquee, not the Pencil
+
+With no tool selected, a click on the canvas painted like the Pencil, and that
+was the state after startup, after opening a file and after switching tabs. A
+stray first click erased or recolored a pixel. Marquee is now the tool in all
+three cases, so the first click makes a selection.
+
+### Browse tab: a thumbnail grid of every sprite in the IMG
+
+A new **Browse** canvas tab shows the current IMG as a scrollable grid of
+thumbnails, loaded as they scroll into view so large libraries stay fast.
+Filter by name or show only marked sprites. Click to select, mark from the
+grid, and double-click to open the sprite in the Image tab.
+
+### World View: a one-frame row no longer stalls the arrow keys
+
+With a single-frame row active, Left/Right only snapped the scene back to that
+frame. They now step the longest visible row, so the arrows still walk the
+scene while the one-frame row stays put. Building a marked row also no longer
+takes over a slot that still holds another tab's row.
 
 ### A .WAX carries only the IMGs its scene draws from
 
