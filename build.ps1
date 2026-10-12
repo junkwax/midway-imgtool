@@ -147,9 +147,13 @@ $exitCode = $LASTEXITCODE
 if ($exitCode -eq 0) {
     $exe = "$buildDir\Release\imgtool.exe"
     $cli = "$buildDir\Release\imgtool-cli.exe"
+    $studio = "$buildDir\Release\imgtool-studio.exe"
     Write-Host ""
     Write-Host "*** Build succeeded ***" -ForegroundColor Green
     Write-Host "EXE: $exe" -ForegroundColor Green
+    if (Test-Path $studio) {
+        Write-Host "STUDIO: $studio" -ForegroundColor Green
+    }
     if (Test-Path $cli) {
         Write-Host "CLI: $cli" -ForegroundColor Green
     }

@@ -8,6 +8,83 @@ Sprite and palette editor for the IMG container files used by 1990s Midway arcad
 
 ---
 
+## Studio preview (separate application)
+
+`imgtool-studio.exe` is a new artwork and animation-alignment editor. Classic
+`imgtool.exe` keeps its existing interface and workflows; `imgtool-cli.exe`
+remains the automation entry point. All three are built together.
+
+Studio has a red-accented workspace with a searchable thumbnail library,
+resizable canvas and inspector, new/rename/duplicate/delete/reorder commands,
+sprite resize/canvas-size/trim/rotate/flip, PNG import/export,
+pencil/erase/fill/selection tools, palette-aware
+copy/paste with a placement preview, shared palette editing, and animation
+anchor controls with engine-aware flip previews. The Animation & alignment
+workspace adds a fixed playfield, floor guide, onion skin, multipart
+reconstruction, timeline playback/scrubbing, and references from open libraries.
+Each open library owns its
+undo history, including geometry, sprite/palette metadata, and selection.
+Stable sprite identities keep preview references attached when the list changes.
+Reordering updates embedded sequence image indices; deletion refuses to remove
+a referenced sprite. Saves validate a temporary file before replacing the destination;
+failed saves leave the document dirty, and external file changes are detected.
+
+This is an **artwork editing preview**, not feature parity with classic. It
+currently accepts validated IMG layouts from version `0x634` through `0x654`.
+Older layouts, GIF/video/sprite-sheet and legacy-format imports, authored animation
+sequences, WAX scenes, and game-source editing remain in classic. Studio preserves the loaded
+library's sequences and other metadata but does not yet expose those editors.
+
+Build and launch on Windows:
+
+```powershell
+.\build.ps1
+& "$env:LOCALAPPDATA\imgtool-build\build\Release\imgtool-studio.exe"
+```
+
+For an isolated workspace build, use `-BuildRoot .\build-studio`; the executable
+is then `build-studio\build\Release\imgtool-studio.exe`. Keep `SDL2.dll` beside
+the executable. On other platforms, build the CMake target `imgtool-studio`.
+
+Open an IMG or choose **Explore sample**. Mouse wheel zooms, middle-drag pans,
+and **Ctrl+0** fits the sprite. **P/E/G/I/R/H** select Pencil/Erase/Fill/Pick/
+Selection/Pan; arrows browse sprites. **Ctrl+C/V** copies/pastes pixels,
+**Ctrl+Z/Y** undoes/redoes, and **Ctrl+S** saves. Flip preview is read-only;
+turn it off to edit. Palette edits explicitly show how many sprites share the
+palette. Studio stores its own layout and recent files separately from classic.
+
+Use **File > New IMG library** (**Ctrl+N**) to start with a blank sprite, or use
+**Sprite > New sprite** to add one. **F2** renames, **Ctrl+J** duplicates, and the
+Sprite menu or a library row's context menu exposes ordering and geometry actions.
+The inspector's **Resize** button adjusts artwork; **Canvas size** moves/crops
+content without resampling it. Resize and transform dialogs explicitly control
+anchor/point adjustments. Geometry changes still need a LOAD2 compatibility check.
+
+**File > Import PNG sprite** can generate a new palette using classic's RGB555
+median-cut quantizer, or match the original PNG colors directly to an existing
+palette. Alpha below 128 becomes transparent; opaque black remains an opaque
+palette entry. PNG export writes the selected sprite with transparency. The
+inspector can assign a palette by matching colors or keeping pixel indices,
+and **Make palette private** copies/assigns it in one undo step so color edits
+affect only that sprite. Full palette management and advanced color tools are pending.
+
+Choose **Animation & alignment** (or press **Tab**) for the World View. Its
+sequence groups come from sprite names, with numeric frame ordering and recognized
+subframes drawn together. They do not interpret embedded IMG or ASM scripts.
+Use the thumbnail strip or scrub slider to seek; **Space** plays/pauses and arrows
+step frames. Frame holds are measured in preview ticks, defaulting to four ticks
+at MK2's 54.7068 Hz. A 60 Hz preview is also available.
+
+**Feet to floor** places the current frame once; the anchor target then stays
+fixed while you browse. Drag an opaque piece to adjust its primary IMG anchor.
+**Drag the whole frame** adjusts all displayed pieces in one undo step. In the
+Artwork workspace, Select can drag the yellow anchor handle. **Escape** cancels
+an unfinished drag. Facing, onion skin, timing, playfield and reference placement
+are session-only preview settings; only actual artwork/anchor edits save to IMG.
+WAX persistence and sequence authoring will be migrated separately.
+
+The design rationale is in [the redesign assessment](UI_REDESIGN_AUDIT.md).
+
 ## What it does
 
 Imgtool is a sprite-sheet editor for Midway's IMG format. Open a file, browse hundreds of frames, edit pixels and palettes, then save back out — bit-identical to what the original 1992 tool produced.

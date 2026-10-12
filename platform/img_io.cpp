@@ -25,6 +25,7 @@
 #include <regex>
 #include <stdarg.h>
 #include <sys/stat.h>
+#include <cerrno>
 #ifdef _WIN32
 #include <direct.h>
 #endif
@@ -116,12 +117,30 @@ static void build_full_path(char *dst, int dstsz)
         _snprintf(dst, dstsz, "%s%s", g_doc->fpath_s, g_doc->fname_s);
 }
 
+static FILE *open_img_utf8(const char *path, const char *mode)
+{
+#ifdef _WIN32
+    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    std::vector<wchar_t> wide((size_t)n);
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide.data(), n);
+    return _wfopen(wide.data(), mode[0] == 'r' ? L"rb" : L"wb");
+#else
+    return fopen(path, mode);
+#endif
+}
+
 void LoadImgFile(void)
 {
     char full[sizeof(g_doc->fpath_s) + sizeof(g_doc->fname_s) + 2];
     build_full_path(full, sizeof(full));
+    LoadImgFileFromPath(full);
+}
+
+void LoadImgFileFromPath(const char *full, bool preserve_small_widths)
+{
     verbose_log("LoadImgFile: %s", full);
-    FILE *f = fopen(full, "rb");
+    FILE *f = preserve_small_widths ? open_img_utf8(full, "rb") : fopen(full, "rb");
     if (!f) { verbose_log("  -> fopen failed"); return; }
 
     LIB_HDR hdr;
@@ -244,7 +263,7 @@ void LoadImgFile(void)
         img->flags  = idisk.flags;
         img->anix   = idisk.anix;
         img->aniy   = idisk.aniy;
-        img->w      = (idisk.w < 3) ? 3 : idisk.w;
+        img->w      = (!preserve_small_widths && idisk.w < 3) ? 3 : idisk.w;
         img->h      = idisk.h;
         img->palnum = (unsigned short)((int)idisk.palnum - NUMDEFPAL + pal_base);
         img->anix2  = idisk.anix2;
@@ -495,8 +514,16 @@ void SaveImgFile(void)
 
     char full[sizeof(g_doc->fpath_s) + sizeof(g_doc->fname_s) + 2];
     build_full_path(full, sizeof(full));
-    FILE *f = fopen(full, "wb");
-    if (!f) return;
+    SaveImgFileToPath(full, NULL, false);
+}
+
+bool SaveImgFileToPath(const char *full, std::string *error, bool utf8_path)
+{
+    FILE *f = utf8_path ? open_img_utf8(full, "wb") : fopen(full, "wb");
+    if (!f) {
+        if (error) *error = strerror(errno);
+        return false;
+    }
 
     /* Bake any non-destructive overlay layers into the image pixels for the
        write; restored at the end so the layers remain editable in-session. */
@@ -714,14 +741,18 @@ void SaveImgFile(void)
     }
 
     /* ---- 11. Rewrite finalized LIB_HDR ---- */
-    rewind(f);
+    bool ok = ferror(f) == 0;
+    if (fseek(f, 0, SEEK_SET) != 0) ok = false;
     fwrite(&hdr, 1, sizeof(hdr), f);
 
-    fclose(f);
+    if (ferror(f) != 0) ok = false;
+    if (fclose(f) != 0) ok = false;
     g_doc->fileversion = hdr.version;
 
     /* Restore base pixels — the overlay layers live on past the save. */
     RestoreLayersAfterSave();
+    if (!ok && error) *error = "Could not finish writing the IMG file.";
+    return ok;
 }
 
 /* ---- Restore Marked Images from Source ---- */
@@ -3959,12 +3990,28 @@ static void blend_rgba_pixel(unsigned char *dst, const unsigned char *src,
 
 } /* namespace */
 
+static void import_png_rgba(const char *path, unsigned char *data, int w, int h);
+bool ImportPngFromMemory(const unsigned char *bytes, int length, const char *name)
+{
+    int w=0,h=0,channels=0;
+    if(!bytes || length<=0 || !stbi_info_from_memory(bytes,length,&w,&h,&channels) ||
+       w<=0 || h<=0 || w>8192 || h>8192 || (size_t)w*h>4*1024*1024)return false;
+    unsigned char *rgba=stbi_load_from_memory(bytes,length,&w,&h,&channels,4);
+    if(!rgba)return false;
+    unsigned old_images=g_doc->imgcnt,old_palettes=g_doc->palcnt;
+    import_png_rgba(name,rgba,w,h);
+    return g_doc->imgcnt==old_images+1 && g_doc->palcnt==old_palettes+1;
+}
 void ImportPng(const char *path)
 {
     verbose_log("ImportPng: %s", path);
     int w, h, channels;
     unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
     if (!data || w == 0 || h == 0) return;
+    import_png_rgba(path,data,w,h);
+}
+static void import_png_rgba(const char *path, unsigned char *data, int w, int h)
+{
 
     /* Step 1: histogram all opaque pixels by their 15-bit color.
        2^15 = 32768 possible colors total, so a flat lookup table is fine. */

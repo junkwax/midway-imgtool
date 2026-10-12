@@ -244,8 +244,57 @@ elseif(NOT WIN32)
     endif()
 endif()
 
+# ---- Studio: independent editor, shared format and math code -----------------
+add_library(imgtool_studio_document STATIC
+    platform/studio/studio_document.cpp
+    platform/studio/studio_animation.cpp
+    platform/studio/studio_editing.cpp
+    platform/document.cpp platform/img_io.cpp platform/globals.c
+    platform/anipoint.cpp platform/anipoint_mirror.cpp platform/img_util.cpp
+    platform/load2_verify.cpp platform/palette_math.cpp platform/tbl_diff.cpp
+    platform/gif_trim.cpp platform/canvas_ops.cpp platform/sprite_resize_ops.cpp)
+target_include_directories(imgtool_studio_document PUBLIC platform platform/studio)
+target_compile_features(imgtool_studio_document PUBLIC cxx_std_17)
+target_link_libraries(imgtool_studio_document PUBLIC SDL2::SDL2)
+if(MSVC)
+    target_compile_definitions(imgtool_studio_document PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+add_executable(imgtool-studio
+    platform/studio/studio_main.cpp platform/studio/studio_theme.cpp
+    imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp
+    imgui/backends/imgui_impl_sdl2.cpp imgui/backends/imgui_impl_sdlrenderer2.cpp
+    ${PLATFORM_RC})
+target_include_directories(imgtool-studio PRIVATE imgui imgui/backends)
+target_link_libraries(imgtool-studio PRIVATE imgtool_studio_document SDL2::SDL2main)
+target_compile_definitions(imgtool-studio PRIVATE IMGTOOL_VERSION="${IMGTOOL_VERSION}")
+if(WIN32)
+    set_target_properties(imgtool-studio PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(imgtool-studio PRIVATE comdlg32)
+    add_custom_command(TARGET imgtool-studio POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:SDL2::SDL2>" "$<TARGET_FILE_DIR:imgtool-studio>"
+        VERBATIM)
+endif()
+if(MSVC)
+    target_compile_options(imgtool-studio PRIVATE /W3)
+    target_compile_definitions(imgtool-studio PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ---- Tests -----------------------------------------------------------------
 enable_testing()
+add_executable(studio_document_test test/studio_document_test.cpp)
+target_link_libraries(studio_document_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_document_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_document COMMAND studio_document_test)
+add_executable(studio_animation_test test/studio_animation_test.cpp)
+target_link_libraries(studio_animation_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_animation_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_animation COMMAND studio_animation_test)
+add_executable(studio_editing_test test/studio_editing_test.cpp)
+target_link_libraries(studio_editing_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_editing_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_editing COMMAND studio_editing_test)
 add_executable(sprite_sheet_import_test
     test/sprite_sheet_import_test.cpp
     platform/img_io.cpp

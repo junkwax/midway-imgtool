@@ -41,6 +41,7 @@ Thumbs.db
 !README.md
 !CHANGELOG.md
 !CONTRIBUTING.md
+!UI_REDESIGN_AUDIT.md
 # Prose fragments the wiki generator pastes around its generated tables.
 # Without this they are swept up by *.md and CI publishes a page with the
 # editorial sections missing.

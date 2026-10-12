@@ -44,6 +44,11 @@ void verbose_log(const char *fmt, ...);
 
 void LoadImgFile(void);
 void SaveImgFile(void);
+/* Compatibility boundary for owned-document clients. These use g_doc only
+ * for the duration of the call; callers must serialize access and restore it.
+ * The writer reports stream errors; atomic replacement is the caller's job. */
+void LoadImgFileFromPath(const char *path, bool preserve_small_widths = false);
+bool SaveImgFileToPath(const char *path, std::string *error, bool utf8_path = true);
 /* Flatten per-sprite overlay layers onto their images just for the file write,
    then restore the pre-flatten pixels so layers stay editable. Implemented in
    imgui_overlay.cpp; called by SaveImgFile around the pixel write. */
@@ -65,6 +70,9 @@ void SaveLbm(const char *filepath);
 void LoadTga(const char *filepath);
 void LoadLbm(const char *filepath);
 void ImportPng(const char *path);
+/* Imports a bounded PNG byte buffer into the current compatibility document.
+ * Uses the same RGB555 median-cut algorithm as the classic file importer. */
+bool ImportPngFromMemory(const unsigned char *bytes, int length, const char *name);
 /* Index a PNG against an existing palette instead of building a new one.
    `palnum` selects the palette; pass -1 to resolve it from the current
    selection. Resolve it once and pass it explicitly when importing several

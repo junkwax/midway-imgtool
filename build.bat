@@ -129,7 +129,8 @@ echo.
 echo *** Build succeeded! ***
 echo EXE : %BUILDDIR%\Release\imgtool.exe
 echo CLI : %BUILDDIR%\Release\imgtool-cli.exe
-echo Copy that folder somewhere and run imgtool.exe or imgtool-cli.exe
+echo STUDIO : %BUILDDIR%\Release\imgtool-studio.exe
+echo Copy that folder somewhere and run imgtool.exe, imgtool-studio.exe or imgtool-cli.exe
 goto :eof
 
 :fail
