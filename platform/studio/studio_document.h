@@ -7,10 +7,27 @@
 #include <cstdint>
 
 namespace studio {
+struct EmbeddedEntryValues;
+struct PaletteMergePlan;
+struct PaletteCompactionPlan;
+struct ImportBatch;
+struct PixelSelection;
+struct RegionPlan;
+struct SelectionTransform;
+struct PaintBrush;
+struct PaintLineReview;
+struct CloneStroke;
+struct FilterStroke;
+struct RepairStroke;
+struct BatchGeometryPlan;
+struct RestorePlan;
+struct VariantSource;
+struct VariantPlan;
 struct Clipboard {
     int w = 0, h = 0;
     std::vector<unsigned char> pixels;
     std::vector<unsigned short> colors;
+    std::vector<unsigned char> mask; // Optional coverage; distinct from transparent index zero.
 };
 
 enum class Transform { FlipHorizontal, FlipVertical, RotateClockwise, RotateCounterclockwise, Rotate180 };
@@ -26,6 +43,7 @@ public:
     static std::unique_ptr<Artwork> demo();
     static std::unique_ptr<Artwork> create();
     bool save(const std::string &path, std::string &error);
+    bool disk_matches() const;
     IMG *sprite(int index) const;
     PAL *palette(int index) const;
     int count() const { return (int)data.imgcnt; }
@@ -46,13 +64,28 @@ public:
     bool can_undo() const { return !past.empty(); }
     bool can_redo() const { return !future.empty(); }
     const char *undo_label() const;
-    void paint(int index, int x, int y, unsigned char color, int radius = 1);
-    void fill(int index, int x, int y, unsigned char color);
+    void paint(int index, int x, int y, unsigned char color, int radius = 1,const PixelSelection *selection=nullptr);
+    void fill(int index, int x, int y, unsigned char color,const PixelSelection *selection=nullptr);
     void anchor(int index, int x, int y);
     void color(int palette_index, int slot, unsigned short value);
     Clipboard copy(int index, int x, int y, int w, int h) const;
     void paste(int index, const Clipboard &clip, int x, int y);
     void clear(int index, int x, int y, int w, int h);
+    Clipboard copy_selection(int index,const PixelSelection &selection)const;
+    bool clear_selection(int index,const PixelSelection &selection,std::string &error);
+    bool move_selection(int index,const PixelSelection &selection,int dx,int dy,std::string &error);
+    int extract_regions(const RegionPlan &plan,std::string &error);
+    bool apply_selection_transform(const SelectionTransform &transform,std::string &error);
+    int paint_stroke(int index,int x0,int y0,int x1,int y1,const PaintBrush &brush,const PixelSelection *selection,std::string &error);
+    int fill_matching(int index,int x,int y,int color,bool match_colors,int tolerance,bool contiguous,const PixelSelection *selection,std::string &error);
+    int filter_stroke(FilterStroke &stroke,int x,int y,std::string &error);
+    int repair_stroke(RepairStroke &stroke,int x,int y,bool all_edges,std::string &error);
+    int apply_batch_geometry(const BatchGeometryPlan &plan,std::string &error);
+    int apply_restore(const RestorePlan &plan,std::string &error);
+    int smart_erase(int index,int x,int y,bool match_colors,int tolerance,bool contiguous,bool cleanup,const PixelSelection &selection,std::string &error);
+    int clone_stroke(CloneStroke &stroke,int x0,int y0,int x1,int y1,std::string &error);
+    bool apply_variant(const VariantSource &source,const std::vector<unsigned char> &coverage,const VariantPlan &reviewed,std::string &error);
+    bool apply_paint_line(const PaintLineReview &line,std::string &error);
     bool rename_sprite(int index, const std::string &name, std::string &error);
     int add_sprite(const std::string &name, int w, int h, int palette_index, std::string &error);
     int duplicate_sprite(int index, std::string &error);
@@ -63,9 +96,23 @@ public:
     bool trim_sprite(int index, std::string &error);
     bool transform_sprite(int index, Transform transform, bool transform_anchors, std::string &error);
     bool assign_palette(int index, int palette_index, bool match_colors, std::string &error);
-    int duplicate_palette(int index, std::string &error, int assign_sprite = -1);
+    int duplicate_palette(int index, std::string &error, int assign_sprite = -1,const std::string &name = {});
+    bool rename_palette(int index,const std::string &name,std::string &error);
+    int add_palette(const std::string &name,const std::vector<unsigned short> &words,std::string &error);
+    bool delete_unused_palette(int index,std::string &error);
+    bool replace_palette_colors(int index,const std::vector<unsigned short> &expected,const std::vector<unsigned short> &words,std::string &error);
+    bool merge_palette(const PaletteMergePlan &plan,bool allow_approximation,std::string &error);
+    bool compact_palette(const PaletteCompactionPlan &plan,std::string &error);
+    int import_batch(const ImportBatch &batch,std::string &error);
     int import_png(const std::string &path, int match_palette, std::string &error);
     bool export_png(int index, const std::string &path, std::string &error) const;
+    bool embedded_edit_entry(int record,int entry,const EmbeddedEntryValues &values,std::string &error);
+    bool embedded_append(int record,int target,std::string &error);
+    bool embedded_duplicate(int record,int entry,std::string &error);
+    bool embedded_delete(int record,int entry,std::string &error);
+    bool embedded_move(int record,int entry,int destination,std::string &error);
+    int embedded_add_record(bool script,const std::string &name,std::string &error);
+    bool embedded_rename(int record,const std::string &name,std::string &error);
     L2Report check(int ppp);
     Document data{}; // Owned codec data; UI reads through sprite()/palette().
 private:
@@ -79,6 +126,7 @@ private:
         std::vector<Sprite> sprites;
         std::vector<Palette> palettes;
         std::vector<unsigned char> sequences;
+        unsigned seqcnt=0,scrcnt=0;
         uint64_t revision = 0;
         uint64_t selection = 0;
         std::string label;
@@ -90,6 +138,7 @@ private:
     void assign_initial_ids();
     bool remap_sequence_indices(const std::vector<int> &mapping, std::vector<unsigned char> &blob, std::string &error) const;
     std::string unique_sprite_name(const std::string &stem) const;
+    bool install_embedded(const std::vector<unsigned char> &blob,unsigned sequences,unsigned scripts,const std::string &label,std::string &error);
     std::unique_ptr<State> pending;
     std::vector<State> past, future;
     uint64_t revision = 0, saved_revision = 0, next_revision = 1, serial = 1, structure_serial = 1, next_sprite_id = 1;

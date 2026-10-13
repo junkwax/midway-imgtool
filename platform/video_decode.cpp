@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <limits>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -23,6 +24,7 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <poll.h>
 #endif
 
 /* ---- Pure helpers ------------------------------------------------------- */
@@ -47,7 +49,7 @@ bool VideoParseProbeOutput(const std::string &text, VideoInfo *out)
     if (!out) return false;
     VideoInfo info;
     double avg_rate = 0.0, r_rate = 0.0;
-    long nb_frames = 0;
+    long long nb_frames = 0;
     bool have_duration = false;
 
     size_t pos = 0;
@@ -67,7 +69,7 @@ bool VideoParseProbeOutput(const std::string &text, VideoInfo *out)
         else if (key == "height")         info.height = std::atoi(val.c_str());
         else if (key == "avg_frame_rate") avg_rate = VideoParseRate(val.c_str());
         else if (key == "r_frame_rate")   r_rate = VideoParseRate(val.c_str());
-        else if (key == "nb_frames")      nb_frames = std::atol(val.c_str());
+        else if (key == "nb_frames") {nb_frames = std::strtoll(val.c_str(),nullptr,10);if(nb_frames>std::numeric_limits<int>::max())return false;}
         else if (key == "codec_name")     info.codec = val;
         else if (key == "rotation" || key == "TAG:rotate") info.rotation = std::atoi(val.c_str());
         else if (key == "duration" && !have_duration) {
@@ -78,13 +80,15 @@ bool VideoParseProbeOutput(const std::string &text, VideoInfo *out)
     }
 
     info.fps = avg_rate > 0.0 ? avg_rate : r_rate;
+    info.variable_rate_hint=avg_rate>0&&r_rate>0&&std::abs(avg_rate-r_rate)/std::max(avg_rate,r_rate)>.002;
+    info.estimated_count=nb_frames<=0;
     if (info.width <= 0 || info.height <= 0 || info.fps <= 0.0) return false;
 
     int rot = ((info.rotation % 360) + 360) % 360;
     if (rot == 90 || rot == 270) std::swap(info.width, info.height);
 
-    if (nb_frames > 0)            info.frame_count = (int)nb_frames;
-    else if (info.duration > 0.0) info.frame_count = (int)std::lround(info.duration * info.fps);
+    if (nb_frames > 0) {if(nb_frames>std::numeric_limits<int>::max())return false;info.frame_count = (int)nb_frames;}
+    else if (info.duration > 0.0) {double count=info.duration*info.fps;if(!std::isfinite(count)||count>std::numeric_limits<int>::max())return false;info.frame_count = (int)std::lround(count);}
     if (info.duration <= 0.0 && info.frame_count > 0) info.duration = info.frame_count / info.fps;
 
     *out = info;
@@ -145,11 +149,12 @@ std::string VideoBuildFilter(const VideoDecodeOptions &opt, int frame_w, int fra
         int ch = std::min(c.h, frame_h - y);
         if (cw > 0 && ch > 0 && (cw != frame_w || ch != frame_h)) {
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "crop=%d:%d:%d:%d", cw, ch, x, y);
+            std::snprintf(buf, sizeof(buf), "crop=%d:%d:%d:%d%s", cw, ch, x, y,opt.exact_crop?":exact=1":"");
             if (!chain.empty()) chain += ',';
             chain += buf;
         }
     }
+    if(opt.output_w>0&&opt.output_h>0){if(!chain.empty())chain+=',';chain+="scale="+std::to_string(opt.output_w)+":"+std::to_string(opt.output_h)+":flags=bilinear";}
     return chain;
 }
 
@@ -216,7 +221,10 @@ bool FileExists(const std::string &p)
 
 #ifdef _WIN32
 
-bool ChildStart(const std::vector<std::string> &argv, Child *c, std::string *err)
+std::wstring WideUtf8(const std::string &s){int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),(int)s.size(),nullptr,0);if(n<=0)return {};std::wstring out(n,0);MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),(int)s.size(),&out[0],n);return out;}
+std::string Utf8Wide(const std::wstring &s){int n=WideCharToMultiByte(CP_UTF8,0,s.data(),(int)s.size(),nullptr,0,nullptr,nullptr);if(n<=0)return {};std::string out(n,0);WideCharToMultiByte(CP_UTF8,0,s.data(),(int)s.size(),&out[0],n,nullptr,nullptr);return out;}
+
+bool ChildStart(const std::vector<std::string> &argv, Child *c, std::string *err,bool utf8=false)
 {
     std::lock_guard<std::mutex> lock(g_spawn_mutex);
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
@@ -253,8 +261,9 @@ bool ChildStart(const std::vector<std::string> &argv, Child *c, std::string *err
     std::memset(&pi, 0, sizeof(pi));
     /* CREATE_NO_WINDOW: imgtool is a GUI-subsystem app, and without it every
        grab would flash a console window. */
-    BOOL ok = CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, CREATE_NO_WINDOW,
-                             NULL, NULL, &si, &pi);
+    BOOL ok=FALSE;
+    if(utf8){auto wide=WideUtf8(cmd);STARTUPINFOW wi{};wi.cb=sizeof wi;wi.dwFlags=si.dwFlags;wi.hStdInput=si.hStdInput;wi.hStdOutput=si.hStdOutput;wi.hStdError=si.hStdError;if(!wide.empty())ok=CreateProcessW(nullptr,&wide[0],nullptr,nullptr,TRUE,CREATE_NO_WINDOW,nullptr,nullptr,&wi,&pi);}
+    else ok = CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, CREATE_NO_WINDOW,NULL, NULL, &si, &pi);
     CloseHandle(out_w);
     CloseHandle(err_w);
     if (nul_in != INVALID_HANDLE_VALUE) CloseHandle(nul_in);
@@ -271,16 +280,18 @@ bool ChildStart(const std::vector<std::string> &argv, Child *c, std::string *err
 }
 
 /* Bytes read, 0 at end of stream. */
-size_t ChildRead(Child *c, void *buf, size_t n)
+size_t ChildRead(Child *c, void *buf, size_t n,const std::function<bool()> &cancelled={})
 {
+    if(cancelled){for(;;){if(cancelled())return 0;DWORD available=0;if(!PeekNamedPipe(c->out,nullptr,0,nullptr,&available,nullptr))return 0;if(available){n=std::min(n,(size_t)available);break;}if(WaitForSingleObject(c->proc,0)==WAIT_OBJECT_0)return 0;Sleep(5);}}
     DWORD got = 0;
     if (!ReadFile(c->out, buf, (DWORD)std::min(n, (size_t)1 << 30), &got, NULL)) return 0;
     return got;
 }
 
 /* Kill if asked, collect stderr, reap. Returns the exit code. */
-int ChildFinish(Child *c, bool kill, std::string *stderr_text)
+int ChildFinish(Child *c, bool kill, std::string *stderr_text,bool force=false)
 {
+    (void)force;
     if (kill) TerminateProcess(c->proc, 1);
     CloseHandle(c->out);
     char buf[1024];
@@ -298,8 +309,9 @@ int ChildFinish(Child *c, bool kill, std::string *stderr_text)
 
 #else /* POSIX */
 
-bool ChildStart(const std::vector<std::string> &argv, Child *c, std::string *err)
+bool ChildStart(const std::vector<std::string> &argv, Child *c, std::string *err,bool utf8=false)
 {
+    (void)utf8;
     std::lock_guard<std::mutex> lock(g_spawn_mutex);
     int outp[2], errp[2];
     if (pipe(outp) != 0) { if (err) *err = "Could not create a pipe for ffmpeg."; return false; }
@@ -337,18 +349,19 @@ bool ChildStart(const std::vector<std::string> &argv, Child *c, std::string *err
     return true;
 }
 
-size_t ChildRead(Child *c, void *buf, size_t n)
+size_t ChildRead(Child *c, void *buf, size_t n,const std::function<bool()> &cancelled={})
 {
     for (;;) {
+        if(cancelled){if(cancelled())return 0;pollfd fd{c->out,POLLIN,0};int ready=poll(&fd,1,50);if(ready<0&&errno==EINTR)continue;if(ready<0)return 0;if(ready==0)continue;}
         ssize_t got = read(c->out, buf, n);
         if (got < 0 && errno == EINTR) continue;
         return got > 0 ? (size_t)got : 0;
     }
 }
 
-int ChildFinish(Child *c, bool kill, std::string *stderr_text)
+int ChildFinish(Child *c, bool kill, std::string *stderr_text,bool force=false)
 {
-    if (kill) ::kill(c->pid, SIGTERM);
+    if (kill) ::kill(c->pid, force?SIGKILL:SIGTERM);
     close(c->out);
     char buf[1024];
     for (;;) {
@@ -367,10 +380,10 @@ int ChildFinish(Child *c, bool kill, std::string *stderr_text)
 
 #endif
 
-bool ReadExact(Child *c, unsigned char *dst, size_t n)
+bool ReadExact(Child *c, unsigned char *dst, size_t n,const std::function<bool()> &cancelled={})
 {
     while (n > 0) {
-        size_t got = ChildRead(c, dst, n);
+        size_t got = ChildRead(c, dst, n,cancelled);
         if (got == 0) return false;
         dst += got;
         n -= got;
@@ -391,8 +404,13 @@ std::string LastLine(const std::string &text)
 
 /* ---- Locating ffmpeg ------------------------------------------------------ */
 
-std::string VideoFindFfmpeg(void)
+std::string VideoFindFfmpeg(bool utf8_paths)
 {
+#ifdef _WIN32
+    if(utf8_paths){wchar_t value[32768]={};auto exists=[](const std::wstring &p){auto a=GetFileAttributesW(p.c_str());return a!=INVALID_FILE_ATTRIBUTES&&!(a&FILE_ATTRIBUTE_DIRECTORY);};DWORD n=GetEnvironmentVariableW(L"IMGTOOL_FFMPEG",value,32768);if(n>0&&n<32768&&exists(value))return Utf8Wide(value);n=GetModuleFileNameW(nullptr,value,32768);if(n>0&&n<32768){std::wstring dir(value,n);auto slash=dir.find_last_of(L"\\/");if(slash!=std::wstring::npos){dir.resize(slash+1);for(auto suffix:{L"ffmpeg.exe",L"ffmpeg\\bin\\ffmpeg.exe"})if(exists(dir+suffix))return Utf8Wide(dir+suffix);}}n=SearchPathW(nullptr,L"ffmpeg.exe",nullptr,32768,value,nullptr);if(n>0&&n<32768)return Utf8Wide(std::wstring(value,n));std::vector<std::wstring> guesses={L"C:\\ffmpeg\\bin\\ffmpeg.exe"};for(auto name:{L"ProgramFiles",L"LOCALAPPDATA"}){n=GetEnvironmentVariableW(name,value,32768);if(n>0&&n<32768)guesses.push_back(std::wstring(value)+(name==std::wstring(L"ProgramFiles")?L"\\ffmpeg\\bin\\ffmpeg.exe":L"\\Microsoft\\WinGet\\Links\\ffmpeg.exe"));}for(auto &p:guesses)if(exists(p))return Utf8Wide(p);return {};}
+#else
+    (void)utf8_paths;
+#endif
     const char *env = std::getenv("IMGTOOL_FFMPEG");
     if (env && *env && FileExists(env)) return env;
 
@@ -458,10 +476,11 @@ std::string VideoFfprobeFor(const std::string &ffmpeg)
 
 /* ---- Probe and decode ------------------------------------------------------ */
 
-bool VideoProbe(const std::string &ffmpeg, const char *path, VideoInfo *out, std::string *err)
+bool VideoProbe(const std::string &ffmpeg, const char *path, VideoInfo *out, std::string *err,const VideoProcessOptions &process)
 {
     if (err) err->clear();
     if (ffmpeg.empty()) { if (err) *err = "ffmpeg was not found."; return false; }
+    if(!path||!out||(process.cancelled&&process.cancelled()))return false;
 
     std::vector<std::string> argv = {
         VideoFfprobeFor(ffmpeg), "-v", "error", "-select_streams", "v:0",
@@ -471,14 +490,14 @@ bool VideoProbe(const std::string &ffmpeg, const char *path, VideoInfo *out, std
         "-of", "default=noprint_wrappers=1", path
     };
     Child c;
-    if (!ChildStart(argv, &c, err)) return false;
+    if (!ChildStart(argv, &c, err,process.utf8_paths)) return false;
     std::string text;
     char buf[4096];
     size_t got;
-    while ((got = ChildRead(&c, buf, sizeof(buf))) > 0 && text.size() < (1 << 20))
+    while (text.size() < (1 << 20)&&(got = ChildRead(&c, buf, sizeof(buf),process.cancelled)) > 0)
         text.append(buf, got);
     std::string stderr_text;
-    ChildFinish(&c, false, &stderr_text);
+    bool cancelled=process.cancelled&&process.cancelled(),excess=text.size()>=(1<<20);ChildFinish(&c, cancelled||excess, &stderr_text,cancelled||excess);if(cancelled)return false;if(excess){if(err)*err="Video metadata exceeds the probe limit.";return false;}
 
     if (!VideoParseProbeOutput(text, out)) {
         if (err) {
@@ -496,7 +515,9 @@ bool VideoDecodeFrames(const std::string &ffmpeg, const char *path, const VideoI
 {
     if (err) err->clear();
     if (ffmpeg.empty()) { if (err) *err = "ffmpeg was not found."; return false; }
-    if (info.fps <= 0.0) { if (err) *err = "Unknown frame rate."; return false; }
+    if (!std::isfinite(info.fps)||info.fps <= 0.0||info.fps>1000000) { if (err) *err = "Unknown frame rate."; return false; }
+    if(!path||!sink||(opt.process.cancelled&&opt.process.cancelled()))return false;
+    if(opt.output_w<0||opt.output_h<0||opt.output_w>8192||opt.output_h>8192||(opt.output_w==0)!=(opt.output_h==0)){if(err)*err="Invalid video preview dimensions.";return false;}
 
     std::vector<int> wanted;
     for (int f : frames)
@@ -515,6 +536,7 @@ bool VideoDecodeFrames(const std::string &ffmpeg, const char *path, const VideoI
     std::string stderr_text;
 
     for (const auto &run : runs) {
+        if(opt.process.cancelled&&opt.process.cancelled())return false;
         const int first = run.first, count = run.second - run.first + 1;
 
         std::vector<std::string> argv = { ffmpeg, "-hide_banner", "-nostdin", "-v", "error" };
@@ -527,14 +549,15 @@ bool VideoDecodeFrames(const std::string &ffmpeg, const char *path, const VideoI
         }
         argv.insert(argv.end(), { "-i", path, "-an", "-sn", "-dn",
                                   "-frames:v", std::to_string(count) });
+        if(opt.first_video_stream)argv.insert(argv.end(),{"-map","0:v:0"});
         if (!filter.empty()) argv.insert(argv.end(), { "-vf", filter });
         argv.insert(argv.end(), { "-vsync", "passthrough", "-pix_fmt", "rgba",
                                   "-c:v", "pam", "-f", "image2pipe", "-" });
 
         Child c;
-        if (!ChildStart(argv, &c, err)) return false;
+        if (!ChildStart(argv, &c, err,opt.process.utf8_paths)) return false;
 
-        bool stopped = false;
+        bool stopped = false,oversized=false;
         for (int k = 0; k < count; k++) {
             /* The header is under 100 bytes; read it a byte at a time so no
                pixel data is swallowed past ENDHDR. */
@@ -543,15 +566,17 @@ bool VideoDecodeFrames(const std::string &ffmpeg, const char *path, const VideoI
             int w = 0, h = 0, depth = 0;
             bool ok = false;
             while (hlen < sizeof(hdr)) {
-                if (!ReadExact(&c, hdr + hlen, 1)) break;
+                if (!ReadExact(&c, hdr + hlen, 1,opt.process.cancelled)) break;
                 hlen++;
                 if (hdr[hlen - 1] == '\n' &&
                     VideoParsePamHeader(hdr, hlen, &w, &h, &depth, &header_len)) { ok = true; break; }
             }
             if (!ok) break;   /* end of stream: the frame count was an estimate */
 
+            if((size_t)w>std::numeric_limits<size_t>::max()/(size_t)h/4||(opt.max_frame_pixels&&((size_t)w*h>opt.max_frame_pixels||w>8192||h>8192))){oversized=true;break;}
+
             pixels.resize((size_t)w * h * depth);
-            if (!ReadExact(&c, pixels.data(), pixels.size())) break;
+            if (!ReadExact(&c, pixels.data(), pixels.size(),opt.process.cancelled)) break;
 
             const int frame = first + k;
             if (want_i < wanted.size() && wanted[want_i] == frame) {
@@ -573,7 +598,9 @@ bool VideoDecodeFrames(const std::string &ffmpeg, const char *path, const VideoI
         }
 
         std::string run_err;
-        ChildFinish(&c, true, &run_err);
+        ChildFinish(&c, true, &run_err,oversized||(opt.process.cancelled&&opt.process.cancelled()));
+        if(oversized){if(err)*err="Decoded video frame exceeds the allocation limit.";return false;}
+        if(opt.process.cancelled&&opt.process.cancelled())return false;
         if (!run_err.empty()) stderr_text = run_err;
         if (stopped) return false;
         while (want_i < wanted.size() && wanted[want_i] <= run.second) want_i++;

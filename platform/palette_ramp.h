@@ -54,6 +54,7 @@
  *************************************************************/
 #ifndef PLATFORM_PALETTE_RAMP_H
 #define PLATFORM_PALETTE_RAMP_H
+#include <functional>
 
 /* One color's share of a material's pixel population: a packed 15-bit
    RGB555 word (the same on-disk form PAL.data_p stores, 5 bits/channel) and
@@ -105,7 +106,7 @@ int FitRampLinear(const RampSample *samples, int n, int count,
    into `out` (caller-sized to at least `count`). */
 int FitRampLloyd(const RampSample *samples, int n, int count,
                  double lo_pct, double hi_pct, int max_iters,
-                 RampColor *out);
+                 RampColor *out,const std::function<bool()> &cancelled={});
 
 /* Weighted RMS distance, in 5-bit-per-channel RGB units, from `samples` to
    their nearest color in `ramp` — how well `ramp` reconstructs the

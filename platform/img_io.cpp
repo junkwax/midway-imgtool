@@ -4463,6 +4463,35 @@ int DebugSpriteSheetImport(const char *path, const char *output_dir,
     return (int)frames.size();
 }
 
+int AnalyzeSpriteSheetRgba(const unsigned char *rgba,int w,int h,const SpriteSheetImportOptions *options,SpriteSheetDebugReport *report)
+{
+    if(!rgba||w<=0||h<=0||(size_t)w*h>4*1024*1024)return 0;
+    SpriteSheetImportOptions opt={SpriteSheetDetect_Auto,245,160,2,true,"FRAME"};if(options)opt=*options;opt.background_threshold=sheet_clamp_int(opt.background_threshold,180,255);opt.min_pixels=(std::max)(1,opt.min_pixels);opt.padding=(std::max)(0,opt.padding);
+    SheetDetectTrace trace;std::vector<SheetFrameCandidate> frames;detect_sheet_candidates(rgba,w,h,&opt,frames,&trace);fill_sheet_debug_report(report,w,h,trace,frames);return (int)frames.size();
+}
+bool ExtractSpriteSheetRgba(const unsigned char *rgba,int w,int h,const SpriteSheetDebugFrame &f,const SpriteSheetImportOptions &opt,bool clear_paper,std::vector<unsigned char> &out,int *out_w,int *out_h,int *source_x,int *source_y)
+{
+    if(!rgba||w<=0||h<=0||(size_t)w*h>4*1024*1024||f.x0<0||f.y0<0||f.x1>=w||f.y1>=h||f.x1<f.x0||f.y1<f.y0||opt.padding<0||opt.padding>256)return false;
+    int x0=(std::max)(0,f.x0-opt.padding),y0=(std::max)(0,f.y0-opt.padding),x1=(std::min)(w-1,f.x1+opt.padding),y1=(std::min)(h-1,f.y1+opt.padding),cw=x1-x0+1,ch=y1-y0+1;
+    // Sample outside a tight detection rectangle, even with zero output padding.
+    // Otherwise its sprite-colored corners can be mistaken for sheet background.
+    int bx0=(std::max)(0,x0-2),by0=(std::max)(0,y0-2),bw=(std::min)(w-1,x1+2)-bx0+1,bh=(std::min)(h-1,y1+2)-by0+1;
+    std::vector<unsigned char> bg((size_t)bw*bh,0);if(clear_paper&&!build_sheet_bg_mask(rgba,w,h,bx0,by0,bw,bh,sheet_clamp_int(opt.background_threshold,180,255),bg))return false;
+    auto background=[&](int x,int y){return bg[(size_t)(y+y0-by0)*bw+x+x0-bx0]!=0;};
+    int left=0,top=0,right=cw-1,bottom=ch-1;if(opt.crop){left=cw;top=ch;right=bottom=-1;for(int y=0;y<ch;++y)for(int x=0;x<cw;++x){auto p=rgba+((size_t)(y+y0)*w+x+x0)*4;if(p[3]>=128&&!background(x,y)){left=(std::min)(left,x);top=(std::min)(top,y);right=(std::max)(right,x);bottom=(std::max)(bottom,y);}}if(right<left||bottom<top)return false;}
+    int width=right-left+1,height=bottom-top+1;std::vector<unsigned char> result((size_t)width*height*4);for(int y=0;y<height;++y)for(int x=0;x<width;++x){int sx=left+x,sy=top+y;auto source=rgba+((size_t)(y0+sy)*w+x0+sx)*4;auto dest=result.data()+((size_t)y*width+x)*4;memcpy(dest,source,4);if(source[3]<128||background(sx,sy))dest[3]=0;}
+    out=std::move(result);if(out_w)*out_w=width;if(out_h)*out_h=height;if(source_x)*source_x=x0+left;if(source_y)*source_y=y0+top;return true;
+}
+bool QuantizeRgbaBuffer(const unsigned char *rgba,int pixels,std::vector<unsigned short> &words,int *unique_colors)
+{
+    if(!rgba||pixels<1||pixels>32*1024*1024)return false;PalRGB5 colors[256];int count=build_quantized_palette_from_rgba(rgba,pixels,1,1,colors,unique_colors);std::vector<unsigned short> out(count+1);for(int i=1;i<=count;++i)out[i]=(unsigned short)((colors[i].r<<10)|(colors[i].g<<5)|colors[i].b);words=std::move(out);return true;
+}
+bool BlendRgbaFrames(unsigned char *rgba,int w,int h,int frames,int mode,int opacity)
+{
+    if(!rgba||w<1||h<1||frames<1||(size_t)w*h*frames>32*1024*1024||mode<0||mode>=GifBlend_Count||opacity<0||opacity>100)return false;if(mode==GifBlend_Normal&&opacity==100)return true;
+    size_t bytes=(size_t)w*h*4;std::vector<unsigned char> canvas(bytes,0);for(int f=0;f<frames;++f){auto source=rgba+(size_t)f*bytes;for(int y=0;y<h;++y)for(int x=0;x<w;++x)blend_rgba_pixel(canvas.data()+((size_t)y*w+x)*4,source+((size_t)y*w+x)*4,x,y,f,mode,opacity);memcpy(source,canvas.data(),bytes);}return true;
+}
+
 /* ---- GIF Import ---- */
 
 const char *GifBlendModeName(int mode)

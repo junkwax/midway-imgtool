@@ -120,6 +120,12 @@ struct SpriteSheetDebugReport {
 int ImportSpriteSheetMatch(const char *path, const SpriteSheetImportOptions *options);
 int AnalyzeSpriteSheet(const char *path, const SpriteSheetImportOptions *options,
                        SpriteSheetDebugReport *report);
+/* Pure bounded adapters for owned-document import previews. No workspace globals
+   are changed; the caller owns the decoded RGBA and resulting buffers. */
+int AnalyzeSpriteSheetRgba(const unsigned char *rgba,int w,int h,const SpriteSheetImportOptions *options,SpriteSheetDebugReport *report);
+bool ExtractSpriteSheetRgba(const unsigned char *rgba,int w,int h,const SpriteSheetDebugFrame &frame,const SpriteSheetImportOptions &options,bool clear_paper,std::vector<unsigned char> &out,int *out_w,int *out_h,int *source_x,int *source_y);
+bool QuantizeRgbaBuffer(const unsigned char *rgba,int pixels,std::vector<unsigned short> &words,int *unique_colors);
+bool BlendRgbaFrames(unsigned char *rgba,int w,int h,int frames,int mode,int opacity);
 int DebugSpriteSheetImport(const char *path, const char *output_dir,
                            const SpriteSheetImportOptions *options,
                            SpriteSheetDebugReport *report);

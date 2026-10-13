@@ -1,0 +1,26 @@
+struct BatchSmoke {
+    int failures=0;std::vector<uint64_t> ids;std::vector<std::vector<unsigned char>> original;BatchGeometryRow expected;
+    void prepare(App &app,ImGuiIO &io,int frame){
+        auto t=app.tab();if(!t){++failures;return;}auto &art=*t->art;auto &u=app.batch;
+        auto check=[&](bool ok){if(!ok){++failures;fprintf(stderr,"Studio batch UI check failed at frame %d: %s / %s; open=%d valid=%d scope=%d op=%d rows=%zu dirty=%d marks=%d\n",frame,app.error.c_str(),u.error.c_str(),u.open,u.valid,u.scope,(int)u.options.kind,u.plan.rows.size(),art.dirty(),app.mark_count(*t));}};
+        auto point=[&](ImVec2 p){io.AddMousePosEvent(p.x,p.y);};auto key=[&](ImGuiKey k,bool down){io.AddKeyEvent(ImGuiMod_Ctrl,down);io.AddKeyEvent(k,down);};auto baseline=[&]{check(art.save((fs::u8path(app.prefs)/"batch-fixture.IMG").u8string(),app.error));};
+        if(frame==0){baseline();for(int i=0;i<art.count();++i){auto im=art.sprite(i);ids.push_back(art.sprite_id(i));original.push_back(art.copy(i,0,0,im->w,im->h).pixels);}t->selection=rectangle_selection(48,64,20,20,2,2);io.AddFocusEvent(true);}
+        if(frame==3){t->selection=rectangle_selection(48,64,20,20,2,2);point(u.mark_point);}if(frame==4)io.AddMouseButtonEvent(0,true);if(frame==5)io.AddMouseButtonEvent(0,false);
+        if(frame==6){check(app.mark_count(*t)==1&&app.marked(*t,ids[0])&&!art.dirty()&&t->selected==0&&t->selection.count()==4);app.mark_sprite(*t,ids[1],true);app.select(3);t->selection=rectangle_selection(48,64,20,20,2,2);point(u.library_point);}if(frame==7)io.AddMouseButtonEvent(0,true);if(frame==8)io.AddMouseButtonEvent(0,false);
+        if(frame==10){check(u.open&&u.valid&&u.plan.rows.size()==2&&u.plan.rows[0].sprite==ids[0]&&u.plan.rows[1].sprite==ids[1]&&!art.dirty()&&t->selection.count()==4);expected=u.plan.rows[0];point(u.row_points[1]);}if(frame==11)io.AddMouseButtonEvent(0,true);if(frame==12)io.AddMouseButtonEvent(0,false);
+        if(frame==13){check(!u.plan.rows[1].enabled);point(u.before_point);}if(frame==14)io.AddMouseButtonEvent(0,true);if(frame==15)io.AddMouseButtonEvent(0,false);
+        if(frame==16){check(u.before&&!art.dirty());point(u.after_point);}if(frame==17)io.AddMouseButtonEvent(0,true);if(frame==18)io.AddMouseButtonEvent(0,false);
+        if(frame==19){check(!u.before&&u.preview_ok&&!art.dirty());point(u.apply_point);}if(frame==20)io.AddMouseButtonEvent(0,true);if(frame==21)io.AddMouseButtonEvent(0,false);
+        if(frame==23){check(!u.open&&art.dirty()&&art.sprite(0)->w==expected.w&&art.sprite(0)->anix==expected.anix&&art.sprite(1)->w==48&&art.selection_id()==ids[3]&&app.mark_count(*t)==2&&std::string(art.undo_label())=="Batch trim bounds");key(ImGuiKey_Z,true);}if(frame==24)key(ImGuiKey_Z,false);
+        if(frame==25){check(!art.dirty()&&art.sprite(0)->w==48&&art.copy(0,0,0,48,64).pixels==original[0]&&app.mark_count(*t)==2);key(ImGuiKey_Y,true);}if(frame==26)key(ImGuiKey_Y,false);
+        if(frame==27){check(art.sprite(0)->w==expected.w);auto file=(fs::u8path(app.prefs)/"batch-result.IMG").u8string();check(art.save(file,app.error));auto loaded=Artwork::open(file,app.error);check(loaded&&loaded->sprite(0)->w==expected.w&&loaded->sprite(0)->anix==expected.anix&&loaded->sprite(1)->w==48);app.action(Action::Undo);baseline();app.open_batch(*t);}
+        if(frame==29)point(u.kind_point);if(frame==30)io.AddMouseButtonEvent(0,true);if(frame==31)io.AddMouseButtonEvent(0,false);if(frame==33)point(u.kind_choices[1]);if(frame==34)io.AddMouseButtonEvent(0,true);if(frame==35)io.AddMouseButtonEvent(0,false);
+        if(frame==36){check(u.options.kind==BatchGeometryKind::Resize&&!art.dirty());u.options.percent=200;u.dirty=true;}
+        if(frame==38){check(u.valid&&u.plan.rows[0].w==96&&u.plan.rows[0].h==128&&!art.dirty());point(u.cancel_point);}if(frame==39)io.AddMouseButtonEvent(0,true);if(frame==40)io.AddMouseButtonEvent(0,false);
+        if(frame==41){check(!u.open&&!art.dirty());snprintf(t->filter.InputBuf,sizeof t->filter.InputBuf,"SENTINEL3");t->filter.Build();app.open_batch(*t);}if(frame==43)point(u.scope_point);if(frame==44)io.AddMouseButtonEvent(0,true);if(frame==45)io.AddMouseButtonEvent(0,false);if(frame==47)point(u.scope_choices[1]);if(frame==48)io.AddMouseButtonEvent(0,true);if(frame==49)io.AddMouseButtonEvent(0,false);
+        if(frame==50){check(u.scope==1&&u.valid&&u.plan.rows.size()==1&&u.plan.rows[0].sprite==ids[2]&&!art.dirty());io.AddKeyEvent(ImGuiKey_Escape,true);}if(frame==51)io.AddKeyEvent(ImGuiKey_Escape,false);
+        if(frame==52){check(!u.open&&!art.dirty());app.open_batch(*t);}if(frame==54){art.color(0,8,0x03e0);art.commit();}if(frame==55)point(u.apply_point);if(frame==56)io.AddMouseButtonEvent(0,true);if(frame==57)io.AddMouseButtonEvent(0,false);
+        if(frame==58){check(u.open&&art.sprite(0)->w==48&&art.sprite(1)->w==48);point(u.cancel_point);}if(frame==59)io.AddMouseButtonEvent(0,true);if(frame==60)io.AddMouseButtonEvent(0,false);
+        if(frame==61){check(!u.open);app.action(Action::Undo);check(!art.dirty()&&art.copy(0,0,0,48,64).pixels==original[0]);app.open_batch(*t);u.scope=2;u.options.kind=BatchGeometryKind::Canvas;u.options.w=40;u.options.h=40;u.options.placement=4;u.dirty=true;}if(frame==63){check(u.valid&&u.plan.rows.size()==8&&u.plan.rows[0].cropped_pixels>0&&!art.dirty());point(ImVec2(5,5));}
+    }
+};

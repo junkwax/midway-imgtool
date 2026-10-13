@@ -35,6 +35,7 @@ struct VideoInfo {
     double duration = 0.0;          /* seconds */
     int    rotation = 0;            /* degrees, as the container states it */
     std::string codec;
+    bool estimated_count = false, variable_rate_hint = false;
 };
 
 /* A rectangle in displayed-frame pixels. w or h <= 0 means the whole frame. */
@@ -42,12 +43,21 @@ struct VideoCrop {
     int x = 0, y = 0, w = 0, h = 0;
 };
 
+struct VideoProcessOptions {
+    bool utf8_paths = false; // Existing callers keep their native path encoding.
+    std::function<bool()> cancelled; // Polled while waiting for child output.
+};
 struct VideoDecodeOptions {
     VideoCrop crop;
     /* Interpolate out the comb between the two fields of interlaced footage
        (yadif, one output frame per input frame so frame numbers hold). Tape
        transfers and DV are interlaced; phone and camera footage is not. */
     bool deinterlace = false;
+    VideoProcessOptions process;
+    size_t max_frame_pixels = 0; // Zero retains the classic allocation policy.
+    int output_w = 0, output_h = 0; // Optional scaled preview, after cropping.
+    bool exact_crop = false; // Preserve odd sizes/coordinates on chroma-subsampled input.
+    bool first_video_stream = false; // Match VideoProbe's v:0; classic keeps auto selection.
 };
 
 /* Called once per requested frame, in ascending frame order. `rgba` is w*h*4,
@@ -59,13 +69,14 @@ typedef std::function<bool(int frame, const unsigned char *rgba, int w, int h)> 
 /* Path to an ffmpeg executable, or "" if none was found. Looked for, in order:
    the IMGTOOL_FFMPEG environment variable (a full path), next to imgtool's
    own executable, on PATH, then the usual install locations. */
-std::string VideoFindFfmpeg(void);
+std::string VideoFindFfmpeg(bool utf8_paths = false);
 
 /* The ffprobe that ships beside `ffmpeg`. */
 std::string VideoFfprobeFor(const std::string &ffmpeg);
 
 /* Read dimensions, frame rate, and length. */
-bool VideoProbe(const std::string &ffmpeg, const char *path, VideoInfo *out, std::string *err);
+bool VideoProbe(const std::string &ffmpeg, const char *path, VideoInfo *out, std::string *err,
+                const VideoProcessOptions &process = {});
 
 /* Decode exactly the frames listed in `frames` (any order; duplicates and
    out-of-range numbers are dropped) and hand each to `sink`. Nearby frames are

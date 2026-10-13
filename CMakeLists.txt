@@ -249,15 +249,37 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_document.cpp
     platform/studio/studio_animation.cpp
     platform/studio/studio_editing.cpp
+    platform/studio/studio_selection.cpp
+    platform/studio/studio_selection_transform.cpp
+    platform/studio/studio_filters.cpp
+    platform/studio/studio_repair.cpp
+    platform/studio/studio_batch.cpp
+    platform/studio/studio_restore.cpp
+    platform/studio/studio_lod.cpp
+    platform/studio/studio_variant.cpp
+    platform/studio/studio_paint.cpp
+    platform/studio/studio_regions.cpp platform/body_split.cpp
+    platform/studio/studio_project.cpp
+    platform/studio/studio_sequences.cpp
+    platform/studio/studio_palette.cpp platform/color_ops.cpp
+    platform/studio/studio_palette_merge.cpp
+    platform/studio/studio_palette_compaction.cpp
+    platform/studio/studio_palette_ramps.cpp platform/studio/studio_file_io.cpp
+    platform/studio/studio_import.cpp
+    platform/studio/studio_digitize.cpp platform/digitize_matte.cpp
+    platform/studio/studio_digitize_job.cpp
+    platform/studio/studio_video.cpp platform/video_decode.cpp
+    platform/material_mask.cpp platform/palette_ramp.cpp platform/ramp_remap.cpp
     platform/document.cpp platform/img_io.cpp platform/globals.c
     platform/anipoint.cpp platform/anipoint_mirror.cpp platform/img_util.cpp
     platform/load2_verify.cpp platform/palette_math.cpp platform/tbl_diff.cpp
     platform/gif_trim.cpp platform/canvas_ops.cpp platform/sprite_resize_ops.cpp)
 target_include_directories(imgtool_studio_document PUBLIC platform platform/studio)
 target_compile_features(imgtool_studio_document PUBLIC cxx_std_17)
-target_link_libraries(imgtool_studio_document PUBLIC SDL2::SDL2)
+target_link_libraries(imgtool_studio_document PUBLIC SDL2::SDL2 Threads::Threads)
 if(MSVC)
     target_compile_definitions(imgtool_studio_document PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(imgtool_studio_document PUBLIC /utf-8)
 endif()
 
 add_executable(imgtool-studio
@@ -276,6 +298,13 @@ if(WIN32)
             "$<TARGET_FILE:SDL2::SDL2>" "$<TARGET_FILE_DIR:imgtool-studio>"
         VERBATIM)
 endif()
+# Share the existing icon family with Studio, relative to the executable.
+add_custom_command(TARGET imgtool-studio POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:imgtool-studio>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/platform/assets/MaterialSymbolsSharp-Regular.ttf"
+        "$<TARGET_FILE_DIR:imgtool-studio>/assets/MaterialSymbolsSharp-Regular.ttf"
+    VERBATIM)
 if(MSVC)
     target_compile_options(imgtool-studio PRIVATE /W3)
     target_compile_definitions(imgtool-studio PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -295,6 +324,98 @@ add_executable(studio_editing_test test/studio_editing_test.cpp)
 target_link_libraries(studio_editing_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_editing_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_editing COMMAND studio_editing_test)
+add_executable(studio_project_test test/studio_project_test.cpp)
+target_link_libraries(studio_project_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_project_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_project COMMAND studio_project_test)
+add_executable(studio_motion_test test/studio_motion_test.cpp)
+target_link_libraries(studio_motion_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_motion_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_motion COMMAND studio_motion_test)
+add_executable(studio_trigger_test test/studio_trigger_test.cpp)
+target_link_libraries(studio_trigger_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_trigger_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_trigger COMMAND studio_trigger_test)
+add_executable(studio_sequences_test test/studio_sequences_test.cpp)
+target_link_libraries(studio_sequences_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_sequences_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_sequences COMMAND studio_sequences_test)
+add_executable(studio_palette_test test/studio_palette_test.cpp)
+target_link_libraries(studio_palette_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette COMMAND studio_palette_test)
+add_executable(studio_palette_merge_test test/studio_palette_merge_test.cpp)
+target_link_libraries(studio_palette_merge_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_merge_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_merge COMMAND studio_palette_merge_test)
+add_executable(studio_palette_compaction_test test/studio_palette_compaction_test.cpp)
+target_link_libraries(studio_palette_compaction_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_compaction_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_compaction COMMAND studio_palette_compaction_test)
+add_executable(studio_palette_ramps_test test/studio_palette_ramps_test.cpp)
+target_link_libraries(studio_palette_ramps_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_ramps_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_ramps COMMAND studio_palette_ramps_test)
+add_executable(studio_import_test test/studio_import_test.cpp)
+target_link_libraries(studio_import_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_import_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_import COMMAND studio_import_test)
+add_executable(studio_digitize_test test/studio_digitize_test.cpp)
+target_link_libraries(studio_digitize_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_digitize_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_digitize COMMAND studio_digitize_test)
+add_executable(studio_digitize_job_test test/studio_digitize_job_test.cpp)
+target_link_libraries(studio_digitize_job_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_digitize_job_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_digitize_job COMMAND studio_digitize_job_test)
+add_executable(studio_selection_test test/studio_selection_test.cpp)
+target_link_libraries(studio_selection_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_selection_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_selection COMMAND studio_selection_test)
+add_executable(studio_regions_test test/studio_regions_test.cpp)
+target_link_libraries(studio_regions_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_regions_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_regions COMMAND studio_regions_test)
+add_executable(studio_selection_transform_test test/studio_selection_transform_test.cpp)
+target_link_libraries(studio_selection_transform_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_selection_transform_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_selection_transform COMMAND studio_selection_transform_test)
+add_executable(studio_paint_test test/studio_paint_test.cpp)
+target_link_libraries(studio_paint_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_paint_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_paint COMMAND studio_paint_test)
+add_executable(studio_filters_test test/studio_filters_test.cpp)
+target_link_libraries(studio_filters_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_filters_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_filters COMMAND studio_filters_test)
+add_executable(studio_repair_test test/studio_repair_test.cpp)
+target_link_libraries(studio_repair_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_repair_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_repair COMMAND studio_repair_test)
+add_executable(studio_batch_test test/studio_batch_test.cpp)
+target_link_libraries(studio_batch_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_batch_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_batch COMMAND studio_batch_test)
+add_executable(studio_lod_test test/studio_lod_test.cpp)
+target_link_libraries(studio_lod_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_lod_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_lod COMMAND studio_lod_test)
+add_executable(studio_restore_test test/studio_restore_test.cpp)
+target_link_libraries(studio_restore_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_restore_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_restore COMMAND studio_restore_test)
+add_executable(studio_variant_test test/studio_variant_test.cpp)
+target_link_libraries(studio_variant_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_variant_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_variant COMMAND studio_variant_test)
+add_executable(studio_clone_test test/studio_clone_test.cpp)
+target_link_libraries(studio_clone_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_clone_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_clone COMMAND studio_clone_test)
+add_executable(studio_video_test test/studio_video_test.cpp)
+target_link_libraries(studio_video_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_video_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_video COMMAND studio_video_test)
 add_executable(sprite_sheet_import_test
     test/sprite_sheet_import_test.cpp
     platform/img_io.cpp

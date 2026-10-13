@@ -92,9 +92,9 @@ bool Artwork::remap_sequence_indices(const std::vector<int> &mapping,std::vector
     blob.assign((unsigned char *)data.scrseqmem_p,(unsigned char *)data.scrseqmem_p+data.scrseqbytes);
     size_t pos=0;for(unsigned s=0;s<data.seqcnt+data.scrcnt;++s){
         if(pos+98>blob.size()){error="Embedded animation data is truncated.";return false;}
-        unsigned flags=u16(blob.data()+pos+16),entries=u16(blob.data()+pos+18);
+        unsigned entries=u16(blob.data()+pos+18);
         if(entries>(blob.size()-pos-98)/18){error="Embedded animation entries are truncated.";return false;}
-        if(flags&0x40)for(unsigned e=0;e<entries;++e){auto p=blob.data()+pos+98+e*18+4;int target=(short)u16(p);
+        if(s<data.seqcnt)for(unsigned e=0;e<entries;++e){auto p=blob.data()+pos+98+e*18+4;int target=(short)u16(p);
             if(target<0)continue;
             if(target>=(int)mapping.size()){error="An embedded animation has an unresolved sprite index. Fix it before changing sprite order.";return false;}
             if(mapping[target]<0){error="This sprite is used by embedded animation '"+std::string((char *)blob.data()+pos,strnlen((char *)blob.data()+pos,16))+"'. Remove that reference before deleting it.";return false;}
@@ -170,18 +170,20 @@ bool Artwork::transform_sprite(int index,Transform op,bool transform_anchors,std
 bool Artwork::assign_palette(int index,int target,bool match,std::string &error){
     error.clear();auto im=sprite(index);auto pal=palette(target);if(!im||!pal)return false;if(target==im->palnum)return true;
     auto source=palette(im->palnum);unsigned char map[256]={};
+    if(match&&pal->numc<2){error="Color matching needs at least one opaque color in the destination palette.";return false;}
     if(match)for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x)if(((unsigned char *)im->data_p)[y*((im->w+3)&~3)+x]>=source->numc){error="This sprite contains unresolved palette indices. Correct them before matching colors.";return false;}
     if(match){for(int i=1;i<source->numc;++i)map[i]=nearest_palette_index_for_word(palette_word_at((unsigned char *)source->data_p,i),pal);}
     else {for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x)if(((unsigned char *)im->data_p)[y*((im->w+3)&~3)+x]>=pal->numc){error="The target palette has too few colors for these pixel indices. Choose Match colors.";return false;}}
     begin("Assign sprite palette");if(match)for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x){auto &ci=((unsigned char *)im->data_p)[y*((im->w+3)&~3)+x];ci=map[ci];}
     im->palnum=(unsigned short)target;++serial;commit();return true;
 }
-int Artwork::duplicate_palette(int index,std::string &error,int assign_sprite){
+int Artwork::duplicate_palette(int index,std::string &error,int assign_sprite,const std::string &name){
     error.clear();auto source=palette(index);if(!source)return -1;if(palette_count()>=4093){error="The palette limit has been reached.";return -1;}
+    if(name.size()>9||std::any_of(name.begin(),name.end(),[](unsigned char c){return c<33||c>126;})){error="Use up to 9 printable ASCII characters without spaces for the palette name.";return -1;}
     if(assign_sprite>=0&&!sprite(assign_sprite)){error="Choose a sprite for this palette.";return -1;}
     void *colors=clone_bytes(source->data_p,source->numc*2);begin(assign_sprite>=0?"Make sprite palette private":"Duplicate palette");Scope scope(data);auto pal=AllocPal();if(!pal){free(colors);cancel();error="Not enough memory.";return -1;}
     *pal=*source;pal->nxt_p=pal->temp=nullptr;pal->data_p=colors;memset(pal->file_name_raw,0,10);
-    snprintf(pal->n_s,10,"PAL%u",data.palcnt);if(assign_sprite>=0)sprite(assign_sprite)->palnum=(unsigned short)(data.palcnt-1);++serial;++structure_serial;commit();return palette_count()-1;
+    memset(pal->n_s,0,10);if(name.empty())snprintf(pal->n_s,10,"PAL%u",data.palcnt);else memcpy(pal->n_s,name.data(),name.size());if(assign_sprite>=0)sprite(assign_sprite)->palnum=(unsigned short)(data.palcnt-1);++serial;++structure_serial;commit();return palette_count()-1;
 }
 int Artwork::import_png(const std::string &path,int match,std::string &error){
     error.clear();if(count()>=2000){error="This IMG has reached its sprite limit.";return -1;}
@@ -194,6 +196,7 @@ int Artwork::import_png(const std::string &path,int match,std::string &error){
     auto im=imported->sprite(0);auto pal=imported->palette(0);if(!im||!im->data_p||!pal||!pal->data_p){error="Not enough memory to import PNG.";return -1;}
     if(!fits_document(*this,im->w,im->h,-1,error))return -1;
     if(match>=0&&!palette(match)){error="Choose a destination palette.";return -1;}
+    if(match>=0&&palette(match)->numc<2){error="PNG color matching needs at least one opaque palette color.";return -1;}
     if(match<0&&palette_count()>=4093){error="The palette limit has been reached.";return -1;}
     std::string stem=std::filesystem::u8path(path).stem().u8string();for(char &c:stem)if(!std::isalnum((unsigned char)c)&&c!='_')c='_';
     if(stem.empty())stem="IMPORTED";std::string name=unique_sprite_name(stem);

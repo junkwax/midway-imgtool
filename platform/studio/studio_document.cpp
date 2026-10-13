@@ -1,4 +1,5 @@
 #include "studio_document.h"
+#include "studio_selection.h"
 #include "img_io.h"
 #include "palette_math.h"
 #include <algorithm>
@@ -182,6 +183,7 @@ bool Artwork::save(const std::string &path, std::string &error) {
     file_path = dest.u8string(); disk_baseline = std::move(written); saved_revision = revision;
     return true;
 }
+bool Artwork::disk_matches() const {std::vector<unsigned char> current;return !file_path.empty()&&read_bytes(file_path,current)&&current==disk_baseline;}
 Artwork::State Artwork::capture() const {
     State s; s.revision = revision;s.selection=selected_sprite_id;
     for (int i = 0; i < count(); ++i) {
@@ -199,6 +201,7 @@ Artwork::State Artwork::capture() const {
         State::Palette item;item.fields=*pal;item.fields.nxt_p=item.fields.data_p=item.fields.temp=nullptr;
         item.colors.assign(p,p+pal->numc*2);s.palettes.push_back(std::move(item));
     }
+    s.seqcnt=data.seqcnt;s.scrcnt=data.scrcnt;
     if(data.scrseqmem_p)s.sequences.assign((unsigned char *)data.scrseqmem_p,(unsigned char *)data.scrseqmem_p+data.scrseqbytes);
     return s;
 }
@@ -207,7 +210,7 @@ size_t Artwork::State::bytes() const {
     for(auto &v:palettes)n+=sizeof(v.fields)+v.colors.size();return n;
 }
 bool Artwork::State::same(const State &s) const {
-    if(sprites.size()!=s.sprites.size()||palettes.size()!=s.palettes.size()||sequences!=s.sequences)return false;
+    if(sprites.size()!=s.sprites.size()||palettes.size()!=s.palettes.size()||sequences!=s.sequences||seqcnt!=s.seqcnt||scrcnt!=s.scrcnt)return false;
     for(size_t i=0;i<sprites.size();++i){auto &a=sprites[i];auto &b=s.sprites[i];
         if(a.id!=b.id||memcmp(&a.fields,&b.fields,sizeof(IMG))||a.pixels!=b.pixels||a.points!=b.points||a.alternate!=b.alternate)return false;
     }
@@ -232,6 +235,7 @@ void Artwork::restore(const State &s) {
     std::swap(data.img_p,replacement->data.img_p);std::swap(data.imgcnt,replacement->data.imgcnt);
     std::swap(data.pal_p,replacement->data.pal_p);std::swap(data.palcnt,replacement->data.palcnt);
     std::swap(data.scrseqmem_p,replacement->data.scrseqmem_p);std::swap(data.scrseqbytes,replacement->data.scrseqbytes);
+    data.seqcnt=s.seqcnt;data.scrcnt=s.scrcnt;
     sprite_ids.clear();for(auto &item:s.sprites)sprite_ids.push_back(item.id);
     revision = s.revision;selected_sprite_id=s.selection; ++serial;if(structural)++structure_serial;
 }
@@ -262,18 +266,21 @@ void Artwork::redo() {
     restore(future.back()); future.pop_back();
 }
 const char *Artwork::undo_label() const { return past.empty() ? "Undo" : past.back().label.c_str(); }
-void Artwork::paint(int index, int x, int y, unsigned char value, int radius) {
+void Artwork::paint(int index, int x, int y, unsigned char value, int radius,const PixelSelection *selection) {
     IMG *im = sprite(index); if (!im || !palette(im->palnum) || value >= palette(im->palnum)->numc) return;
+    if(x < -32 || y < -32 || x > (int)im->w+32 || y > (int)im->h+32)return;
+    if(selection&&!selection->fits(im->w,im->h))return;
     begin(value ? "Paint pixels" : "Erase pixels");
     int stride = (im->w + 3) & ~3; auto p = (unsigned char *)im->data_p;
     radius = std::clamp(radius, 1, 32);
     for (int yy = std::max(0, y - radius + 1); yy <= std::min((int)im->h - 1, y + radius - 1); ++yy)
         for (int xx = std::max(0, x - radius + 1); xx <= std::min((int)im->w - 1, x + radius - 1); ++xx)
-            if ((xx-x)*(xx-x)+(yy-y)*(yy-y) < radius*radius) p[yy*stride+xx] = value;
+            if ((xx-x)*(xx-x)+(yy-y)*(yy-y) < radius*radius&&(!selection||!selection->valid||selection->contains(xx,yy))) p[yy*stride+xx] = value;
     ++serial;
 }
-void Artwork::fill(int index, int x, int y, unsigned char value) {
-    IMG *im = sprite(index); if (!im || x < 0 || y < 0 || x >= im->w || y >= im->h || value >= palette(im->palnum)->numc) return;
+void Artwork::fill(int index, int x, int y, unsigned char value,const PixelSelection *selection) {
+    IMG *im = sprite(index); if (!im || !palette(im->palnum)||x < 0 || y < 0 || x >= im->w || y >= im->h || value >= palette(im->palnum)->numc) return;
+    if(selection&&(!selection->fits(im->w,im->h)||(selection->valid&&!selection->contains(x,y))))return;
     int stride = (im->w + 3) & ~3; auto p = (unsigned char *)im->data_p; unsigned char old = p[y*stride+x];
     if (old == value) return;
     begin("Fill connected pixels");
@@ -282,7 +289,7 @@ void Artwork::fill(int index, int x, int y, unsigned char value) {
         auto pt = todo.back(); todo.pop_back();
         const int dx[] = {-1,1,0,0}, dy[] = {0,0,-1,1};
         for (int k=0;k<4;++k) { int nx=pt.first+dx[k], ny=pt.second+dy[k];
-            if(nx>=0 && ny>=0 && nx<im->w && ny<im->h && p[ny*stride+nx]==old) {
+            if(nx>=0 && ny>=0 && nx<im->w && ny<im->h && p[ny*stride+nx]==old&&(!selection||!selection->valid||selection->contains(nx,ny))) {
                 p[ny*stride+nx]=value; todo.emplace_back(nx,ny);
             }
         }
@@ -308,17 +315,40 @@ Clipboard Artwork::copy(int index, int x, int y, int w, int h) const {
     return c;
 }
 void Artwork::paste(int index,const Clipboard &c,int x,int y) {
-    IMG *im=sprite(index); if(!im || c.pixels.empty()) return;
-    PAL *pal=palette(im->palnum); unsigned char map[256]={};
+    IMG *im=sprite(index); if(!im||c.w<1||c.h<1||c.w>8192||c.h>8192||(size_t)c.w*c.h>4*1024*1024||c.pixels.size()!=(size_t)c.w*c.h||c.colors.empty()||c.colors.size()>256||(!c.mask.empty()&&c.mask.size()!=c.pixels.size()))return;
+    PAL *pal=palette(im->palnum);if(!pal||!pal->data_p||pal->numc<1||pal->numc>256)return;unsigned char map[256]={};
+    for(size_t i=0;i<c.pixels.size();++i)if((c.mask.empty()||c.mask[i])&&c.pixels[i]>=c.colors.size())return;
     bool same=c.colors.size()==pal->numc;
     for(size_t i=0;same && i<c.colors.size();++i) same=c.colors[i]==palette_word_at((unsigned char *)pal->data_p,(int)i);
     for(size_t i=1;i<c.colors.size();++i) map[i]=same?(unsigned char)i:nearest_palette_index_for_word(c.colors[i],pal);
     begin("Paste pixels"); int stride=(im->w+3)&~3;
     for(int yy=0;yy<c.h;++yy) for(int xx=0;xx<c.w;++xx) {
-        int dx=x+xx,dy=y+yy; auto v=c.pixels[yy*c.w+xx];
-        if(v && dx>=0 && dy>=0 && dx<im->w && dy<im->h) ((unsigned char *)im->data_p)[dy*stride+dx]=map[v];
+        long long dx=(long long)x+xx,dy=(long long)y+yy;size_t at=(size_t)yy*c.w+xx;auto v=c.pixels[at];
+        if((c.mask.empty()?v!=0:c.mask[at]!=0)&&dx>=0&&dy>=0&&dx<im->w&&dy<im->h)((unsigned char *)im->data_p)[(size_t)dy*stride+(size_t)dx]=map[v];
     }
     commit();
+}
+Clipboard Artwork::copy_selection(int index,const PixelSelection &s)const{
+    auto im=sprite(index);if(!im||!s.valid||!s.fits(im->w,im->h))return {};
+    auto c=copy(index,s.x,s.y,s.w,s.h);c.mask.resize(c.pixels.size());
+    for(int y=0;y<s.h;++y)for(int x=0;x<s.w;++x)c.mask[(size_t)y*s.w+x]=s.contains(s.x+x,s.y+y)?1:0;
+    return c;
+}
+bool Artwork::clear_selection(int index,const PixelSelection &s,std::string &error){
+    auto im=sprite(index);if(!im||!s.valid||!s.fits(im->w,im->h)){error="Select pixels on this sprite first.";return false;}
+    begin("Clear selected pixels");int stride=(im->w+3)&~3;auto p=(unsigned char *)im->data_p;
+    for(int y=s.y;y<s.y+s.h;++y)for(int x=s.x;x<s.x+s.w;++x)if(s.contains(x,y))p[y*stride+x]=0;
+    commit();error.clear();return true;
+}
+bool Artwork::move_selection(int index,const PixelSelection &s,int dx,int dy,std::string &error){
+    auto im=sprite(index);if(!im||!s.valid||!s.fits(im->w,im->h)){error="Select pixels on this sprite first.";return false;}
+    long long x=(long long)s.x+dx,y=(long long)s.y+dy;
+    if(x<0||y<0||x+s.w>im->w||y+s.h>im->h){error="The selection would leave the sprite. Increase the canvas size first.";return false;}
+    if(!dx&&!dy){error.clear();return true;}
+    auto c=copy_selection(index,s);begin("Move selected pixels");int stride=(im->w+3)&~3;auto p=(unsigned char *)im->data_p;
+    for(int yy=0;yy<c.h;++yy)for(int xx=0;xx<c.w;++xx)if(c.mask[(size_t)yy*c.w+xx])p[(s.y+yy)*stride+s.x+xx]=0;
+    for(int yy=0;yy<c.h;++yy)for(int xx=0;xx<c.w;++xx)if(c.mask[(size_t)yy*c.w+xx])p[(size_t)(y+yy)*stride+(size_t)x+xx]=c.pixels[(size_t)yy*c.w+xx];
+    commit();error.clear();return true;
 }
 void Artwork::clear(int index,int x,int y,int w,int h) {
     IMG *im=sprite(index); if(!im) return; begin("Clear selected pixels"); int stride=(im->w+3)&~3;

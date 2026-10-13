@@ -175,7 +175,7 @@ int FitRampLinear(const RampSample *samples, int n, int count,
 
 int FitRampLloyd(const RampSample *samples, int n, int count,
                  double lo_pct, double hi_pct, int max_iters,
-                 RampColor *out)
+                 RampColor *out,const std::function<bool()> &cancelled)
 {
     if (!samples || n <= 0 || count <= 0 || !out) return 0;
     if (max_iters <= 0) max_iters = 32;
@@ -200,6 +200,7 @@ int FitRampLloyd(const RampSample *samples, int n, int count,
     std::vector<bool> has_sample(count, false);
 
     for (int iter = 0; iter < max_iters; iter++) {
+        if(cancelled&&cancelled())return 0;
         bool changed = false;
         for (size_t i = 0; i < proj.size(); i++) {
             const double t = proj[i].first;
