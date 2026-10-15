@@ -94,6 +94,9 @@ bool field_is_long(int idx);
 /* Parse MKSTK.ASM. Returns true on success. doc->source_path is set
    to the resolved path. Errors are returned via err (may be NULL). */
 bool load(Document *doc, const char *path, std::string *err);
+/* Parse owned source text without reading or writing files. source_path is
+   retained; callers own their file encoding, snapshots and write policy. */
+bool parse_text(Document *doc, const std::string &text, std::string *err);
 
 /* Write doc back to source_path, applying any edits made via set_value().
    Lines that weren't touched are written verbatim. Returns true on success. */

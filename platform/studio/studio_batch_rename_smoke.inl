@@ -1,0 +1,24 @@
+struct BatchRenameSmoke {
+    int failures=0;uint64_t uid=0,selected=0;std::vector<uint64_t> ids;std::vector<unsigned char> baseline,pixels;std::string path;
+    void prepare(App &app,ImGuiIO &io,int frame){auto t=frame?app.find(uid):app.tab();if(!t){++failures;return;}auto &art=*t->art;auto &u=app.renaming;
+        auto check=[&](bool ok){if(!ok){++failures;fprintf(stderr,"Batch rename UI failure at %d: %s / %s (open=%d scope=%d valid=%d changes=%d)\n",frame,app.error.c_str(),u.error.c_str(),u.open,u.scope,u.valid,u.changed);}};
+        auto point=[&](ImVec2 p){io.AddMousePosEvent(std::round(p.x),std::round(p.y));};auto click=[&](int at,ImVec2 p){if(frame==at){point(p);io.AddMouseButtonEvent(0,true);}if(frame==at+1)io.AddMouseButtonEvent(0,false);};auto key=[&](ImGuiKey k,bool down){io.AddKeyEvent(ImGuiMod_Ctrl,down);io.AddKeyEvent(k,down);};
+        auto read=[&](const std::string &file){std::ifstream in(fs::u8path(file),std::ios::binary);return std::vector<unsigned char>{std::istreambuf_iterator<char>(in),{}};};
+        if(frame==0){io.AddFocusEvent(true);uid=t->uid;path=(fs::u8path(app.prefs)/"rename-fixture.IMG").u8string();check(art.save(path,app.error));baseline=read(path);for(int i=0;i<art.count();++i)ids.push_back(art.sprite_id(i));pixels=art.copy(0,0,0,48,64).pixels;app.select(3);selected=t->selected_id;app.mark_sprite(*t,ids[0],true);app.mark_sprite(*t,ids[1],true);app.action(Action::BatchRename);}
+        if(frame==3)check(u.open&&u.valid&&u.plan.rows.size()==2&&!art.dirty()&&u.scope==0);click(4,u.text_point);if(frame==6)key(ImGuiKey_A,true);if(frame==7){key(ImGuiKey_A,false);io.AddInputCharactersUTF8("WALK");}if(frame==8)io.AddKeyEvent(ImGuiKey_Enter,true);if(frame==9)io.AddKeyEvent(ImGuiKey_Enter,false);
+        if(frame==10)check(u.valid&&!u.dirty&&u.plan.rows[0].after=="WALK1"&&u.plan.rows[1].after=="WALK2"&&!art.dirty());click(11,u.row_points[1]);if(frame==14)check(u.changed==1&&!u.plan.rows[1].enabled&&u.plan.rows[1].after=="WALK2");click(16,u.apply_point);
+        if(frame==20)check(!u.open&&art.dirty()&&std::string(art.sprite(0)->n_s)=="WALK1"&&std::string(art.sprite(1)->n_s)=="SENTINEL2"&&art.selection_id()==selected&&app.mark_count(*t)==2&&art.copy(0,0,0,48,64).pixels==pixels);if(frame==21)key(ImGuiKey_Z,true);if(frame==22)key(ImGuiKey_Z,false);
+        if(frame==24)check(!art.dirty()&&std::string(art.sprite(0)->n_s)=="SENTINEL1");if(frame==25)key(ImGuiKey_Y,true);if(frame==26)key(ImGuiKey_Y,false);
+        if(frame==29){check(art.dirty()&&std::string(art.sprite(0)->n_s)=="WALK1");auto result=(fs::u8path(app.prefs)/"rename-result.IMG").u8string();check(art.save(result,app.error));auto loaded=Artwork::open(result,app.error);check(loaded&&loaded->disk_version()==art.disk_version()&&std::string(loaded->sprite(0)->n_s)=="WALK1"&&std::string(loaded->sprite(1)->n_s)=="SENTINEL2");}
+        if(frame==31){app.action(Action::Undo);check(art.save(path,app.error)&&read(path)==baseline);app.action(Action::BatchRename);snprintf(u.text,sizeof u.text,"SENTINEL");u.options.start=2;u.dirty=true;}click(35,u.row_points[1]);
+        if(frame==39)check(u.valid&&u.changed==-1&&!u.error.empty()&&!art.dirty());click(41,u.apply_point);if(frame==44)check(u.open&&!art.dirty()&&std::string(art.sprite(0)->n_s)=="SENTINEL1");click(45,u.cancel_point);
+        if(frame==48){check(!u.open&&!art.dirty());app.action(Action::BatchRename);}click(50,u.kind_point);click(53,u.kind_choices[1]);
+        if(frame==56){check(u.options.kind==BatchRenameKind::Prepend);snprintf(u.text,sizeof u.text,"K");u.dirty=true;}if(frame==59)check(u.valid&&u.changed==2&&u.plan.rows[0].after=="KSENTINEL1"&&!art.dirty());click(60,u.cancel_point);
+        if(frame==64){check(!u.open&&!art.dirty());t->marks.clear();snprintf(t->filter.InputBuf,sizeof t->filter.InputBuf,"SENTINEL3");t->filter.Build();app.action(Action::BatchRename);snprintf(u.text,sizeof u.text,"FILTER");u.options.start=10;u.options.padding=2;u.dirty=true;}
+        if(frame==67)check(u.valid&&u.scope==1&&u.plan.rows.size()==1&&u.plan.rows[0].sprite==ids[2]&&u.plan.rows[0].after=="FILTER10");click(68,u.apply_point);
+        if(frame==72){check(!u.open&&std::string(art.sprite(2)->n_s)=="FILTER10"&&art.selection_id()==selected);app.action(Action::Undo);check(!art.dirty());t->filter.Clear();app.mark_sprite(*t,ids[0],true);app.action(Action::BatchRename);}
+        if(frame==75){art.color(0,8,0x03e0);art.commit();}click(77,u.apply_point);if(frame==80)check(u.open&&std::string(art.sprite(0)->n_s)=="SENTINEL1"&&!u.error.empty());click(81,u.cancel_point);
+        if(frame==85){check(!u.open);app.action(Action::Undo);check(!art.dirty()&&art.copy(0,0,0,48,64).pixels==pixels);app.action(Action::BatchRename);u.scope=2;snprintf(u.text,sizeof u.text,"STANCE");u.options.padding=2;u.dirty=true;}
+        if(frame==88)check(u.valid&&u.plan.rows.size()==8&&u.changed==8&&!art.dirty());
+    }
+};

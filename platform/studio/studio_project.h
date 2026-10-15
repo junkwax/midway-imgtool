@@ -1,5 +1,6 @@
 #pragma once
 #include "studio_animation.h"
+#include "studio_stage.h"
 #include <functional>
 #include <memory>
 
@@ -79,7 +80,8 @@ public:
     bool bind(const SceneBinder &provider,std::vector<SceneIssue> &issues);
     void establish_loaded();
     bool save(const std::string &path,const SceneSource &source,std::string &error);
-    bool export_png(const std::string &path,int tick,const SceneSource &source,std::string &error) const;
+    bool export_png(const std::string &path,int tick,const SceneSource &source,std::string &error,
+                    const StageBackdrop *stage=nullptr,const StageView *view=nullptr) const;
     void begin(const std::string &label);
     void commit();
     void cancel();

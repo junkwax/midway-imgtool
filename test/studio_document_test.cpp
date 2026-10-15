@@ -80,9 +80,9 @@ int main(int argc, char **argv) {
     CHECK(!studio::Artwork::open((folder/"bad.img").u8string(),error));CHECK(g_doc==nullptr);
     auto unicode=(folder/fs::u8path(u8"art-\u00e9-\u65e5.img")).u8string();
     CHECK(b->save(unicode,error));CHECK(studio::Artwork::open(unicode,error)!=nullptr);
-    auto legacy=bytes(mp);legacy[8]=0x2e;legacy[9]=6;
+    auto legacy=bytes(mp);legacy[8]=0x32;legacy[9]=6;
     {std::ofstream out(folder/"legacy.img",std::ios::binary);out.write(legacy.data(),legacy.size());}
-    CHECK(!studio::Artwork::open((folder/"legacy.img").u8string(),error));CHECK(error.find("older IMG")!=std::string::npos);
+    CHECK(!studio::Artwork::open((folder/"legacy.img").u8string(),error));CHECK(error.find("unsupported layout")!=std::string::npos);
     // Optional local fixtures are read only; all output stays in our temp dir.
     for(int arg=1;arg<argc;++arg){
         auto real=studio::Artwork::open(argv[arg],error);

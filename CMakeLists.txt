@@ -246,7 +246,7 @@ endif()
 
 # ---- Studio: independent editor, shared format and math code -----------------
 add_library(imgtool_studio_document STATIC
-    platform/studio/studio_document.cpp
+    platform/studio/studio_document.cpp platform/studio/studio_img_codec.cpp
     platform/studio/studio_animation.cpp
     platform/studio/studio_editing.cpp
     platform/studio/studio_selection.cpp
@@ -254,18 +254,36 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_filters.cpp
     platform/studio/studio_repair.cpp
     platform/studio/studio_batch.cpp
+    platform/studio/studio_batch_rename.cpp
+    platform/studio/studio_batch_palette.cpp
+    platform/studio/studio_batch_delete.cpp
+    platform/studio/studio_sprite_scope.cpp
+    platform/studio/studio_library_copy.cpp
     platform/studio/studio_restore.cpp
     platform/studio/studio_lod.cpp
+    platform/studio/studio_export.cpp
     platform/studio/studio_variant.cpp
     platform/studio/studio_paint.cpp
     platform/studio/studio_regions.cpp platform/body_split.cpp
     platform/studio/studio_project.cpp
+    platform/studio/studio_stage.cpp
+    platform/studio/studio_anchor_link.cpp
+    platform/studio/studio_points.cpp
+    platform/studio/studio_tbl_compare.cpp
+    platform/studio/studio_strikes.cpp platform/mk2_hitbox.cpp
+    platform/studio/studio_asm.cpp platform/strike_bind.cpp
+    platform/studio/studio_bindings.cpp
+    platform/studio/studio_strike_phases.cpp
+    platform/studio/studio_animation_copy.cpp
+    platform/studio/studio_animation_clipboard.cpp
+    platform/studio/studio_animation_split.cpp
     platform/studio/studio_sequences.cpp
     platform/studio/studio_palette.cpp platform/color_ops.cpp
     platform/studio/studio_palette_merge.cpp
+    platform/studio/studio_palette_cleanup.cpp
     platform/studio/studio_palette_compaction.cpp
     platform/studio/studio_palette_ramps.cpp platform/studio/studio_file_io.cpp
-    platform/studio/studio_import.cpp
+    platform/studio/studio_import.cpp platform/studio/studio_legacy_media.cpp platform/studio/studio_sheet.cpp
     platform/studio/studio_digitize.cpp platform/digitize_matte.cpp
     platform/studio/studio_digitize_job.cpp
     platform/studio/studio_video.cpp platform/video_decode.cpp
@@ -280,6 +298,7 @@ target_link_libraries(imgtool_studio_document PUBLIC SDL2::SDL2 Threads::Threads
 if(MSVC)
     target_compile_definitions(imgtool_studio_document PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(imgtool_studio_document PUBLIC /utf-8)
+    target_compile_options(imgtool_studio_document PRIVATE "$<$<CONFIG:Release>:/Zi>")
 endif()
 
 add_executable(imgtool-studio
@@ -292,7 +311,7 @@ target_link_libraries(imgtool-studio PRIVATE imgtool_studio_document SDL2::SDL2m
 target_compile_definitions(imgtool-studio PRIVATE IMGTOOL_VERSION="${IMGTOOL_VERSION}")
 if(WIN32)
     set_target_properties(imgtool-studio PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_link_libraries(imgtool-studio PRIVATE comdlg32)
+    target_link_libraries(imgtool-studio PRIVATE comdlg32 dbghelp)
     add_custom_command(TARGET imgtool-studio POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:SDL2::SDL2>" "$<TARGET_FILE_DIR:imgtool-studio>"
@@ -307,15 +326,71 @@ add_custom_command(TARGET imgtool-studio POST_BUILD
     VERBATIM)
 if(MSVC)
     target_compile_options(imgtool-studio PRIVATE /W3)
+    target_compile_options(imgtool-studio PRIVATE "$<$<CONFIG:Release>:/Zi>")
+    target_link_options(imgtool-studio PRIVATE "$<$<CONFIG:Release>:/DEBUG:FULL>" "$<$<CONFIG:Release>:/INCREMENTAL:NO>")
     target_compile_definitions(imgtool-studio PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # ---- Tests -----------------------------------------------------------------
 enable_testing()
+if(WIN32)
+    add_executable(studio_startup_test test/studio_startup_test.cpp)
+    target_link_libraries(studio_startup_test PRIVATE SDL2::SDL2 dbghelp)
+    target_compile_features(studio_startup_test PRIVATE cxx_std_17)
+    target_compile_definitions(studio_startup_test PRIVATE SDL_MAIN_HANDLED NOMINMAX _CRT_SECURE_NO_WARNINGS)
+    if(MSVC)
+        target_compile_options(studio_startup_test PRIVATE /utf-8)
+    endif()
+    add_test(NAME studio_startup COMMAND studio_startup_test)
+endif()
 add_executable(studio_document_test test/studio_document_test.cpp)
 target_link_libraries(studio_document_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_document_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_document COMMAND studio_document_test)
+add_executable(studio_sheet_test test/studio_sheet_test.cpp)
+target_link_libraries(studio_sheet_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_sheet_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_sheet COMMAND studio_sheet_test)
+add_executable(studio_stage_test test/studio_stage_test.cpp platform/bdd_bg.cpp)
+target_link_libraries(studio_stage_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_stage_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_stage COMMAND studio_stage_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data")
+add_executable(studio_anchor_link_test test/studio_anchor_link_test.cpp)
+target_link_libraries(studio_anchor_link_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_anchor_link_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_anchor_link COMMAND studio_anchor_link_test)
+add_executable(studio_points_test test/studio_points_test.cpp)
+target_link_libraries(studio_points_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_points_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_points COMMAND studio_points_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAVEYES.IMG")
+add_executable(studio_tbl_compare_test test/studio_tbl_compare_test.cpp)
+target_link_libraries(studio_tbl_compare_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_tbl_compare_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_tbl_compare COMMAND studio_tbl_compare_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main")
+add_executable(studio_strikes_test test/studio_strikes_test.cpp)
+target_link_libraries(studio_strikes_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_strikes_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_strikes COMMAND studio_strikes_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MKSTK.ASM")
+add_executable(studio_asm_test test/studio_asm_test.cpp)
+target_link_libraries(studio_asm_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_asm_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_asm COMMAND studio_asm_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MKJC.ASM" "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_bindings_test test/studio_bindings_test.cpp)
+target_link_libraries(studio_bindings_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_bindings_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_bindings COMMAND studio_bindings_test)
+add_executable(studio_strike_phases_test test/studio_strike_phases_test.cpp)
+target_link_libraries(studio_strike_phases_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_strike_phases_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_strike_phases COMMAND studio_strike_phases_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MKSTK.ASM")
+add_executable(studio_legacy_media_test test/studio_legacy_media_test.cpp)
+target_link_libraries(studio_legacy_media_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_legacy_media_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_legacy_media COMMAND studio_legacy_media_test)
+add_executable(studio_legacy_img_test test/studio_legacy_img_test.cpp)
+target_link_libraries(studio_legacy_img_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_legacy_img_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_legacy_img COMMAND studio_legacy_img_test)
 add_executable(studio_animation_test test/studio_animation_test.cpp)
 target_link_libraries(studio_animation_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_animation_test PRIVATE SDL_MAIN_HANDLED)
@@ -396,6 +471,58 @@ add_executable(studio_batch_test test/studio_batch_test.cpp)
 target_link_libraries(studio_batch_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_batch_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_batch COMMAND studio_batch_test)
+add_executable(studio_batch_rename_test test/studio_batch_rename_test.cpp)
+target_link_libraries(studio_batch_rename_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_batch_rename_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_batch_rename COMMAND studio_batch_rename_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_batch_palette_test test/studio_batch_palette_test.cpp)
+target_link_libraries(studio_batch_palette_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_batch_palette_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_batch_palette COMMAND studio_batch_palette_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_batch_delete_test test/studio_batch_delete_test.cpp)
+target_link_libraries(studio_batch_delete_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_batch_delete_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_batch_delete COMMAND studio_batch_delete_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_palette_cleanup_test test/studio_palette_cleanup_test.cpp)
+target_link_libraries(studio_palette_cleanup_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_cleanup_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_cleanup COMMAND studio_palette_cleanup_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_sprite_scope_test test/studio_sprite_scope_test.cpp)
+target_link_libraries(studio_sprite_scope_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_sprite_scope_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_sprite_scope COMMAND studio_sprite_scope_test)
+add_executable(studio_sprite_clipboard_test test/studio_sprite_clipboard_test.cpp)
+target_link_libraries(studio_sprite_clipboard_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_sprite_clipboard_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_sprite_clipboard COMMAND studio_sprite_clipboard_test)
+add_executable(studio_library_split_test test/studio_library_split_test.cpp)
+target_link_libraries(studio_library_split_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_library_split_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_library_split COMMAND studio_library_split_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_animation_copy_test test/studio_animation_copy_test.cpp)
+target_link_libraries(studio_animation_copy_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_animation_copy_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_animation_copy COMMAND studio_animation_copy_test)
+add_executable(studio_animation_artwork_test test/studio_animation_artwork_test.cpp)
+target_link_libraries(studio_animation_artwork_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_animation_artwork_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_animation_artwork COMMAND studio_animation_artwork_test)
+add_executable(studio_animation_clipboard_test test/studio_animation_clipboard_test.cpp)
+target_link_libraries(studio_animation_clipboard_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_animation_clipboard_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_animation_clipboard COMMAND studio_animation_clipboard_test)
+add_executable(studio_animation_split_test test/studio_animation_split_test.cpp)
+target_link_libraries(studio_animation_split_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_animation_split_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_animation_split COMMAND studio_animation_split_test)
+add_executable(studio_library_copy_test test/studio_library_copy_test.cpp)
+target_link_libraries(studio_library_copy_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_library_copy_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_library_copy COMMAND studio_library_copy_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_export_test test/studio_export_test.cpp)
+target_link_libraries(studio_export_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_export_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_export COMMAND studio_export_test)
 add_executable(studio_lod_test test/studio_lod_test.cpp)
 target_link_libraries(studio_lod_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_lod_test PRIVATE SDL_MAIN_HANDLED)

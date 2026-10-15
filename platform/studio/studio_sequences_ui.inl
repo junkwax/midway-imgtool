@@ -36,6 +36,7 @@ void embedded_canvas(Tab &t,float height){
     ImGui::InvisibleButton("##embedded-stage",available,ImGuiButtonFlags_MouseButtonLeft|ImGuiButtonFlags_MouseButtonMiddle|ImGuiButtonFlags_MouseButtonRight);
     if(ImGui::IsItemHovered()){if(io.MouseWheel!=0)e.zoom=std::clamp(z*std::pow(1.15f,io.MouseWheel),.1f,32.f);if(ImGui::IsMouseDragging(ImGuiMouseButton_Middle)||ImGui::IsMouseDragging(ImGuiMouseButton_Right))e.pan+=io.MouseDelta;}
     dl->PushClipRect(pos,pos+available,true);dl->AddRectFilled(stage,stage+ImVec2(400*z,254*z),IM_COL32(28,32,40,255));dl->AddRect(stage,stage+ImVec2(400*z,254*z),IM_COL32(78,83,95,255));
+    dl->PushClipRect(ImMax(pos,stage),ImMin(pos+available,stage+ImVec2(400*z,254*z)),true);draw_stage(t,dl,stage,z);dl->PopClipRect();
     dl->AddLine(stage+ImVec2(0,e.floor*z),stage+ImVec2(400*z,e.floor*z),IM_COL32(100,106,120,180));
     auto r=embedded_record(t);if(r&&!r->script&&!r->entries.empty()){
         auto &v=r->entries[e.entry].values;if(auto im=t.art->sprite(v.index)){float x=(float)e.origin_x-anipoint_effective((short)im->anix+v.dx,im->w,t.flip,t.convention);float y=(float)e.origin_y-((short)im->aniy+v.dy);

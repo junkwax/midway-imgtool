@@ -31,6 +31,152 @@ duplicate/undo/redo and applying/undoing the resize dialog. ASM animation,
 legacy imports and additional paint tools,
 batch operations and game-pipeline exports remain pending.
 
+**Marked TGA sheet checkpoint (2026-10-14):** `studio_sheet` and its dedicated
+review UI add Marked/Shown/All/Selected whole-sprite sheet export with stable-ID
+exclusions, exact-color indexed palette merging or RGBA output, deterministic
+height-first shelf packing, bounded layout dimensions and a zoom/pan preview.
+Rectangles and selected primary-anchor crosses expose the actual layout. Packing
+cannot crop, overlap or omit included sprites; block rows remain available for
+exclusion. Identical palette words preserve indices, while mixed used RGB555 colors
+merge without approximation; opaque black stays nonzero. Indexed color overflow
+blocks instead of degrading the art. Source IMG format, pixels, metadata, dirty
+state, history and marks are unchanged.
+
+Optional classic ANF uses width 256, sprite coordinates up to 256×256, at most
+1000 faces and 6000 rows. Actual DOS `doc/it/itimg.asm:4358` writes count-minus-one
+and library-order faces after height sorting for layout; Studio follows those
+rules rather than the port's count and sorted-face differences. The TGA uses
+bottom-up indexed pixels and raw 15-bit palette words. General RGBA output has
+32-bit BGRA pixels with alpha and no ANF. Golden AFACE fields include signed anchors,
+legacy negative X words, four offsets and packed corner bytes. Different 8-bit RGB
+expansion rules in stb are accounted for while direct RGB555/index round-trips stay
+exact. Source-compatible formats are tested; no VUNIT runtime validation is claimed.
+
+Reviewed source/destination snapshots are re-derived before writing. Unicode paths,
+source/output aliases, foreign/tampered reviews, stale files and packing/color limits
+fail without source edits. Both replacements and existing-byte backups are staged
+before committing. Failed second replacement rolls back the first when it still
+matches the new bytes. If an external change prevents rollback, retain the backup
+and report it; two paths are not globally atomic against crashes/power loss/races.
+A Windows read-only ANF test forces this real second-replacement failure and checks
+both original files plus staging cleanup. Classic code is unchanged.
+
+All 60 Windows suites pass. Layout occupancy, indexed/RGBA color/transparency,
+ANF headers/order/coordinates, blocked/excluded rows, limits, stale/alias/tampered
+inputs, destination rollback and read-only CAGE1/CAVEYES/KITANA11/PURPRAIN fixtures
+are covered. ASAN model and compact software UI checks pass; hidden UI checks at
+both sizes exercise cancellation, marks/exclusions, row selection, actual paired
+export, stale outputs/sources and RGBA/ANF switching. The intermittent user launch
+memory exception remains unconfirmed; passing checks do not establish its cause.
+
+**Indexed legacy media checkpoint (2026-10-14):** `studio_legacy_media` and its
+review UI add full-canvas LBM/IFF and indexed TGA import, plus separate selected
+sprite LBM/TGA exports. Owned bounded readers handle PBM and 1–8-plane ILBM,
+raw/ByteRun1 rows and mask/transparent-color normalization; TGA handles raw/RLE,
+map origins, 15/16/24/32-bit palette entries and both orientations. Unmasked
+source index zero follows IMG transparency; explicit mask/alpha relocates opaque
+zero only when needed and reports it. RGB555 quantization preserves palette order.
+HAM/EHB, ANIM, destination plane merging, partial palette alpha and an unrepresentable
+256 opaque colors plus transparency are rejected. New imports keep secondary
+anchors unused (also fixes the batch importer default). Existing IMG format remains
+immutable on save, including after imports into the older CAVEYES library.
+
+Import reviews palette choice, name, full-canvas pixels and anchor (click or numeric),
+then uses the existing staged batch transaction with one Undo. LBM hotspot anchors
+survive export/reimport. TGA has no IMG anchor representation. LBM writes PBM with
+BMHD/CMAP/GRAB/BODY; TGA writes indexed 32-bit BGRA palette entries with alpha zero
+for index zero. Export reviews snapshot/source generation and destination contents,
+rechecks source and output bytes at write time, rejects source/open-library aliases,
+and writes atomically. Neither dirty state nor history changes. Filesystem Unicode
+paths, bounds, malformed runs, every truncated exported prefix, masked bitplanes,
+palette origins/orientations, alpha and pixel/color round-trips have model coverage.
+Truevision colors are cross-checked with the bundled stb_image decoder. Readers
+follow the [Amiga ILBM specification](https://wiki.amigaos.net/wiki/ILBM_IFF_Interleaved_Bitmap)
+and the source format adapters; classic UI/IO remain untouched.
+
+All 59 Windows CTest suites pass. Model export/import/save/reopen checks use read-only
+CAGE1, CAVEYES, KITANA11 and PURPRAIN fixtures. ASAN covers those and all 85 older
+IMG round-trips. Hidden UI checks exercise cancel/import/Undo, source palette versus
+matching, export and changed-destination refusal/rebuild at both window sizes,
+including the software renderer/memory build. This is single-sprite indexed exchange;
+the sheet checkpoint above completes marked TGA export; advanced IFF modes remain separate work.
+
+**Older IMG compatibility checkpoint (2026-10-13):** Studio accepts validated
+WIMP near layouts `0x60a`–`0x631`, in addition to existing `0x634`–`0x654`
+layouts. `studio_img_codec` checks the owned byte snapshot and loads directly
+from it, removing the checked-path/reopened-path gap. Classic loading/writing
+and its UI remain unchanged. Near records map frame/Z and point/alternate fields
+separately; 58-byte headers and 16-byte entries expand to the existing owned
+98/18-byte model and project back on save. Pointer placeholders, padding/spares,
+raw names, palettes, points, alternate tables, sequence order and script calls
+survive that translation. Pre-alternate reserved words and empty-pool header
+sentinels remain with stable sprite identities / source provenance.
+
+**User requirement: IMG format must never change.** Save / Save As retain the
+source version and record layout for every existing IMG. The format-conversion
+menu and save API option are removed. The serializer uses the captured source
+version and validates it again before atomic replacement; codec-state changes
+cannot upgrade or downgrade the output. The footer identifies older libraries. Saves
+block unrepresentable far pointers, sequence damage metadata, damage tables or
+alternate palettes before their format threshold, leaving the destination intact.
+The shared writer's scratch fields are restored so save/failure does not create
+untracked metadata edits. Saves can repack payload placement; this is format and
+content preservation, not a promise that every first save keeps physical offsets.
+Near files with unaccounted trailing bytes are rejected. Pre-`0x60a`, pre-WIMP 5
+and transitional `0x632`/`0x633` records still need separate adapters.
+
+All **58/58 Windows CTest suites pass**. Independent near-format golden fixtures,
+every truncated prefix, pointer/range errors, Unicode paths, sentinel/reserved
+words, compressed rows, sequence editing/reorder/undo and format-preserving Save As
+are covered. Tests check all 33 supported far-format version values and refuse
+unrepresentable older edits on existing and new destinations. All **85 older MK2 libraries** open/edit/save/reopen in temporary
+folders; inverse conversion reproduces their original bytes and originals remain
+untouched. ASAN passes those fixtures and modern CAGE1/KITANA11/PURPRAIN regressions.
+Hidden UI checks pass at both sizes, including the memory build/software renderer,
+embedded playback/edit/undo, format-preserving copies and File menu. LOD UI regression
+and a real KANG2 older-library launch also pass. The user's intermittent Windows
+memory exception is still unconfirmed; these checks do not establish its cause.
+
+**Pipeline export checkpoint (2026-10-13):** `studio_export.{h,cpp}` and its review
+UI provide TBL, IRW and ANILST exports in one library. Marked/Shown/All/Selected
+whole-sprite scopes, stable-ID exclusions and library order are explicit. Source
+pixels/palette fields are owned snapshots; no classic globals or IMG mark flags
+are borrowed. Writing re-derives rows, sources and output bytes, checks owner/
+generation and destination contents, then replaces one output file atomically.
+Wrong extensions, source paths/aliases, open-library destinations, changed sources/
+targets and tampered plans are rejected. Dirty state/history/marks remain intact.
+Only successful settings/scope/exclusions persist in the current tab's session.
+
+One uncompressed layout drives both TBL addresses and IRW packing. Depth uses
+fixed 1-8, palette size or visible indices; insufficient fixed depth blocks instead
+of truncating. Word/nibble/packed padding, word-aligned base, 32-bit range checks
+and optional dual-bank record/SAG adjustment are supported. TBL runtime CTRL is
+(bpp & 7) << 12; editor flags do not become DMA flags. Every included record gets
+its optional palette pointer, primary signed anchors and optional MK3 secondary
+anchors. Invalid/duplicate sprite labels and conflicting palette labels block.
+ANILST is the classic sequential sprite list, not embedded animation/script export.
+
+Inspection of DOS source and shipped CAVEYES/BOSSHAM IRWs established the true
+44-byte header (16-bit checksum/magic) + 24-byte record, rather than the classic
+port's 48-byte header. Studio emits that DOS layout and one contiguous payload,
+which the existing MK2 makevrom.parse_irw function accepts. Word checksums and all
+1-8 depths, cross-word packing and source padding are tested. Classic code stays
+unchanged. Reviews, output and prior-destination snapshots are bounded to 128 MiB.
+
+57/57 Windows tests pass, including golden assembly/binary, mixed depths and
+alignment, bank addresses, label/index errors, history/metadata/global preservation,
+stale/tampered/foreign plans, Unicode and destination/source-alias guards. CAGE1,
+KITANA11 and PURPRAIN exports decode every pixel exactly and leave original files
+unchanged. Hidden export checks pass at both sizes with real inclusion, depth/MK3,
+scope, rebuilding, exporting/reusing settings, cancel and stale source/target checks.
+LOD/batch/tools/home checks also pass. AddressSanitizer export fixtures and the
+compact export UI check pass without memory errors. No new user crash dump exists;
+startup's specific intermittent fault remains unconfirmed.
+
+This is a new raw layout, not a preservation of shipped ROM allocation or LOAD2
+compression/deduplication/scaling/multipart-box builds. Palette definitions remain
+separate. Legacy formats and specialist game/script/source workflows still remain.
+
 **LOD loading checkpoint (2026-10-13):** `studio_lod.{h,cpp}` and its owned
 review dialog load references into separate tabs. Unicode/BOM/quotes/comments,
 manifest-relative/as-written/IMGDIR resolution and forced basename overrides
@@ -79,6 +225,21 @@ fixed before the final 55/55 result. Its Windows dialog could explain the report
 if titled `studio_lod_test.exe`; that identity is unconfirmed and was requested.
 No matching Studio crash event was found. Do not equate clean tested paths or
 ample current system memory with resolution of an intermittent user failure.
+
+**Memory-fault capture checkpoint (2026-10-13):** the user confirmed the Windows
+read/written error wording; application and exception code remain unavailable.
+Studio now logs the faulting memory operation/address and writes a uniquely named
+MiniDumpNormal beside startup.log, with precomputed Unicode paths and a one-writer
+reentry guard. DbgHelp remains a Windows system dependency. Release Studio and its
+core library compile with debug information and retain optimization; the Studio
+executable links a matching imgtool-studio.pdb for dump interpretation. Windows
+exception handling continues after capture; this does not recover a corrupt process.
+A Windows-only test supplies a fabricated exception record plus real CPU context
+to the dump writer and verifies the resulting exception stream, without generating
+a Windows crash dialog. Normal/no-output, Unicode, reentry and missing-folder cases
+are covered. 56/56 Windows tests pass; standard Direct3D/software startup with user
+preferences and the home/open/close smoke check pass. This adds evidence capture;
+it does not establish the cause or claim the user's intermittent failure is fixed.
 
 **Batch restoration checkpoint (2026-10-13):** Sprite > Restore child sprites
 adds an owned parent-to-child review in the current library, using existing stable
@@ -1031,3 +1192,619 @@ Required checks before calling the fork usable:
 - No source IMG, WAX, assembly or ROM assets were edited. No release, push or deployment was performed.
 
 These checks establish a working baseline and reusable tested components. They do not validate a Studio implementation, the complete GUI interaction model, or in-game fidelity. The next implementation should start with Slice 1 and its ownership/save contracts, rather than another styling patch.
+
+
+## Studio migration — reference staging and inspection (October 14, 2026)
+
+Completed BDD/BDB read-only scenery, cross-library feature-based anchor linking,
+IMG ten-point table editing, and existing TBL comparison. User-facing details and
+limits are documented in README.md; STUDIO_MIGRATION_CHECKPOINT.md is the active
+handoff. IMG source versions/layouts remain immutable; classic UI/IO are unchanged.
+
+Stage pixels are owned snapshots; draw/export share camera/opacity. References
+remain session-only, as in classic; no promise of game parallax/runtime floors.
+Link review changes only the chosen target's primary anchor, in one undo, with
+explicit target history/save. Point tables remain their native optional 40-byte
+block, not a substitute for game strike sources. TBL differences use the existing
+pure parser/diff and explicitly exclude unknown runtime flags/ROM allocation.
+
+64 Release suites and the four ASAN model suites pass. Real stage comparisons
+match classic pixels; DSRT1 missing colors are disclosed. MK1SKULL has 42 matches,
+zero drift. New UI checks cover both window sizes; compact ASAN checks pass.
+Malformed/source-stale/duplicate/overflow/foreign plans refuse work or show a
+refresh requirement. No user assets changed. Next game work remains ASM/script
+runtime, strike/fatality/reactions sources, unsupported WAX rules; specialist
+palette and bulk-library commands also remain.
+
+
+## Studio migration — MK2 strike source workspace (October 14, 2026)
+
+Added an independent owned ASM document, record/fighter browsing, shared alias
+awareness, staged operands and corner-based preview, source-specific undo/redo,
+reviewed exact-byte Save/As, and dirty close/reload/quit guards. IMG history and
+format are untouched. Read-only real source parses 257 editable strike records;
+one non-record table declaration remains disabled. Original game assets stay
+read-only; edits and failure injection use generated fixtures.
+
+The source core adds a pure parse_text entry point to the existing classic parser;
+classic load/save behavior is verified by field parity and roundtrip checks. The
+new writer only replaces changed operand spans and preserves original byte layout.
+The preview uses the actual JOY.ASM object-origin/facing collision formula. Manual
+sprite selection is explicit; animation/script binding, phase-table execution,
+includes/conditional evaluation and sidecar editing remain pending.
+
+65 suites pass; new ASAN model and compact UI checks pass. UI scenarios exercise
+preview cancellation, alias updates, target-independent history, reviewed write,
+external destination refusal, quit cancellation and saving before source replacement.
+
+## Studio migration — ASM source preview and strike associations (October 14, 2026)
+
+Added a bounded, owned, read-only ASM source inspector with animation/anitab
+browsing, alias groups, multipart frames, signed word adjustments (including
+facing-dependent X direction), flips, segment boundaries, source jump traversal,
+local anchor tables and visible runtime/unsupported-command notices. No includes,
+assembly conditions, arbitrary routines or game phase timing execute. The original
+classic viewer is unchanged; Studio uses its owned Artwork identities instead of
+classic global document lists. Ambiguous pieces require an explicit library choice.
+
+Preview transport, origin/facing/floor placement and cross-library lookup feed
+the existing strike source editor. Name suggestions reuse the tested strike_bind
+logic; explicit overrides are session associations. Strike overlays do not imply
+active-frame timing. Sidecar persistence, phase rules, runtime calls, slave-object
+commands and fatality/reaction tooling remain pending. IMG IO is unchanged.
+
+66 Release suites pass. Model tests use real MKJC/CAGE1 read-only fixtures and
+verify byte-identical IMG saves; generated fixtures cover malformed operands,
+aliases, branches, loops, local tables, duplicate/missing/renamed/reordered pieces
+and bounds. GUI checks cover both window sizes, source load failure retention,
+transport, multipart resolution and animated strike dragging/apply/history.
+Compact ASAN model/UI checks pass; real Cage source/strike rendering is inspected.
+
+
+## Studio migration — persistent strike associations (October 14, 2026)
+
+Added owned classic .imgtool sidecar documents keyed by strike source path, with
+explicit disabled associations (`-`), independent history, source-switch retention,
+reviewed atomic saves, external-change refusal, dirty reload and application quit
+resolution. The ASM picker reads these documents and preserves overrides across
+animation source replacement; missing bound labels do not silently fall back.
+Tools > Strike associations exposes all cached documents, original/unmodified text
+and warnings. Source Save As uses another sidecar while retaining older edits.
+
+The byte-span editor preserves comments, BOM, whitespace, mixed endings, unknown
+lines and other fighters. All duplicate assignments change consistently; removing
+an override restores name suggestions. Unusual assignment lines are preserved and
+refuse targeted changes. Writes protect open IMG/project/ASM aliases and recheck
+both destination contents and aliases when confirmed. Source ASM/IMG IO and the
+original classic tool remain unchanged. Bounds: 256 KiB, 2048-byte lines, 4096
+lines/pairs, 100 / 16 MiB history per sidecar, 32 retained documents.
+
+67 Release suites pass. Generated fixtures check classic parser compatibility,
+Unicode, duplicate/case matching, disabled/default rules, history, exact byte
+preservation, foreign/tampered/stale reviews, external changes, alias refusal and
+write failure. Both GUI sizes exercise save/reload/undo/redo, stale destinations,
+source replacement with two dirty sidecars, quit cancellation/save/discard, and
+subsequent strike-source quit protection. ASAN model and compact GUI checks pass.
+Runtime active-frame/phase rules and game execution remain pending.
+
+
+## Studio migration — strike phase inspection (October 14, 2026)
+
+Added a read-only inspector for source phase directories, threshold pairs and
+countdown-based record selection. It uses the actual `get_stk_phases`,
+`pick_stk_phase` and `striker` rules from MKSTK/JOY, including two-long directory
+entries, two-word thresholds, signed long -1 terminators, native sign extension,
+PHASE_MAX bounds/fallback, and no strike at countdown zero. Profile choices resolve
+stkphase/wunit, negation, literal 0/1 and else nesting; includes, arbitrary symbols,
+other build conditions and assembly assertions are not evaluated. Contiguous slot
+walking includes inline labels and conditional appended rows. Ambiguous or
+unavailable results do not produce a guessed overlay.
+
+The UI exposes manual window length and step/play/reset, conditional slot numbers,
+selected/base outlines, sprite/ASM frame selection and an existing strike-editing
+handoff. Phase lists are not authored in this pass. Artwork selection is separate
+from active countdown; startup/recovery/hit interruption and runtime timing are not
+inferred. Source snapshots refresh on geometry edits/undo/replacement. Browsing and
+preview flags never dirty or save ASM, sidecars or IMG. IMG IO/format and classic
+UI remain unchanged.
+
+68 Release suites pass. New model tests exercise the real low-kick phase records,
+slot 23/24 shifts, signed sentinels, directory padding refusal, bounded fallback,
+unknown/symbolic data, aliases, duplicate labels, malformed nesting, DOS EOF,
+compound rows and input limits; real source bytes/history remain unchanged.
+Both GUI sizes cover countdown boundaries, playback ending, unsupported external
+tables and geometry edit/undo refresh. Compact ASAN model/UI checks pass. Real Liu
+Kang multipart artwork is inspected; strike/binding/ASM regressions pass.
+
+
+## Studio migration — existing strike phase editing (October 14, 2026)
+
+The phase inspector now stages edits to existing threshold / strike-slot word
+pairs and previews their countdown selection before Apply. Active consumer lists
+are reviewed for the explicit stkphase/wunit assumptions; shared lists must resolve
+all affected character/base slots and all candidate strikes must be complete,
+editable local records. Unknown or external consumers refuse review. Neither
+build settings nor includes/assertions are evaluated. Existing list size stays
+fixed within PHASE_MAX, thresholds decrease strictly and finish at zero, and
+literal thresholds/slots must fit 0..32767 / 0..255. Conditional or symbolic rows
+cannot be rewritten. Directories, labels and declarations are not authored.
+
+Validated patches replace only operand byte spans, preserving comments, spacing,
+BOM, mixed line endings, compound rows and DOS EOF. Foreign, stale or altered
+patches are rejected. Geometry and phase edits share one bounded ASM history and
+the existing reviewed atomic source save, external-change checks and dirty-source
+quit guard. Unchanged UI values keep their exact literal spelling. Apply never
+writes a file; Cancel discards the staged preview. IMG data/history/format and
+classic UI remain unchanged. Validation describes the selected profile only;
+automatic active timing, artwork synchronization and runtime execution are pending.
+
+68 Release suites pass. Model coverage adds byte-exact edits, aliases/shared
+consumers, invalid thresholds/slots/layout, profile/external-table refusal,
+foreign/tampered/stale patches, no-ops, interleaved geometry history and reviewed
+save/reopen. Real MKSTK is reviewed without applying or saving edits. GUI checks
+at both sizes cover Apply/Cancel, integer overflow refusal, undo/redo, reviewed
+save, source quit cancellation and unchanged IMG history. Compact ASAN model/UI
+checks and phase/strike/binding/ASM UI regressions pass. Generated fixtures only;
+no original game files are written. New smoke mode: phases-edit (104 frames).
+
+
+## Studio migration — batch sprite rename (October 14, 2026)
+
+Sprite > Batch rename now migrates classic's numbered, prepend and tail-numbered
+marked-image rename, adding explicit Marked/Shown/All scope, zero padding, stable-ID
+exclusions, old/new row review and final-state case-insensitive collision checks.
+Numbering follows library order and does not move when rows are excluded. Names
+must fit 1..15 printable ASCII characters without spaces; no truncation or automatic
+suffixing occurs. Conflicts with excluded or out-of-scope sprites block Apply.
+Existing duplicate names do not prevent unchanged/excluded rows from being kept.
+
+The owned plan validates owner/generation, source visible/raw names and regenerated
+results before one history transaction. Pending edits, stale sources and modified
+reviews are refused. No-op previews create no history or dirty changes. Only the
+visible name buffer changes; stable sprite IDs, selection identity, pixel/palette
+buffers, anchors/points, alternate palettes, opaque metadata and embedded indices
+remain attached to the same images. The shared writer retains trailing raw-name
+bytes with its existing splice behavior; renames can affect name-based LOAD2 hashes.
+External ASM/TBL references are not rewritten. IMG format/layout never changes.
+
+69 Release CTest suites pass. Tests cover metadata and byte-level save fidelity,
+near 0x610/far 0x634 layout retention, classic naming modes, library order/padding,
+exclusions/collisions/atomic shifts, no-ops, stale/foreign/tampered plans, pending
+edits, Unicode paths, embedded references and exact undo saves. CAGE1 edits write
+temporary copies only and confirm the original source remains unchanged. Generated
+GUI checks at both sizes cover real prefix text input, Apply/Cancel, exclusions,
+collision refusal, undo/redo, save/reopen, search scope, rule switching and stale
+review refusal. Compact ASAN model/UI checks pass; batch geometry, embedded,
+alignment and phase-editing GUI regressions pass. Mode: batch-rename (92 frames).
+Remaining bulk delete/assignment/copy and game runtime workflows remain separate.
+
+
+## Studio migration — bulk palette assignment (October 14, 2026)
+
+Palette > Assign to multiple sprites migrates classic's SetPaletteOfMarked to an
+owned review for Marked/Shown/All scope, destination selection, matching or raw
+index retention, stable-ID exclusions and primary-palette before/after previews.
+Rows expose incompatible indices and active alternate-palette conflicts. Color
+matching uses the existing nearest opaque RGB555 slot helper and retains index zero.
+Approximate matching requires the review checkbox. Keep indices permits intentional
+recoloring and can resolve indices undefined by a valid old palette if the target
+contains them. Missing palettes cannot be guessed. Same-palette rows are no-ops,
+including duplicate-color indices that must not be collapsed by matching.
+
+Active alternate palettes prohibit index-changing matches; exact matches that keep
+indices and raw assignments retain alternate appearances. No palette grows, shrinks,
+changes color, or changes order/depth. Geometry, anchors/points, raw names, baselines,
+row padding, alternate buffers, stable IDs, selection identity and embedded references
+stay intact. The loaded near/far version and layout remain fixed. PPP reports newly
+crossed color limits only; other palette-size changes can also affect LOAD2 packing.
+Build settings remain unchanged and Apply never saves automatically.
+
+Owned pixel/field/palette snapshots and regenerated-result comparison refuse stale,
+foreign or modified plans before one atomic history transaction. Pending edits and
+included incompatible rows refuse Apply; excluded errors remain visible. No-op
+reviews create no dirty/history changes. Limits: 2000 sprites, 256 MiB before/after
+pixel snapshots, 4 million pixels per sprite, palettes up to 256 colors, PPP 0..8.
+Textures and pixel plans are released on close/quit.
+
+70 Release suites pass. Model tests cover opaque/transparency matches, duplicate
+colors, primary recoloring, padded rows, unknown source indices, alternate guards,
+approximation opt-in, PPP threshold findings, unchanged palettes and metadata,
+embedded indices, exclusions/no-ops, owner/generation/tampered/pending guards,
+Unicode save/reopen and byte-exact undo. Near 0x610/far 0x634 layout retention is
+verified; real CAGE1 edits write temporary copies and preserve the original asset.
+GUI checks at both window sizes cover destination/mode selection, alternate conflicts,
+exclusions, exact/approximate/raw assignment, Apply/Cancel, save/reopen, undo/redo,
+search scope, stale refusal and retained pixel selection. Compact ASAN model/UI pass.
+Rename, palette editing/merge/compaction and embedded UI regressions pass. New smoke
+mode: batch-palette (118 frames). Bulk deletion/cross-library copy remain pending.
+
+
+## Studio migration — bulk sprite deletion (October 14, 2026)
+
+Sprite > Delete multiple sprites now reviews Marked/Shown/All scope, stable-ID
+exclusions, row dimensions, embedded/open-scene references and the source sprite.
+Exclude referenced sprites handles blocked rows in one click. The button deletes
+only reviewed rows, retains at least one sprite, and commits in one undo step.
+Family/subframe expansion and automatic unused-palette cleanup are separate work.
+External ASM/TBL files, closed scenes and project history are not scanned.
+
+The model parses bounded embedded data, counts per-sequence references, rejects
+invalid positive image indices, and distinguishes script sequence targets from
+sprite targets. Referenced sprites cannot be deleted. Remaining sequence indices
+are remapped through the existing helper without changing script indices, negative
+sentinels or opaque entry bytes. Current scene uses are checked through document
+and sprite IDs each frame and again at Apply. Scene save resolves surviving IDs
+at their new disk slots. Selected surviving IDs stay selected; a removed selection
+moves to the next survivor (or last if no later sprite remains).
+
+Owned source fields/pixels/colors and the full embedded snapshot are regenerated
+before mutation, rejecting stale, foreign, modified or pending reviews. All-excluded
+reviews create no history. Survivors retain their original geometry, metadata,
+palettes and identity. Existing complete artwork history restores removed pixels,
+baselines, raw name tails, point/alternate tables, indices and selection. Near/far
+IMG versions and record layouts remain unchanged; deletion naturally changes counts
+and can affect game allocations. Review limits: 2000 sprites, 128 MiB preview pixel
+snapshots, 4M pixels per sprite, existing embedded 32 MiB / 4096 record-entry limits.
+Preview textures and pixel plans are released on close/quit.
+
+71 Release suites pass. Tests cover embedded counts and remapping, opaque/script/
+negative bytes, scene document/ID resolution, referenced-row refusal, exclusions,
+last-sprite protection, no-op/pending/stale/foreign/tampered plans, selected fallback,
+metadata/history, Unicode save/reopen, near 0x61d/far 0x634 retention and exact undo
+saves. CAGE1 tests write temporary copies only and confirm the original asset stays
+unchanged. Both GUI sizes cover blocked deletion, exclusions, undo/redo, IMG/scene
+save, newly added scene references, search/all scopes, stale review and last-sprite
+protection. Compact ASAN model/UI pass; rename, palette assignment, embedded, project
+and alignment GUI regressions pass. Smoke mode: batch-delete (112 frames).
+Cross-library copy and remaining specialist workflows are still pending.
+
+
+## Studio migration — cross-library sprite copy (October 15, 2026)
+
+Sprite > Copy to another library appends Marked/Shown/All source sprites to a
+second open document. Destination selection, source preview, exact copied names,
+prefixes, exclusions and palette assignments form the review. Collisions block
+rows instead of replacing sprites or auto-truncating names. Copies get new stable
+identities and select the first appended sprite. Source data/history stay intact;
+all destination additions share one undo step. Nothing is saved automatically.
+
+Primary and active alternate palette dependencies are collected by source index.
+Each required palette is copied once, retaining colors, depth and opaque metadata.
+Optional exact reuse requires matching normalized PAL fields and color words;
+reusing colors alone is insufficient. Alternate references are rebased with default
+references 0..2 and trailing bytes preserved. Unrepresentable byte references and
+alternate blocks in pre-0x61d destinations are refused. Pixel indices/padding,
+anchors, points, baselines, raw name bytes and opaque fields are copied; the writer
+retains name-tail bytes where not occupied by the reviewed new name. Active source
+overlay layers and unresolved primary/alternate palettes are refused. No colors are
+quantized, palette slots reordered, or destination formats changed.
+
+Owned snapshots of both generations, sprite fields/buffers and palette fields/
+colors are regenerated and compared before staging. Pending edits, stale/foreign/
+modified plans refuse Apply. All objects and ID capacity are staged before linking
+into the destination; all-excluded reviews are no-ops. Exclusions rebuild dependencies
+so unused palettes are not appended. Limits remain 2000 destination sprites,
+4093 palettes, 128 MiB destination decoded pixels, 4M pixels per sprite and 256 MiB
+review pixel/baseline snapshots. Close/quit release review textures and snapshots.
+
+72 Release suites pass. Model tests cover exact indices/padding/baselines/metadata,
+shared and alternate palettes, default/sentinel bytes, raw name tails, name conflicts,
+reuse/exclusions, no-ops, stale/source/destination/pending/foreign/tampered reviews,
+new identities/history, unchanged embedded records, Unicode saves and byte-exact
+undo. Near 0x610 and far 0x634 destination retention is verified, including blocked
+unsupported alternates. CAGE1 tests copy into temporary documents and leave the
+original untouched. Both GUI sizes cover copy, destination switching, real prefix
+input, collisions, reuse choices, exclusions, source/search/all scope, undo/redo,
+save/reopen and mutations of either document during review. Compact ASAN model/UI
+pass; deletion, palette assignment/editing, embedded and project UI regressions pass.
+Smoke: library-copy (110 frames). Automatic child expansion, embedded record
+transfer and a clipboard surviving source closure remain separate work.
+
+
+**Child-piece review checkpoint (2026-10-15):** Bulk library copy and deletion now
+share `studio_sprite_scope.*`. Include child pieces defaults off, expands only
+direct children of explicitly scoped sprites, follows the classic split-letter /
+underscore / dash / trailing-number rules, and requires equal source-library
+labels. No sibling promotion or recursive expansion. Duplicate visible parents
+and competing naming-rule parents are ambiguous: skip, count, and show names on
+hover rather than guessing. Explicit scope membership wins; rows remain in
+library order, with stable parent IDs and parent labels for added pieces.
+
+The original scope, expansion choice, ambiguity list and per-row origins are
+captured and regenerated at Apply in both models. Tampered/stale scope refuses
+mutation. Changing the option preserves row exclusions; excluding a parent does
+not cascade. Copy still rebuilds required palettes from included rows. Embedded
+and current open-scene references still protect every included deletion row,
+including implicitly added children. Existing one-step history and IMG
+version/layout retention are unchanged. Source labels are runtime provenance;
+reopening an IMG gives its sprites the same source-library label. No on-disk
+relationship fields are added.
+
+73 Release suites pass. The family model suite covers direct/nonrecursive scope,
+source namespaces, word suffixes, case sensitivity, duplicate/overlapping parent
+ambiguity, explicit overrides, invalid IDs, copy/delete exclusions, scope
+snapshots, child references, remapping, undo/redo and save/reopen. Family UI smoke
+(74 frames) covers both dialogs, toggles/exclusion persistence, reference refusal,
+apply/history at wide and compact sizes. Compact AddressSanitizer model/UI and
+existing copy/delete UI regressions pass. Embedded record transfer, a persistent
+sprite clipboard, split/move-to-library and unused-palette cleanup remain pending.
+
+
+**Unused-palette cleanup checkpoint (2026-10-15):** Palette > Remove unused
+palettes adds a whole-library review in `studio_palette_cleanup.*` plus UI/smoke.
+All owned palettes are listed with primary sprite use counts, active alternate
+reference counts, color swatches and old/new indices. Only unused hides used
+rows. Unused rows initially selected; keep individual palettes, Keep all or Select
+all unused. Referenced rows are protected. Names/raw metadata, exact words,
+color counts and bit depth remain unchanged in retained palettes; no merging,
+color-slot compaction or pixel-index changes. Default alternate references 0..2
+and bytes at/after the first terminator >=128 remain verbatim. Remap the owned
+alternate slots only, including full sixteen-slot tables without a terminator.
+
+Owner/generation, all palette fields/words and sprite fields/alternate buffers are
+re-derived at Apply. Foreign, pending, stale and modified reviews refuse mutation.
+Unresolved primary/alternate references, invalid palette data, invalid keep choices
+and removal of the last palette are blocked. Keep-all is a no-op with no history.
+Relink survivors and remap references in one artwork Undo step. Stable sprite IDs,
+selection, pixel/baseline data, anchors, point tables and embedded records remain
+intact. No automatic cleanup as a side effect of deletion; no automatic save.
+Existing format retention remains unchanged. External palette-name references
+in ASM/TBL files or closed projects are not scanned; keep those palettes explicitly.
+
+74 Release suites pass. New model tests cover partial/all/no-op choices, repeated
+and default alternate refs, trailing bytes, full sixteen-entry alternates, highest
+active byte reference 127, raw metadata, unchanged pixels/baselines/points/embedded
+records, ownership/stale/pending/tamper guards, malformed references/colors,
+selection/history, Unicode save/reopen, near 0x61d / far 0x634 format retention and
+byte-exact saved undo. Real CAGE1 input stays read-only; outputs use temp files.
+Both GUI sizes plus compact ASAN model/UI pass. UI tests cover keep/protected rows,
+filter/swatches, reference remapping, Apply, undo/redo, save/reopen, Keep all no-op,
+Cancel and stale refusal. Existing palette/compaction/family/project UI regressions
+pass. Smoke: palette-cleanup (92 frames). Persistent sprite clipboard, embedded
+record transfer, split/move and specialist/runtime tooling remain pending.
+
+
+**Sprite clipboard checkpoint (2026-10-15):** Sprite > Copy sprites to clipboard
+adds a reviewed Marked/Shown/All capture with optional direct child expansion and
+per-row exclusions. Sprite > Paste sprites from clipboard reviews the fixed
+captured set against any open destination, including the original library.
+Names/prefixes, exact palette reuse, exclusions, alternate dependencies, capacity
+and existing-format guards use the existing library-copy model. Normal live
+library copy keeps its original behavior. Clear sprite clipboard is available
+from Sprite and Edit; the paste tooltip reports captured count/source.
+
+`SpriteClipboard` owns an independent Artwork, palettes and scope provenance,
+without borrowing tabs or copying embedded sequences/scripts. Palette references
+are normalized to its owned set; default/trailing alternate bytes remain intact.
+Capture validates the original review and builds detached objects through the
+same staging helper as ordinary copy. No source mutation/history and no extra
+history snapshots in clipboard storage. A failed capture or Cancel leaves the
+previous clipboard. Successful capture replaces it atomically. Paste reviews
+hold a shared immutable snapshot so clearing/replacement cannot dangle the review.
+Source edits/closure cannot alter captured data. Session memory only; no OS
+clipboard integration or restart persistence. Pixel and palette-color clipboards
+remain separate. No change to any existing IMG version/layout. Paste appends in
+one destination undo step; it never transfers source embedded records or saves.
+
+75 Release suites pass. The clipboard suite verifies owned buffers/raw metadata,
+child provenance/exclusions, stale/pending/tampered capture refusal, source edits
+and destruction, repeated paste/collisions/prefix/exact reuse, shared lifetime,
+replacement, near 0x610 unsupported-row refusal, far 0x634 save/reopen and exact
+saved undo. Wide/compact GUI tests cover capture, child inclusion, Cancel preserving
+the old clipboard, actual source-tab closure, paste with no source tab, exclusions,
+undo/redo/save/reopen, conflicts/typed prefix, replacement, stale refusal, Clear,
+and unchanged pixel clipboard. Compact ASAN model/UI pass, plus existing live-copy
+and family UI regressions. Smoke: sprite-clipboard (144 frames). Embedded transfer,
+split/move-to-library and broader specialist/runtime features remain pending.
+
+
+**Split-library checkpoint (2026-10-15):** Sprite > Split to new library extends
+the reviewed transfer UI with a separate unsaved IMG tab. Marked/Shown/All scope,
+optional direct children, exclusions and required primary/alternate palette copies.
+Copy defaults on; Move from source is explicit. The split target inherits the
+source's exact version/header reserve policy, rather than offering conversion.
+Near pre-0x61d per-sprite reserve words are copied by old-to-new stable ID mapping.
+New data owns its buffers, has no initial undo snapshot or placeholder sprite,
+and is dirty so normal close/quit guards protect it. Embedded records stay in
+source and are not transferred; palette counts/colors/depth are retained.
+
+Preparation reuses validated copy snapshots and detached staging. The UI allocates
+and initializes the new tab, inferred sequences, tab capacity and status before
+source removal. Move requires equal copied/removed ID sets and revalidates source
+and deletion reviews; referenced and last-sprite removal is refused. Current open
+scene uses are checked continuously and again at Apply. Exclude referenced sprites
+mass-keeps protected rows. Per-row/preview provenance and uses stay visible.
+Remaining embedded sprite indices remap with ordinary deletion logic. Source
+palettes remain. One source undo restores removed sprites; the new library remains
+independent. Copy leaves source history unchanged. No automatic saves; external
+references/closed projects are not scanned. No change to existing IMG formats.
+
+76 Release suites pass. Split model tests cover owned metadata/pixels/padding/
+baselines/points/alternates, source-unchanged copy, dirty initial tab, reference
+blocking, mismatched/tampered/stale/pending/empty/occupied reviews, source selection,
+survivor indices/scripts, history, near 0x610 reserves, far 0x634 save/reopen and
+byte-exact source Undo. Real CAGE1 stays read-only. Both UI sizes and compact ASAN
+model/UI pass: copy, unsaved-close guard, child pieces, Move protection/exclusion,
+publication, source Undo/Redo, save/reopen, added scene refs, stale refusal and
+scopes. Existing live-copy, clipboard and family UI regressions pass. Smoke:
+library-split (114 frames). Embedded transfer, move to an existing library and
+broader specialist/runtime workflows remain pending.
+
+
+**Embedded animation-copy checkpoint (2026-10-15):** File > Copy IMG animations
+to library, plus Animation > Copy to another library in IMG animations mode,
+adds `studio_animation_copy.*` with an independent review controller. Select
+sequences/scripts, auto-include called sequences, review unique name-based sprite
+bindings already in destination. A separate destination sprite prefix supports
+prefixed artwork without renaming it. An animation-name prefix resolves record
+collisions. Missing/ambiguous names, unresolved targets, oversized names/records,
+active source sequence damage-table bindings and near-layout-incompatible fields
+block Apply. Source duplicate sprite names are rejected even if destination has
+one match, avoiding conflation of distinct raw-name-tail sprites.
+
+Both raw embedded blobs/counts and owners/generations are captured. Sprite IDs,
+indices and full fields are snapshotted for every required binding. Apply
+re-derives and compares rows/bindings/output, refuses pending/foreign/stale or
+modified reviews, then installs the complete output as one destination history
+step. Existing sequences remain first, incoming sequences append, then existing
+scripts, then incoming scripts. Existing record bytes and call indices remain
+unchanged. Incoming entry +4 target words are the only entry bytes changed.
+Sequence disk order stays reversed; scripts stay forward. Prefix edits preserve
+name tails beyond the new terminator. Negative sentinels stay opaque. Source,
+sprite/palette data, selection and existing game tables are not modified. The
+destination opens at its first new sequence/script for inspection and Undo.
+No automatic save, no on-disk format change, no artwork creation/replacement,
+no damage/global binding transfer and no script engine execution.
+
+77 Release suites pass. Model tests include dependency closure, repeated matches,
+reordered destination sprites, raw headers/entries/timing/offsets, exact existing
+record bytes, prefixes and prefixed sprite bindings, empty/no-op records,
+collision/missing/ambiguous/invalid references, case matching, ownership/pending/
+stale/tampered guards, negative calls, damaged metadata refusal, near 0x610 / far
+0x634 save/reopen and byte-exact saved Undo. Both GUI sizes and compact ASAN
+model/UI pass, including typed animation prefix, sprite prefix, dependencies,
+selection clearing, missing/collision refusal, destination inspection, Undo/Redo,
+save/reopen and mutations of either library. Embedded/project/live-copy UI
+regressions pass. Smoke at this checkpoint: animation-copy (120 frames).
+Automatic artwork dependencies, combined clipboard/split animation transfer,
+move to existing libraries and specialist/runtime tooling remain pending.
+
+
+**Manual animation sprite-binding checkpoint (2026-10-15):** Animation copy now
+supports explicit destination choices for each required source sprite. Dropdowns
+search case-insensitive name substrings or exact sprite indices, show index and
+dimensions, and expose anchors in tooltips. The review labels Auto/Manual and
+retains geometry/anchor warnings. Different names and duplicate visible names can
+be bound deliberately, including source sprites with distinct raw-name tails.
+Multiple source sprites may intentionally share one destination. Existing artwork
+is required; no automatic artwork copying or pixel-content comparison is added.
+
+Overrides use source/destination stable IDs. Every ID is validated, including
+inactive overrides retained across animation selection changes. Prefix changes
+keep manual choices; changing the destination clears them because IDs belong to
+a particular library. Automatic name match resets one row; Reset sprite choices
+clears all overrides. Automatic binding retains unique trimmed, case-insensitive
+name matching. Unresolved rows still block Apply. Review revalidation compares
+manual state, IDs, full sprite fields and remapped output, retaining all existing
+owner/generation/pending/record/format guards. One destination history step; source,
+sprites and palettes unchanged; no automatic saves or IMG format/layout changes.
+
+77/77 Release suites and the ASAN animation-copy suite pass. Added model cases
+cover duplicate names/raw tails, different names, explicit shared targets, invalid
+IDs, inactive choices, prefix retention, tampering, stale edits/reordering,
+undo/redo and save/reopen with original near 0x610/far 0x634 layouts. Original saved
+files remain byte-exact. Extended animation-copy smoke (244 frames) passes at both
+window sizes and compact ASAN: typed name/index searches, manual/automatic/reset,
+selection retention, destination switch clearing, applying remapped records,
+history and save/reopen. Automatic artwork dependencies, combined clipboard/split
+records, move to an existing library and specialist/runtime workflows remain.
+
+
+**Animation artwork-dependency checkpoint (2026-10-15):** Copy IMG animations
+now offers Copy missing artwork (off by default). It identifies required sprites
+from selected sequences and called sequences, dedupes repeated refs, and appends
+only unique names missing in the destination. Existing name matches/manual
+bindings remain in place. Ambiguity requires a manual choice; no replacements,
+child-family expansion or pixel-content comparison. The sprite prefix also names
+new sprites. Review labels Copy/Auto/Manual, shows future indices and addition
+counts; a summary tooltip lists primary/active alternate palette mappings,
+reuse and color counts. Palette reuse requires identical metadata and words.
+
+The animation plan owns a LibraryCopyPlan with all required sprite fields,
+padded pixels, baselines, point/alternate tables and palette snapshots. Existing
+copy validation and limits apply, including alternate-slot and original-layout
+constraints. Apply re-derives and compares the full review and records before
+allocating detached buffers, replacement blob, history state and ID/history
+capacity. Publication splices artwork and swaps records without further
+allocation. Existing destination pointers/selection stay intact; all new sprites,
+palettes and records share one Undo step. Records-only transfer also uses this
+publication path. No autosave, source modification or IMG format/layout changes.
+Shared append and history-trimming helpers retain normal copy/retention behavior.
+
+78/78 Release suites pass. New tests verify only required artwork, repeated refs,
+script closure, existing/manual matches, palette reuse/remapping, independent raw
+buffers/metadata, reviewed-plan tampering and mutation refusal, pending/stale
+state, names/prefixes/empty selections, near 0x610 constraints/save, far 0x634
+save/reopen, original bytes and whole-history stable IDs. Injected C++ allocation
+failures verify unchanged target contents, generation and Undo state before the
+first successful publication. ASAN animation-artwork, animation-copy and
+library-copy suites pass. New animation-artwork UI smoke (140 frames) passes at
+both sizes and compact ASAN: option toggles, cancellation, manual/automatic
+fallback, art/palette/entry verification, Undo/Redo, saving/reopening, prefixed
+copies, clearing choices and source/target stale refusal. Existing manual-copy
+and live sprite-copy compact UI regressions pass. Clipboard/split animation
+records, move to existing libraries and specialist/runtime integration remain.
+
+
+**Owned animation clipboard checkpoint (2026-10-15):** File > Copy IMG animations
+to clipboard captures selected records/called sequences and their required art
+and palettes. Paste IMG animations from clipboard works after the source tab
+closes. The Animation menu includes both commands in IMG mode; Edit/Animation can
+clear the session clipboard. Capture preserves names/source state; unique source
+sprite names and existing unsupported-damage/layout constraints apply. Paste
+starts with all captured records and Copy missing artwork enabled, preserving
+the transfer review, manual mappings, prefixes, palette rules and one destination
+Undo step. Neither IMG format/layout changes and nothing saves automatically.
+
+AnimationClipboard owns a const Artwork snapshot, label and included source-row
+origins. It validates the original review through extracted private
+validate_animation_copy, then re-plans/applies into detached source-layout storage
+and removes unused history/dirty state. It retains no source tab pointers or disk
+paths for loading. Source mutation/closure cannot affect the snapshot. Empty,
+pending, stale, modified or failed captures keep the old clipboard. UI capture
+uses an owned empty staging library; paste holds shared ownership, so clearing or
+replacing the session clipboard cannot invalidate a live paste review. Cleanup
+releases plan before snapshot/staging. Contents last until replaced, cleared or
+Studio closes. Pixel, palette and sprite clipboards and shortcuts are independent.
+
+79/79 Release suites pass. New model tests cover closure/art exclusion, raw record
+and image metadata, independent pixels/baselines/points/alternates/palettes,
+source mutation/closure, invalid/pending/stale/empty reviews, injected allocation
+failures, shared review lifetime, reuse/prefixes, one-step Undo/Redo/stable IDs,
+empty sequences and negative-sentinel scripts without artwork, near 0x610/far
+0x634 saves/reopen and exact original files. ASAN clipboard/copy/artwork suites
+pass. New animation-clipboard UI smoke (152 frames) passes at both sizes and
+compact ASAN: actual source closure, paste into a new library, record choices,
+metadata/entry/art/palette checks, history and saving, clearing a held clipboard,
+replacement, conflict refusal/typed prefix, cancellation/empty/stale refusal and
+preservation of the other three clipboards. Existing manual-animation,
+artwork-dependency and sprite-clipboard compact UI regressions pass. Split
+animation records, move to existing libraries and specialist/runtime work remain.
+
+
+**New IMG from native animations checkpoint (2026-10-15):** File > Split IMG
+animations to new library and Animation > Split to new library create an
+independent IMG tab from selected records. Scripts include called sequences;
+only required sprites/primary+active alternate palettes are copied, with repeated
+refs deduped and indices remapped. Names and raw metadata remain intact. The
+new tab inherits the source IMG version/layout and opens in native IMG animations
+mode. It starts dirty without a creation Undo entry; subsequent edits use normal
+history and the unsaved-close guard applies. The source and all clipboards remain
+unchanged. No automatic save, source removal or format conversion. At least one
+selected record must reference artwork; empty sequences may accompany it. Unique
+source names, damage-binding and other transfer constraints remain explicit.
+
+Artwork::prepare_animation_split shares private prepare_animation_snapshot with
+clipboard capture. The helper validates/re-plans against detached matching-layout
+storage, preserves supported header/legacy reserve metadata under new sprite IDs,
+and drops detached history. Split keeps dirty state; clipboard clears it. Full
+review, owner/generation/pending/raw-data guards and transfer limits remain.
+Tab allocation/alignment/native-record parsing/status/capacity complete before
+publication, so preparation failure leaves source/tabs unchanged. UI uses the
+existing animation-copy controller's owned staging target with split_library mode;
+no clipboard replacement. Scene projects and external game bindings stay separate.
+
+80/80 Release suites pass. New tests verify dependency closure/repeated refs,
+unused-art/palette exclusion, raw timing/entry/header and sprite/baseline/point/
+alternate metadata, independent edits/history, fresh dirty/no-history state,
+empty/artless/unsupported/mismatched/pending/stale/tampered refusal and injected
+C++ allocation failures. Near 0x610/far 0x634 save/reopen retain layouts, including
+near opaque header/reserve words mapped to new sprite IDs. Original generated
+sources remain byte-exact. ASAN split/clipboard/artwork/copy suites pass. New
+animation-split UI smoke (130 frames) passes at both sizes and compact ASAN:
+record choices/dependencies, Cancel, no-art/empty refusal, native new-tab inspection,
+unsaved-close guard, save/reopen/close, all-record copies, independent edit/Undo,
+stale/damage refusal and source/clipboard preservation. Existing animation
+clipboard, artwork-dependency and sprite split UI regressions pass. Moving to
+existing libraries, optional animation-aware sprite splitting and specialist/
+runtime integration remain.

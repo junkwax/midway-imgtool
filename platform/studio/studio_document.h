@@ -5,11 +5,14 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <unordered_map>
 
 namespace studio {
 struct EmbeddedEntryValues;
+struct PointTableEdit;
 struct PaletteMergePlan;
 struct PaletteCompactionPlan;
+struct PaletteCleanupPlan;
 struct ImportBatch;
 struct PixelSelection;
 struct RegionPlan;
@@ -20,6 +23,11 @@ struct CloneStroke;
 struct FilterStroke;
 struct RepairStroke;
 struct BatchGeometryPlan;
+struct BatchRenamePlan;
+struct BatchPalettePlan;
+struct BatchDeletePlan;
+struct LibraryCopyPlan;
+struct AnimationCopyPlan;
 struct RestorePlan;
 struct VariantSource;
 struct VariantPlan;
@@ -42,7 +50,9 @@ public:
     static std::unique_ptr<Artwork> open(const std::string &path, std::string &error);
     static std::unique_ptr<Artwork> demo();
     static std::unique_ptr<Artwork> create();
+    // Save and Save As always retain the source IMG version and record layout.
     bool save(const std::string &path, std::string &error);
+    unsigned disk_version() const { return source_version; }
     bool disk_matches() const;
     IMG *sprite(int index) const;
     PAL *palette(int index) const;
@@ -67,6 +77,7 @@ public:
     void paint(int index, int x, int y, unsigned char color, int radius = 1,const PixelSelection *selection=nullptr);
     void fill(int index, int x, int y, unsigned char color,const PixelSelection *selection=nullptr);
     void anchor(int index, int x, int y);
+    bool apply_point_table(const PointTableEdit &edit,std::string &error);
     void color(int palette_index, int slot, unsigned short value);
     Clipboard copy(int index, int x, int y, int w, int h) const;
     void paste(int index, const Clipboard &clip, int x, int y);
@@ -81,6 +92,16 @@ public:
     int filter_stroke(FilterStroke &stroke,int x,int y,std::string &error);
     int repair_stroke(RepairStroke &stroke,int x,int y,bool all_edges,std::string &error);
     int apply_batch_geometry(const BatchGeometryPlan &plan,std::string &error);
+    int apply_batch_rename(const BatchRenamePlan &plan,std::string &error);
+    int apply_batch_palette(const BatchPalettePlan &plan,bool allow_approximation,std::string &error);
+    int apply_batch_delete(const BatchDeletePlan &plan,std::string &error);
+    int apply_animation_copy(const Artwork &source,const AnimationCopyPlan &plan,std::string &error);
+    int apply_library_copy(const Artwork &source,const LibraryCopyPlan &plan,std::string &error);
+    // A split inherits the source layout; these APIs never convert an IMG.
+    std::unique_ptr<Artwork> split_target() const;
+    std::unique_ptr<Artwork> prepare_library_split(const LibraryCopyPlan &plan,std::string &error) const;
+    std::unique_ptr<Artwork> prepare_animation_split(const AnimationCopyPlan &plan,std::string &error) const;
+    int remove_split_source(const LibraryCopyPlan &copy,const BatchDeletePlan &removal,std::string &error);
     int apply_restore(const RestorePlan &plan,std::string &error);
     int smart_erase(int index,int x,int y,bool match_colors,int tolerance,bool contiguous,bool cleanup,const PixelSelection &selection,std::string &error);
     int clone_stroke(CloneStroke &stroke,int x0,int y0,int x1,int y1,std::string &error);
@@ -100,6 +121,7 @@ public:
     bool rename_palette(int index,const std::string &name,std::string &error);
     int add_palette(const std::string &name,const std::vector<unsigned short> &words,std::string &error);
     bool delete_unused_palette(int index,std::string &error);
+    int apply_palette_cleanup(const PaletteCleanupPlan &plan,std::string &error);
     bool replace_palette_colors(int index,const std::vector<unsigned short> &expected,const std::vector<unsigned short> &words,std::string &error);
     bool merge_palette(const PaletteMergePlan &plan,bool allow_approximation,std::string &error);
     bool compact_palette(const PaletteCompactionPlan &plan,std::string &error);
@@ -116,6 +138,13 @@ public:
     L2Report check(int ppp);
     Document data{}; // Owned codec data; UI reads through sprite()/palette().
 private:
+    friend class SpriteClipboard;
+    friend class AnimationClipboard;
+    int validate_animation_copy(const Artwork &source,const AnimationCopyPlan &plan,std::string &error) const;
+    std::unique_ptr<Artwork> prepare_animation_snapshot(const AnimationCopyPlan &plan,std::string &error) const;
+    int validate_library_copy(const Artwork &source,const LibraryCopyPlan &plan,std::string &error) const;
+    void append_staged_library(Artwork &staged,int added,bool select_first);
+    bool install_animation_with_artwork(const Artwork &source,const LibraryCopyPlan &artwork,const std::vector<unsigned char> &blob,unsigned sequences,unsigned scripts,std::string &error);
     struct State {
         struct Sprite {
             IMG fields{};
@@ -135,6 +164,7 @@ private:
     };
     State capture() const;
     void restore(const State &state);
+    void trim_history();
     void assign_initial_ids();
     bool remap_sequence_indices(const std::vector<int> &mapping, std::vector<unsigned char> &blob, std::string &error) const;
     std::string unique_sprite_name(const std::string &stem) const;
@@ -144,6 +174,9 @@ private:
     uint64_t revision = 0, saved_revision = 0, next_revision = 1, serial = 1, structure_serial = 1, next_sprite_id = 1;
     std::vector<uint64_t> sprite_ids;
     uint64_t selected_sprite_id = 0;
+    unsigned source_version=0x634;
+    LIB_HDR source_header{};
+    std::unordered_map<uint64_t,unsigned short> legacy_reserved_alternates;
     std::string file_path;
     std::vector<unsigned char> disk_baseline;
 };

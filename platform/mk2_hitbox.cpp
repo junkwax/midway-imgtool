@@ -122,6 +122,15 @@ bool load(Document *doc, const char *path, std::string *err)
     std::string text;
     if (sz > 0) { text.resize((size_t)sz); std::fread(&text[0], 1, (size_t)sz, f); }
     std::fclose(f);
+    return parse_text(doc, text, err);
+}
+
+bool parse_text(Document *doc, const std::string &text, std::string *err)
+{
+    doc->raw_lines.clear();
+    doc->records.clear();
+    doc->char_tables.clear();
+    doc->dirty = false;
     split_lines(text, &doc->raw_lines);
 
     /* Patterns matched against each line (a la hitbox_edit.py). The .word

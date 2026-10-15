@@ -92,7 +92,7 @@ bool save_scene(Tab &t,bool as){
 void export_scene(Tab &t){
     finish();t.scene.playing=false;scene_error.clear();
 #ifdef _WIN32
-    auto path=native_file(window,true,"scene.png",true);if(!path.empty()){if(t.project->export_png(path,(int)t.scene.tick,scene_source(),error))status="Exported current scene PNG.";}
+    auto path=native_file(window,true,"scene.png",true);if(!path.empty()){if(t.project->export_png(path,(int)t.scene.tick,scene_source(),error,t.stage.get(),&t.stage_view))status="Exported current scene PNG.";}
 #else
     scene_path_dialog=true;scene_path_save=false;scene_path_export=true;scene_path_uid=t.uid;snprintf(scene_path_input,sizeof scene_path_input,"scene.png");
 #endif
@@ -152,7 +152,7 @@ void project_dialogs(){
             auto owner=find(scene_path_uid);bool ok=false;std::error_code ec;
             if((scene_path_save||scene_path_export)&&fs::exists(fs::u8path(scene_path_input),ec)&&(!owner||!owner->project||owner->project->path()!=scene_path_input))scene_error="Choose a new filename to avoid replacing another file.";
             else if(scene_path_save&&owner&&owner->project)ok=owner->project->save(scene_path_input,scene_source(),scene_error);
-            else if(scene_path_export&&owner&&owner->project)ok=owner->project->export_png(scene_path_input,(int)owner->scene.tick,scene_source(),scene_error);
+            else if(scene_path_export&&owner&&owner->project)ok=owner->project->export_png(scene_path_input,(int)owner->scene.tick,scene_source(),scene_error,owner->stage.get(),&owner->stage_view);
             else if(!scene_path_save&&!scene_path_export){open_scene(scene_path_input);ok=true;}
             if(ok){scene_path_dialog=false;ImGui::CloseCurrentPopup();if(scene_guard_uid&&scene_path_save)complete_scene_guard();}
         }
@@ -183,6 +183,7 @@ void project_canvas(Tab &t,float height){
     ImVec2 stage=pos+(avail-ImVec2(s.width*z,s.height*z))*.5f+u.pan,end=stage+ImVec2(s.width*z,s.height*z);
     auto dl=ImGui::GetWindowDrawList();dl->PushClipRect(pos,pos+avail,true);dl->AddRectFilled(pos,pos+avail,IM_COL32(18,21,27,255));dl->AddRectFilled(stage,end,IM_COL32(s.background[0],s.background[1],s.background[2],255));
     dl->PushClipRect(ImMax(pos,stage),ImMin(pos+avail,end),true);
+    draw_stage(t,dl,stage,z);
     for(int x=0;x<=s.width;x+=50)dl->AddLine(stage+ImVec2(x*z,0),stage+ImVec2(x*z,s.height*z),IM_COL32(49,55,65,130));
     for(int y=0;y<=s.height;y+=50)dl->AddLine(stage+ImVec2(0,y*z),stage+ImVec2(s.width*z,y*z),IM_COL32(49,55,65,130));
     dl->AddLine(stage+ImVec2(0,s.floor*z),stage+ImVec2(s.width*z,s.floor*z),IM_COL32(172,151,108,220));
@@ -254,6 +255,7 @@ void project_inspector(Tab &t){
     if(ImGui::Button("Add frame"))u.command=SceneCommand::AddFrame;ImGui::SameLine();if(ImGui::Button("Replace frame"))u.command=SceneCommand::ReplaceFrame;
     ImGui::BeginDisabled(s.lanes.size()>=32);if(ImGui::Button("Add actor lane"))u.command=SceneCommand::AddLane;ImGui::EndDisabled();ImGui::SameLine();bool lane_used=scene_uses_lane(s,lane.id);ImGui::BeginDisabled(s.lanes.size()==1||lane_used);if(ImGui::Button("Remove lane"))u.command=SceneCommand::RemoveLane;ImGui::EndDisabled();if(lane_used&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("An effect follows this actor. Detach it before removing the source actor.");
     if(ImGui::CollapsingHeader("Playfield & preview")){
+        if(ImGui::Button("Stage reference..."))show_stage_dialog(t);
         int size[]={s.width,s.height};ImGui::SetNextItemWidth(-1);if(ImGui::InputInt2("##scene-size",size)){s.width=std::clamp(size[0],64,2048);s.height=std::clamp(size[1],64,2048);s.floor=std::min(s.floor,s.height);u.zoom=0;}ImGui::TextDisabled("Playfield width / height");
         int origin[]={s.origin_x,s.origin_y};ImGui::SetNextItemWidth(-1);if(ImGui::InputInt2("##scene-origin",origin)){s.origin_x=std::clamp(origin[0],-4096,4096);s.origin_y=std::clamp(origin[1],-4096,4096);}ImGui::TextDisabled("Anchor origin X / Y");
         ImGui::SetNextItemWidth(100);if(ImGui::InputInt("Floor",&s.floor))s.floor=std::clamp(s.floor,0,s.height);

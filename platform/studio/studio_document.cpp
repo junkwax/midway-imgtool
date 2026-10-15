@@ -1,5 +1,6 @@
 #include "studio_document.h"
 #include "studio_selection.h"
+#include "studio_img_codec.h"
 #include "img_io.h"
 #include "palette_math.h"
 #include <algorithm>
@@ -24,6 +25,26 @@ struct CodecScope {
     explicit CodecScope(Document &doc) : previous(g_doc) { g_doc = &doc; }
     ~CodecScope() { g_doc = previous; }
 };
+// The shared writer uses these fields as scratch. Saving (including a failed
+// layout serialization) must not introduce untracked changes into Studio history.
+struct WriterScratch {
+    struct Image { IMG *p; void *temp; unsigned short alternate,point; };
+    struct Palette { PAL *p; void *temp; };
+    std::vector<Image> images;
+    std::vector<Palette> palettes;
+    Document &document;
+    unsigned original_version;
+    explicit WriterScratch(Document &d, unsigned source_version) : document(d), original_version(d.fileversion) {
+        for(auto p=(IMG *)d.img_p;p;p=(IMG *)p->nxt_p)images.push_back({p,p->temp,p->opals,p->file_pttblnum});
+        for(auto p=(PAL *)d.pal_p;p;p=(PAL *)p->nxt_p)palettes.push_back({p,p->temp});
+        d.fileversion=source_version<0x634?0x634:source_version;
+    }
+    ~WriterScratch() {
+        document.fileversion=original_version;
+        for(auto &v:images){v.p->temp=v.temp;v.p->opals=v.alternate;v.p->file_pttblnum=v.point;}
+        for(auto &v:palettes)v.p->temp=v.temp;
+    }
+};
 bool read_bytes(const std::string &path, std::vector<unsigned char> &out) {
     std::ifstream f(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
     if (!f) return false;
@@ -36,55 +57,6 @@ bool read_bytes(const std::string &path, std::vector<unsigned char> &out) {
 template<class T> bool read_at(const std::vector<unsigned char> &b, size_t p, T &v) {
     if (p > b.size() || sizeof(T) > b.size() - p) return false;
     memcpy(&v, b.data() + p, sizeof(T)); return true;
-}
-bool preflight(const std::vector<unsigned char> &b, LIB_HDR &h) {
-    // Preview supports the far-pointer records used by 0x634..0x654 libraries.
-    // Older records need a separate lossless adapter: the classic loader swaps
-    // their frame/Z fields and discards their legacy alternate-palette index.
-    if (!read_at(b, 0, h) || h.temp != 0xabcd || h.version < 0x634 ||
-        h.version > 0x654 || !h.imgcnt || h.imgcnt > 2000 || h.palcnt < 3 ||
-        h.palcnt > 4096 || h.oset < sizeof(LIB_HDR)) return false;
-    auto range = [&](size_t p, size_t n) { return p <= b.size() && n <= b.size() - p; };
-    size_t records = (size_t)h.imgcnt * sizeof(IMAGE_disk) + (h.palcnt - 3) * sizeof(PALETTE_disk);
-    if (!range(h.oset, records)) return false;
-    size_t points = 0, alts = 0, decoded = 0;
-    for (int i = 0; i < h.imgcnt; ++i) {
-        IMAGE_disk d{}; read_at(b, h.oset + i * sizeof d, d);
-        // The classic loader maps disk palette numbers 3..N onto owned palettes.
-        if (!d.w || !d.h || d.palnum < 3 || d.palnum >= h.palcnt) return false;
-        size_t stride = ((size_t)d.w + 3) & ~size_t(3);
-        decoded += stride * d.h;
-        if (decoded > 128 * 1024 * 1024) return false;
-        if (d.flags & 0x80) {
-            size_t p = d.oset;
-            for (int y = 0; y < d.h; ++y) {
-                if (!range(p, 1)) return false;
-                int c = b[p++];
-                int skip = (c & 15) * (1 << ((d.flags >> 8) & 3)) +
-                           (c >> 4) * (1 << ((d.flags >> 10) & 3));
-                if (skip > d.w || !range(p, d.w - skip)) return false;
-                p += d.w - skip;
-            }
-        } else if (!range(d.oset, stride * d.h)) return false;
-        if (h.version >= 0x60a && (short)d.pttblnum >= 0) ++points;
-        if (h.version >= 0x634 && (short)d.opals >= 0) ++alts;
-    }
-    for (int i = 0; i < h.palcnt - 3; ++i) {
-        PALETTE_disk d{};
-        read_at(b, h.oset + h.imgcnt * sizeof(IMAGE_disk) + i * sizeof d, d);
-        if (!d.numc || d.numc > 256 || !range(d.oset, d.numc * 2)) return false;
-    }
-    size_t pos = h.oset + records;
-    int sequences = std::max(0, (int)(short)h.seqcnt) + std::max(0, (int)(short)h.scrcnt);
-    for (int i = 0; i < sequences; ++i) {
-        unsigned short n;
-        if (!read_at(b, pos + 18, n)) return false;
-        size_t size = (h.version >= 0x634 ? 98 : 58) + (size_t)n * (h.version >= 0x634 ? 18 : 16);
-        if (!range(pos, size)) return false;
-        pos += size;
-    }
-    size_t damage = h.version >= 0x632 ? std::max(0, (int)(short)h.damcnt) * 4 : 0;
-    return range(pos, points * 40 + alts * 16 + damage);
 }
 bool reserve_temp(const std::filesystem::path &p) {
 #ifdef _WIN32
@@ -124,16 +96,12 @@ std::unique_ptr<Artwork> Artwork::open(const std::string &path, std::string &err
     auto d = std::make_unique<Artwork>();
     LIB_HDR header{};
     if (!read_bytes(path, d->disk_baseline)) { error = "Could not read this file (limit: 256 MiB)."; return {}; }
-    if (read_at(d->disk_baseline, 0, header) && header.temp == 0xabcd && header.version < 0x634) {
-        error = "This older IMG layout is not supported by the first Studio preview. Open it in classic imgtool."; return {};
-    }
-    if (!preflight(d->disk_baseline, header)) {
-        error = "This IMG is truncated, invalid, or uses a layout this Studio preview does not support."; return {};
-    }
-    {
-        CodecScope scope(d->data);
-        LoadImgFileFromPath(path.c_str(), true);
-    }
+    std::vector<unsigned char> normalized;
+    if (!normalize_img(d->disk_baseline, normalized, error)) return {};
+    read_at(d->disk_baseline,0,header);
+    d->source_version=header.version;
+    d->source_header=header;
+    if (!load_img_snapshot(normalized,d->data,error)) return {};
     if (d->data.imgcnt != header.imgcnt || d->data.palcnt != (unsigned)(header.palcnt - 3)) {
         error = "IMG loading did not complete. No open document was changed."; return {};
     }
@@ -142,6 +110,10 @@ std::unique_ptr<Artwork> Artwork::open(const std::string &path, std::string &err
     }
     d->file_path = std::filesystem::absolute(std::filesystem::u8path(path)).lexically_normal().u8string();
     d->assign_initial_ids();
+    if(header.version<0x61d)for(unsigned i=0;i<header.imgcnt;++i){
+        IMAGE_disk record{};read_at(d->disk_baseline,header.oset+i*sizeof record,record);
+        d->legacy_reserved_alternates[d->sprite_id(i)]=record.pttblnum;
+    }
     return d;
 }
 bool Artwork::save(const std::string &path, std::string &error) {
@@ -163,12 +135,36 @@ bool Artwork::save(const std::string &path, std::string &error) {
     bool ok;
     {
         CodecScope scope(data);
+        WriterScratch scratch(data,source_version);
         ok = SaveImgFileToPath(temp.u8string().c_str(), &error);
     }
     std::vector<unsigned char> written;
     LIB_HDR h{};
-    if (ok && (!read_bytes(temp.u8string(), written) || !preflight(written, h))) {
+    if (ok && (!read_bytes(temp.u8string(), written) || !inspect_img(written, h))) {
         ok = false; error = "The saved IMG did not pass validation. The destination was left intact.";
+    }
+    if (ok && source_version<0x634) {
+        ok=project_img_layout(written,source_version,error);
+        if(ok){
+            LIB_HDR original{};read_at(written,0,original);
+            // Before damage/alternate support these words are opaque reserves.
+            // Empty sequence/script pools also commonly use negative sentinels.
+            original.damcnt=source_header.damcnt;
+            if(!original.seqcnt&&(short)source_header.seqcnt<0)original.seqcnt=source_header.seqcnt;
+            if(!original.scrcnt&&(short)source_header.scrcnt<0)original.scrcnt=source_header.scrcnt;
+            memcpy(written.data(),&original,sizeof original);
+            if(source_version<0x61d)for(int i=0;i<count();++i){
+                auto found=legacy_reserved_alternates.find(sprite_id(i));
+                if(found!=legacy_reserved_alternates.end())memcpy(written.data()+original.oset+i*sizeof(IMAGE_disk)+48,&found->second,2);
+            }
+        }
+        if(ok) { std::ofstream f(temp,std::ios::binary|std::ios::trunc);
+            ok=bool(f.write((const char *)written.data(),written.size()));f.close();ok=ok&&!f.fail();
+            if(!ok)error="Could not write the original IMG layout. The destination was left intact.";
+        }
+    }
+    if(ok&&(!inspect_img(written,h)||h.version!=source_version)){
+        ok=false;error="Saving would change this IMG's original format. The destination was left intact.";
     }
     if (ok) {
 #ifdef _WIN32
@@ -181,6 +177,7 @@ bool Artwork::save(const std::string &path, std::string &error) {
     }
     if (!ok) { std::filesystem::remove(temp, ec); return false; }
     file_path = dest.u8string(); disk_baseline = std::move(written); saved_revision = revision;
+    read_at(disk_baseline,0,source_header);
     return true;
 }
 bool Artwork::disk_matches() const {std::vector<unsigned char> current;return !file_path.empty()&&read_bytes(file_path,current)&&current==disk_baseline;}
@@ -247,12 +244,13 @@ void Artwork::commit() {
     State now = capture();
     if (!now.same(*pending)) {
         past.push_back(std::move(*pending)); future.clear(); revision = next_revision++; ++serial;
-        size_t bytes = 0; for (auto &s : past) bytes += s.bytes();
-        while (past.size() > 1 && (past.size() > 64 || bytes > 128 * 1024 * 1024)) {
-            bytes -= past.front().bytes(); past.erase(past.begin());
-        }
+        trim_history();
     }
     pending.reset();
+}
+void Artwork::trim_history(){
+    size_t bytes=0;for(auto &s:past)bytes+=s.bytes();
+    while(past.size()>1&&(past.size()>64||bytes>128*1024*1024)){bytes-=past.front().bytes();past.erase(past.begin());}
 }
 void Artwork::cancel() { if (pending) { restore(*pending); pending.reset(); } }
 void Artwork::undo() {

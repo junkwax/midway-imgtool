@@ -408,10 +408,12 @@ bool SceneProject::save(const std::string &path,const SceneSource &source,std::s
     auto serialized=written;compact_assets(serialized);std::string bytes=encode(serialized,false);if(bytes.size()>8*1024*1024){error="The project exceeds the 8 MiB file limit.";return false;}
     if(!atomic_write(dest,bytes,error))return false;state=std::move(written);file_path=dest.u8string();disk_baseline=std::move(bytes);saved_revision=revision;imported=false;return true;
 }
-bool SceneProject::export_png(const std::string &path,int tick,const SceneSource &source,std::string &error) const{
+bool SceneProject::export_png(const std::string &path,int tick,const SceneSource &source,std::string &error,const StageBackdrop *stage,const StageView *view) const{
     error.clear();if(!validate_scene(state,error))return false;std::error_code ec;auto dest=fs::absolute(fs::u8path(path),ec);
     if(ec||lower(dest.extension().u8string())!=".png"){error="Choose a .png filename.";return false;}
     std::vector<unsigned char> rgba((size_t)state.width*state.height*4);for(size_t i=0;i<rgba.size();i+=4){rgba[i]=(unsigned char)state.background[0];rgba[i+1]=(unsigned char)state.background[1];rgba[i+2]=(unsigned char)state.background[2];rgba[i+3]=255;}
+    if(stage&&view){for(auto &p:{stage->bdd_path,stage->bdb_path})if(fs::equivalent(dest,fs::u8path(p),ec)){error="PNG export cannot replace source scenery.";return false;}
+        if(!blit_stage(*stage,*view,state.width,state.height,rgba,error))return false;}
     for(auto &pose:evaluate_scene(state,tick)){auto art=source(state.assets[pose.sprite.asset].runtime_doc);int index=art?art->sprite_index(pose.sprite.runtime_id):-1;auto im=art?art->sprite(index):nullptr;
         if(!im){error="A scene source or sprite is missing.";return false;}auto pal=art->palette(im->palnum);auto p=place_sprite(*im,pose.x,pose.y,pose.flip_x,state.convention);
         if(pose.flip_y)p.y=pose.y-anipoint_effective((short)im->aniy,im->h,true,state.convention);

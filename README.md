@@ -19,7 +19,7 @@ a saved-project shortcut, and recent libraries with folder paths and hover detai
 Unavailable recent files can be removed from the list without deleting files.
 Studio has a red-accented workspace with a searchable thumbnail library,
 resizable canvas and inspector, new/rename/duplicate/delete/reorder commands,
-sprite resize/canvas-size/trim/rotate/flip with reviewed batch geometry and parent/child restoration, reviewed LOD library loading, PNG import/export, reviewed sprite-sheet/GIF imports,
+indexed LBM/TGA import and export with reviewed sprite sheets, sprite resize/canvas-size/trim/rotate/flip with reviewed batch geometry and parent/child restoration, reviewed LOD library loading and TBL/IRW/ANILST exports, PNG import/export, reviewed sprite-sheet/GIF imports,
 pencil/erase/clone/variant/blur/smudge/heal/defringe, line previews, color replacement/matching fill and rectangle/wand/lasso selection tools, palette-aware
 copy/paste with a placement preview, shared palette editing, and animation
 anchor controls with engine-aware flip previews. The Animation & alignment
@@ -35,8 +35,13 @@ a referenced sprite. Saves validate a temporary file before replacing the destin
 failed saves leave the document dirty, and external file changes are detected.
 
 This is an **artwork editing preview**, not feature parity with classic. It
-currently accepts validated IMG layouts from version `0x634` through `0x654`.
-Older layouts and legacy-format imports, ASM animation,
+currently accepts validated IMG layouts `0x60a`–`0x631` and `0x634`–`0x654`.
+Older WIMP libraries preserve their original format on Save / Save As, including
+stored sequences/scripts, point tables and alternate palettes. The status bar
+shows their format. **Every Save and Save As keeps the original IMG version and
+record layout. Studio offers no format conversion.** A save refuses edits that
+cannot fit that format and leaves the destination intact.
+Pre-`0x60a` and transitional `0x632` / `0x633` layouts, additional legacy image variants, ASM animation,
 full script execution, advanced WAX rules, and game-source editing remain in classic.
 Studio exposes embedded sequence frames and script calls while preserving their
 other metadata.
@@ -151,6 +156,234 @@ step. **Cancel / Escape** discards the preview. These operations edit whole
 sprites. Palettes, saved baselines, raw names and embedded references are retained;
 geometry changes can affect LOAD2 packing. Pipeline exports remain pending.
 
+**Sprite > Batch rename...** previews names for Marked sprites, Shown by search,
+or All sprites in the current library. Choose numbered names, prepend text, or
+append text plus a number, with a starting number and optional zero padding.
+Rows follow library order. Uncheck a row to keep its current name; the remaining
+previewed numbers stay fixed. The review checks the final names against the whole
+library, including excluded sprites, using case-insensitive matching. Overlong,
+empty, non-ASCII or spaced names block Apply instead of being silently shortened.
+
+**Apply names** changes included rows in one Undo step; Cancel discards the
+preview. Pixels, palettes, anchors, point tables, raw trailing name bytes and
+embedded animation references remain intact. Existing IMGs retain their version
+and record layout. External ASM / TBL references are not rewritten, and new names
+can change name-based LOAD2 allocation. Save the IMG through its normal save flow.
+
+**Sprite > Copy to another library...** appends sprites to another open IMG
+library. Open both libraries, then start from the source and choose Marked sprites,
+Shown by search, or All sprites. Review copied names, palette assignments and the
+source preview; uncheck rows to exclude them. An optional prefix resolves name
+conflicts. Names must fit 15 ASCII characters without spaces; existing sprites are
+never replaced and names are never silently shortened.
+
+Required primary and alternate palettes are copied once per source palette.
+**Reuse identical palettes** reuses existing destination palettes only when colors
+and metadata match exactly; disable it to keep the copied palettes independent.
+Pixel indices, padding, anchors, point tables, baselines and opaque sprite/palette
+metadata are retained. Alternate table references are remapped, with default
+palette references and bytes past the terminator retained. Unrepresentable
+alternate indices or metadata unsupported by the destination layout block the row.
+Both libraries must remain open and unchanged while the review is active.
+
+**Copy sprites** appends the included rows and required palettes in one destination
+Undo step. Copies have new stable identities; source data and history are unchanged.
+The destination keeps its existing IMG version and record layout. Apply never
+saves automatically. This pass transfers listed sprites and palettes only, without
+source sequences/scripts. Use the separate sprite clipboard below when the
+source library needs to close before pasting.
+
+**File > Copy IMG animations to library...** (also **Animation > Copy to another
+library...** in IMG animations mode) transfers embedded sequences and script call
+lists between two open libraries. Select source records; choosing a script adds
+its called sequences automatically. Clear choices or uncheck the script to remove
+those dependencies. An animation-name prefix resolves collisions without replacing
+existing records. Each resulting name must fit 16 printable ASCII characters.
+
+By default, the destination uses its existing referenced sprite artwork. The review
+matches unique sprite names without case or outer spaces. **Destination sprite
+prefix** matches prefixed artwork, such as source `SENTINEL3` to destination
+`ART_SENTINEL3`; it does not rename sprites. For differently named or duplicate
+sprites, open that row's **Destination sprite** dropdown and search by name or
+exact sprite index. Each choice shows its index and dimensions, with anchors in
+the tooltip. Explicit choices distinguish sprites even when their visible names
+are identical; multiple source sprites can deliberately share one destination.
+Unresolved rows block Apply. Enable **Copy missing artwork** below, or copy artwork
+first with the sprite-transfer tools.
+
+**Manual** choices survive prefix edits and animation selection changes.
+Changing the destination library clears them. Choose **Automatic name match** in
+a dropdown to reset that row, or **Reset sprite choices** to clear all overrides.
+The binding table shows exact sprite indices and dimensions; anchor/geometry
+differences are marked. Bindings do not compare pixel content.
+
+**Copy missing artwork** is optional and off by default. It appends only sprites
+required by the selected animations (including script dependencies) whose unique
+names are absent from the destination. The destination sprite prefix also names
+new sprites. Existing matches and explicit bindings stay in place; ambiguous
+names still need a manual choice. Repeated animation references copy a sprite
+once. Other sprites, including child pieces not explicitly referenced, stay out.
+
+New sprite rows are labelled **Copy**, with their future destination indices.
+The summary lists sprite/palette additions; hover it to review required palette
+names, indices, reuse and color counts. Primary and active alternate palettes are
+remapped; only palettes with identical stored metadata and colors are reused.
+New buffers include pixels, baselines, anchors, point tables and alternate tables.
+Unsupported names, layers, palette references, destination limits or layout fields
+block Apply. Existing sprites and palettes are never replaced.
+
+Artwork, palettes and animation records are prepared together before changing
+the destination and become one **Copy animations and artwork** Undo step. Cancel,
+stale reviews and failed preparation add nothing. Undo/Redo restores/removes the
+whole transfer, including stable sprite IDs. Copying records with existing artwork
+also prepares its history before publishing changes.
+
+Copy appends sequences before the destination script block, keeps existing
+sequence indices and existing script calls intact, and remaps incoming sprite and
+sequence calls. Stored timing (including zero ticks), offsets, flags, negative
+sentinels and opaque bytes stay intact; a name prefix overwrites only its visible
+name and terminator. Both libraries are checked again at Apply. One destination
+Undo step removes the additions. The destination opens in IMG animations mode
+for inspection; the source library and existing destination artwork stay unchanged.
+
+Copy never saves automatically and never changes either IMG version or record
+layout. Unsupported far-pointer fields are blocked for older destinations.
+Sequences with active damage-table bindings are not supported in this transfer
+pass; damage tables and external engine/runtime bindings are not transferred.
+Script runtime execution is still outside Studio's current playback scope.
+
+**File > Copy IMG animations to clipboard...** captures selected embedded records,
+called sequences and all required sprite artwork/palettes into an independent
+snapshot. You can close the source library afterward. Capture keeps original
+names and does not change source artwork, history or saved files. Choose at least
+one record; source sprite names must be unique. Unsupported damage bindings and
+other transfer constraints still apply. Cancel or failed capture keeps the
+previous animation clipboard.
+
+**File > Paste IMG animations from clipboard...** opens the transfer review
+against any open library. All captured records start selected and **Copy missing
+artwork** starts enabled. You can select fewer records, change prefixes, choose
+existing destination sprites and review palette additions before pasting. The
+usual name/layout/reference checks and one destination Undo step apply. Save
+separately. The destination always retains its original IMG version and layout.
+
+The **Animation** menu offers these commands in IMG animations mode.
+**Edit > Clear animation clipboard** releases the session copy. Clipboard contents
+last until replaced, cleared or Studio closes; they do not use the OS clipboard
+or persist across restarts. Pixel, palette and sprite clipboards stay separate.
+An already-open paste review retains its snapshot until that review closes.
+
+**File > Split IMG animations to new library...** (also **Animation > Split to
+new library...** in IMG animations mode) creates a new IMG tab from selected
+native sequences/scripts. Scripts include their called sequences. The review
+shows exactly which records, sprites and palettes will be included; Select all
+and Clear choices adjust the set. Original names are retained. Only referenced
+sprites and their primary/active alternate palettes are copied, with incoming
+indices remapped. Unreferenced artwork stays in the source.
+
+**Create library** opens the result in IMG animations mode. It is initially
+unsaved, with no creation Undo entry; subsequent edits use normal Undo/Redo.
+Closing it prompts for unsaved changes. Save it when ready. The new library
+inherits the source IMG version and record layout, including supported legacy
+reserve metadata. The source library, its saved files, history and all clipboards
+stay unchanged.
+
+Choose at least one animation that references artwork. Empty sequences can be
+included alongside it; a new library containing only records without artwork
+is refused. Source sprite names must be unique, and damage-bound sequences and
+other transfer limits still apply. This extracts native IMG records; scene
+projects and external game bindings remain separate.
+
+**Sprite > Split to new library...** creates a separate IMG tab from Marked,
+Shown by search, or All sprites, with optional child pieces and per-row exclusions.
+The default is **Copy**, leaving the source unchanged. Enable **Move from source**
+to remove the included sprites after the new library is ready. Names stay intact;
+only required primary/alternate palettes are copied. The new library inherits the
+source IMG version and record layout, including older layouts.
+
+Move protects sprites used by embedded sequences or current open Studio scenes.
+**Exclude referenced sprites** keeps them in the source; per-row labels and the
+selected preview show those uses. Open scene references are checked again when
+applying. At least one sprite must remain in the source. External game references
+and closed projects are not scanned. Remaining embedded sprite indices are
+remapped; source palettes and embedded sequences/scripts stay in the source.
+Sequences/scripts are not transferred to the new library.
+
+The new tab starts unsaved and participates in the normal close/quit save guard.
+Move is one source Undo step: Undo restores the source sprites while the new
+library remains open. Copy does not add source history. Save the new IMG when
+ready, and save the source too after Move. No files are written automatically.
+Source palette cleanup stays a separate explicit operation.
+
+**Sprite > Copy sprites to clipboard...** captures Marked, Shown by search, or
+All sprites after review. Include child pieces is optional; uncheck any rows to
+leave them out. A successful copy replaces the previous sprite clipboard. Cancel
+or a failed capture keeps it. Copy leaves the source artwork and history untouched.
+
+The snapshot owns its sprite pixels, padding, baselines, anchors, point tables,
+raw name metadata, primary palettes and required alternate palettes. Source edits
+and closing its tab cannot change what was copied. It stays in memory for this
+Studio session, separate from pixel Ctrl+C/Ctrl+V and palette-color Copy/Paste.
+It is not the Windows clipboard and does not survive closing Studio.
+
+Open or create the destination and choose **Sprite > Paste sprites from
+clipboard...**. Review names, a prefix, exact palette reuse and per-row exclusions.
+The captured set stays fixed; copy again to choose another scope. Name collisions
+and metadata unsupported by the destination's existing IMG layout block affected
+rows. Paste appends sprites and required palettes in one destination Undo step,
+with new sprite IDs, unchanged pixel indices and remapped alternate references.
+You can paste repeatedly or into the same library using a prefix to avoid clashes.
+Neither Paste nor capture saves automatically, and the destination IMG version
+and record layout never change. Sequences, scripts and external game references
+are not captured. **Clear sprite clipboard** (Sprite or Edit menu) releases the
+snapshot without clearing the pixel or palette clipboards.
+
+Both bulk copy and bulk deletion offer **Include child pieces** (off by default).
+This adds direct children of sprites in the chosen scope using the classic naming
+rules (`BASE1A`, `BASE_1A`, `BASE_1`, `BASE1`) and matching source-library labels.
+The review counts added pieces and labels each with its parent. It does not add
+siblings or recurse into descendants; explicitly scoped children can bring their
+own direct children. Ambiguous parents are skipped and reported, with names on
+hover. Select those sprites explicitly if needed. Each row can still be excluded;
+excluding a parent does not silently exclude its reviewed children. These are
+name-based editing relationships, with no new metadata stored in the IMG.
+
+**Sprite > Delete multiple sprites...** reviews Marked sprites, Shown by search,
+or All sprites with a sprite preview and per-row exclusions. Referenced rows show
+their embedded sequence or open Studio scene; **Exclude referenced sprites** keeps
+them automatically. Remove references first if those sprites must be deleted.
+Open scene uses are checked again when deleting, including changes made after the
+review opened. At least one sprite must remain in the library.
+
+**Delete selected sprites** removes the included rows in one Undo step and remaps
+remaining embedded sprite indices. Script sequence indices, palettes and surviving
+sprite identities are retained. Undo restores deleted pixels, metadata and the
+previous selection. Save and Save As retain the loaded IMG version and record
+layout. The review deletes only listed rows, including child pieces added with
+the explicit option. External ASM/TBL files and closed projects are not scanned.
+Deletion can change game build allocations; Apply never saves automatically.
+
+**Palette > Assign to multiple sprites...** reviews a destination palette for
+Marked sprites, Shown by search, or All sprites. **Match source colors** maps each
+opaque color to the nearest opaque destination slot; transparency stays at index
+zero. **Keep pixel indices** changes the palette reference without changing any
+pixel bytes, for intentional recoloring or correcting an old palette assignment.
+A destination that cannot hold the retained indices is blocked. Select a row to
+compare its primary-palette appearance before and after, and exclude rows as needed.
+
+Matching that changes indices is blocked for sprites with active alternate
+palettes; retaining indices preserves those alternate appearances. Matching can
+approximate colors, so review the preview and select **Allow approximate colors**
+when needed. The destination palette's colors and order are never modified. The
+PPP indicator reports newly crossed LOAD2 color-count limits; palette-size changes
+can also affect packing, so use the packing report before a game build.
+
+**Apply palettes** commits all included, compatible sprites in one Undo step.
+Cancel discards the review. Whole sprites are edited independently of canvas
+selections. Anchors, points, alternate palettes, raw names, baselines and embedded
+animation references are retained. Existing IMG version/layout stays fixed. Apply
+does not save the library or change game build settings.
+
 **Sprite > Restore child sprites...** reviews parent-to-child restoration in the
 current library. Choose Marked children, Shown by search, or All sprites; parents
 can be outside the child scope. **Name rule** uses one capture to find each parent:
@@ -241,6 +474,57 @@ the whole extraction. Overlapping regions are reported because they duplicate ar
 in multiple children. Appending sprites and cutting silhouettes affect LOAD2
 packing; extraction does not rewrite game-source tables or animation references.
 
+**File > Import indexed LBM / TGA...** reviews one sprite with its full source
+canvas, a new palette in the source color order or matching to an existing palette,
+and an editable primary anchor. Click the preview to place the anchor; source LBM
+hotspots are used when available. Import adds a sprite/palette in one undo step.
+LBM/IFF and indexed TGA drag-and-drop use this review. These imports never convert
+the IMG file format. New sprites start with unused secondary-anchor sentinels.
+
+The indexed reader supports PBM and 1–8-plane ILBM, raw / ByteRun1 rows, transparent
+colors and ILBM mask planes; indexed TGA supports raw / RLE, 8-bit pixel indices,
+nonzero palette origins, 15/16/24/32-bit color maps and both image origins.
+Unmasked artwork treats index zero as IMG transparency. Explicit mask/alpha may
+move an opaque color zero to an available slot; the review reports this. Colors
+reduce to RGB555 without reordering by frequency. Partial alpha, 256 distinct
+opaque entries plus IMG transparency, HAM / Extra Halfbrite, IFF ANIM and destination
+plane merging are rejected. Full-color TGA still uses the sprite-sheet review.
+
+**File > Export selected LBM... / TGA...** reviews an indexed output with the
+source palette order and visible pixel indices. LBM writes uncompressed IFF PBM
+with transparent index zero and a GRAB primary-anchor hotspot. TGA writes an
+uncompressed indexed image with palette alpha; IMG animation anchors have no TGA
+representation. Export leaves IMG metadata, format, dirty state and history intact.
+Rebuild after settings, artwork or destination changes; replacement is atomic and
+cannot target an open IMG. These selected-sprite commands write one sprite; the
+separate sheet exporter below handles marks.
+
+**File > Export TGA sprite sheet...** reviews Marked, Shown by search, All or
+Selected sprites. Exclude rows without changing marks; inspect rectangle positions,
+primary-anchor crosses and face order. Scroll to zoom, drag with the middle/right
+button to pan, or use Fit preview. Full canvases pack tallest first with editable
+spacing; no sprites are cropped, scaled or silently omitted.
+
+Identical palettes retain their indices. Mixed palettes merge the exact used
+RGB555 colors, preserving opaque black separately from transparent index zero.
+More than 255 opaque colors blocks indexed output; choose **RGBA sheet** without
+ANF or export smaller groups. RGBA keeps every sprite's colors and transparency.
+
+**Classic ANF face map** writes a companion `.ANF` with the primary anchors and
+face rectangles in library order. This mode uses a 256-wide, bottom-up indexed
+TGA with 15-bit palette words, sprites up to 256×256, at most 1000 faces and 6000
+sheet rows. Its count-minus-one and face ordering follow the original DOS writer.
+TGA-only output allows widths up to 8192 and four million sheet pixels, with a
+maximum height of 8192. TGA does not carry sprite names or IMG anchor metadata.
+
+Build the review after settings, source or destination changes. Both output files
+are prepared before replacement, and a failed second replacement restores the
+first when it still matches Studio's output. Two separate files cannot be globally
+atomic against a crash, power loss or concurrent external changes; an unsuccessful
+restore retains the backup and reports its path. The exporter never changes IMG
+format, pixels, metadata, history or marks. This is a new packed sheet layout,
+not preservation of previously allocated ROM addresses.
+
 **File > Import sprite sheet / GIF...** opens a separate batch review. Sheets can
 use automatic/island detection or a fixed grid with margins, gaps, padding and
 optional border cleanup. Inspect the source rectangles or indexed result, choose
@@ -330,6 +614,46 @@ but do not execute. This is library loading, not a LOAD2 build or append/merge.
 The review is bounded to 128 entries, a 1 MiB manifest, 64 MiB per IMG and 128 MiB
 of accepted decoded sprite/baseline pixels. Larger libraries can be opened directly.
 
+**File > Export pipeline** opens a review for **TBL image table**, **IRW raw pixels**,
+or **ANILST sprite list** in the current library. Choose Marked, Shown by search,
+All, or Selected whole sprites; rows stay in library order. Without marks the first
+review starts with the selected sprite. Per-row inclusion is separate from marks
+and canvas pixel selection. Options and destination changes require **Build review**;
+row exclusion rebuilds the output. Source changes require an explicit rebuild.
+The table shows depth, SAG and blocked reasons, with assembly or binary previews.
+The destination is shown before **Export file** / **Replace output**. Existing-output
+changes after review are rejected; a successful write replaces one file atomically.
+Source data, flags, dirty state, history and marks stay unchanged. The library keeps
+its last successful export settings/scope/exclusions for this session; canceled
+settings do not replace them.
+
+TBL and IRW share one **new uncompressed layout**. Export them separately with the
+same included sprites, ROM base and packing options to keep SAGs consistent. Fixed
+1-8 bpp blocks indices that would be truncated; Auto palette size and Auto used
+indices choose a depth for each sprite. Word / Nibble / Packed alignment inserts
+16-bit / 4-bit / no inter-sprite gaps; the complete IRW stream ends on a word.
+The ROM load base must be word-aligned, and overflowing addresses block export.
+Dual-bank addressing sets the IRW bank and applies LOAD2's +/-0x02000000 TBL SAG
+adjustment. The review's IRW view shows both physical and table addresses.
+TBL uses the runtime depth control word, supports signed primary anchors, optional
+MK3 secondary anchors and an optional palette pointer on **every** included record.
+Invalid/duplicate sprite labels, conflicting palette labels and invalid visible
+indices are blocked. Referenced palette definitions are exported separately.
+
+IRW uses the actual DOS layout: a 44-byte header (16-bit version checksum/magic),
+one 24-byte record and little-endian packed words with their 32-bit checksum.
+This matches shipped MK2 IRWs and the existing `makevrom.py` parser. Studio's
+single record also supports sprites starting between words under Packed/Nibble
+alignment. ANILST reproduces the sequential `.asg 1,N` / `.word N,index` list;
+it does not export embedded animation sequences or scripts.
+
+These exports do **not** preserve existing ROM allocations or reproduce LOAD2's
+compression, deduplication, scaling, multipart boxes or manifest directives.
+Use LOAD2 for those builds. Classic's exporters keep their existing behavior.
+Source reviews, outputs and existing-destination snapshots are bounded to 128 MiB;
+geometry is bounded as for direct Studio editing. The export cannot target the
+source IMG or another open library; source-path aliases are checked as well.
+
 Build and launch on Windows:
 
 ```powershell
@@ -347,8 +671,12 @@ to open artwork. If Studio closes during startup, try
 The executable also accepts `--software-renderer` directly. Both modes use the
 same editor and files. Startup stages, renderer name and native exception details
 are written to `%APPDATA%\midway-imgtool\studio\startup.log` on Windows; the
-file is replaced on each launch. SDL/window/renderer failures display their reason
-and log location. Hidden smoke checks write their startup log beside their PNG.
+file is replaced on each launch. Unhandled Windows memory faults also record the
+read/write/execute address and save a uniquely named `startup-crash-*.dmp` in that
+folder. Dumps remain available across subsequent launches. Release builds produce
+`imgtool-studio.pdb` beside the executable for interpreting those crash stacks.
+SDL/window/renderer failures display their reason and log location. Hidden smoke
+checks write diagnostics beside their PNG instead.
 
 The Studio helper uses x64 Release and cached SDL2 2.32.10. Its default output is
 `build-studio-motion\build\Release\imgtool-studio.exe`; it also builds the separate
@@ -392,6 +720,21 @@ adds a new palette without assigning it. Import/export supports raw RGB555
 `.PAL` and Adobe `.ACT`, including ACT color-count footers. ACT transparency must
 be index zero or unspecified. Removing an unused palette updates sprite and
 alternate-palette references; referenced palettes cannot be removed.
+
+**Palette > Remove unused palettes...** reviews cleanup across the whole library.
+Palettes referenced by any sprite or active alternate-palette entry are protected.
+Unused palettes start selected for removal; uncheck any to keep them, or use
+**Keep all** / **Select all unused**. **Only unused** hides protected rows. Select
+a row to inspect its colors; the table shows current and resulting palette indices.
+
+**Remove selected palettes** uses one Undo step and remaps all retained primary
+and alternate references. Pixel indices, colors, palette sizes/depths, sprite IDs,
+anchors, points and embedded sequences/scripts stay intact. Default alternate
+references and bytes after their terminator are preserved. Invalid palette data
+or unresolved references block cleanup. The library must keep at least one palette.
+Apply never saves automatically, and Save retains the original IMG version and
+record layout. External palette-name references in ASM/TBL files or closed
+projects are not scanned; keep palettes still needed by those sources.
 
 Click a swatch to select one color, **Ctrl-click** to toggle colors, or
 **Shift-click** for a range. **All opaque** and **Used in preview** provide quick
@@ -503,7 +846,8 @@ identities, portable relative paths and fallback paths. Reopening stages all
 dependencies first and offers **Locate IMG** for missing files. Unsaved scenes
 have their own close/quit prompt, and libraries used by a project's history stay
 open until that project is closed. **Project > Export current scene PNG** exports
-the current tick on the chosen solid background, without editor guides or ghosts.
+the current tick on the chosen background, including enabled reference scenery,
+without editor guides or ghosts.
 
 **Open project / import WAX** (**Ctrl+Shift+O**) reads native Studio projects and
 classic WAX/WVP files containing explicit sprite rows. WAX import converts classic
@@ -518,6 +862,146 @@ reconstruct runtime game placement or settings absent from the WAX file. Imports
 save to `.ISTUDIO`; the original WAX is kept as the classic project. Studio reads
 versions 1–4. It writes version 3 normally and version 4 when a frame exceeds
 120 ticks, so older builds reject long-hold projects instead of shortening them.
+
+**View > Stage reference...** loads a matching BDD/BDB pair behind animation,
+embedded-sequence, and scene previews. Choose either file, select a plane, then
+use **Align plane to floor**, camera X/Y and opacity to place the scenery.
+Dropping a BDD/BDB opens this review. Failed loads retain the previous scenery;
+missing placements/colors are reported. These are owned read-only reference
+pixels. Settings stay in the library session, appear in scene PNG exports, and
+must be reloaded after reopening a project. Game parallax, camera offsets and
+runtime floor layers require game source and are not reconstructed here.
+
+**View > Link animation anchors...** selects reference and target sprites from
+any open libraries. Click matching opaque features, or drag from Reference to
+Target; choose each facing, mirror convention and the target staging offset.
+The aligned preview leaves artwork untouched until **Apply target anchor**.
+The target receives one undoable primary-anchor edit; its pixels, secondary
+anchors and the reference remain intact. **Undo target**, **Redo target** and
+**Save target IMG** address that library even when it is not the active tab.
+Escape resets the points. Changed sources require picking the features again;
+coordinates outside signed 16-bit range are refused. No sequence propagation.
+
+**Sprite > Point table...** (also in the inspector) edits the IMG's existing
+optional ten-point block. Enable/disable the table, type signed X/Y coordinates,
+drag handles, or right-click to place the selected point. Connecting points is
+only a preview aid. **Apply** is one undo step; **Cancel** leaves stored data
+unchanged. **Reload stored points** refreshes a stale review. Points can sit
+outside the sprite; zoom and middle-drag pan help locate them. These are generic
+IMG coordinates, not MK2 strike boxes. Saves keep the original IMG layout.
+
+**File > Compare existing TBL...** (or dropping a TBL) compares dimensions,
+primary/secondary anchors and palette labels for marked, shown, all or selected
+sprites. Select a row to inspect individual differences and reveal its sprite;
+**Copy report** copies the findings. Runtime DMA flags and ROM SAG addresses are
+informational because IMG metadata cannot verify them. Parser warnings remain
+visible; duplicate names/labels and overflowing decimal words are refused.
+The comparison reads a TBL snapshot: **Compare / refresh** rereads the file and
+current IMG scope. Neither file, marks nor artwork history are modified.
+
+**Tools > MK2 strike tables...** opens a separate ASM source workspace. Load
+`MKSTK.ASM`, browse/filter records or fighter tables, and edit box offsets/sizes,
+routine/sound operands, hit/block damage and score. Shared alias labels are listed
+because their source data changes together. Incomplete/unusual declarations stay
+visible with editing disabled; extended fighter-table names are supported.
+
+Select a sprite from any open library for a manual preview. Its object origin,
+facing and IMG mirror convention determine placement; the box follows `JOY.ASM`
+`strike_check`: normal X = origin + offset - width, flipped X = origin - offset,
+Y = origin + offset. Drag corners to resize the preview, then **Apply record**
+commits one source-history step. **Undo source**, **Redo source** and Ctrl+Z/Y
+address the ASM document. Escape resets the unapplied preview. Previewing and
+editing strikes leave IMG pixels, anchors, history and format untouched.
+
+**Save source...** / **Save source As...** review changed lines and the destination
+before **Write source**. Unedited bytes, comments, indentation, BOM, mixed line
+endings and the final newline survive. External file changes require a new review
+or Save As; a failed write retains the existing destination. Close, source
+replacement and application quit offer Save/Discard/Keep editing for applied
+unsaved ASM changes. Numeric fields are checked against their native word/long
+ranges. Symbolic operands are preserved; this does not evaluate includes,
+conditional assembly, expressions or game script control flow. Active-frame
+timing and authoring new phase lists remain separate migration work.
+
+**Tools > ASM animations...** loads a read-only character/exported animation ASM.
+Open the move's IMG libraries first, or use **Open IMG library...** in the viewer.
+Browse/filter animation labels, step frames with the arrows, or play/pause with
+Space. Multipart pieces resolve across all open libraries by stable identities.
+Choose a preferred library when sprite names repeat; other ambiguous/missing
+pieces are listed rather than silently substituted. **Feet to floor**, object
+origin, facing, pan and zoom affect the preview only.
+
+The viewer reads frame groups, label aliases, word adjustments, horizontal/vertical
+flips, segments, source jumps and exported local anchor tables. Jumps traverse each
+source block once; preview Loop repeats the collected frames. Runtime calls are
+reported without running them; unknown/conditional commands stop with a partial
+preview warning. Includes and conditional assembly are not evaluated. Preview
+hold ticks override timing, including steppable no-sleep frames; source segments
+do not determine when game code calls each stage.
+
+With strike tables loaded, select a suggested or manual strike association and
+show its overlay. **Edit associated strike...** opens that source record with the
+animation preview. In the strike editor, **Animate** and the animation selector
+replace manual sprite preview; box resize/apply/source undo keep working while
+you step frames. Associations do not prove active-frame timing. Both viewers leave IMG pixels,
+anchors, history and disk format untouched.
+
+**Tools > Strike associations...** (or **Manage / save associations...** in the ASM
+viewer) manages explicit move associations. Studio reads the original
+`MKSTK.imgtool` sidecar beside `MKSTK.ASM` automatically. Choose **None** to disable
+a suggestion, or **Suggest from names** / **Use suggestion** to remove an override.
+In the sidecar, `a_move = stk_move` stores a pair and `a_move = -` disables it.
+The classic viewer also treats `-` as a bound label with no matching strike.
+
+Association changes have their own Undo/Redo, reviewed **Save associations...**,
+and **Reload from disk...**. Saves preserve comments, unknown lines, unrelated
+characters, BOM, whitespace and line endings; external changes require reloading.
+Unusual assignments stay visible and cannot be rewritten through the picker.
+Assignments to missing strike labels suppress the overlay rather than silently
+falling back to a different box. Switching animation ASMs retains the strike
+source's associations; switching strike ASMs keeps each sidecar's unsaved edits
+available in the workspace's file selector. Strike Save As selects a separate
+sidecar for the new source path; existing sidecar edits remain available.
+Quit offers Save/Discard/Keep editing for each changed sidecar, independently of
+ASM and IMG changes. Neither IMG format nor source ASM changes when saving
+associations.
+
+**Tools > Strike phase inspector...** (or **Inspect phase countdown...** in the
+strike editor) previews the per-phase lookup declared in the loaded `MKSTK.ASM`.
+Choose a character-table slot, a base move slot and a manually supplied active
+window. Step or play the countdown; zero removes the strike overlay. The selected
+box is red, with the base box shown in gray for comparison. **Edit selected
+strike...** opens that box in the existing source editor. With the stkphase
+preview assumption enabled, **Edit phase rows...** stages changes to existing
+thresholds and strike slots. Preview the new countdown selection, then Apply or
+Cancel. Thresholds must decrease strictly and end at zero; slots must resolve to
+complete strike records for every active consumer of the list under the chosen
+preview flags. Shared lists show affected character/base slots. Validation refuses
+unresolved consumers, symbolic or conditional rows, and row-count changes.
+
+Applied phase changes share the ASM source undo/redo history with box edits.
+**Review source save...** opens the existing reviewed save dialog; no file is
+written by Apply. Unchanged operands, comments, whitespace, line endings, BOM and
+DOS EOF are retained. This edits word pairs in ASM, never the IMG format.
+
+**Assume stkphase enabled** and **Assume wunit enabled** affect the preview only.
+Both start off; they do not read or modify build settings. Conditional strike
+slots follow those choices, including appended entries and inline slot labels.
+For the existing Liu Kang low-kick example, enabling phase preview selects
+`stk_lklokick_early` (slot 0x17 = 23) at countdown 6..4 and `stk_lklokick` at 3..1.
+With phase preview off, slot 23 instead names `stk_lkdubknee` because the early
+row is excluded. The resolver observes native word/long layout, the signed -1
+long directory sentinel and the source's `PHASE_MAX` scan limit; malformed data,
+symbolic values, unknown conditions and external tables report unavailable results.
+
+Choose a sprite or an ASM artwork frame independently, with facing/origin/pan/zoom.
+The tool does not infer startup, active timing, recovery, hit interruption or
+which artwork frame the game draws during the active window. Includes and assembly
+assertions are not evaluated. Opening, stepping or changing preview flags leaves
+source ASM, association files, IMG data, history and format untouched. Applied
+strike-box and phase-row edits use the existing ASM history and reviewed save
+workflow. Build settings stay unchanged; validation uses the explicit preview
+profile and does not establish behavior for other profiles.
 
 The design rationale is in [the redesign assessment](UI_REDESIGN_AUDIT.md).
 
