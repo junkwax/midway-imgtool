@@ -271,7 +271,7 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_points.cpp
     platform/studio/studio_tbl_compare.cpp
     platform/studio/studio_strikes.cpp platform/mk2_hitbox.cpp
-    platform/studio/studio_asm.cpp platform/studio/studio_asm_assets.cpp platform/strike_bind.cpp
+    platform/studio/studio_asm.cpp platform/studio/studio_asm_assets.cpp platform/studio/studio_asm_artwork_library.cpp platform/strike_bind.cpp
     platform/studio/studio_reactions.cpp platform/reaction_class.cpp
     platform/studio/studio_fatality.cpp platform/studio/studio_fatality_workspace.cpp platform/mk2_fatality.cpp
     platform/studio/studio_bindings.cpp
@@ -382,6 +382,10 @@ add_executable(studio_asm_assets_test test/studio_asm_assets_test.cpp)
 target_link_libraries(studio_asm_assets_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_asm_assets_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_asm_assets COMMAND studio_asm_assets_test)
+add_executable(studio_asm_artwork_library_test test/studio_asm_artwork_library_test.cpp)
+target_link_libraries(studio_asm_artwork_library_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_asm_artwork_library_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_asm_artwork_library COMMAND studio_asm_artwork_library_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MKJC.ASM" "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
 add_executable(studio_reactions_test test/studio_reactions_test.cpp)
 target_link_libraries(studio_reactions_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_reactions_test PRIVATE SDL_MAIN_HANDLED)

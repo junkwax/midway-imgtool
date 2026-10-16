@@ -23,10 +23,12 @@ void asm_assets_open_sprite(){
     status="Opened animation artwork. IMG edits use its own Undo and Save; ASM stays unchanged.";
 }
 void asm_assets_dialog(){
-    auto &u=asm_ui;auto &v=u.assets;asm_assets_refresh();auto animation=asm_animation();
+    auto &u=asm_ui;auto &v=u.assets;
+    if(!v.library_review){v.library_preview.reset();v.library_snapshot.reset();asm_assets_refresh();}auto animation=asm_animation();
     ImGui::OpenPopup("Animation artwork");auto display=ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowSize(ImVec2(std::min(900.f,display.x-50),std::min(700.f,display.y-60)),ImGuiCond_Appearing);
     if(!ImGui::BeginPopupModal("Animation artwork",nullptr,ImGuiWindowFlags_NoSavedSettings))return;
+    if(v.library_review){asm_artwork_library_review();ImGui::EndPopup();return;}
     ImGui::TextWrapped("Required artwork / %s",animation?animation->label.c_str():"No animation");
     ImGui::TextWrapped("Review every piece in this animation. Choose among matching sprites in open IMG libraries; choices affect this source preview only.");
     if(animation&&animation->partial)ImGui::TextColored(ImVec4(1,.65f,.4f,1),"Partial ASM preview: this list covers only the frames the inspector could expand.");
@@ -35,7 +37,7 @@ void asm_assets_dialog(){
     ImGui::SetNextItemWidth(std::max(150.f,ImGui::GetContentRegionAvail().x-200));if(ImGui::InputTextWithHint("##artwork-search","Find artwork symbol...",v.filter.InputBuf,sizeof v.filter.InputBuf))v.filter.Build();v.filter_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     ImGui::SameLine();ImGui::Checkbox("Unresolved only",&v.unresolved);v.unresolved_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     std::vector<int> visible;if(v.valid)for(int i=0;i<(int)v.review.rows.size();++i){auto &row=v.review.rows[i];if(v.filter.PassFilter(row.symbol.c_str())&&(!v.unresolved||!row.resolved.sprite))visible.push_back(i);}
-    if(ImGui::BeginTable("animation-artwork",4,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_ScrollY,ImVec2(0,std::max(100.f,ImGui::GetContentRegionAvail().y-190)))){
+    if(ImGui::BeginTable("animation-artwork",4,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_ScrollY,ImVec2(0,std::max(100.f,ImGui::GetContentRegionAvail().y-(animation&&animation->partial?260:225))))){
         ImGui::TableSetupColumn("Symbol",ImGuiTableColumnFlags_WidthStretch,1.1f);ImGui::TableSetupColumn("Uses",ImGuiTableColumnFlags_WidthFixed,50);
         ImGui::TableSetupColumn("Status",ImGuiTableColumnFlags_WidthStretch,1.f);ImGui::TableSetupColumn("Library",ImGuiTableColumnFlags_WidthStretch,1.4f);ImGui::TableSetupScrollFreeze(0,1);ImGui::TableHeadersRow();
         ImGuiListClipper clip;clip.Begin((int)visible.size());while(clip.Step())for(int n=clip.DisplayStart;n<clip.DisplayEnd;++n){int i=visible[n];auto &row=v.review.rows[i];auto &p=row.resolved;
@@ -68,5 +70,8 @@ void asm_assets_dialog(){
     ImGui::BeginDisabled(!v.valid);if(ImGui::Button("Copy unresolved names")){std::string names;for(auto &row:v.review.rows)if(!row.resolved.sprite){if(!names.empty())names+='\n';names+=row.symbol;}ImGui::SetClipboardText(names.c_str());}v.copy_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();
     ImGui::SameLine();if(ImGui::Button("Open IMG library...")){auto path=native_file(window,false,{},false,false,false,false,false,false,false,6);if(!path.empty()){auto extension=fs::u8path(path).extension().u8string();for(auto &c:extension)c=(char)std::toupper((unsigned char)c);if(extension==".IMG")open(path);else v.error="Choose an IMG sprite library.";}}
     ImGui::SameLine();if(ImGui::Button("Refresh"))v.cache_animation=-1;
+    if(animation&&animation->partial){ImGui::Checkbox("Include expanded frames only",&v.allow_partial);v.partial_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;}
+    ImGui::BeginDisabled(!v.valid||v.review.rows.empty()||v.review.missing||v.review.ambiguous||v.review.stale||(animation&&animation->partial&&!v.allow_partial));
+    if(ImGui::Button("Prepare artwork library...",ImVec2(210,0)))asm_assets_prepare_library();v.prepare_library_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();
     ImGui::EndPopup();
 }

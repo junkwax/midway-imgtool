@@ -141,6 +141,7 @@ public:
     L2Report check(int ppp);
     Document data{}; // Owned codec data; UI reads through sprite()/palette().
 private:
+    friend class AsmArtworkLibrary;
     friend class SpriteClipboard;
     friend class AnimationClipboard;
     int validate_animation_copy(const Artwork &source,const AnimationCopyPlan &plan,std::string &error) const;

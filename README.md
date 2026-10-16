@@ -1062,11 +1062,32 @@ library, deleting it or changing its name makes the choice visibly unavailable.
 Studio does not silently substitute another match. Undo can restore a valid choice;
 reopening a library gets a new identity and requires choosing again.
 
-Choices remain while browsing animations in the same loaded source; successful
-source loading/refresh clears them. They are session-only and do not rewrite ASM,
+Choices remain while browsing animations in the same loaded source. Reloading
+the ASM or capturing a new source snapshot clears them; **Refresh** in the artwork
+review rebuilds the inventory and retains choices. They are session-only and do not rewrite ASM,
 IMG names, pixels or file formats. Artwork edits use the normal IMG Undo/Save.
 Partial ASM previews explicitly list only the pieces the inspector expanded.
-This review does not copy assets, search unopened libraries or stage game builds.
+**Prepare artwork library...** captures every resolved piece into an owned review,
+combining sprites from the chosen open libraries. Resolve missing, ambiguous or
+unavailable choices first. All contributing IMGs must use the same version; the
+new library inherits that original layout. Mixed versions are refused. Partial
+ASM previews require **Include expanded frames only** before preparing the review.
+
+Review each sprite, its source library and palette/anchor details, then choose
+**Create unsaved IMG**. The review stays fixed if a source changes or closes;
+return to the artwork list and prepare again to capture newer edits. Creation
+opens a separate tab with no placeholder sprite or creation Undo step. Save As
+writes it through the normal IMG save flow. Source files, edits, selections and
+Undo histories are unchanged by collection. Back to artwork review cancels the
+prepared snapshot without creating a tab.
+
+Pixels, names including raw trailing name bytes, primary/secondary anchors, point
+tables, baselines and alternate appearances are retained. Required palettes are
+reused only when colors and metadata match exactly; otherwise they are copied,
+with references remapped. The review supports up to 2000 required symbols and the
+usual IMG copy limits. It includes artwork only: ASM, embedded sequences/scripts,
+external game references and build outputs are separate. Unopened libraries are
+not searched automatically.
 
 **Tools > Strike associations...** (or **Manage / save associations...** in the ASM
 viewer) manages explicit move associations. Studio reads the original

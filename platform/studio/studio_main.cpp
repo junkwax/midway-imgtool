@@ -5,6 +5,7 @@
 #include "studio_animation.h"
 #include "studio_asm.h"
 #include "studio_asm_assets.h"
+#include "studio_asm_artwork_library.h"
 #include "studio_reactions.h"
 #include "studio_fatality.h"
 #include "studio_fatality_workspace.h"
@@ -432,6 +433,9 @@ struct ReactionsUi {
 };
 struct AsmAssetsUi {
     bool open=false,valid=false,unresolved=false;int selected=-1,cache_animation=-1;uint64_t cache_preferred=0;
+    bool library_review=false,allow_partial=false;int library_row=0;
+    std::shared_ptr<const AsmArtworkLibrary> library_snapshot;std::unique_ptr<Tab> library_preview;std::string library_error;
+    ImVec2 prepare_library_point,create_library_point,cancel_library_point,partial_point,library_row_points[8]{};
     AsmAssetReview review;AsmArtworkChoices choices;std::string error;ImGuiTextFilter filter;
     std::vector<std::pair<uint64_t,uint64_t>> signature;
     ImVec2 show_point,close_point,open_point,frame_point,choice_point,auto_point,filter_point,copy_point,unresolved_point;
@@ -1561,6 +1565,7 @@ public:
 #include "studio_points_ui.inl"
 #include "studio_tbl_compare_ui.inl"
 #include "studio_strikes_ui.inl"
+#include "studio_asm_artwork_library_ui.inl"
 #include "studio_asm_assets_ui.inl"
 #include "studio_asm_ui.inl"
 #include "studio_reactions_ui.inl"
@@ -1793,6 +1798,7 @@ struct EmbeddedSmoke {
 #include "studio_strikes_smoke.inl"
 #include "studio_asm_smoke.inl"
 #include "studio_asm_assets_smoke.inl"
+#include "studio_asm_artwork_library_smoke.inl"
 #include "studio_reactions_smoke.inl"
 #include "studio_fatality_smoke.inl"
 #include "studio_fatality_workspace_smoke.inl"
@@ -1949,6 +1955,8 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool fatality_workspace_smoke=fatality_linked_smoke||argc>=3&&std::string(argv[1])=="--smoke-fatality-workspace";
     bool fatality_smoke=argc>=3&&std::string(argv[1]).find("--smoke-fatality")==0;
     bool reactions_smoke=argc>=3&&std::string(argv[1]).find("--smoke-reactions")==0;
+    bool asm_library_smoke=argc>=3&&std::string(argv[1]).find("--smoke-asm-library")==0;
+    bool asm_library_review_smoke=argc>=3&&std::string(argv[1])=="--smoke-asm-library-review";
     bool asm_assets_smoke=argc>=3&&std::string(argv[1])=="--smoke-asm-assets";
     bool asm_smoke=fatality_smoke||reactions_smoke||(argc>=3&&std::string(argv[1]).find("--smoke-asm")==0);
     bool strikes_smoke=argc>=3&&std::string(argv[1])=="--smoke-strikes";
@@ -2057,6 +2065,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     studio::StrikesSmoke strikes_check;
     studio::FatalityWorkspaceSmoke fatality_workspace_check;
     studio::AsmAssetsSmoke asm_assets_check;
+    studio::AsmArtworkLibrarySmoke asm_library_check;
     studio::FatalitySmoke fatality_check;fatality_check.real=argc>1&&std::string(argv[1])=="--smoke-fatality-real";
     studio::ReactionsSmoke reactions_check;reactions_check.real=argc>1&&std::string(argv[1])=="--smoke-reactions-real";
     studio::AsmSmoke asm_check;asm_check.real=argc>1&&std::string(argv[1])=="--smoke-asm-real";
@@ -2097,7 +2106,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         if(restore_smoke)restore_check.prepare(app,io,frames);
         if(lod_smoke)lod_check.prepare(app,io,frames);
         if(strikes_smoke)strikes_check.prepare(app,io,frames);
-        if(fatality_workspace_smoke)fatality_workspace_check.prepare(app,io,frames);else if(fatality_smoke)fatality_check.prepare(app,io,frames);else if(reactions_smoke)reactions_check.prepare(app,io,frames);else if(asm_assets_smoke)asm_assets_check.prepare(app,io,frames);else if(asm_smoke)asm_check.prepare(app,io,frames);
+        if(fatality_workspace_smoke)fatality_workspace_check.prepare(app,io,frames);else if(fatality_smoke)fatality_check.prepare(app,io,frames);else if(reactions_smoke)reactions_check.prepare(app,io,frames);else if(asm_library_smoke)asm_library_check.prepare(app,io,frames);else if(asm_assets_smoke)asm_assets_check.prepare(app,io,frames);else if(asm_smoke)asm_check.prepare(app,io,frames);
         if(bindings_smoke)bindings_check.prepare(app,io,frames);
         if(phases_smoke)phases_check.prepare(app,io,frames);
         if(table_compare_smoke)table_compare_check.prepare(app,io,frames);
@@ -2147,7 +2156,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         }
         ImGui::NewFrame();app.frame();ImGui::Render();
         SDL_SetRenderDrawColor(app.renderer,15,18,23,255);SDL_RenderClear(app.renderer);ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(),app.renderer);
-        if(smoke&&((++frames==((video_smoke||digitize_smoke||job_smoke)?600:phases_smoke?(phases_check.edit?104:74):bindings_smoke?100:fatality_linked_smoke?188:fatality_smoke?(fatality_check.real?12:230):reactions_smoke?(reactions_check.real?18:140):asm_assets_smoke?164:asm_smoke?52:strikes_smoke?97:table_compare_smoke?31:points_smoke?54:anchor_link_smoke?60:stage_smoke?43:sheet_smoke?68:legacy_media_smoke?60:legacy_img_smoke?30:export_smoke?99:lod_smoke?70:restore_smoke?98:animation_split_smoke?130:animation_clipboard_smoke?152:animation_artwork_smoke?140:animation_copy_smoke?244:split_animations_smoke?140:split_smoke?114:sprite_clip_smoke?144:cleanup_smoke?92:family_smoke?74:library_move_smoke?160:library_copy_smoke?110:batch_delete_smoke?112:batch_palette_smoke?118:batch_rename_smoke?92:batch_smoke?66:repair_smoke?63:filters_smoke?43:tools_smoke?50:welcome_smoke?26:variant_smoke?56:clone_smoke?50:paint_smoke?59:floating_smoke?53:region_smoke?38:selection_smoke?58:import_smoke?28:ramp_smoke?49:compact_smoke?40:merge_smoke?36:palette_smoke?43:project_smoke||motion_smoke||trigger_smoke||embedded_smoke?30:editing_smoke?28:gesture_smoke?20:5))||(video_smoke&&video_check.finished)||(digitize_smoke&&digitize_check.finished)||(job_smoke&&job_check.finished))){int w,h;SDL_GetRendererOutputSize(app.renderer,&w,&h);std::vector<unsigned char> pixels((size_t)w*h*4);
+        if(smoke&&((++frames==((video_smoke||digitize_smoke||job_smoke)?600:phases_smoke?(phases_check.edit?104:74):bindings_smoke?100:fatality_linked_smoke?188:fatality_smoke?(fatality_check.real?12:230):reactions_smoke?(reactions_check.real?18:140):asm_library_smoke?(asm_library_review_smoke?38:110):asm_assets_smoke?164:asm_smoke?52:strikes_smoke?97:table_compare_smoke?31:points_smoke?54:anchor_link_smoke?60:stage_smoke?43:sheet_smoke?68:legacy_media_smoke?60:legacy_img_smoke?30:export_smoke?99:lod_smoke?70:restore_smoke?98:animation_split_smoke?130:animation_clipboard_smoke?152:animation_artwork_smoke?140:animation_copy_smoke?244:split_animations_smoke?140:split_smoke?114:sprite_clip_smoke?144:cleanup_smoke?92:family_smoke?74:library_move_smoke?160:library_copy_smoke?110:batch_delete_smoke?112:batch_palette_smoke?118:batch_rename_smoke?92:batch_smoke?66:repair_smoke?63:filters_smoke?43:tools_smoke?50:welcome_smoke?26:variant_smoke?56:clone_smoke?50:paint_smoke?59:floating_smoke?53:region_smoke?38:selection_smoke?58:import_smoke?28:ramp_smoke?49:compact_smoke?40:merge_smoke?36:palette_smoke?43:project_smoke||motion_smoke||trigger_smoke||embedded_smoke?30:editing_smoke?28:gesture_smoke?20:5))||(video_smoke&&video_check.finished)||(digitize_smoke&&digitize_check.finished)||(job_smoke&&job_check.finished))){int w,h;SDL_GetRendererOutputSize(app.renderer,&w,&h);std::vector<unsigned char> pixels((size_t)w*h*4);
             if(SDL_RenderReadPixels(app.renderer,nullptr,SDL_PIXELFORMAT_RGBA32,pixels.data(),w*4)!=0||!stbi_write_png(argv[2],w,h,4,pixels.data(),w*4))exit_code=1;
             if(selection_check.failures)exit_code=17;
             if(region_check.failures)exit_code=18;
@@ -2180,7 +2189,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
             if(points_check.failures)exit_code=36;
             if(table_compare_check.failures)exit_code=37;
             if(strikes_check.failures)exit_code=38;
-            if(asm_assets_check.failures||asm_check.failures||reactions_check.failures||fatality_check.failures||fatality_workspace_check.failures)exit_code=39;
+            if(asm_library_check.failures||asm_assets_check.failures||asm_check.failures||reactions_check.failures||fatality_check.failures||fatality_workspace_check.failures)exit_code=39;
             if(bindings_check.failures)exit_code=40;
             if(phases_check.failures)exit_code=41;
             if(!app.error.empty())exit_code=2;if(editing_check.failures)exit_code=4;if(project_check.failures)exit_code=5;if(motion_check.failures)exit_code=6;if(trigger_check.failures)exit_code=7;if(embedded_check.failures)exit_code=8;if(palette_check.failures)exit_code=9;if(merge_check.failures)exit_code=10;if(compact_check.failures)exit_code=11;if(ramp_check.failures)exit_code=12;if(import_check.failures)exit_code=13;if(digitize_check.failures)exit_code=14;if(video_check.failures)exit_code=15;if(job_check.failures)exit_code=16;app.running=false;
@@ -2188,7 +2197,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         SDL_RenderPresent(app.renderer);
         if(first_frame){startup.stage("Editor rendered successfully");first_frame=false;}
     }
-    app.clear_sheet_preview();app.clear_indexed_preview();app.stop_video();app.stop_digitize();app.clear_import_textures();app.clear_region_preview();app.clear_floating();app.clear_paint_line();app.clear_variant();app.clear_batch_textures();app.clear_batch_palette_textures();app.clear_batch_delete_preview();app.clear_library_copy_preview();app.clear_restore_textures();app.clear_lod_preview();app.lod.review={};app.tabs.clear();if(app.paste_texture)SDL_DestroyTexture(app.paste_texture);if(app.palettes.preview)SDL_DestroyTexture(app.palettes.preview);if(app.palettes.original)SDL_DestroyTexture(app.palettes.original);ImGui_ImplSDLRenderer2_Shutdown();ImGui_ImplSDL2_Shutdown();ImGui::DestroyContext();SDL_DestroyRenderer(app.renderer);SDL_DestroyWindow(app.window);SDL_Quit();startup.stage("Closed normally");return exit_code;
+    app.clear_sheet_preview();app.clear_indexed_preview();app.stop_video();app.stop_digitize();app.clear_import_textures();app.clear_region_preview();app.clear_floating();app.clear_paint_line();app.clear_variant();app.clear_batch_textures();app.clear_batch_palette_textures();app.clear_batch_delete_preview();app.clear_library_copy_preview();app.clear_restore_textures();app.clear_lod_preview();app.lod.review={};app.asm_ui.assets=studio::AsmAssetsUi{};app.tabs.clear();if(app.paste_texture)SDL_DestroyTexture(app.paste_texture);if(app.palettes.preview)SDL_DestroyTexture(app.palettes.preview);if(app.palettes.original)SDL_DestroyTexture(app.palettes.original);ImGui_ImplSDLRenderer2_Shutdown();ImGui_ImplSDL2_Shutdown();ImGui::DestroyContext();SDL_DestroyRenderer(app.renderer);SDL_DestroyWindow(app.window);SDL_Quit();startup.stage("Closed normally");return exit_code;
 }
 
 int main(int argc,char **argv){

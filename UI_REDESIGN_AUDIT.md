@@ -2025,3 +2025,92 @@ inspection. Hidden linked-preview UI checks pass wide/compact and verify applied
 unsaved external edits, independent source Undo and exact IMG fixture history/
 bytes. Compact workspace, source editor, real ASM and reaction regressions pass.
 Targeted ASM/reaction model tests and compact linked UI pass under ASAN.
+
+
+**Animation artwork review checkpoint (2026-10-15):** Review artwork in the ASM /
+Reactions preview lists each required symbol across the selected expanded
+animation, with use counts, first frame/source location, resolved library and all
+matching candidates. Case-insensitive artwork symbols are grouped in first-use
+order (ASM label lookup remains case-sensitive). Name/unresolved filters, complete
+unresolved-name clipboard output, first-frame navigation, IMG library loading and
+Open selected sprite make dependencies accessible without stepping every frame.
+Partial ASM previews explicitly limit the inventory to expanded frames.
+
+Per-symbol choices use stable document/sprite IDs and affect the canvas and
+reaction anchor table. Automatic restores preferred-library / unique-name lookup.
+A move preserves the choice; rename, deletion or library closure makes it visibly
+unavailable instead of substituting a different match. Undo can restore it, while
+reopening the same path gets a new document ID and does not revive an old choice.
+Choices survive animation switches within one loaded ASM, and reset on successful
+source reload/new snapshot; failed source loading retains them. Inventory Refresh
+retains choices. They are session-only; neither ASM nor IMG is rewritten. Existing
+IMG formats and classic binary behavior remain fixed. Asset copying/staging and
+unopened-library discovery are still separate.
+
+studio_asm_assets builds owned reviews before publication, bounded to 32768
+symbols, 262144 references and 65536 matching candidates. Failure retains the
+previous review but disables its actions; Refresh permits retry. UI caching tracks
+animation, preferred library, document order/identity/generation and explicit
+choice changes. Nested sprite navigation closes both modals before activating the
+artwork workspace. Candidate/library hover paths distinguish identical filenames.
+
+86/86 Release suites pass, plus ASM/artwork/reaction models under ASAN. New model
+coverage checks repeated names/use counts, first-use provenance, preference and
+manual resolution, canvas/table agreement, stale-name/closure behavior, stable-ID
+moves, Undo restoration, invalid IDs, bounds, failed-review preservation and no
+artwork mutation. New 164-frame asm-assets UI checks pass wide/compact and compact
+ASAN: actual choice/filter/clipboard/frame/open controls, source closure/reopen,
+automatic reset, reaction-table consistency, failed/successful ASM reload and
+exact generated IMG/source bytes/history. Windows clipboard CRLF is normalized
+only by the check. Compact ASM, reactions and linked fatality regressions pass.
+
+The existing Studio executable was running and locked by Windows during linking.
+It was left running. The verified updated Release binary and SDL2.dll are in
+`build-studio-artwork/build/Release`; rebuild/launch helpers accept
+`-BuildRoot .\build-studio-artwork`. No game assets were modified.
+
+
+**Collected ASM artwork library checkpoint (2026-10-15):** Prepare artwork library
+in the animation artwork review gathers all resolved symbols into an owned
+snapshot, then reviews source provenance, uses, sprites and palette/anchor details
+before Create unsaved IMG opens a separate tab. Missing, ambiguous and unavailable
+symbols block preparation; partial ASM expansion requires Include expanded frames
+only. Every contributing source must use the same IMG version. The new library
+inherits that version/header; no existing IMG or layout changes. Save As is a
+separate normal save. No ASM, native sequences/scripts or game runtime is copied.
+
+studio_asm_artwork_library owns all captured buffers. It resolves again at capture,
+groups source copies and uses the existing reviewed-copy/split validators. Exact
+palette reuse compares fields and words; alternate tables remap to the aggregate.
+Primary/secondary points, padded pixels, baselines, point tables, raw name tails
+and per-sprite legacy reserved words survive collection. Sources and their
+histories/selections are never changed. The captured result remains usable after
+source edits or closure. Preview/create failures do not publish a tab or destroy
+an existing review. A new tab is dirty, with no placeholder or artificial creation
+Undo. Normal edits then use its own history. Collection remains bounded by 2000
+symbols, normal copy memory/palette limits and the inventory's dependency bounds.
+
+The UI prepares a detached tab and reserves publication capacity before adding it.
+Review textures remain owned through the rendered frame: Back disposes them on
+the next frame, Create moves them into the live tab, and shutdown clears any
+remaining detached preview before destroying SDL. Partial reviews retain their
+scope notice. Creating from the nested modal closes both review and ASM modals.
+
+87/87 Release suites pass. New model coverage includes multi-source palette reuse/
+remap, repeated pieces, source-order vs first-use provenance, points/raw tails/
+secondary anchors/padded pixels, creation history, independent clones after source
+edit/closure, partial consent, unresolved/manual/stale choices, pending source
+edits, mixed-version refusal, real CAGE artwork, save/reopen and exact source-byte
+checks. Allocation injection covers 180 capture and 60 clone positions without
+source mutation or loss of a retained review. Near-layout aggregation preserves
+0x610 and distinct reserved words from two sources. Model checks pass under ASAN.
+
+New asm-library UI checks pass wide/compact: actual prepare/cancel/select/create,
+closing and editing sources after capture, creation dirty/no-Undo state, save/
+reopen, normal edit Undo, disabled partial preparation, explicit partial consent
+and repeated create. asm-library-review captures the owned review at both sizes.
+Compact inventory and linked-fatality regressions pass. Both compact new modes
+pass ASAN, including shutdown while a textured review is still open. Only fixture
+outputs were written. Binary: build-studio-artwork/build/Release/imgtool-studio.exe.
+Remaining work includes copying reviewed dependencies into an existing IMG,
+source/build packaging and specialist runtime/legacy-format workflows.
