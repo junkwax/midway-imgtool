@@ -38,7 +38,7 @@ bool plan_library_copy(const Artwork &source,const Artwork &target,const std::ve
     }catch(const std::bad_alloc &){error="Not enough memory for the copy review.";return false;}out=std::move(p);return true;
 }
 bool same_library_copy_plan(const LibraryCopyPlan &a,const LibraryCopyPlan &b){
-    if(a.source!=b.source||a.target!=b.target||a.source_generation!=b.source_generation||a.target_generation!=b.target_generation||!(a.scope==b.scope)||a.options.prefix!=b.options.prefix||a.options.reuse!=b.options.reuse||a.options.include_children!=b.options.include_children||a.options.excluded!=b.options.excluded||a.added_palettes!=b.added_palettes||a.added_pixels!=b.added_pixels||a.rows.size()!=b.rows.size()||a.palettes.size()!=b.palettes.size())return false;
+    if(a.reuse_named!=b.reuse_named||a.reuse_options.prefix!=b.reuse_options.prefix||a.reuse_options.reuse!=b.reuse_options.reuse||a.reuse_options.include_children!=b.reuse_options.include_children||a.reuse_options.excluded!=b.reuse_options.excluded||a.reused!=b.reused||a.source!=b.source||a.target!=b.target||a.source_generation!=b.source_generation||a.target_generation!=b.target_generation||!(a.scope==b.scope)||a.options.prefix!=b.options.prefix||a.options.reuse!=b.options.reuse||a.options.include_children!=b.options.include_children||a.options.excluded!=b.options.excluded||a.added_palettes!=b.added_palettes||a.added_pixels!=b.added_pixels||a.rows.size()!=b.rows.size()||a.palettes.size()!=b.palettes.size())return false;
     for(size_t i=0;i<a.rows.size();++i)if(!equal_row(a.rows[i],b.rows[i]))return false;
     for(size_t i=0;i<a.palettes.size();++i){auto &x=a.palettes[i];auto &y=b.palettes[i];if(x.source!=y.source||x.target!=y.target||x.reused!=y.reused||x.fields!=y.fields||x.words!=y.words)return false;}
     return true;
@@ -75,8 +75,16 @@ std::shared_ptr<const SpriteClipboard> SpriteClipboard::capture(const Artwork &s
 }
 int Artwork::apply_library_copy(const Artwork &source,const LibraryCopyPlan &p,std::string &error){
     int added=validate_library_copy(source,p,error);if(added<=0)return added;auto staged=stage_copy(p,palette_count(),error);if(!staged)return -1;
-    try{sprite_ids.reserve(sprite_ids.size()+added);begin("Copy sprites from library");}catch(const std::bad_alloc &){error="Not enough memory to start the complete copy. No sprites were added.";return -1;}
-    append_staged_library(*staged,added,true);commit();return added;
+    try{
+        auto reserved=legacy_reserved_alternates;
+        if(disk_version()<0x61d&&source.disk_version()<0x61d){uint64_t next=next_sprite_id;for(auto &row:p.rows)if(row.enabled){auto found=source.legacy_reserved_alternates.find(row.sprite);if(found!=source.legacy_reserved_alternates.end())reserved[next]=found->second;++next;}}
+        State before=capture();before.label="Copy sprites from library";
+        sprite_ids.reserve(sprite_ids.size()+added);past.reserve(past.size()+1);
+        // Prepare history and legacy metadata before publishing the detached copy.
+        append_staged_library(*staged,added,true);legacy_reserved_alternates.swap(reserved);
+        past.push_back(std::move(before));future.clear();revision=next_revision++;trim_history();return added;
+    }catch(const std::bad_alloc &){error="Not enough memory to prepare the complete copy. No sprites were added.";return -1;}
+
 }
 int Artwork::apply_library_move(Artwork &source,const LibraryCopyPlan &copy,const BatchDeletePlan &removal,std::string &error){
     try{

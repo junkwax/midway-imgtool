@@ -1,4 +1,5 @@
 #include "studio_palette.h"
+#include "studio_layers.h"
 #include "palette_math.h"
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,39 @@ static void write(const std::filesystem::path &p,const std::vector<unsigned char
 int main(int argc,char **argv){
     using namespace studio;namespace fs=std::filesystem;std::string error;
     auto root=fs::temp_directory_path()/("studio-palette-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));fs::create_directories(root);
+    {
+        const std::vector<unsigned short> colors={0xf123,0x0000,0x8000,0x7fff,0xffff,0x4210,0x801f};
+        std::array<bool,256> mask{};mask[0]=mask[1]=mask[4]=mask[6]=mask[255]=true;
+        auto inverted=palette_color_effect(colors,mask,PaletteColorEffect::Invert);
+        CHECK(inverted==std::vector<unsigned short>({0xf123,0x7fff,0x8000,0x7fff,0x8000,0x4210,0xffe0}));
+        CHECK(palette_color_effect(inverted,mask,PaletteColorEffect::Invert)==colors);
+        auto reversed=palette_color_effect(colors,mask,PaletteColorEffect::Reverse);
+        CHECK(reversed==std::vector<unsigned short>({0xf123,0x801f,0x8000,0x7fff,0xffff,0x4210,0x0000}));
+        CHECK(palette_color_effect(reversed,mask,PaletteColorEffect::Reverse)==colors);
+        mask[2]=true;reversed=palette_color_effect(colors,mask,PaletteColorEffect::Reverse);
+        CHECK(reversed==std::vector<unsigned short>({0xf123,0x801f,0xffff,0x7fff,0x8000,0x4210,0x0000}));
+        mask.fill(false);mask[0]=mask[255]=true;
+        CHECK(palette_color_effect(colors,mask,PaletteColorEffect::Invert)==colors&&palette_color_effect(colors,mask,PaletteColorEffect::Reverse)==colors);
+        mask[4]=true;CHECK(palette_color_effect(colors,mask,PaletteColorEffect::Reverse)==colors);
+        CHECK(palette_color_effect({},mask,PaletteColorEffect::Invert).empty());
+        CHECK(palette_color_effect(std::vector<unsigned short>(257),mask,PaletteColorEffect::Reverse).empty());
+        CHECK(palette_color_effect(colors,mask,(PaletteColorEffect)99).empty());
+        CHECK(palette_color_effect({0xbeef},mask,PaletteColorEffect::Reverse)==std::vector<unsigned short>({0xbeef}));
+        auto fx=Artwork::demo();auto original=copy_palette(*fx,0).words;auto base=fx->copy(0,0,0,48,64).pixels;
+        auto image=fx->sprite(0);image->opaltbl_p=malloc(16);memset(image->opaltbl_p,0xff,16);((unsigned char *)image->opaltbl_p)[0]=NUMDEFPAL;
+        auto clip=fx->copy(0,0,0,2,2);clip.pixels.assign(4,8);CHECK(fx->paste_layer(0,clip,2,3,error));
+        auto path=root/"effects.IMG";CHECK(fx->save(path.u8string(),error));auto exact=bytes(path);
+        auto pal=fx->palette(0);auto metadata=*pal;auto buffer=pal->data_p;auto layer=image->layer_p;auto baseline=image->baseline_p;auto id=fx->sprite_id(0);auto generation=fx->generation();
+        mask.fill(false);mask[2]=mask[8]=mask[15]=true;
+        auto changed=palette_color_effect(original,mask,PaletteColorEffect::Reverse);
+        CHECK(fx->generation()==generation&&!fx->dirty()&&copy_palette(*fx,0).words==original);
+        CHECK(fx->replace_palette_colors(0,original,changed,error)&&fx->dirty()&&pal->data_p==buffer&&memcmp(pal,&metadata,sizeof(PAL))==0);
+        CHECK(image->layer_p==layer&&image->baseline_p==baseline&&fx->sprite_id(0)==id&&image->palnum==0&&((unsigned char *)image->opaltbl_p)[0]==NUMDEFPAL&&fx->copy(0,0,0,48,64).pixels==base);
+        CHECK(fx->save(path.u8string(),error));auto disk=Artwork::open(path.u8string(),error);CHECK(disk&&disk->disk_version()==0x634&&copy_palette(*disk,0).words==changed);
+        fx->undo();CHECK(copy_palette(*fx,0).words==original&&fx->sprite(0)->layer_p&&fx->save(path.u8string(),error)&&bytes(path)==exact);fx->redo();CHECK(copy_palette(*fx,0).words==changed);fx->undo();
+        generation=fx->generation();auto label=std::string(fx->undo_label());
+        mask.fill(false);CHECK(fx->replace_palette_colors(0,original,palette_color_effect(original,mask,PaletteColorEffect::Invert),error)&&fx->generation()==generation&&std::string(fx->undo_label())==label);
+    }
     auto art=Artwork::demo();auto pixels=art->copy(0,0,0,48,64).pixels;auto original=copy_palette(*art,0);CHECK(original.words.size()==16);CHECK(palette_usage(*art,0).primary==8);
     auto pal=art->palette(0);auto original_bpp=pal->bitspix;pal->flags=0x72;pal->pad=0x3421;pal->file_spare=0x7531;pal->file_colind=17;memcpy(pal->file_name_raw,pal->n_s,10);pal->file_name_raw[9]=0x55;
     auto file=root/"original.IMG";CHECK(art->save(file.u8string(),error));auto original_file=bytes(file);

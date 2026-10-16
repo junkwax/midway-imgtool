@@ -8,6 +8,50 @@ This records the investigation made before implementation. The abandoned red-the
 
 **Implementation checkpoint (2026-10-11):** the first separate `imgtool-studio` target now lives in `platform/studio`. It reuses format/math code behind a scoped adapter, owns each library and its history, and provides an artwork workspace with red accents. Classic's overlay is not part of that target. See the [README preview section](README.md#studio-preview-separate-application) for build instructions, supported workflows, and limits. The broader migration below remains a roadmap, not a claim of implemented parity.
 
+**Marked palette merge checkpoint (2026-10-16):** Palette manager now has local
+palette marks, Space/Shift+M/M controls, Mark shown/Clear marks and automatic
+keyboard-row reveal. Selecting a destination and typing * or keypad multiply
+reviews all marked sources, ignoring the destination's own mark. Per-source
+exclusions retain marks; no marks keeps the existing single-source workflow.
+One final palette is built before calculating every source mapping. Combined
+preview, growth/depth, per-source skipped/retained/removed summaries, PPP impact
+and explicit approximation approval precede one atomic Undo step. Approval stays
+visible beside Apply at the minimum window size and resets after mapping changes.
+
+Alternate-palette sprites are skipped, and optional removal keeps any remaining
+primary/alternate references. Unused marked sources stay unchanged. Metadata,
+pixel padding, baselines, stable sprite IDs, default alternate references and
+terminator tails are preserved; retained palette references are remapped once.
+Owned snapshots and Apply revalidation reject stale, raw-mutated and forged
+reviews. All allocations/history preparation precede nonthrowing installation;
+allocation failure leaves bytes, history, selection and generation unchanged.
+Marks clear when structural edits/history restores invalidate their palette
+identities. Classic's layer L action remains unmigrated. Help and shortcut docs
+were updated; verification is in the current Studio checkpoint.
+
+**Shortcut and Help checkpoint (2026-10-16):** Classic shortcuts were audited
+against `ui_main.cpp` and its Help. Studio now uses shared command/tool binding
+tables for dispatch, menu hints and a generated searchable keyboard reference,
+with compile-time duplicate checks. H/F1 opens a bounded topic browser: updated
+quickstart, all previous Studio workflow notes, frame-origin/anchor explanations,
+corrected format guidance and retained original DMA2 technical text. F9 provides
+read-only diagnostics. H/V/E/K regain Help/Variant/Smart erase/playback meanings;
+Shift+H/V/E/K selects Pan/Move/Erase/Line. Existing T/U aliases remain.
+
+Marks, sprite ordering/rename/deletion, extraction/paste-as-new, palette assignment,
+manager clipboard/navigation/history/deletion, reduction review, import/export,
+keypad zoom, preview reordering and source Redo aliases are bound. Ctrl+Tab sets
+the tab bar selection as well as the active document. Paste H/V, arrows, Ctrl+T,
+Ctrl+E, Ctrl+J and Enter use frozen destination-color mapped previews with explicit
+coverage, one Undo commit and stale/raw destination rejection. Clipboard/source
+pixels, indices, anchors and IMG layouts retain their existing boundaries.
+
+Help and [shortcut migration notes](doc/STUDIO_SHORTCUTS.md) explicitly distinguish
+review-based equivalents from remaining sprite-layer L and multi-palette-mark
+behavior. Tap Space marks; Space+left drag pans without painting or marking. These remain gaps, not claims of full shortcut/feature parity.
+Classic UI and game assets are unchanged. Verification is recorded in the current
+Studio migration checkpoint.
+
 **Animation/alignment checkpoint:** Studio now has name-inferred sequence groups,
 numeric frame order, multipart reconstruction, a timeline with per-frame preview
 ticks, fixed World View, onion skin, normal/flipped/both facing previews, a floor
@@ -2114,3 +2158,230 @@ pass ASAN, including shutdown while a textured review is still open. Only fixtur
 outputs were written. Binary: build-studio-artwork/build/Release/imgtool-studio.exe.
 Remaining work includes copying reviewed dependencies into an existing IMG,
 source/build packaging and specialist runtime/legacy-format workflows.
+
+
+**Copy captured ASM artwork into an existing IMG checkpoint (2026-10-15):** Copy
+to existing IMG in the captured artwork review enters the existing library-copy
+review using its owned multi-source snapshot. Choose an open destination, review
+names/palettes, prefix names or exclude rows, then append in one destination Undo
+step. Existing sprites are never replaced. Prefixes do not rewrite ASM references;
+exclusions produce a subset. Destination version must match the snapshot. The
+same original IMG format remains on Save and Save As. No disk writes happen on
+Copy. Sources and the unrelated session sprite clipboard remain untouched.
+
+AsmArtworkLibrary now plans and applies destination copies through existing
+validators, adding layout checks. Plans revalidate source/destination identity,
+generation and bytes; stale/forged/foreign/pending edits refuse safely. Captured
+sources can close. Cancel returns to the retained owned review; a missing target
+automatically returns there too. Reopening a target path has a new document ID
+and requires a fresh review. Target changes require cancel/reopen. Successful
+copy releases the captured preview on the next frame and activates the destination
+by default. Partial-expansion scope remains visible in the copy review.
+
+The shared apply_library_copy path prepares reserved metadata and the complete
+Undo state/capacity before appending buffers. It preserves pre-0x61d per-sprite
+reserved words on newly assigned IDs. Allocation failure cannot leave appended
+sprites without their Undo state. Copy-preview textures now survive the frame in
+which the dialog closes and are freed before the following frame draws; this also
+covers ordinary copy/paste. Quit releases the new held snapshot explicitly.
+
+88/88 Release suites pass. New model checks cover multi-source append, collisions,
+prefix/exclusions, palette reuse/remap, original sprite/ID/pixel preservation,
+single Undo/Redo, save/reopen, source closure, pending/stale/forged refusal,
+180 injected allocation positions and exact near-layout reserved-word copy/
+undo/redo bytes. The snapshot and original IMG layout remain unchanged.
+Targeted artwork-copy/shared-copy model tests pass under ASAN.
+
+New asm-copy UI (120 frames) passes wide/compact with actual prepare/transition,
+collision review, prefix typing, exclusions, target close/reopen with a new ID,
+stale destination refusal, cancel/back, source rename/closure after capture,
+copy, Undo/Redo and Save As/reopen. The unrelated clipboard and original fixture
+IMG/ASM disk bytes remain intact. asm-copy-review (81 frames) captures destination
+review at both sizes. Compact ordinary copy, move and collected-library regressions
+pass. Both new compact modes plus ordinary copy pass ASAN, including shutdown with
+a textured destination review open. Binary stays in build-studio-artwork/build/Release.
+Further work includes explicit reuse/replacement of existing artwork, source/build
+packaging and remaining specialist/runtime or legacy adapters.
+
+
+**Reuse existing animation artwork checkpoint (2026-10-16):** The destination
+artwork copy review now offers an opt-in Reuse identical named sprites setting.
+A unique same-name destination with matching stored artwork is reused, and its
+existing sprite number is shown. Different or ambiguous matches remain collisions;
+no replacement happens. User exclusions are tracked separately from reused rows.
+Only missing artwork and its palettes are appended. One Undo reverses that append.
+All-reused operations use Use existing artwork and change no IMG data, selection,
+generation, dirty state or history. Existing formats stay fixed.
+
+AsmArtworkLibrary compares effective on-disk names (including raw tails), padded
+pixel indices, primary/secondary anchors, flags and stored data/lib/frame fields,
+point tables, primary palettes and each alternate appearance. Palette comparison
+uses stored names/metadata and RGB555 words, allowing remapped numeric slots.
+Alternate table terminators/tail bytes and legacy reserve words must also match.
+Editor baselines, file offsets, source grouping, pointers and rewritten point/alt
+pool indices do not determine equality. Overlay layers refuse reuse. The original
+snapshot is never mutated. Reuse metadata stores requested options and source/
+target stable IDs alongside the append plan. Apply regenerates and compares both
+the reuse decisions and copy data before mutation; erased/forged/stale choices
+are refused. Requested exclusions cannot silently become reuse exclusions.
+
+89/89 Release suites pass. New model tests cover mixed/all reuse, loaded-vs-owned
+name/baseline state, prefix matching, exclusions, original pointer/ID retention,
+no-op history, modified pixel/anchor/secondary-point/flags/frame/lib/data/name-tail/
+palette/point rejection, duplicate names, raw changes without a generation update,
+forged/erased/stale choices, alternate palette slot remapping and tail checks,
+150 allocation-failure positions, and 0x610 reserved-word agreement/refusal. Existing
+artwork-copy model tests pass too; both targeted suites pass ASAN.
+
+New asm-reuse UI checks (126 frames) pass wide/compact: actual reuse setting and
+row exclusion toggles, restoring collisions by disabling reuse, mixed append,
+Undo/Redo/save/reopen, then all-reused no-op followed by Undo proving no extra
+history entry was added. Fixture bytes, source generations, original destination
+baseline pointer and unrelated clipboard stay intact. asm-reuse-review captures
+the mixed review at both sizes; asm-reuse-all captures the compact no-change CTA.
+Compact destination-copy and ordinary library-copy regressions pass. Compact full
+reuse and all-reused modes pass ASAN. Classic, CLI and Studio build successfully.
+Binary remains build-studio-artwork/build/Release/imgtool-studio.exe. Only temporary
+fixture outputs were saved. Replacement/difference review, packaging and other
+specialist/runtime or legacy workflows remain separate.
+
+
+**Paste overlay checkpoint (2026-10-16):** L during a pixel paste or transformed
+clipboard preview creates one independent sprite overlay. Inspector controls
+visibility, position/nudges, flips, flatten and remove, all undoable. Pixel zero
+is transparent; paint/Copy target base pixels. Save writes the visible composite
+in the original IMG layout and restores live pointers/base/layer; reopened IMG
+contains flattened pixels. Hidden overlays are excluded. No on-disk layer format
+or format conversion. Source index remapping and geometry require explicit
+flatten/remove; marked merge/Variant guard library layers. Sprite duplication
+owns a copy. New model staging/history mutations allocate before changing data,
+and save prepares every composite before borrowing pointers from the document.
+
+91/91 Release suites pass, including layer ownership/history, clipping, masks,
+palette mapping, invalid/stale guards, failed-save restoration, exact Undo saves
+for five supported versions, and injected allocation failures during creation,
+two-overlay save staging and flatten. Layers, selection-transform and marked
+merge pass ASAN. Actual L/inspector/Undo/Redo/save/reopen/modal UI checks pass at
+1440x900 and 1000x680, compact under ASAN too. Compact shortcut, floating paste,
+marked palette, sheet, indexed media and project regressions pass. Screens live
+under build-studio-artwork/layer-checks; binary remains its build/Release folder.
+Help/README/shortcut notes describe session-only editability. Direct layer drag,
+multiple stacked layers and a multiple-palette clipboard remain separate work.
+
+
+**Direct overlay movement checkpoint (2026-10-16):** Move (Shift+V) has explicit
+Overlay / Base selection targets in the inspector; L-to-overlay selects the
+Overlay target automatically. Canvas dragging previews the visible composite
+without mutating artwork, then releases as one Undo step. Shift locks an axis;
+arrows nudge one pixel (Shift=10) rather than browsing when the visible overlay
+is targeted. Escape/Undo cancels without history changes. Focus/source/modal/
+sprite/workspace changes invalidate safely. Hidden overlay targets cannot move
+base selections accidentally. Space drag still pans without marking. Off-canvas
+placement clips for display/save; coordinates recover fully off-canvas layers.
+
+Base selection transforms and line previews keep a stationary overlay visible;
+Apply updates base pixels only. Overlay bytes/ownership survive Undo. Original
+IMG format and session-only layer save semantics stay fixed. Full sprite geometry
+and palette-index operation guards remain. Multiple stacked layers and overlay
+replacement are separate work.
+
+91/91 Release suites pass, with additional base-transform/overlay pixel checks.
+Layers, selection-transform and paint models pass ASAN. New actual-input movement
+and held-preview modes pass at 1440x900 and 1000x680; compact also passes ASAN.
+The full 284-frame mode covers single history edits, cancellation/invalidation,
+axis locks, target switching, base transforms, arrows, hidden layers, off-canvas
+placement, no-op clicks, Space pan and exact appearance after same-format reopen.
+Compact original layer, hotkey, floating paste and painting regressions pass.
+Screens are in build-studio-artwork/layer-drag-* and build-studio-memory equivalents.
+The verified binary remains build-studio-artwork/build/Release/imgtool-studio.exe.
+
+
+**Marked palette clipboard checkpoint (2026-10-16):** Palette manager Ctrl+C
+copies all marked palettes in library order, or the selected one with no marks;
+search does not omit marked rows. Right-click Copy chooses selected-only capture.
+Ctrl+V appends every captured entry in one Undo step, selects the first addition
+and assigns no sprites. Counted Copy/Paste buttons and Clear make its scope
+visible. Source edits, Undo and closure leave the owned clipboard intact. Other
+clipboards and PAL/ACT exchange remain separate; existing preview/input guards
+apply. Copy failures retain the old clipboard; paste failures append nothing.
+
+The snapshot owns colors, depth, flags, stored metadata and raw name tails.
+Destination and within-batch name collisions receive numbered variants; renamed
+entries clear obsolete raw tails. Unique names retain their tails. Pasting stages
+all palette buffers, names, history and history capacity before changing linked
+lists/revision. Existing sprite/alternate references, layers, IDs, selection and
+baseline pointers remain intact. The complete batch must fit the 4093-palette
+limit. Save/Save As retain the existing IMG format; no conversion is introduced.
+
+92/92 Release suites pass. New model tests cover metadata, closure, full-batch
+Undo/Redo, references/layers, invalid/pending/forged state, capacity, 160 allocation
+failure positions in capture/paste and five original-layout save/Undo round trips.
+Clipboard/palette/marked merge models pass ASAN. New actual-input clipboard check
+passes at 1440x900/1000x680 and compact ASAN: marks/filter, Ctrl+C/V, selected-only
+context menu, source edit/Undo/destruction, paste/history/repeated names, pending
+preview guards, Clear, unmarked fallback and Save/reopen. Compact palette/hotkeys/
+marked-merge/layer-move/animation-clipboard regressions pass. Screens live in
+build-studio-artwork/palette-clipboard-{small,wide}/result.png and the memory build.
+Help/README/shortcut notes are updated; verified binary remains the artwork build.
+
+
+**Swatch clipboard checkpoint (2026-10-16):** right-click a palette color or use
+Copy / paste colors to capture one color or Ctrl/Shift-selected slots with their
+original indices. The owned capture survives source edits/closure and stays
+separate from whole-palette Ctrl+C/V and all artwork clipboards. Paste reviews
+original indices, appended colors, or one existing opaque slot. The mapping and
+before/after sprite preview show shared primary/alternate references, changed
+slots, growth/depth and PPP impact. Visible overlays participate in preview and
+used-color sampling. Pending edits block context menus; reviews block unrelated
+palette commands. A changed library invalidates its review. Clear releases only
+copied swatches; Cancel leaves clipboard and artwork unchanged.
+
+Destination zero stays untouched; its copied color may become an opaque slot.
+Same-index growth fills new gaps with black. Append requires every copied color
+to fit within 256 slots, with no silent truncation. Apply replans/compares its
+review and prepares colors/history before mutation. It records one Undo step,
+retains high bits and leaves pixels, assignments, metadata, layers and original
+IMG version/layout intact. No-op records no step; failed capture retains the
+previous clipboard, and failed paste changes no data/history. Save separately.
+
+New model suite passes, including source closure, gaps/transparency/capacity,
+stale/foreign/forged/pending rejection, layers/references, pointer/history guards,
+130 injected allocation positions and five original-layout save/Undo round trips.
+Swatch, whole-palette clipboard, palette and layer models pass ASAN. Actual-input
+228-frame swatch check passes wide/compact Release and compact ASAN, with palette,
+clipboard, marked merge, ramps, layers and Help/hotkey regressions passing. Full
+Release run: 92/93; existing strike-phase integration check expects 25 WOLF rows
+in the neighboring modified MK2 source, which now has 26 with Stryker added. Its
+self-contained fixtures pass without that optional external source. No game files
+or existing tests were changed to conceal this external fixture drift.
+
+Screens: build-studio-artwork/palette-swatches-small/result.png,
+build-studio-artwork/swatches-regression-palette-swatches-wide/result.png and
+build-studio-memory/palette-swatches-check/small.png. Help, README and shortcut
+notes updated. Current binary remains the artwork build. No commits/pushes.
+
+
+**Selected palette effects checkpoint (2026-10-16):** Palette manager restores
+Invert selected and Reverse selected order using its staged before/after editor.
+Invert complements RGB555 while retaining stored high bits; Reverse moves complete
+words across selected nonadjacent slots, including odd selections. Both always
+preserve destination zero. None selected disables both; Reverse needs two opaque
+slots. Use All opaque explicitly for the whole palette. Effects build on current
+RGB/HSL stages, bake offsets once and can compose. Apply colors commits the combined
+preview in one Undo step; Reset/Close discards it. No-op records no history.
+Existing pending-preview guards protect clipboard/library mutations. Palette
+size/depth, pixel indices, assignments, metadata, layers, IDs/baselines and original
+IMG format stay intact. Small palette grids contract to keep compact controls
+accessible; large palettes retain a capped scroll area.
+
+Expanded palette model checks pass Release and ASAN: complements/high bits, sparse
+odd/even order, invalid/zero/single-slot cases, involution, preview purity, buffer/
+metadata/layer/reference retention, Undo/Redo, no-op and same-format save/reopen/
+byte-exact Undo. The 176-frame --smoke-palette-effects actual-input check passes
+wide/compact Release and compact ASAN. Palette/swatches/ramps/hotkeys-Help compact
+regressions pass. Full Release remains 92/93: only the previously described external
+MK2 roster test fails (25 expected, 26 present). Classic/CLI/Studio build. No game
+assets, original UI or format adapters changed. Help, README and shortcut notes
+updated. Screens: build-studio-artwork/effects-palette-effects-{small,wide}/result.png
+and build-studio-memory/palette-effects-check/small.png. Current binary remains
+the artwork build. No commit/push.

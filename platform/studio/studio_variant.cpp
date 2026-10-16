@@ -8,6 +8,7 @@ bool dimensions(int w,int h){return w>0&&h>0&&w<=8192&&h<=8192&&(size_t)w*h<=4*1
 unsigned short word(const std::vector<unsigned short> &p,int c){return c<(int)p.size()?p[c]:0;}
 }
 bool capture_variant_source(const Artwork &art,int index,int color,int ppp,const PixelSelection &selection,VariantSource &out,std::string &error){
+    for(int i=0;i<art.count();++i)if(art.sprite(i)->layer_p){error="Flatten or remove library overlays before allocating variant colors.";return false;}
     out={};error.clear();auto im=art.sprite(index);auto pal=im?art.palette(im->palnum):nullptr;
     if(!im||!im->data_p||!dimensions(im->w,im->h)||!pal||!pal->data_p||pal->numc<1||pal->numc>256||pal->bitspix>8||color<=0||color>=pal->numc||ppp<0||ppp>8||!selection.fits(im->w,im->h)){error="Choose an opaque target color and a valid sprite/selection.";return false;}
     VariantSource s;s.owner=&art;s.generation=art.generation();s.sprite=art.sprite_id(index);s.palette=im->palnum;s.color=color;s.ppp=ppp;s.original=art.copy(index,0,0,im->w,im->h);s.selection=selection;s.used[0]=true;

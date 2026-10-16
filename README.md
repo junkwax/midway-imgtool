@@ -46,6 +46,35 @@ full script execution, advanced WAX rules, and game-source editing remain in cla
 Studio exposes embedded sequence frames and script calls while preserving their
 other metadata.
 
+**Palette clipboard:** in Palette manager, **Ctrl+C** copies every marked
+palette (or the selected one when no marks exist), including palettes hidden by
+the search filter. Right-click Copy for **Copy selected only**. **Ctrl+V** appends
+all captured palettes in one Undo step and selects the first addition. Names are
+numbered when needed; colors, depth and palette metadata are retained. Sprite
+assignments stay unchanged. The clipboard survives closing the source library;
+**Clear** beside Paste releases it. Save separately in the original IMG format.
+
+**Swatch clipboard:** right-click a color, or choose **Copy / paste colors...**,
+to copy one color or the Ctrl/Shift-selected swatches with their slot numbers.
+Paste reviews the original indices, appended slots, or one existing opaque slot.
+The before/after sprite preview shows shared-color changes; the review lists
+palette growth, declared depth and LOAD2 PPP impact. Destination index zero stays
+unchanged. Its copied color can be appended or pasted into an opaque slot.
+Every color must fit within 256 slots; nothing is silently dropped. Apply uses
+one Undo step, retaining pixels and palette assignments. This clipboard survives
+source closure and stays separate from whole-palette Ctrl+C/V and pixel copying.
+
+**Sprite overlay (L):** while placing or transforming pasted pixels, press **L**
+to retain a separate overlay. Move (**Shift+V**) then targets the overlay; drag
+and release for one Undo step, hold Shift to lock an axis, or nudge with arrows
+(Shift = ten pixels). Escape/Undo cancels a drag. Choose **Base selection** in
+the inspector to move selected pixels beneath the stationary overlay. The
+inspector also positions, flips, hides, flattens or removes it, with Undo/Redo. Index zero stays transparent. Save
+includes visible overlays as flattened pixels in the **unchanged IMG format**;
+the live layer remains editable for this session. Hidden overlays are excluded,
+and reopened files contain flattened pixels. Paint and pixel Copy target the
+base. Flatten before geometry changes, palette remapping or pipeline export.
+
 **Side toolbar and color wheel:** the left rail contains the 18 migrated pixel
 tools as icons with names, shortcuts and instructions on hover. The active tool
 uses Studio's red highlight; its settings remain in the inspector. A hue wheel
@@ -63,7 +92,7 @@ short labels provide a fallback when the font is unavailable.
 
 **Painting:** Pencil/Erase/Line/Replace/Clone/Variant/Blur/Smudge/Heal/Defringe share round or square brushes, a radius
 control and **[ / ]** size shortcuts. Fast strokes interpolate continuously.
-**Line (K)** previews a straight stroke without changing the IMG. Hold Shift to
+**Line (Shift+K)** previews a straight stroke without changing the IMG. Hold Shift to
 snap horizontal, vertical or diagonal; release to apply one undo step, or press
 Escape/Undo to cancel (including while Shift is held). The preview reports the
 number of changing pixels. A changed source discards the pending line.
@@ -72,7 +101,7 @@ number of changing pixels. A changed source discards the pending line.
 matching pixels under the brush with the selected palette index. Crossing another
 color does not change the source. Enable **All matching pixels** for a click to
 replace throughout the sprite or active selection. **Fill (G)** and **Smart erase
-(U)** support connected or global matching; smart erase writes transparency.
+(E / U)** support connected or global matching; smart erase writes transparency.
 By default matching uses the exact index. Enable **Match palette colors** to use
 RGB555 color distance and tolerance, including duplicate colors in different
 slots. Transparency remains separate from opaque black. All tools restrict writes
@@ -89,7 +118,7 @@ selection, including holes; sampling can read outside the selection. Release
 commits one undo step; Escape restores the unfinished stroke and keeps its
 selection. Switching sprites or changing dimensions clears the source. This first
 clone workflow samples within one sprite; cross-sprite copying uses the clipboard.
-**Variant (T)** recolors painted pixels in the current palette while preserving
+**Variant (V / T)** recolors painted pixels in the current palette while preserving
 those pixels' colors under the library's other palettes. Choose an opaque target
 swatch, drag to preview, then **Apply/Enter** or **Cancel/Escape**. **Preview selected
 pixels** applies the same review to a rectangle/wand/lasso selection. Transparent
@@ -467,7 +496,7 @@ pixels. Copying without a selection keeps the earlier transparent-overlay behavi
 Moves keep anchors and geometry unchanged and require the entire selection to
 fit the canvas. Escape restores the prior selection during an unfinished drag.
 Selections are session view state; pixel commands have their own undo steps.
-**Move (V)** drags selected pixels into a floating preview. **Ctrl+T**, **Edit >
+**Move (Shift+V)** drags selected pixels into a floating preview. **Ctrl+T**, **Edit >
 Transform selection...**, or the inspector's **Move / transform...** opens the
 same controls. Drag corners to resize, edit numeric position/size, flip, rotate in
 90-degree steps, reset, fit to the canvas, or enable **Duplicate instead of move**.
@@ -718,13 +747,41 @@ For an isolated workspace build, use `-BuildRoot .\build-studio`; the executable
 is then `build-studio\build\Release\imgtool-studio.exe`. Keep `SDL2.dll` beside
 the executable. On other platforms, build the CMake target `imgtool-studio`.
 
-Open an IMG or choose **Explore sample**. Mouse wheel zooms, middle-drag pans,
-and **Ctrl+0** fits the sprite. **P/E/G/I/R/H/W/L/V** select Pencil/Erase/Fill/Pick/
-Rectangle/Pan/Wand/Lasso/Move; arrows browse sprites. **Ctrl+C/X/V** copies/cuts/pastes pixels,
-**K/B/U** choose Line/Replace/Smart erase, **C** chooses Clone (Alt-click source), **T** chooses Variant paint,
-**Ctrl+Z/Y** undoes/redoes, and **Ctrl+S** saves. Flip preview is read-only;
-turn it off to edit. Palette edits explicitly show how many sprites share the
-palette. Studio stores its own layout and recent files separately from classic.
+Open an IMG or choose **Explore sample**. **H / F1** opens searchable Help,
+with the current keyboard reference, Studio workflows, frame-origin/anchor and
+file-format explanations, and the original DMA2 hardware reference. **F9** toggles
+read-only diagnostics. The guide identifies remaining classic-only behavior;
+it does not advertise missing sprite layers as implemented.
+
+Mouse wheel zooms, middle-drag pans, and **Ctrl+0** fits the sprite. **P/G/I/R/W/L**
+select Pencil/Fill/Pick/Rectangle/Wand/Lasso; **E / U** selects Smart erase,
+**Shift+E** plain Erase, **V / T** Variant, **Shift+V** Move, **Shift+H** Pan,
+**Shift+K** Line, **B** Replace and **C** Clone (Alt-click sets its source).
+**K** plays/pauses; tapping **Space** marks a sprite in Artwork and plays in animation
+workspaces. Hold **Space** and left-drag to pan without marking or painting. **Shift+M / M** marks/unmarks all. **Ctrl+Tab / Ctrl+Shift+Tab** switches
+libraries; **Tab** switches Artwork/alignment. **Ctrl+Left/Right** reorders the
+current temporary preview, stored IMG entry or project frame according to mode.
+
+**Ctrl+C/X/V** copies/cuts/places pixels. During Paste, **H/V** flips, arrows
+position (**Shift** = ten pixels), **Ctrl+T** opens transform, **Enter / Ctrl+E**
+applies and **Ctrl+J** stamps while keeping a floating duplicate. **Escape / Ctrl+Z**
+cancels an active floating preview. **Ctrl+Shift+C/X** reviews extraction into a
+new sprite; **Ctrl+Shift+V** pastes pixels into a new sprite in one Undo step.
+**Ctrl+R / F2** renames, **Ctrl+P** reviews point tables, **Alt+PageUp/PageDown**
+reorders sprites and **Shift+Delete** reviews deletion. **Delete / Backspace**
+clears a selection; without a selection, **Delete** reviews sprite deletion.
+**[ / ]** changes brush radius, or opens marked/selected palette assignment when
+no brush is active. **Shift+R** opens palette Rename, **\*** Merge review, and
+**;** a marked-sprite smooth reduction review. **Alt+L / Ctrl+L** imports indexed
+LBM/TGA, **Alt+S** exports LBM and **Ctrl+B** reviews a TGA sprite sheet.
+
+**Ctrl+Z / Ctrl+Y** undoes/redoes (**Ctrl+Shift+Z** also redoes); **Ctrl+S** saves.
+Shortcuts pause in text entry and modal reviews. Palette manager owns its palette
+copy/paste, browsing, unused deletion and Undo/Redo keys; source editors retain
+separate histories. Flip preview is read-only; turn it off to edit. Palette edits
+show how many sprites share colors. Studio stores its layout and recent files
+separately from classic. [Shortcut migration notes](doc/STUDIO_SHORTCUTS.md) list
+intentional differences and remaining gaps.
 
 Use **File > New IMG library** (**Ctrl+N**) to start with a blank sprite, or use
 **Sprite > New sprite** to add one. **F2** renames, **Ctrl+J** duplicates, and the
@@ -772,6 +829,38 @@ that palette; **Reset preview** or **Close (discard preview)** leaves stored col
 untouched. Index zero stays transparent. Browsing a palette does not assign it;
 **Assign to preview sprite** explicitly matches colors or keeps pixel indices.
 The preview displays existing indices, so matching on assignment can look different.
+**Invert selected** previews the RGB complement of selected opaque colors.
+**Reverse selected order** flips their order across the selected slot numbers,
+including nonadjacent slots; select at least two colors. Both build on the current
+color preview and leave transparency, pixel indices, palette size/depth and
+assignments intact. Reversing a ramp changes the artwork's shading. **Apply colors**
+commits the combined preview in one Undo step; **Reset preview** or **Close**
+discards it. With **None** selected, both effects are disabled.
+Right-click a swatch for **Copy this color**, **Copy selected colors**, reviewed
+**Paste at original indices**, **Append copied colors**, or **Paste copied color
+here**. The last choice requires one copied color and an existing opaque slot.
+Original-index paste can grow the palette, filling new gaps with black; existing
+pixels retain their indices. Append retains all existing colors. Review shared
+users and LOAD2 PPP impact before applying. Cancel retains the clipboard without
+changing the library. Clear copied colors releases only the swatch clipboard.
+To merge several palettes, mark source rows with their checkboxes or **Space**,
+select the destination palette, then press **\*** / keypad multiply or choose
+**Merge marked...**. **Shift+M** marks all palettes; **M** clears marks; **Mark shown**
+uses the search filter. A destination mark is ignored. Exclude sources in the
+review without clearing their marks. All enabled sources map to the same final
+combined destination; review per-source skips, combined colors, approximation
+and packing impact before **Apply marked merge**. Approval for approximate colors
+stays beside Apply and resets when the mapping changes. Apply records one Undo
+step and does not save automatically.
+
+**Remove sources that become unused** removes only merged palettes without any
+remaining primary or alternate references. Sources with skipped alternate-palette
+sprites stay; unused marked sources stay unchanged. Existing destination slots,
+transparent pixels, sprite metadata and baselines are retained. Marks are per-library
+view state and clear after structural edits/history restores that change palette
+identities. Cancel leaves marks and IMG data intact. Save retains the original
+IMG version and record layout.
+
 To merge sprites onto one palette, select the destination in the manager and
 choose **Merge...**, then select the source. **Grow for exact colors**
 adds used source colors up to the 256-color limit while keeping existing target
@@ -1088,6 +1177,41 @@ with references remapped. The review supports up to 2000 required symbols and th
 usual IMG copy limits. It includes artwork only: ASM, embedded sequences/scripts,
 external game references and build outputs are separate. Unopened libraries are
 not searched automatically.
+
+**Copy to existing IMG...** in the captured review opens a destination copy
+review. Choose any open destination with the same IMG version, set an optional
+prefix and exclude rows you do not want. Existing sprite names cannot be
+replaced: collisions block copying until resolved by a prefix or exclusions.
+A prefix changes the copied names; ASM references are not rewritten. Excluding
+rows copies a subset of the animation's captured artwork.
+
+Copy appends the reviewed sprites/palettes in one destination Undo step; save
+the destination separately. Source libraries and the session sprite clipboard
+remain unchanged. Cancel returns to the owned captured review. If the destination
+changes, cancel and reopen that review before copying. If it closes, Studio
+returns to the captured review; reopening the same path creates a new destination
+identity and requires a fresh review. The captured data remains usable when its
+original sources change or close. Mixed destination layouts are refused without
+converting either IMG. Exact palette reuse still requires both colors and metadata
+to match; otherwise palettes are copied and references remapped.
+
+Enable **Reuse identical named sprites** to reuse a unique destination name match
+instead of appending another sprite. This starts off. Each reused row shows its
+existing destination sprite number. Pixels (including row padding), primary and
+secondary anchors, point tables, stored metadata, raw name tails and palette
+appearances must match. Alternate palette slots may differ numerically when
+their stored palette data matches. Editing baselines, file offsets and source
+list/group state are not part of the stored artwork comparison.
+
+Different or ambiguous matches stay blocked collisions. You can still use a
+prefix, exclude the row, or cancel; existing artwork is never replaced. Exclusions
+remain distinct from reuse. Apply rechecks the chosen destination sprites against
+the review. A mixed operation appends only missing artwork in one Undo step. If
+all included artwork is reused, **Use existing artwork** closes the review without
+changing IMG data, selection, dirty state, generation or Undo history. The session
+sprite clipboard remains separate.
+
+
 
 **Tools > Strike associations...** (or **Manage / save associations...** in the ASM
 viewer) manages explicit move associations. Studio reads the original

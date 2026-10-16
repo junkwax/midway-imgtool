@@ -49,7 +49,8 @@ bool plan_export(const Artwork &art,const std::vector<ExportRequest> &requests,c
             if(request.enabled){++next.included;row.entry=next.included-1;
                 if(list){if(row.name.empty()||std::any_of(row.name.begin(),row.name.end(),[](unsigned char c){return c<32||c==127;}))row.error="Name cannot be an assembly comment.";}
                 else {
-                    if(im->w==0||im->h==0||im->w>8192||im->h>8192||(uint64_t)im->w*im->h>4*1024*1024||!im->data_p)row.error="Invalid sprite geometry or pixels.";
+                    if(im->layer_p)row.error="Flatten or remove this sprite overlay before pipeline export.";
+                    else if(im->w==0||im->h==0||im->w>8192||im->h>8192||(uint64_t)im->w*im->h>4*1024*1024||!im->data_p)row.error="Invalid sprite geometry or pixels.";
                     else if(!pal||!pal->data_p||pal->numc==0||pal->numc>256)row.error="Invalid primary palette.";
                     else {int stride=(im->w+3)&~3;size_t size=(size_t)stride*im->h;snapshot_bytes+=size+pal->numc*2;if(snapshot_bytes>limit){error="The source review exceeds 128 MiB. Narrow the export scope.";return false;}source.pixels.assign((unsigned char *)im->data_p,(unsigned char *)im->data_p+size);source.colors.assign((unsigned char *)pal->data_p,(unsigned char *)pal->data_p+pal->numc*2);unsigned max=0;for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x)max=std::max(max,(unsigned)source.pixels[(size_t)y*stride+x]);
                         row.bpp=options.bpp==-1?PaletteBppForColorCount(pal->numc):options.bpp==0?PaletteBppForColorCount((int)max+1):options.bpp;

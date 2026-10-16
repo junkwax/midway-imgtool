@@ -1,7 +1,7 @@
 void clear_floating(){if(floating.texture)SDL_DestroyTexture(floating.texture);floating=FloatingUi{};}
 void cancel_floating(){
     auto &u=floating;if(!u.active)return;auto t=find(u.doc);
-    if(t&&t->selected_id==u.stage.sprite){auto im=t->art->sprite(t->selected);if(im&&u.stage.source.fits(im->w,im->h))t->selection=u.stage.source;}
+    if(t&&t->selected_id==u.stage.sprite){auto im=t->art->sprite(t->selected);if(im&&u.stage.source.fits(im->w,im->h))t->selection=u.stage.clipboard?u.prior_selection:u.stage.source;}
     u.active=false;u.dragging=false;status="Cancelled selection preview. Artwork is unchanged.";
     // Texture retirement waits until the next frame: inspector buttons follow canvas drawing.
 }
@@ -15,11 +15,17 @@ void begin_floating(Tab &t){
     u.doc=t.uid;u.active=true;u.dirty=true;paste_mode=false;tool=Tool::Move;
     status="Drag or transform the preview. Enter applies; Escape cancels.";
 }
+void begin_clipboard_floating(Tab &t){
+    finish();synchronize(t);clear_floating();auto &u=floating;
+    if(!begin_clipboard_transform(*t.art,t.selected,clipboard,u.stage,error))return;
+    u.doc=t.uid;u.prior_selection=t.selection;u.stage.x=std::clamp(paste_x,0,u.stage.canvas_w-u.stage.w);u.stage.y=std::clamp(paste_y,0,u.stage.canvas_h-u.stage.h);u.active=u.dirty=true;paste_mode=false;tool=Tool::Move;
+    status="Transform pasted pixels. Enter applies; Escape cancels without changing the sprite.";
+}
 void refresh_floating(){
     auto &u=floating;if(!u.active||!u.dirty)return;u.dirty=false;u.valid=preview_selection_transform(u.stage,u.preview,u.error);
     if(u.texture)SDL_DestroyTexture(u.texture);u.texture=nullptr;if(!u.valid)return;
-    auto &s=u.stage;std::vector<unsigned char> rgba(u.preview.pixels.size()*4);
-    for(size_t i=0;i<u.preview.pixels.size();++i){int c=u.preview.pixels[i];auto p=rgba.data()+i*4;unsigned short word=s.clip.colors[c];unsigned char bytes[]={(unsigned char)word,(unsigned char)(word>>8)};pal_word_to_rgb8(bytes,p,p+1,p+2);p[3]=c?255:0;}
+    auto &s=u.stage;auto t=find(u.doc);auto im=t?t->art->sprite(t->art->sprite_index(s.sprite)):nullptr;if(!im){u.valid=false;return;}checked_layer_bytes(*im);std::vector<unsigned char> rgba(u.preview.pixels.size()*4);
+    for(size_t i=0;i<u.preview.pixels.size();++i){int c=overlay_pixel(*im,(int)(i%s.canvas_w),(int)(i/s.canvas_w),u.preview.pixels[i]);auto p=rgba.data()+i*4;unsigned short word=s.clip.colors[c];unsigned char bytes[]={(unsigned char)word,(unsigned char)(word>>8)};pal_word_to_rgb8(bytes,p,p+1,p+2);p[3]=c?255:0;}
     u.texture=SDL_CreateTexture(renderer,SDL_PIXELFORMAT_RGBA32,SDL_TEXTUREACCESS_STATIC,s.canvas_w,s.canvas_h);
     if(!u.texture){u.valid=false;u.error="Could not create the selection preview texture.";return;}
     SDL_SetTextureBlendMode(u.texture,SDL_BLENDMODE_BLEND);SDL_SetTextureScaleMode(u.texture,SDL_ScaleModeNearest);SDL_UpdateTexture(u.texture,nullptr,rgba.data(),s.canvas_w*4);
@@ -29,9 +35,15 @@ void apply_floating(){
     if(!t->art->apply_selection_transform(u.stage,u.error)){u.valid=false;return;}
     t->selection=u.preview.selection;u.active=false;u.dragging=false;status="Applied selected pixels. Undo restores the complete edit.";
 }
+void duplicate_floating(){
+    auto &u=floating;u.stage.copy=true;apply_floating();if(!u.active)if(auto t=tab()){begin_floating(*t);floating.stage.copy=true;}
+}
 void floating_shortcuts(ImGuiInputFlags route){
-    auto &u=floating;if(ImGui::IsKeyPressed(ImGuiKey_Escape)){cancel_floating();return;}
-    if(ImGui::Shortcut(ImGuiKey_Enter,route)||ImGui::Shortcut(ImGuiKey_KeypadEnter,route)){apply_floating();return;}
+    auto &u=floating;if(u.stage.clipboard&&ImGui::Shortcut(ImGuiKey_L,route)){drop_paste_layer();return;}if(ImGui::IsKeyPressed(ImGuiKey_Escape)){cancel_floating();return;}
+    if(ImGui::Shortcut(ImGuiKey_Enter,route)||ImGui::Shortcut(ImGuiKey_KeypadEnter,route)||ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_E,route)||ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_T,route)){apply_floating();return;}
+    if(ImGui::Shortcut(ImGuiKey_H,route)){u.stage.flip_h=!u.stage.flip_h;u.dirty=true;}
+    if(ImGui::Shortcut(ImGuiKey_V,route)){u.stage.flip_v=!u.stage.flip_v;u.dirty=true;}
+    if(ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_J,route)){duplicate_floating();return;}
     const ImGuiKey arrows[]={ImGuiKey_LeftArrow,ImGuiKey_RightArrow,ImGuiKey_UpArrow,ImGuiKey_DownArrow};const int dx[]={-1,1,0,0},dy[]={0,0,-1,1};
     for(int i=0;i<4;++i)for(int fast=0;fast<2;++fast)if(ImGui::Shortcut((fast?ImGuiMod_Shift:0)|arrows[i],route)){u.stage.x=std::clamp(u.stage.x+dx[i]*(fast?10:1),0,std::max(0,u.stage.canvas_w-u.stage.w));u.stage.y=std::clamp(u.stage.y+dy[i]*(fast?10:1),0,std::max(0,u.stage.canvas_h-u.stage.h));u.dirty=true;}
 }
@@ -65,12 +77,13 @@ void draw_floating(ImDrawList *dl,ImVec2 origin,float z,ImVec2 a,ImVec2 b){
 void floating_inspector(Tab &t){
     auto &u=floating;auto &s=u.stage;ImGui::Spacing();ImGui::SeparatorText("Selection preview");ImGui::TextWrapped("Drag to move; drag corners to resize. Artwork changes when you apply.");
     ImGui::BeginDisabled(!u.valid||u.dirty||u.dragging);bool apply=ImGui::Button("Apply",ImVec2(100,0));u.apply_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();ImGui::SameLine();bool cancel=ImGui::Button("Cancel",ImVec2(100,0));u.cancel_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(s.clipboard){if(ImGui::Button("Keep as overlay (L)"))drop_paste_layer();layer_paste_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::TextWrapped("Overlay keeps index 0 transparent; it does not clear base pixels.");}
     if(!u.error.empty())ImGui::TextWrapped("%s",u.error.c_str());
     int xy[]={s.x,s.y};ImGui::TextUnformatted("Position X / Y");ImGui::SetNextItemWidth(-1);if(ImGui::InputInt2("##floating-pos",xy)){s.x=std::clamp(xy[0],-8192,8192);s.y=std::clamp(xy[1],-8192,8192);u.dirty=true;}
     int w=s.w,h=s.h;double ratio=(double)s.w/s.h;
     ImGui::SetNextItemWidth(110);if(ImGui::InputInt("Width",&w,0,0)){s.w=std::clamp(w,1,8192);if(u.ratio)s.h=std::clamp((int)std::lround(s.w/ratio),1,8192);u.dirty=true;}
     ImGui::SetNextItemWidth(110);if(ImGui::InputInt("Height",&h,0,0)){s.h=std::clamp(h,1,8192);if(u.ratio)s.w=std::clamp((int)std::lround(s.h*ratio),1,8192);u.dirty=true;}
-    ImGui::Checkbox("Keep proportions",&u.ratio);u.dirty|=ImGui::Checkbox("Duplicate instead of move",&s.copy);u.copy_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    ImGui::Checkbox("Keep proportions",&u.ratio);ImGui::BeginDisabled(s.clipboard);u.dirty|=ImGui::Checkbox("Duplicate instead of move",&s.copy);ImGui::EndDisabled();u.copy_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     if(ImGui::Button("Flip H")){s.flip_h=!s.flip_h;u.dirty=true;}u.flip_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::SameLine();if(ImGui::Button("Flip V")){s.flip_v=!s.flip_v;u.dirty=true;}
     if(ImGui::Button("Rotate 90")){s.rotation=(s.rotation+1)%4;std::swap(s.w,s.h);std::swap(s.flip_h,s.flip_v);u.dirty=true;}u.rotate_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     ImGui::TextDisabled("Rotation: %d degrees",s.rotation*90);ImGui::TextWrapped("Nearest pixels retain palette indices.");if(ImGui::IsItemHovered())ImGui::SetTooltip("Transparent selected pixels clear the destination. Unselected holes leave it intact.");

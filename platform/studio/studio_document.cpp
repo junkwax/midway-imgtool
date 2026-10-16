@@ -1,4 +1,5 @@
 #include "studio_document.h"
+#include "studio_layers.h"
 #include "studio_selection.h"
 #include "studio_img_codec.h"
 #include "img_io.h"
@@ -132,12 +133,13 @@ bool Artwork::save(const std::string &path, std::string &error) {
     auto temp = dest;
     temp += ".studio-" + std::to_string(stamp) + "-" + std::to_string(++counter) + ".tmp";
     if (!reserve_temp(temp)) { error = "Cannot create a temporary file in the destination folder."; return false; }
-    bool ok;
-    {
+    bool ok=false;
+    try {
+        LayerCompositeScope layers(data);
         CodecScope scope(data);
         WriterScratch scratch(data,source_version);
         ok = SaveImgFileToPath(temp.u8string().c_str(), &error);
-    }
+    } catch(const std::exception &e) { error=std::string("Could not prepare IMG save: ")+e.what(); }
     std::vector<unsigned char> written;
     LIB_HDR h{};
     if (ok && (!read_bytes(temp.u8string(), written) || !inspect_img(written, h))) {
@@ -190,7 +192,7 @@ Artwork::State Artwork::capture() const {
         item.pixels.assign(p,p+(((size_t)im->w+3)&~size_t(3))*im->h);
         auto copy_blob=[](void *from,size_t bytes,std::vector<unsigned char> &out){if(from)out.assign((unsigned char *)from,(unsigned char *)from+bytes);};
         copy_blob(im->baseline_p,(((size_t)im->baseline_w+3)&~size_t(3))*im->baseline_h,item.baseline);
-        copy_blob(im->pttbl_p,40,item.points);copy_blob(im->opaltbl_p,16,item.alternate);
+        copy_blob(im->pttbl_p,40,item.points);copy_blob(im->opaltbl_p,16,item.alternate);copy_blob(im->layer_p,checked_layer_bytes(*im),item.layer);
         s.sprites.push_back(std::move(item));
     }
     for (int i = 0; i < palette_count(); ++i) {
@@ -203,13 +205,13 @@ Artwork::State Artwork::capture() const {
     return s;
 }
 size_t Artwork::State::bytes() const {
-    size_t n=sequences.size();for(auto &v:sprites)n+=sizeof(v.fields)+v.pixels.size()+v.baseline.size()+v.points.size()+v.alternate.size();
+    size_t n=sequences.size();for(auto &v:sprites)n+=sizeof(v.fields)+v.pixels.size()+v.baseline.size()+v.points.size()+v.alternate.size()+v.layer.size();
     for(auto &v:palettes)n+=sizeof(v.fields)+v.colors.size();return n;
 }
 bool Artwork::State::same(const State &s) const {
     if(sprites.size()!=s.sprites.size()||palettes.size()!=s.palettes.size()||sequences!=s.sequences||seqcnt!=s.seqcnt||scrcnt!=s.scrcnt)return false;
     for(size_t i=0;i<sprites.size();++i){auto &a=sprites[i];auto &b=s.sprites[i];
-        if(a.id!=b.id||memcmp(&a.fields,&b.fields,sizeof(IMG))||a.pixels!=b.pixels||a.points!=b.points||a.alternate!=b.alternate)return false;
+        if(a.id!=b.id||memcmp(&a.fields,&b.fields,sizeof(IMG))||a.pixels!=b.pixels||a.points!=b.points||a.alternate!=b.alternate||a.layer!=b.layer)return false;
     }
     for(size_t i=0;i<palettes.size();++i)if(memcmp(&palettes[i].fields,&s.palettes[i].fields,sizeof(PAL))||palettes[i].colors!=s.palettes[i].colors)return false;
     return true;
@@ -224,7 +226,7 @@ void Artwork::restore(const State &s) {
     auto allocate=[](const std::vector<unsigned char> &bytes)->void *{if(bytes.empty())return nullptr;void *p=malloc(bytes.size());if(!p)throw std::bad_alloc();memcpy(p,bytes.data(),bytes.size());return p;};
     {CodecScope scope(replacement->data);
         for(auto &item:s.sprites){IMG *im=AllocImg();if(!im)throw std::bad_alloc();void *next=im->nxt_p;*im=item.fields;im->nxt_p=next;
-            im->data_p=allocate(item.pixels);im->baseline_p=allocate(item.baseline);im->pttbl_p=allocate(item.points);im->opaltbl_p=allocate(item.alternate);
+            im->data_p=allocate(item.pixels);im->baseline_p=allocate(item.baseline);im->pttbl_p=allocate(item.points);im->opaltbl_p=allocate(item.alternate);im->layer_p=allocate(item.layer);
         }
         for(auto &item:s.palettes){PAL *pal=AllocPal();if(!pal)throw std::bad_alloc();void *next=pal->nxt_p;*pal=item.fields;pal->nxt_p=next;pal->data_p=allocate(item.colors);}
         replacement->data.scrseqmem_p=allocate(s.sequences);replacement->data.scrseqbytes=(unsigned)s.sequences.size();
@@ -354,7 +356,7 @@ void Artwork::clear(int index,int x,int y,int w,int h) {
         for(int xx=std::max(0,x);xx<std::min((int)im->w,x+w);++xx) ((unsigned char *)im->data_p)[yy*stride+xx]=0;
     commit();
 }
-L2Report Artwork::check(int ppp) { CodecScope scope(data); return VerifyLoad2Packing(ppp); }
+L2Report Artwork::check(int ppp) { LayerCompositeScope layers(data);CodecScope scope(data); return VerifyLoad2Packing(ppp); }
 
 std::unique_ptr<Artwork> Artwork::demo() {
     auto d=std::make_unique<Artwork>(); CodecScope scope(d->data);

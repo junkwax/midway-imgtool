@@ -11,7 +11,7 @@ bool plan_palette_merge(const Artwork &art,const PaletteMergeOptions &o,PaletteM
     PaletteMergePlan p;p.owner=&art;p.generation=art.generation();p.options=o;p.source_words=copy_palette(art,o.source).words;p.target_words=p.words=copy_palette(art,o.target).words;
     if(p.words.empty()||p.words.size()>256||p.source_words.empty()||p.source_words.size()>256){error="The selected palettes do not have valid color data.";return false;}
     p.alternate_refs=palette_usage(art,o.source).alternate;
-    for(int i=0;i<art.count();++i){auto im=art.sprite(i);if(im->palnum!=o.source)continue;if(active_alternates(*im)){++p.skipped_sprites;continue;}p.sprites.push_back(i);
+    for(int i=0;i<art.count();++i){auto im=art.sprite(i);if(im->palnum!=o.source)continue;if(im->layer_p){error="Flatten or remove source overlays before merging palettes.";return false;}if(active_alternates(*im)){++p.skipped_sprites;continue;}p.sprites.push_back(i);
         auto pixels=(const unsigned char *)im->data_p;int stride=(im->w+3)&~3;for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x){int c=pixels[y*stride+x];if(c>=(int)p.source_words.size()){error="Sprite '"+std::string(im->n_s)+"' has an unresolved color index. Fix it before merging.";return false;}if(c)++p.usage[c];}}
     if(p.sprites.empty()){error=p.skipped_sprites?"All source sprites use alternate palettes. This merge preserves them by skipping those sprites.":"The source palette has no primary sprites to merge.";return false;}
     if(o.remove_source&&(p.skipped_sprites||p.alternate_refs)){error="Keep the source palette: it is still used by skipped sprites or alternate references.";return false;}

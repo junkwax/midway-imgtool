@@ -1,11 +1,13 @@
-bool pixel_preview()const{return floating.active||paint_line.active||variant.active;}
+bool pixel_preview()const{return layer_drag.active||floating.active||paint_line.active||variant.active;}
 void tool_header(Tab &t){
     auto &spec=tool_specs[(int)tool];ImGui::TextUnformatted(spec.name);ImGui::SameLine();ImGui::TextDisabled("%s",spec.key);ImGui::SameLine();
     if(ImGui::Button("Fit"))action(Action::Fit);if(ImGui::IsItemHovered())ImGui::SetTooltip("Fit artwork (Ctrl+0)");
-    if(variant.active)ImGui::TextColored(accent_surface(1),variant.dragging?"Release to review / Esc cancels":"Enter applies / Esc cancels");
+    if(layer_drag.active)ImGui::TextColored(accent_surface(1),"Moving overlay / Esc cancels");
+    else if(variant.active)ImGui::TextColored(accent_surface(1),variant.dragging?"Release to review / Esc cancels":"Enter applies / Esc cancels");
     else if(paint_line.active)ImGui::TextColored(accent_surface(1),"Release applies / Esc cancels");
     else if(floating.active)ImGui::TextColored(accent_surface(1),"Enter applies / Esc cancels");
     else if(paste_mode)ImGui::TextColored(accent_surface(1),"Click to paste / Esc cancels");
+    else if(layer_move_selected(t))ImGui::TextDisabled(layer_move_target(t)?"Move overlay / Shift locks axis":"Overlay hidden / show to move");
     else if(t.flip)ImGui::TextDisabled("Flipped preview / pixel editing paused");
     else ImGui::TextDisabled("Wheel zooms / middle-drag pans");
 }

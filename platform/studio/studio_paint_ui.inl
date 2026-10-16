@@ -26,7 +26,8 @@ void validate_paint_line(){
 void refresh_paint_line(){
     auto &u=paint_line;if(!u.active||!u.dirty)return;u.dirty=false;u.valid=preview_paint_line(u.review,u.pixels,u.changed,u.error);if(u.texture)SDL_DestroyTexture(u.texture);u.texture=nullptr;if(!u.valid)return;
     const auto &c=u.review.original;std::vector<unsigned char> rgba(u.pixels.size()*4);
-    for(size_t i=0;i<u.pixels.size();++i){int slot=u.pixels[i];unsigned short color=c.colors[slot];unsigned char words[]={(unsigned char)color,(unsigned char)(color>>8)};auto p=rgba.data()+i*4;pal_word_to_rgb8(words,p,p+1,p+2);p[3]=slot?255:0;}
+    auto t=find(u.doc);auto im=t?t->art->sprite(t->art->sprite_index(u.review.sprite)):nullptr;if(!im){u.valid=false;return;}checked_layer_bytes(*im);
+    for(size_t i=0;i<u.pixels.size();++i){int slot=overlay_pixel(*im,(int)(i%c.w),(int)(i/c.w),u.pixels[i]);unsigned short color=c.colors[slot];unsigned char words[]={(unsigned char)color,(unsigned char)(color>>8)};auto p=rgba.data()+i*4;pal_word_to_rgb8(words,p,p+1,p+2);p[3]=slot?255:0;}
     u.texture=SDL_CreateTexture(renderer,SDL_PIXELFORMAT_RGBA32,SDL_TEXTUREACCESS_STATIC,c.w,c.h);if(!u.texture){u.valid=false;u.error="Could not create the line preview texture.";return;}
     SDL_SetTextureBlendMode(u.texture,SDL_BLENDMODE_BLEND);SDL_SetTextureScaleMode(u.texture,SDL_ScaleModeNearest);SDL_UpdateTexture(u.texture,nullptr,rgba.data(),c.w*4);
 }

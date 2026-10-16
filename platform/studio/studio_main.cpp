@@ -1,5 +1,6 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "studio_document.h"
+#include "studio_layers.h"
 #include "studio_img_codec.h"
 #include "studio_theme.h"
 #include "studio_animation.h"
@@ -20,6 +21,8 @@
 #include "studio_project.h"
 #include "studio_sequences.h"
 #include "studio_palette.h"
+#include "studio_palette_swatches.h"
+#include "studio_palette_multi_merge.h"
 #include "studio_palette_ramps.h"
 #include "studio_import.h"
 #include "studio_legacy_media.h"
@@ -81,18 +84,18 @@ struct ToolSpec {const char *name,*key,*glyph,*fallback,*tip;};
 static const ToolSpec tool_specs[]={
     {"Select","R","\xee\xbd\x92","R","Drag a rectangle to select pixels."},
     {"Pencil","P","\xee\x8f\x89","P","Draw with the selected palette index. [ / ] changes brush size."},
-    {"Erase","E","\xee\x9b\x90","E","Paint transparency inside the selection."},
+    {"Erase","Shift+E","\xee\x9b\x90","E","Paint transparency inside the selection."},
     {"Fill","G","\xee\x88\xba","G","Fill matching pixels; choose connected or global in tool settings."},
     {"Pick","I","\xef\x8d\x91","I","Pick a palette index from the sprite. Right-click also picks."},
-    {"Pan","H","\xee\xa4\xa5","H","Drag to pan; middle-drag works with any tool."},
+    {"Pan","Shift+H","\xee\xa4\xa5","H","Drag to pan; middle-drag works with any tool."},
     {"Wand","W","\xef\x8c\x9f","W","Select matching colors, respecting transparency."},
     {"Lasso","L","\xee\xac\x83","L","Draw a freehand selection."},
-    {"Move","V","\xee\xa2\x9f","V","Drag selected pixels. Enter applies; Escape cancels."},
-    {"Line","K","\xee\xa4\x99","K","Preview a straight line. Shift snaps; release applies; Escape cancels."},
+    {"Move","Shift+V","\xee\xa2\x9f","V","Drag selected pixels. Enter applies; Escape cancels."},
+    {"Line","Shift+K","\xee\xa4\x99","K","Preview a straight line. Shift snaps; release applies; Escape cancels."},
     {"Replace","B","\xee\xa2\x81","B","Replace the color clicked at the start of a stroke."},
-    {"Smart erase","U","\xee\x9b\x90","U","Erase matching colors inside the selection."},
+    {"Smart erase","E / U","\xee\x9b\x90","U","Erase matching colors inside the selection."},
     {"Clone","C","\xee\x85\x8d","C","Alt-click a source, then drag to clone its pixels."},
-    {"Variant","T","\xee\x90\x8a","T","Recolor pixels while retaining alternate palette appearances. Preview before applying."},
+    {"Variant","V / T","\xee\x90\x8a","T","Recolor pixels while retaining alternate palette appearances. Preview before applying."},
     {"Blur","O","\xee\x8e\xa5","O","Soften colors inside the selection. Each stroke is one pass; strength controls the blend."},
     {"Smudge","S","\xee\x85\x95","S","Drag colors along the stroke inside the selection. Transparency and outlines stay intact."},
     {"Heal","J","\xee\x99\xa2","J","Repair a brushed blemish from surrounding colors. Pixels without a usable rim stay unchanged."},
@@ -113,7 +116,7 @@ struct BatchPaletteUi {
     bool open=false,dirty=true,valid=false,preview_dirty=true,preview_ok=false,allow_approximation=false;
     uint64_t doc=0,generation=0;int scope=0,selected=0;BatchPaletteOptions options;BatchPalettePlan plan;
     std::unordered_set<uint64_t> excluded;std::string error;SDL_Texture *before_texture=nullptr,*after_texture=nullptr;
-    ImVec2 apply_point,cancel_point,scope_point,target_point,match_point,indices_point,approximate_point,scope_choices[3]{},target_choices[4]{},row_points[3]{},name_points[3]{};
+    ImVec2 apply_point,cancel_point,scope_point,target_point,match_point,indices_point,approximate_point,scope_choices[4]{},target_choices[4]{},row_points[3]{},name_points[3]{};
 };
 struct PaletteCleanupUi {
     bool open=false,valid=false,dirty=true,only_unused=true;uint64_t doc=0,generation=0;int selected=0;
@@ -133,12 +136,12 @@ struct AnimationCopyUi {
     ImVec2 binding_points[6]{},binding_choices[8]{},binding_filter_point,automatic_point,reset_bindings_point,missing_point;
 };
 struct LibraryCopyUi {
-    bool open=false,valid=false,dirty=true,preview_dirty=true,show_target=true,capture_clipboard=false,paste_clipboard=false,split_library=false,move_source=false,split_animations=false;uint64_t source=0,target=0,source_generation=0,target_generation=0;
+    bool open=false,valid=false,dirty=true,preview_dirty=true,show_target=true,capture_clipboard=false,paste_clipboard=false,split_library=false,move_source=false,split_animations=false,artwork_return=false,reuse_artwork=false;uint64_t source=0,target=0,source_generation=0,target_generation=0;
     LibrarySplitAnimationPlan split_animation_plan;
     BatchDeletePlan split_removal;std::vector<std::string> split_scene_uses;
-    std::unique_ptr<Artwork> capture_target;std::shared_ptr<const SpriteClipboard> held;
+    std::unique_ptr<Artwork> capture_target;std::shared_ptr<const SpriteClipboard> held;std::shared_ptr<const AsmArtworkLibrary> held_artwork;
     int scope=0,selected=0;char prefix[16]={};LibraryCopyOptions options;LibraryCopyPlan plan;std::string error;SDL_Texture *preview=nullptr;
-    ImVec2 apply_point,cancel_point,prefix_point,target_point,scope_point,reuse_point,children_point,move_point,animations_point,animation_details_point,exclude_refs_point,target_choices[4]{},scope_choices[3]{},row_points[3]{},name_points[3]{};
+    ImVec2 apply_point,cancel_point,prefix_point,target_point,scope_point,reuse_point,children_point,move_point,animations_point,animation_details_point,exclude_refs_point,reuse_artwork_point,target_choices[4]{},scope_choices[3]{},row_points[3]{},name_points[3]{};
 };
 struct RestoreUi {
     bool open=false,build=false,valid=false,preview_dirty=true,preview_ok=false,changes=true;uint64_t doc=0,generation=0;int scope=0,selected=0,view=1;
@@ -167,7 +170,9 @@ struct ToolsUi {ImVec2 points[18]{},wheel_origin,detail_point,transparent_point,
 enum class Action { Open, OpenLod, ExportTbl, ExportIrw, ExportAnilst, ImportIndexed, ExportLbm, ExportTga, ExportSheet, Save, SaveAs, Undo, Redo, Copy, Paste, Clear, Fit, ZoomIn, ZoomOut, Demo, Close, Quit,
     NewLibrary, NewSprite, Rename, Duplicate, Delete, MoveUp, MoveDown, Resize, CanvasSize, Trim, Transform, ImportPng, ExportPng,
     NewProject, OpenProject, SaveProject, SaveProjectAs, CloseProject, SaveArtwork, SaveArtworkAs, ExportScene, ManagePalettes, ImportMedia, Digitize, CaptureVideo,
-    Cut,SelectAll,Deselect,InvertSelection,SelectOpaque,ExtractSelection,SplitBody,TransformSelection,BatchGeometry,BatchRename,BatchPalette,BatchDelete,LibraryCopy,AnimationCopy,SplitAnimations,CopyAnimations,PasteAnimations,ClearAnimationClipboard,SplitLibrary,CopySprites,PasteSprites,ClearSpriteClipboard,PaletteCleanup,RestoreChildren };
+    Cut,SelectAll,Deselect,InvertSelection,SelectOpaque,ExtractSelection,SplitBody,TransformSelection,BatchGeometry,BatchRename,BatchPalette,BatchDelete,LibraryCopy,AnimationCopy,SplitAnimations,CopyAnimations,PasteAnimations,ClearAnimationClipboard,SplitLibrary,CopySprites,PasteSprites,ClearSpriteClipboard,PaletteCleanup,RestoreChildren, Help,Diagnostics,Points,CopyNew,CutNew,PasteNew,Mark,MarkAll,UnmarkAll,PaletteAssign,PaletteAssignMarked,PaletteRename,PaletteMerge,ReduceMarked,PreviewEarlier,PreviewLater };
+#include "studio_shortcut_bindings.inl"
+#include "studio_help_topics.inl"
 enum class EditDialog { None, NewSprite, Rename, Delete, Resize, CanvasSize, Transform, ImportPng, ExportPng };
 using Selection=PixelSelection;
 struct Texture { SDL_Texture *value=nullptr; uint64_t revision=0; };
@@ -232,9 +237,12 @@ struct EmbeddedView {
     ImGuiTextFilter filter;
     EmbeddedCommand command=EmbeddedCommand::None;
 };
-enum class PaletteCommand {None,Apply,Reset,New,Duplicate,Paste,Delete,Rename,Assign,Private,Undo,Redo,Import,Export,Merge,Compact,Ramp};
+enum class PaletteCommand {None,Apply,Reset,New,Duplicate,Paste,Delete,Rename,Assign,Private,Undo,Redo,Import,Export,Merge,Compact,Ramp,Swatches};
 struct PaletteUi {
-    bool open=false,compare=true,match=true,export_act=false;
+    bool swatch_mode=false,swatch_valid=false;uint64_t swatch_generation=0;int swatch_kind=0,swatch_slot=1;
+    PaletteSwatchClipboard swatch_source;PaletteSwatchPlan swatch_plan;std::string swatch_error;
+    ImVec2 swatches_menu_point,copy_one_point,copy_swatches_point,paste_one_point,paste_swatches_point,append_swatches_point,clear_swatches_point,swatch_same_point,swatch_append_point,cancel_swatches_point;
+    bool open=false,compare=true,match=true,export_act=false,rename_focus=false,palette_reveal=false;
     uint64_t doc=0,seen=0;int index=0,slot=1,preview_sprite=0,new_count=64,hue=0,saturation=0,lightness=0;
     std::array<bool,256> selected{};
     std::vector<unsigned short> baseline,manual;
@@ -243,8 +251,14 @@ struct PaletteUi {
     PaletteCommand command=PaletteCommand::None;
     SDL_Texture *preview=nullptr,*original=nullptr;int tex_w=0,tex_h=0;
     uint64_t tex_revision=0,tex_doc=0;int tex_sprite=-1;std::vector<unsigned short> tex_words,tex_baseline;
+    ImVec2 clear_clipboard_point,copy_selected_point;
+    ImVec2 invert_colors_point,reverse_colors_point;
     ImVec2 apply_point,reset_point,copy_point,paste_point,undo_point,assign_point,hue_point,close_point,swatch_point;
     bool merge_mode=false,merge_valid=false,allow_approximation=false,tex_merge=false;
+    bool marked_merge=false,marked_dirty=true;uint64_t marked_generation=0;
+    std::vector<int> marked_candidates;std::set<int> marked_excluded;
+    PaletteMultiMergeOptions marked_options;PaletteMultiMergePlan marked_plan;
+    ImVec2 palette_mark_points[8]{},palette_row_points[8]{},marked_row_points[8]{},remove_sources_point;
     PaletteMergeOptions merge_options;
     PaletteMergePlan merge_plan;
     std::string merge_error;
@@ -332,7 +346,7 @@ struct VariantUi {
 };
 struct FloatingUi {
     bool active=false,dirty=true,valid=false,dragging=false,ratio=true;
-    uint64_t doc=0;SelectionTransform stage;SelectionTransformPreview preview;
+    uint64_t doc=0;SelectionTransform stage;SelectionTransformPreview preview;PixelSelection prior_selection;
     SDL_Texture *texture=nullptr;std::string error;
     int drag_kind=-1,drag_x=0,drag_y=0,drag_w=0,drag_h=0;ImVec2 drag_mouse;
     ImVec2 apply_point,cancel_point,rotate_point,flip_point,copy_point;
@@ -365,9 +379,10 @@ struct Tab {
     float zoom=0;
     ImVec2 pan{0,0};
     bool flip=false,grid=false,anchors=true,reveal_selection=false;
-    bool match_palette=true;
+    bool match_palette=true,move_overlay=false;
     int view_w=0,view_h=0;
     MirrorConvention convention=MirrorConvention_Ani2;
+    std::set<int> palette_marks;uint64_t palette_marks_structure=0;std::vector<const PAL *> palette_mark_order;
     std::unordered_set<uint64_t> marks;
     Selection selection;
     int selection_operation=0,wand_tolerance=0;
@@ -435,7 +450,7 @@ struct AsmAssetsUi {
     bool open=false,valid=false,unresolved=false;int selected=-1,cache_animation=-1;uint64_t cache_preferred=0;
     bool library_review=false,allow_partial=false;int library_row=0;
     std::shared_ptr<const AsmArtworkLibrary> library_snapshot;std::unique_ptr<Tab> library_preview;std::string library_error;
-    ImVec2 prepare_library_point,create_library_point,cancel_library_point,partial_point,library_row_points[8]{};
+    ImVec2 prepare_library_point,create_library_point,cancel_library_point,copy_library_point,partial_point,library_row_points[8]{};
     AsmAssetReview review;AsmArtworkChoices choices;std::string error;ImGuiTextFilter filter;
     std::vector<std::pair<uint64_t,uint64_t>> signature;
     ImVec2 show_point,close_point,open_point,frame_point,choice_point,auto_point,filter_point,copy_point,unresolved_point;
@@ -544,7 +559,9 @@ public:
     SDL_Texture *paste_texture=nullptr;
     uint64_t paste_generation=0,paste_uid=0;
     int paste_sprite=-1;
-    bool running=true,quitting=false,help=false,paste_mode=false,stroke=false,select_drag=false,anchor_drag=false;
+    ImGuiTextFilter help_search;int help_topic=0;ImVec2 help_done_point,help_search_point,help_topic_points[48]{};
+    int paste_x=0,paste_y=0;uint64_t space_mark_doc=0,space_mark_sprite=0;
+    bool running=true,quitting=false,help=false,diagnostics=false,paste_mode=false,stroke=false,select_drag=false,anchor_drag=false;
     ImVec2 anchor_drag_mouse;
     int anchor_start_x=0,anchor_start_y=0;
     int start_x=0,start_y=0,last_x=0,last_y=0;
@@ -579,7 +596,7 @@ public:
     Action deferred_action=Action::Open;
     uint64_t deferred_sprite=0;
     bool have_deferred=false;
-    ImVec2 edit_apply_point;
+    ImVec2 edit_cancel_point,edit_apply_point;
     std::unique_ptr<SceneProject> pending_project;
     bool pending_scene_new=false;
     std::vector<std::unique_ptr<Tab>> staged_scene_tabs;
@@ -593,6 +610,7 @@ public:
     ImVec2 scene_cancel_point;
     PaletteUi palettes;
     PaletteTransfer palette_clipboard;
+    PaletteSwatchClipboard swatch_clipboard;
     ImportUi importing;
     LegacyMediaUi legacy_media;
     DigitizeUi digitizing;
@@ -605,7 +623,7 @@ public:
 
     Tab *tab(){return active>=0 && active<(int)tabs.size()?tabs[active].get():nullptr;}
     Tab *find(uint64_t uid){for(auto &t:tabs)if(t->uid==uid)return t.get();return nullptr;}
-    void finish(){if(variant.active)cancel_variant();if(paint_line.active)cancel_paint_line();if(floating.active)cancel_floating();if(tab()){if(tab()->wheel.editing)ImGui::ClearActiveID();tab()->wheel.editing=false;tab()->wheel.serial=0;tab()->art->commit();tab()->alignment.dragging=false;if(tab()->project)tab()->project->commit();tab()->scene.dragging=false;}stroke=false;clone={};filter={};repair={};select_drag=false;anchor_drag=false;selection_base={};lasso_points.clear();}
+    void finish(){if(layer_drag.active)cancel_layer_drag();if(variant.active)cancel_variant();if(paint_line.active)cancel_paint_line();if(floating.active)cancel_floating();if(tab()){if(tab()->wheel.editing)ImGui::ClearActiveID();tab()->wheel.editing=false;tab()->wheel.serial=0;tab()->art->commit();tab()->alignment.dragging=false;if(tab()->project)tab()->project->commit();tab()->scene.dragging=false;}stroke=false;clone={};filter={};repair={};select_drag=false;anchor_drag=false;selection_base={};lasso_points.clear();}
     void recent_add(const std::string &path){
         recent.erase(std::remove(recent.begin(),recent.end(),path),recent.end());recent.insert(recent.begin(),path);
         if(recent.size()>10)recent.resize(10);
@@ -675,11 +693,15 @@ public:
         recent_add(t.art->path());status="Saved "+t.name();return true;
     }
     bool enabled(Action a){
-        if(floating.active||paint_line.active||variant.active)return a==Action::Undo||a==Action::Quit||a==Action::Fit||a==Action::ZoomIn||a==Action::ZoomOut;
+        if(a==Action::Help||a==Action::Diagnostics)return true;
+        if(layer_drag.active||floating.active||paint_line.active||variant.active)return a==Action::Undo||a==Action::Quit||a==Action::Fit||a==Action::ZoomIn||a==Action::ZoomOut;
         auto t=tab();if(a==Action::Open||a==Action::OpenLod||a==Action::OpenProject||a==Action::Demo||a==Action::Quit||a==Action::NewLibrary)return true;
         if(a==Action::ClearSpriteClipboard)return sprite_clipboard!=nullptr;
         if(a==Action::ClearAnimationClipboard)return animation_clipboard!=nullptr;
         if(!t)return false;
+        if(a==Action::PasteNew)return !clipboard.pixels.empty()&&!t->embedded.enabled&&!t->alignment.enabled&&!t->flip;
+        if(a==Action::CopyNew||a==Action::CutNew)return !t->embedded.enabled&&!t->alignment.enabled&&!t->flip;
+        if(a==Action::Points||a==Action::Mark||a==Action::MarkAll||a==Action::UnmarkAll||a==Action::PaletteAssign||a==Action::PaletteAssignMarked||a==Action::PaletteRename||a==Action::PaletteMerge||a==Action::ReduceMarked)return !t->embedded.enabled&&!t->alignment.enabled&&!t->flip;
         if(a==Action::ExportSheet)return true;
         if(a==Action::ExportLbm||a==Action::ExportTga)return !t->embedded.enabled;
         if(a==Action::ExportTbl||a==Action::ExportIrw||a==Action::ExportAnilst)return true;
@@ -689,7 +711,7 @@ public:
         if(a==Action::AnimationCopy)return tabs.size()>1&&(t->art->data.seqcnt+t->art->data.scrcnt)>0;
         if(a==Action::LibraryCopy)return tabs.size()>1&&!t->alignment.enabled&&!t->embedded.enabled&&!t->flip;
         if(a==Action::SplitLibrary||a==Action::CopySprites||a==Action::BatchGeometry||a==Action::BatchRename||a==Action::BatchPalette||a==Action::PaletteCleanup||a==Action::BatchDelete||a==Action::RestoreChildren)return !t->alignment.enabled&&!t->embedded.enabled&&!t->flip;
-        if(a==Action::TransformSelection)return !t->alignment.enabled&&!t->embedded.enabled&&!t->flip&&t->selection.valid;
+        if(a==Action::TransformSelection)return !t->alignment.enabled&&!t->embedded.enabled&&!t->flip&&(t->selection.valid||paste_mode);
         if(a==Action::ExtractSelection||a==Action::SplitBody)return !t->alignment.enabled&&!t->embedded.enabled&&!t->flip&&(a==Action::SplitBody||t->selection.valid);
         if(a==Action::OpenProject)return true;
         if(a==Action::Undo&&t->wheel.editing)return true;
@@ -709,13 +731,26 @@ public:
         return true;
     }
     void action(Action a){
-        if(a==Action::Quit){animation_copy.open=false;animation_copy.plan={};animation_copy.held.reset();animation_copy.capture_target.reset();cleanup.open=false;cleanup.plan={};renaming.open=false;batch_palette.open=false;clear_batch_palette_textures();batch_palette.plan={};deleting.open=false;clear_batch_delete_preview();deleting.plan={};library_copy.open=false;clear_library_copy_preview();library_copy.plan={};library_copy.split_removal={};library_copy.split_animation_plan={};library_copy.split_scene_uses.clear();library_copy.held.reset();library_copy.capture_target.reset();}
+        if(a==Action::Quit){animation_copy.open=false;animation_copy.plan={};animation_copy.held.reset();animation_copy.capture_target.reset();cleanup.open=false;cleanup.plan={};renaming.open=false;batch_palette.open=false;clear_batch_palette_textures();batch_palette.plan={};deleting.open=false;clear_batch_delete_preview();deleting.plan={};library_copy.open=false;clear_library_copy_preview();library_copy.plan={};library_copy.split_removal={};library_copy.split_animation_plan={};library_copy.split_scene_uses.clear();library_copy.held.reset();library_copy.held_artwork.reset();library_copy.artwork_return=false;library_copy.capture_target.reset();}
         if(a==Action::Quit&&fatality.workspace.first_dirty()){finish();asm_ui.open=false;asm_ui.player.playing=false;uint64_t id=fatality.source&&fatality.source->dirty()?fatality.document:fatality.workspace.first_dirty();if(id!=fatality.document)activate_fatality(id);fatality.open=true;fatality.guard=3;fatality.guard_document=id;return;}
         if(a==Action::Quit&&dirty_bindings()){finish();request_bindings_quit();return;}
         if(a==Action::Quit&&strikes.source&&strikes.source->dirty()){finish();strike_phases.open=false;strike_phases.playing=false;asm_ui.open=false;asm_ui.player.playing=false;strikes.guard=3;strikes.open=true;return;}
-        if(!enabled(a))return;if(a==Action::Undo&&tab()&&tab()->wheel.editing){auto mask=tab()->selection;tab()->art->cancel();tab()->wheel=WheelState{};synchronize(*tab());auto im=tab()->art->sprite(tab()->selected);if(mask.fits(im->w,im->h))tab()->selection=std::move(mask);ImGui::ClearActiveID();status="Cancelled palette color edit.";return;}if(variant.active&&a==Action::Undo){cancel_variant();return;}if(paint_line.active&&a==Action::Undo){cancel_paint_line();return;}if(floating.active&&a==Action::Undo){cancel_floating();return;}if((!floating.active&&!paint_line.active&&!variant.active)||a==Action::Quit)finish();auto t=tab();
+        if(!enabled(a))return;if(a==Action::Undo&&tab()&&tab()->wheel.editing){auto mask=tab()->selection;tab()->art->cancel();tab()->wheel=WheelState{};synchronize(*tab());auto im=tab()->art->sprite(tab()->selected);if(mask.fits(im->w,im->h))tab()->selection=std::move(mask);ImGui::ClearActiveID();status="Cancelled palette color edit.";return;}if(layer_drag.active&&a==Action::Undo){cancel_layer_drag();return;}if(variant.active&&a==Action::Undo){cancel_variant();return;}if(paint_line.active&&a==Action::Undo){cancel_paint_line();return;}if(floating.active&&a==Action::Undo){cancel_floating();return;}if((!floating.active&&!paint_line.active&&!variant.active)||a==Action::Quit)finish();auto t=tab();
         if(t&&a!=Action::Fit&&a!=Action::ZoomIn&&a!=Action::ZoomOut){t->alignment.player.playing=false;t->scene.playing=false;t->embedded.playing=false;}
         switch(a){
+        case Action::PreviewEarlier:case Action::PreviewLater:reorder_preview(*t,a==Action::PreviewEarlier?-1:1);break;
+        case Action::Help:help=true;break;
+        case Action::Diagnostics:diagnostics=!diagnostics;break;
+        case Action::Points:show_points(*t);break;
+        case Action::CopyNew:case Action::CutNew:{if(!t->selection.valid){auto im=t->art->sprite(t->selected);t->selection=rectangle_selection(im->w,im->h,0,0,im->w,im->h);}request_regions(false);regions.cut=a==Action::CutNew;regions.dirty=true;break;}
+        case Action::PasteNew:paste_new_sprite(*t);break;
+        case Action::Mark:mark_sprite(*t,t->selected_id,!marked(*t,t->selected_id));break;
+        case Action::MarkAll:for(int i=0;i<t->art->count();++i)mark_sprite(*t,t->art->sprite_id(i),true);break;
+        case Action::UnmarkAll:t->marks.clear();break;
+        case Action::PaletteAssign:case Action::PaletteAssignMarked:open_batch_palette(*t);batch_palette.scope=a==Action::PaletteAssignMarked?0:3;batch_palette.options.match=false;batch_palette.dirty=true;break;
+        case Action::PaletteRename:open_palettes(*t);palettes.rename_focus=true;break;
+        case Action::PaletteMerge:open_palettes(*t);start_palette_merge(*t);break;
+        case Action::ReduceMarked:open_batch(*t);batch.scope=0;batch.options.kind=BatchGeometryKind::Resize;batch.options.relative=true;batch.options.percent=50;batch.options.quality=true;batch.dirty=true;break;
         case Action::Open:choose_open();break;
         case Action::OpenLod:choose_lod();break;
         case Action::ExportTbl:case Action::ExportIrw:case Action::ExportAnilst:open_export(*t,a==Action::ExportTbl?ExportKind::Tbl:a==Action::ExportIrw?ExportKind::Irw:ExportKind::Anilst);break;
@@ -737,7 +772,7 @@ public:
         case Action::Digitize:request_digitize({});break;
         case Action::CaptureVideo:request_video({});break;
         case Action::ExtractSelection:case Action::SplitBody:request_regions(a==Action::SplitBody);break;
-        case Action::TransformSelection:begin_floating(*t);break;
+        case Action::TransformSelection:if(paste_mode)begin_clipboard_floating(*t);else begin_floating(*t);break;
         case Action::NewSprite:request_edit(EditDialog::NewSprite);break;
         case Action::Rename:if(t->embedded.enabled)t->embedded.rename_focus=true;else request_edit(EditDialog::Rename);break;
         case Action::Delete:request_edit(EditDialog::Delete);break;
@@ -774,7 +809,7 @@ public:
             clipboard=r.valid?t->art->copy_selection(t->selected,r):t->art->copy(t->selected,0,0,im->w,im->h);
             if(a==Action::Cut)t->art->clear_selection(t->selected,r,error);
             status="Copied pixels and palette. Paste, then click the canvas to place.";break;}
-        case Action::Paste:paste_mode=true;status="Click to place. Escape cancels. Colors map to the destination palette.";break;
+        case Action::Paste:paste_mode=true;paste_x=paste_y=0;status="Click to place. Escape cancels. Colors map to the destination palette.";break;
         case Action::Clear:t->art->clear_selection(t->selected,t->selection,error);break;
         case Action::SelectAll:{auto im=t->art->sprite(t->selected);t->selection=rectangle_selection(im->w,im->h,0,0,im->w,im->h);break;}
         case Action::Deselect:t->selection={};break;
@@ -787,7 +822,7 @@ public:
         case Action::Quit:fatality.open=false;fatality.saving=false;fatality.guard=0;fatality.pending_source.reset();strike_phases.open=false;strike_phases.playing=false;binding_ui.open=false;binding_ui.saving=false;binding_ui.guard=0;binding_ui.pending_reload.reset();asm_ui.open=false;asm_ui.player.playing=false;strikes.open=false;strikes.guard=0;strikes.saving=false;strikes.pending_source.reset();table_compare.open=false;points.open=false;anchor_link.open=false;stage_dialog_open=false;sheet.open=false;legacy_media.open=false;exporting.open=false;lod.open=false;restoring.open=false;batch.open=false;regions.open=false;edit_dialog=EditDialog::None;help=false;path_dialog=false;palettes.open=false;importing.open=false;digitizing.open=false;digitizing.pending=false;if(digitizing.job)digitizing.job->cancel=true;video.open=false;if(video.job)video.job->cancel=true;quitting=true;close_uid=0;break;
         }
     }
-    void item(const char *label,const char *shortcut,Action a){if(ImGui::MenuItem(label,shortcut,false,enabled(a)))action(a);}
+    void item(const char *label,const char *shortcut,Action a){for(const auto &binding:shortcut_bindings)if(binding.action==a){shortcut=binding.label;break;}if(ImGui::MenuItem(label,shortcut,false,enabled(a)))action(a);}
     void button(const char *label,Action a){ImGui::BeginDisabled(!enabled(a));if(ImGui::Button(label))action(a);ImGui::EndDisabled();}
     void sync_alignment(Tab &t){
         auto &v=t.alignment;int sequence,frame;
@@ -824,8 +859,8 @@ public:
         auto im=t.art->sprite(i);auto pal=t.art->palette(im->palnum);auto &cache=t.textures[i];
         if(cache.value && cache.revision==t.art->generation())return cache.value;
         if(!cache.value){cache.value=SDL_CreateTexture(renderer,SDL_PIXELFORMAT_RGBA32,SDL_TEXTUREACCESS_STATIC,im->w,im->h);if(!cache.value)return nullptr;SDL_SetTextureBlendMode(cache.value,SDL_BLENDMODE_BLEND);SDL_SetTextureScaleMode(cache.value,SDL_ScaleModeNearest);}
-        std::vector<unsigned char> rgba((size_t)im->w*im->h*4);int stride=(im->w+3)&~3;
-        for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x){int ci=((unsigned char *)im->data_p)[y*stride+x];auto q=&rgba[((size_t)y*im->w+x)*4];
+        checked_layer_bytes(*im);std::vector<unsigned char> rgba((size_t)im->w*im->h*4);int stride=(im->w+3)&~3;
+        for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x){int ci=visible_pixel(*im,x,y);auto q=&rgba[((size_t)y*im->w+x)*4];
             if(ci<pal->numc)pal_word_to_rgb8((unsigned char *)pal->data_p+ci*2,q,q+1,q+2);else {q[0]=255;q[1]=0;q[2]=255;}
             q[3]=ci?255:0;
         }
@@ -859,7 +894,7 @@ public:
             item("Copy IMG animations to library...",nullptr,Action::AnimationCopy);item("Split IMG animations to new library...",nullptr,Action::SplitAnimations);item("Copy IMG animations to clipboard...",nullptr,Action::CopyAnimations);animation_paste_item("Paste IMG animations from clipboard...");
             item("Save IMG artwork",nullptr,Action::SaveArtwork);item("Save IMG artwork As...",nullptr,Action::SaveArtworkAs);ImGui::Separator();
             item("Explore sample",nullptr,Action::Demo);item("Close library","Ctrl+W",Action::Close);item("Quit",nullptr,Action::Quit);ImGui::EndMenu();}
-        if(ImGui::BeginMenu("Edit")){item("Undo","Ctrl+Z",Action::Undo);item("Redo","Ctrl+Y",Action::Redo);ImGui::Separator();item("Copy pixels","Ctrl+C",Action::Copy);item("Cut pixels","Ctrl+X",Action::Cut);item("Paste pixels","Ctrl+V",Action::Paste);item("Clear selection","Delete",Action::Clear);item("Transform selection...","Ctrl+T",Action::TransformSelection);ImGui::Separator();item("Select all","Ctrl+A",Action::SelectAll);item("Select artwork",nullptr,Action::SelectOpaque);item("Invert selection","Ctrl+Shift+I",Action::InvertSelection);item("Deselect","Ctrl+D",Action::Deselect);ImGui::Separator();item("Clear sprite clipboard",nullptr,Action::ClearSpriteClipboard);item("Clear animation clipboard",nullptr,Action::ClearAnimationClipboard);ImGui::EndMenu();}
+        if(ImGui::BeginMenu("Edit")){item("Undo","Ctrl+Z",Action::Undo);item("Redo","Ctrl+Y",Action::Redo);ImGui::Separator();item("Copy pixels","Ctrl+C",Action::Copy);item("Cut pixels","Ctrl+X",Action::Cut);item("Paste pixels","Ctrl+V",Action::Paste);if(ImGui::MenuItem("Keep paste as overlay","L",false,tab()&&(paste_mode||(floating.active&&floating.stage.clipboard))))drop_paste_layer();item("Clear selection","Delete",Action::Clear);item("Copy selection to new sprite...",nullptr,Action::CopyNew);item("Cut selection to new sprite...",nullptr,Action::CutNew);item("Paste pixels as new sprite",nullptr,Action::PasteNew);item("Transform selection...","Ctrl+T",Action::TransformSelection);ImGui::Separator();item("Select all","Ctrl+A",Action::SelectAll);item("Select artwork",nullptr,Action::SelectOpaque);item("Invert selection","Ctrl+Shift+I",Action::InvertSelection);item("Deselect","Ctrl+D",Action::Deselect);ImGui::Separator();item("Clear sprite clipboard",nullptr,Action::ClearSpriteClipboard);item("Clear animation clipboard",nullptr,Action::ClearAnimationClipboard);ImGui::EndMenu();}
         if(ImGui::BeginMenu("Project")){
             item("Create from current preview",nullptr,Action::NewProject);item("Open / import WAX...",nullptr,Action::OpenProject);item("Save project",nullptr,Action::SaveProject);item("Save project As...",nullptr,Action::SaveProjectAs);item("Export current scene PNG...",nullptr,Action::ExportScene);item("Close project",nullptr,Action::CloseProject);ImGui::EndMenu();}
         if(ImGui::BeginMenu("Sprite",tab()!=nullptr&&!tab()->embedded.enabled)){
@@ -867,34 +902,54 @@ public:
             item("Split to new library...",nullptr,Action::SplitLibrary);
             ImGui::Separator();item("Copy sprites to clipboard...",nullptr,Action::CopySprites);item("Paste sprites from clipboard...",nullptr,Action::PasteSprites);if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)){if(sprite_clipboard)ImGui::SetTooltip("%d sprites from %s. Available until replaced, cleared or Studio closes.",sprite_clipboard->artwork().count(),sprite_clipboard->label().c_str());else ImGui::SetTooltip("Copy sprites to the sprite clipboard first. Pixel Copy/Paste uses a separate clipboard.");}item("Clear sprite clipboard",nullptr,Action::ClearSpriteClipboard);
             ImGui::Separator();item("Move up",nullptr,Action::MoveUp);item("Move down",nullptr,Action::MoveDown);ImGui::Separator();
-            item("Resize artwork...",nullptr,Action::Resize);item("Canvas size...",nullptr,Action::CanvasSize);item("Trim transparent bounds",nullptr,Action::Trim);item("Rotate / flip...",nullptr,Action::Transform);item("Batch geometry...",nullptr,Action::BatchGeometry);item("Restore child sprites...",nullptr,Action::RestoreChildren);ImGui::Separator();item("Extract selection...",nullptr,Action::ExtractSelection);item("Split body parts...",nullptr,Action::SplitBody);ImGui::Separator();if(ImGui::MenuItem("Point table..."))show_points(*tab());ImGui::EndMenu();
+            item("Resize artwork...",nullptr,Action::Resize);item("Canvas size...",nullptr,Action::CanvasSize);item("Trim transparent bounds",nullptr,Action::Trim);item("Rotate / flip...",nullptr,Action::Transform);item("Batch geometry...",nullptr,Action::BatchGeometry);item("Restore child sprites...",nullptr,Action::RestoreChildren);ImGui::Separator();item("Extract selection...",nullptr,Action::ExtractSelection);item("Split body parts...",nullptr,Action::SplitBody);ImGui::Separator();item("Point table...",nullptr,Action::Points);ImGui::EndMenu();
         }
-        if(ImGui::BeginMenu("Palette",tab()!=nullptr)){item("Manage palettes...",nullptr,Action::ManagePalettes);item("Assign to multiple sprites...",nullptr,Action::BatchPalette);item("Remove unused palettes...",nullptr,Action::PaletteCleanup);ImGui::EndMenu();}
+        if(ImGui::BeginMenu("Palette",tab()!=nullptr)){item("Manage palettes...",nullptr,Action::ManagePalettes);item("Assign to multiple sprites...",nullptr,Action::BatchPalette);item("Remove unused palettes...",nullptr,Action::PaletteCleanup);item("Assign palette to marked...","[",Action::PaletteAssignMarked);item("Assign palette to selected...","]",Action::PaletteAssign);item("Rename palette...",nullptr,Action::PaletteRename);item("Merge palettes...","*",Action::PaletteMerge);ImGui::EndMenu();}
         if(tab()&&tab()->embedded.enabled&&ImGui::BeginMenu("Animation")){auto &e=tab()->embedded;
             item("Copy to another library...",nullptr,Action::AnimationCopy);item("Split to new library...",nullptr,Action::SplitAnimations);item("Copy to animation clipboard...",nullptr,Action::CopyAnimations);animation_paste_item("Paste from animation clipboard...");item("Clear animation clipboard",nullptr,Action::ClearAnimationClipboard);ImGui::Separator();if(ImGui::MenuItem("New sequence"))e.command=EmbeddedCommand::NewSequence;if(ImGui::MenuItem("New script"))e.command=EmbeddedCommand::NewScript;ImGui::Separator();item("Rename animation","F2",Action::Rename);item("Duplicate entry","Ctrl+J",Action::Duplicate);ImGui::EndMenu();}
         if(ImGui::BeginMenu("View")){item("Fit artwork","Ctrl+0",Action::Fit);item("Zoom in","Ctrl++",Action::ZoomIn);item("Zoom out","Ctrl+-",Action::ZoomOut);if(tab()){ImGui::MenuItem("Pixel grid",nullptr,&tab()->grid);ImGui::MenuItem("Animation anchor",nullptr,&tab()->anchors);ImGui::Separator();if(ImGui::MenuItem("Stage reference..."))show_stage_dialog(*tab());if(ImGui::MenuItem("Link animation anchors..."))show_anchor_link(*tab());}ImGui::EndMenu();}
         if(ImGui::BeginMenu("Tools")){if(ImGui::MenuItem("ASM animations..."))show_asm();if(ImGui::MenuItem("Reactions..."))show_reactions();if(ImGui::MenuItem("Fatality source..."))show_fatality();if(ImGui::MenuItem("MK2 strike tables..."))show_strikes();if(ImGui::MenuItem("Strike associations..."))show_bindings();if(ImGui::MenuItem("Strike phase inspector..."))show_strike_phases();ImGui::EndMenu();}
-        if(ImGui::BeginMenu("Help")){if(ImGui::MenuItem("Using Studio"))help=true;ImGui::EndMenu();}
+        if(ImGui::BeginMenu("Help")){item("Using Studio / keyboard reference","H / F1",Action::Help);item("Diagnostics","F9",Action::Diagnostics);ImGui::EndMenu();}
         ImGui::EndMenuBar();
     }
+    #include "studio_help_ui.inl"
+    #include "studio_shortcut_actions.inl"
+    #include "studio_layers_ui.inl"
     void shortcuts(){
-        if(ImGui::GetIO().WantTextInput || ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel))return;
+        if(ImGui::GetIO().WantTextInput || ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel)){space_mark_doc=0;return;}
         const auto route=ImGuiInputFlags_RouteGlobal;
-        struct Key {ImGuiKeyChord key;Action action;};
-        const Key keys[]={{ImGuiMod_Ctrl|ImGuiKey_N,Action::NewLibrary},{ImGuiMod_Ctrl|ImGuiKey_J,Action::Duplicate},{ImGuiKey_F2,Action::Rename},{ImGuiMod_Ctrl|ImGuiKey_O,Action::Open},{ImGuiMod_Ctrl|ImGuiKey_S,Action::Save},{ImGuiMod_Ctrl|ImGuiMod_Shift|ImGuiKey_S,Action::SaveAs},
-            {ImGuiMod_Ctrl|ImGuiMod_Shift|ImGuiKey_O,Action::OpenProject},
-            {ImGuiMod_Ctrl|ImGuiKey_Z,Action::Undo},{ImGuiMod_Ctrl|ImGuiKey_Y,Action::Redo},{ImGuiMod_Ctrl|ImGuiKey_C,Action::Copy},{ImGuiMod_Ctrl|ImGuiKey_V,Action::Paste},
-            {ImGuiMod_Ctrl|ImGuiKey_X,Action::Cut},{ImGuiMod_Ctrl|ImGuiKey_A,Action::SelectAll},{ImGuiMod_Ctrl|ImGuiKey_D,Action::Deselect},{ImGuiMod_Ctrl|ImGuiMod_Shift|ImGuiKey_I,Action::InvertSelection},
-            {ImGuiMod_Ctrl|ImGuiKey_T,Action::TransformSelection},
-            {ImGuiMod_Ctrl|ImGuiKey_W,Action::Close},{ImGuiMod_Ctrl|ImGuiKey_0,Action::Fit},{ImGuiMod_Ctrl|ImGuiKey_Equal,Action::ZoomIn},{ImGuiMod_Ctrl|ImGuiKey_Minus,Action::ZoomOut},{ImGuiKey_Delete,Action::Clear}};
-        for(auto &k:keys)if(ImGui::Shortcut(k.key,route))action(k.action);
+        if(layer_drag.active){if(ImGui::IsKeyPressed(ImGuiKey_Escape)||(ImGui::GetIO().KeyCtrl&&ImGui::IsKeyPressed(ImGuiKey_Z)))cancel_layer_drag();return;}
+        // A paste owns transform/placement keys before global Help or frame navigation.
+        if(paste_mode&&tab()&&!ImGui::GetIO().KeyCtrl&&!ImGui::GetIO().KeyAlt&&!ImGui::GetIO().KeyShift&&!ImGui::GetIO().KeySuper&&ImGui::IsKeyPressed(ImGuiKey_L)){drop_paste_layer();return;}
+        if(paste_mode&&tab()){
+            auto &io=ImGui::GetIO();bool plain=!io.KeyCtrl&&!io.KeyAlt&&!io.KeySuper;
+            bool control=io.KeyCtrl&&!io.KeyAlt&&!io.KeyShift&&!io.KeySuper;
+            bool intercept=(plain&&!io.KeyShift&&(ImGui::IsKeyPressed(ImGuiKey_H)||ImGui::IsKeyPressed(ImGuiKey_V)||ImGui::IsKeyPressed(ImGuiKey_Enter)||ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)))||(plain&&(ImGui::IsKeyPressed(ImGuiKey_LeftArrow)||ImGui::IsKeyPressed(ImGuiKey_RightArrow)||ImGui::IsKeyPressed(ImGuiKey_UpArrow)||ImGui::IsKeyPressed(ImGuiKey_DownArrow)))||(control&&(ImGui::IsKeyPressed(ImGuiKey_T)||ImGui::IsKeyPressed(ImGuiKey_E)||ImGui::IsKeyPressed(ImGuiKey_J)));
+            if(intercept){
+                bool open_transform=control&&ImGui::IsKeyPressed(ImGuiKey_T);begin_clipboard_floating(*tab());refresh_floating();
+                // First-use keys are already pressed before a floating preview can
+                // register next-frame Shortcut routing, so consume this event here.
+                if(floating.active&&!open_transform){auto &u=floating;
+                    if(control&&ImGui::IsKeyPressed(ImGuiKey_J))duplicate_floating();
+                    else if((control&&ImGui::IsKeyPressed(ImGuiKey_E))||ImGui::IsKeyPressed(ImGuiKey_Enter)||ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))apply_floating();
+                    else if(ImGui::IsKeyPressed(ImGuiKey_H)){u.stage.flip_h=!u.stage.flip_h;u.dirty=true;}
+                    else if(ImGui::IsKeyPressed(ImGuiKey_V)){u.stage.flip_v=!u.stage.flip_v;u.dirty=true;}
+                    else{int step=io.KeyShift?10:1;int dx=(ImGui::IsKeyPressed(ImGuiKey_RightArrow)?step:0)-(ImGui::IsKeyPressed(ImGuiKey_LeftArrow)?step:0),dy=(ImGui::IsKeyPressed(ImGuiKey_DownArrow)?step:0)-(ImGui::IsKeyPressed(ImGuiKey_UpArrow)?step:0);u.stage.x=std::clamp(u.stage.x+dx,0,u.stage.canvas_w-u.stage.w);u.stage.y=std::clamp(u.stage.y+dy,0,u.stage.canvas_h-u.stage.h);u.dirty=true;}
+                }return;
+            }
+        }
+        for(const auto &k:shortcut_bindings)if(!(floating.active&&k.key==ImGuiKey_H&&k.action==Action::Help)&&(!k.artwork||(tab()&&!tab()->alignment.enabled&&!tab()->embedded.enabled))&&ImGui::Shortcut(k.key,route)){
+            auto command=k.action;if(command==Action::Mark){if(enabled(command)&&tab()){space_mark_doc=tab()->uid;space_mark_sprite=tab()->selected_id;}continue;}if(command==Action::Clear&&k.key==ImGuiKey_Delete&&tab()&&!tab()->selection.valid)command=Action::Delete;action(command);
+        }
+        if(ImGui::IsKeyReleased(ImGuiKey_Space)&&space_mark_doc){if(tab()&&tab()->uid==space_mark_doc&&tab()->selected_id==space_mark_sprite)action(Action::Mark);space_mark_doc=0;}
         auto t=tab();if(!t)return;
         if(variant.active){if(ImGui::IsKeyPressed(ImGuiKey_Escape))cancel_variant();else if(ImGui::Shortcut(ImGuiKey_Enter,route)||ImGui::Shortcut(ImGuiKey_KeypadEnter,route))apply_variant();return;}
         if(paint_line.active){if(ImGui::IsKeyPressed(ImGuiKey_Escape))cancel_paint_line();return;}
         if(floating.active){floating_shortcuts(route);return;}
+        if(ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_Tab,route)||ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiMod_Shift|ImGuiKey_Tab,route)){finish();active=(active+(ImGui::GetIO().KeyShift?(int)tabs.size()-1:1))%(int)tabs.size();select_uid=tabs[active]->uid;paste_mode=false;return;}
         if(t->embedded.enabled){
             if(ImGui::Shortcut(ImGuiKey_Tab,route))workspace(*t,false);
-            if(ImGui::Shortcut(ImGuiKey_Space,route))embedded_toggle_play(*t);
+            if(ImGui::Shortcut(ImGuiKey_Space,route)||ImGui::Shortcut(ImGuiKey_K,route))embedded_toggle_play(*t);
             if(ImGui::Shortcut(ImGuiKey_LeftArrow,route)||ImGui::Shortcut(ImGuiKey_UpArrow,route))embedded_step(*t,-1);
             if(ImGui::Shortcut(ImGuiKey_RightArrow,route)||ImGui::Shortcut(ImGuiKey_DownArrow,route))embedded_step(*t,1);
             return;
@@ -902,7 +957,7 @@ public:
         if(t->project&&t->alignment.enabled){
             if(ImGui::Shortcut(ImGuiKey_Escape,route)){t->project->cancel();t->scene.dragging=false;}
             if(ImGui::Shortcut(ImGuiKey_Tab,route))workspace(*t,false);
-            if(ImGui::Shortcut(ImGuiKey_Space,route))toggle_scene_playback(*t);
+            if(ImGui::Shortcut(ImGuiKey_Space,route)||ImGui::Shortcut(ImGuiKey_K,route))toggle_scene_playback(*t);
             if(ImGui::Shortcut(ImGuiKey_LeftArrow,route)||ImGui::Shortcut(ImGuiKey_UpArrow,route))scene_step(*t,-1);
             if(ImGui::Shortcut(ImGuiKey_RightArrow,route)||ImGui::Shortcut(ImGuiKey_DownArrow,route))scene_step(*t,1);
             return;
@@ -912,19 +967,27 @@ public:
         if(ImGui::Shortcut(ImGuiKey_Tab,route))workspace(*t,!t->alignment.enabled);
         if(t->alignment.enabled){
             auto &v=t->alignment;
-            if(ImGui::Shortcut(ImGuiKey_Space,route))toggle_playback(*t);
+            if(ImGui::Shortcut(ImGuiKey_Space,route)||ImGui::Shortcut(ImGuiKey_K,route))toggle_playback(*t);
             if(ImGui::Shortcut(ImGuiKey_LeftArrow,route)||ImGui::Shortcut(ImGuiKey_UpArrow,route))select_frame(*t,v.player.frame? v.player.frame-1:(int)v.sequences[v.sequence].frames.size()-1);
             if(ImGui::Shortcut(ImGuiKey_RightArrow,route)||ImGui::Shortcut(ImGuiKey_DownArrow,route))select_frame(*t,(v.player.frame+1)%(int)v.sequences[v.sequence].frames.size());
             return;
         }
+        if(layer_move_keys(*t))return;
+        if(ImGui::Shortcut(ImGuiKey_K,route)){workspace(*t,true);toggle_playback(*t);return;}
+        if(ImGui::Shortcut(ImGuiKey_LeftArrow,route)){select_frame(*t,t->alignment.player.frame? t->alignment.player.frame-1:(int)t->alignment.sequences[t->alignment.sequence].frames.size()-1);return;}
+        if(ImGui::Shortcut(ImGuiKey_RightArrow,route)){select_frame(*t,(t->alignment.player.frame+1)%(int)t->alignment.sequences[t->alignment.sequence].frames.size());return;}
+        if(ImGui::Shortcut(ImGuiKey_PageUp,route))select(std::max(0,t->selected-10));
+        if(ImGui::Shortcut(ImGuiKey_PageDown,route))select(std::min(t->art->count()-1,t->selected+10));
         if(ImGui::Shortcut(ImGuiKey_UpArrow,route))select((t->selected+t->art->count()-1)%t->art->count());
         if(ImGui::Shortcut(ImGuiKey_DownArrow,route))select((t->selected+1)%t->art->count());
         const ImGuiKey arrows[]={ImGuiKey_LeftArrow,ImGuiKey_RightArrow,ImGuiKey_UpArrow,ImGuiKey_DownArrow};
         const int dx[]={-1,1,0,0},dy[]={0,0,-1,1};
         for(int i=0;i<4;++i)for(int fast=0;fast<2;++fast)if(ImGui::Shortcut(ImGuiMod_Alt|(fast?ImGuiMod_Shift:0)|arrows[i],route))nudge_selection(*t,dx[i]*(fast?10:1),dy[i]*(fast?10:1));
-        const ImGuiKey tool_keys[]={ImGuiKey_R,ImGuiKey_P,ImGuiKey_E,ImGuiKey_G,ImGuiKey_I,ImGuiKey_H,ImGuiKey_W,ImGuiKey_L,ImGuiKey_V,ImGuiKey_K,ImGuiKey_B,ImGuiKey_U,ImGuiKey_C,ImGuiKey_T,ImGuiKey_O,ImGuiKey_S,ImGuiKey_J,ImGuiKey_F};
-        for(int i=0;i<18;++i)if(ImGui::Shortcut(tool_keys[i],route)){finish();tool=(Tool)i;paste_mode=false;}
+        if(t->flip)return;
+        for(const auto &k:tool_bindings)if(ImGui::Shortcut(k.key,route)){finish();tool=k.tool;paste_mode=false;}
         if(tool==Tool::Pencil||tool==Tool::Erase||tool==Tool::Replace||tool==Tool::Line||tool==Tool::Clone||tool==Tool::Variant||tool==Tool::Blur||tool==Tool::Smudge||tool==Tool::Heal||tool==Tool::Defringe){if(ImGui::Shortcut(ImGuiKey_LeftBracket,route))t->radius=std::max(1,t->radius-1);if(ImGui::Shortcut(ImGuiKey_RightBracket,route))t->radius=std::min(16,t->radius+1);}
+        else{if(ImGui::Shortcut(ImGuiKey_LeftBracket,route))action(Action::PaletteAssignMarked);if(ImGui::Shortcut(ImGuiKey_RightBracket,route))action(Action::PaletteAssign);}
+        bool merge=ImGui::Shortcut(ImGuiKey_KeypadMultiply,route);for(ImWchar c:ImGui::GetIO().InputQueueCharacters)merge|=c=='*';if(merge)action(Action::PaletteMerge);
     }
     #include "studio_batch_ui.inl"
     #include "studio_batch_rename_ui.inl"
@@ -995,36 +1058,41 @@ public:
         bool hovered=ImGui::IsItemHovered(),held=ImGui::IsItemActive();
         float fit=std::max(1.f,std::floor(std::min((available.x-60)/im->w,(available.y-60)/im->h)));
         float z=t.zoom>0?t.zoom:std::min(16.f,fit);
-        if(hovered && io.MouseWheel!=0){t.zoom=std::clamp(z*(io.MouseWheel>0?1.25f:.8f),1.f,64.f);z=t.zoom;}
-        if(hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Middle))t.pan+=io.MouseDelta;
-        if(held && tool==Tool::Pan && ImGui::IsMouseDragging(ImGuiMouseButton_Left))t.pan+=io.MouseDelta;
+        if(!layer_drag.active&&hovered && io.MouseWheel!=0){t.zoom=std::clamp(z*(io.MouseWheel>0?1.25f:.8f),1.f,64.f);z=t.zoom;}
+        if(!layer_drag.active&&hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Middle))t.pan+=io.MouseDelta;
+        if(held && tool==Tool::Pan && !ImGui::IsKeyDown(ImGuiKey_Space) && ImGui::IsMouseDragging(ImGuiMouseButton_Left))t.pan+=io.MouseDelta;
+        bool space_down=ImGui::IsKeyDown(ImGuiKey_Space)&&!pixel_preview();
+        if(held&&space_down&&ImGui::IsMouseDragging(ImGuiMouseButton_Left)){if(space_mark_doc)finish();space_mark_doc=0;t.pan+=io.MouseDelta;}
+
         ImVec2 size(im->w*z,im->h*z),origin=pos+(available-size)*.5f+t.pan;
         t.canvas_origin=origin;t.canvas_zoom=z;
         ImVec2 anchor=origin+ImVec2((short)im->anix*z,(short)im->aniy*z);
         if(t.flip)origin.x=anchor.x-anipoint_effective((short)im->anix,im->w,true,t.convention)*z;
-        floating_input(t,origin,z,hovered);
-        paint_line_input(t,origin,z,hovered);
-        variant_input(t,origin,z,hovered);
+        layer_drag_input(t,origin,z,hovered&&!space_down);
+        floating_input(t,origin,z,hovered&&!space_down&&!layer_move_selected(t));
+        paint_line_input(t,origin,z,hovered&&!space_down);
+        variant_input(t,origin,z,hovered&&!space_down);
         auto dl=ImGui::GetWindowDrawList();dl->PushClipRect(pos,pos+available,true);
         dl->AddRectFilled(pos,pos+available,IM_COL32(18,21,27,255));
         ImVec2 ca=ImMax(pos,origin),cb=ImMin(pos+available,origin+size);
         for(float yy=ca.y;yy<cb.y;yy+=12)for(float xx=ca.x;xx<cb.x;xx+=12){int cellx=(int)std::floor((xx-origin.x)/12),celly=(int)std::floor((yy-origin.y)/12);dl->AddRectFilled(ImVec2(xx,yy),ImMin(ImVec2(xx+12,yy+12),cb),((cellx+celly)&1)?IM_COL32(41,44,51,255):IM_COL32(33,36,43,255));}
-        auto canvas_tex=variant.active&&variant.texture?variant.texture:paint_line.active&&paint_line.valid?paint_line.texture:floating.active&&floating.valid?floating.texture:texture(t,t.selected);
+        auto canvas_tex=layer_drag.active&&layer_drag.texture?layer_drag.texture:variant.active&&variant.texture?variant.texture:paint_line.active&&paint_line.valid?paint_line.texture:floating.active&&floating.valid?floating.texture:texture(t,t.selected);
         if(canvas_tex)dl->AddImage((ImTextureID)(intptr_t)canvas_tex,origin,origin+size,ImVec2(t.flip?1.f:0.f,0),ImVec2(t.flip?0.f:1.f,1));
         dl->AddRect(origin,origin+size,IM_COL32(90,96,106,255));
+        if(auto layer=img_layer(im);layer&&layer->visible&&!t.flip&&!floating.active){dl->PushClipRect(origin,origin+size,true);dl->AddRect(origin+ImVec2((layer_drag.active?layer_drag.x:layer->x)*z,(layer_drag.active?layer_drag.y:layer->y)*z),origin+ImVec2(((layer_drag.active?layer_drag.x:layer->x)+layer->w)*z,((layer_drag.active?layer_drag.y:layer->y)+layer->h)*z),IM_COL32(235,100,110,220),0,0,1.5f);dl->PopClipRect();}
         if(t.grid && z>=6){for(int x=0;x<=im->w;++x)if(origin.x+x*z>=pos.x&&origin.x+x*z<=pos.x+available.x)dl->AddLine(origin+ImVec2(x*z,0),origin+ImVec2(x*z,size.y),IM_COL32(10,12,16,90));for(int y=0;y<=im->h;++y)if(origin.y+y*z>=pos.y&&origin.y+y*z<=pos.y+available.y)dl->AddLine(origin+ImVec2(0,y*z),origin+ImVec2(size.x,y*z),IM_COL32(10,12,16,90));}
         if(t.anchors){dl->AddLine(anchor-ImVec2(12,0),anchor+ImVec2(12,0),IM_COL32(239,193,94,255),1.5f);dl->AddLine(anchor-ImVec2(0,12),anchor+ImVec2(0,12),IM_COL32(239,193,94,255),1.5f);dl->AddCircle(anchor,4,IM_COL32(239,193,94,255));}
         int x=(int)std::floor((io.MousePos.x-origin.x)/z),y=(int)std::floor((io.MousePos.y-origin.y)/z);
         bool inside=x>=0&&y>=0&&x<im->w&&y<im->h;
         bool on_anchor=!floating.active&&tool==Tool::Select&&t.anchors&&!t.flip&&!io.KeyShift&&!io.KeyAlt&&std::abs(io.MousePos.x-anchor.x)<12&&std::abs(io.MousePos.y-anchor.y)<12;
-        if(hovered&&on_anchor&&!paste_mode&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+        if(hovered&&on_anchor&&!space_down&&!paste_mode&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
             finish();anchor_drag=true;anchor_drag_mouse=io.MousePos;anchor_start_x=(short)im->anix;anchor_start_y=(short)im->aniy;t.art->begin("Move animation anchor");
         }
         if(anchor_drag&&ImGui::IsMouseDown(ImGuiMouseButton_Left))t.art->anchor(t.selected,
             anchor_start_x+(int)std::round((io.MousePos.x-anchor_drag_mouse.x)/z),anchor_start_y+(int)std::round((io.MousePos.y-anchor_drag_mouse.y)/z));
         if(hovered&&on_anchor)ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         if(!variant.active&&hovered && inside && ImGui::IsMouseClicked(ImGuiMouseButton_Right))t.color=((unsigned char *)im->data_p)[y*((im->w+3)&~3)+(t.flip?im->w-1-x:x)];
-        if(hovered && inside && !t.flip && !anchor_drag && !floating.active && !paint_line.active && !variant.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+        if(hovered && inside && !space_down && !t.flip && !anchor_drag && !layer_move_selected(t) && !floating.active && !paint_line.active && !variant.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
             if(paste_mode){t.art->paste(t.selected,clipboard,x,y);paste_mode=false;}
             else if(tool==Tool::Clone)start_clone(t,x,y,io.KeyAlt);
             else if(tool==Tool::Blur||tool==Tool::Smudge)start_filter(t,x,y);
@@ -1051,10 +1119,10 @@ public:
             if(tool==Tool::Lasso){append_lasso(im->w,im->h,(io.MousePos.x-origin.x)/z,(io.MousePos.y-origin.y)/z);if(ImGui::IsMouseReleased(ImGuiMouseButton_Left))t.selection=combine_selection(selection_base,lasso_selection(im->w,im->h,lasso_points),selection_operation,im->w,im->h);}
             else{int xx=std::clamp(x,0,(int)im->w-1),yy=std::clamp(y,0,(int)im->h-1);t.selection=combine_selection(selection_base,rectangle_selection(im->w,im->h,std::min(start_x,xx),std::min(start_y,yy),std::abs(start_x-xx)+1,std::abs(start_y-yy)+1),selection_operation,im->w,im->h);}}
         if(ImGui::IsMouseReleased(ImGuiMouseButton_Left)){if(repair.owner){status="Repair finished. Undo restores the complete edit.";if(repair.unresolved)status+=" "+std::to_string(repair.unresolved)+" pixels stayed unchanged without usable surrounding colors.";}if(filter.owner)status="Filter stroke finished. Undo restores the complete edit.";if(clone.owner)status="Clone stroke finished. Alt-click chooses a new source.";if(stroke||anchor_drag)t.art->commit();stroke=false;clone={};filter={};repair={};select_drag=false;anchor_drag=false;lasso_points.clear();selection_base={};}
-        if(floating.active)draw_floating(dl,origin,z,ca,cb);else if(t.selection.valid&&!t.flip)draw_selection(t.selection,dl,origin,z,ca,cb);
+        if(floating.active)draw_floating(dl,origin,z,ca,cb);else if(t.selection.valid&&!t.flip&&!layer_move_selected(t))draw_selection(t.selection,dl,origin,z,ca,cb);
         if(paint_line.active){const auto &line=paint_line.review;dl->AddCircle(origin+ImVec2((line.x0+.5f)*z,(line.y0+.5f)*z),3,IM_COL32(239,193,94,255));dl->AddCircle(origin+ImVec2((line.x1+.5f)*z,(line.y1+.5f)*z),3,IM_COL32(239,193,94,255));}
         if(select_drag&&tool==Tool::Lasso){for(size_t i=1;i<lasso_points.size();++i)dl->AddLine(origin+ImVec2(lasso_points[i-1].x*z,lasso_points[i-1].y*z),origin+ImVec2(lasso_points[i].x*z,lasso_points[i].y*z),IM_COL32(236,218,162,255),1.5f);}
-        if(paste_mode&&hovered&&!t.flip){ImVec2 a=origin+ImVec2(x*z,y*z),b=a+ImVec2(clipboard.w*z,clipboard.h*z);
+        if(paste_mode&&hovered&&!t.flip){paste_x=x;paste_y=y;ImVec2 a=origin+ImVec2(x*z,y*z),b=a+ImVec2(clipboard.w*z,clipboard.h*z);
             dl->PushClipRect(ImMax(pos,origin),ImMin(pos+available,origin+size),true);
             if(auto tex=paste_preview(t))dl->AddImage((ImTextureID)(intptr_t)tex,a,b);
             dl->PopClipRect();dl->AddRect(a,b,ImGui::GetColorU32(ImGuiCol_CheckMark),0,0,2);}
@@ -1266,9 +1334,11 @@ public:
         auto im=t.art->sprite(t.selected);auto p=t.art->palette(im->palnum);
         ImGui::TextUnformatted("SPRITE INSPECTOR");ImGui::Separator();ImGui::TextUnformatted(im->n_s);
         ImGui::TextDisabled("%d x %d pixels  |  %d of %d",im->w,im->h,t.selected+1,t.art->count());
+        if(layer_drag.active){ImGui::SeparatorText("Move overlay preview");ImGui::Text("X: %d / Y: %d",layer_drag.x,layer_drag.y);ImGui::TextWrapped("Release to apply one Undo step. Hold Shift to lock an axis. Escape or Undo cancels. Artwork and anchors stay unchanged during this preview.");return;}
         if(variant.active){variant_inspector(t);return;}
         if(paint_line.active){ImGui::SeparatorText("Line preview");ImGui::Text("%d pixels change",paint_line.changed);ImGui::TextWrapped("Release to draw the line. Shift snaps horizontal, vertical or diagonal. Escape or Undo cancels without changing artwork.");return;}
         if(floating.active){floating_inspector(t);return;}
+        layer_inspector(t);
         if(!t.alignment.enabled){
             ImGui::Spacing();if(ImGui::Button("Rename"))request_edit(EditDialog::Rename);ImGui::SameLine();if(ImGui::Button("Resize"))request_edit(EditDialog::Resize);ImGui::SameLine();if(ImGui::Button("More..."))ImGui::OpenPopup("sprite-more");
             if(ImGui::BeginPopup("sprite-more")){
@@ -1293,7 +1363,7 @@ public:
         else if(tool==Tool::Pencil||tool==Tool::Erase||tool==Tool::Replace||tool==Tool::Line)paint_brush_controls(t);
         else if(tool==Tool::Select)ImGui::TextWrapped("Drag a rectangle. Copy with Ctrl+C; Delete clears its pixels.");
         else if(tool==Tool::Lasso)ImGui::TextWrapped("Drag around the pixels to select, then release to close the shape.");
-        else if(tool==Tool::Move)ImGui::TextWrapped("Drag selected pixels to preview a move. Enter applies; Escape cancels. Use Transform selection for flips, rotation and resizing.");
+        else if(tool==Tool::Move)ImGui::TextWrapped(layer_move_selected(t)?(layer_move_target(t)?"Move targets the overlay. Drag and release to apply; Shift locks an axis. Choose Base selection above to move selected base pixels.":"The overlay is hidden. Show it to drag, or choose Base selection above to move base pixels."):"Drag selected base pixels to preview a move. Enter applies; Escape cancels. An existing overlay stays in place.");
         else if(tool==Tool::Wand)ImGui::TextWrapped("Click a color to select matching pixels.");
         else if(tool==Tool::Fill||tool==Tool::SmartErase)paint_match_controls(t);
         else if(tool==Tool::Pick)ImGui::TextWrapped("Click to pick a color. Right-click also picks with any tool.");
@@ -1382,7 +1452,7 @@ public:
             if(added>=0){target->selected=added;target->selected_id=target->art->sprite_id(added);target->art->select_sprite(target->selected_id);target->alignment.enabled=false;}
             if(applied){status="Completed "+std::string(titles[(int)edit_dialog]);edit_dialog=EditDialog::None;ImGui::CloseCurrentPopup();}
         }
-        ImGui::SameLine();if(ImGui::Button("Cancel",ImVec2(110,0))){edit_dialog=EditDialog::None;edit_error.clear();ImGui::CloseCurrentPopup();}
+        ImGui::SameLine();if(ImGui::Button("Cancel",ImVec2(110,0))){edit_dialog=EditDialog::None;edit_error.clear();ImGui::CloseCurrentPopup();}edit_cancel_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
         ImGui::EndPopup();
     }
     void dialogs(){
@@ -1416,43 +1486,8 @@ public:
         editing_dialog();
         if(!error.empty()&&!close_uid)ImGui::OpenPopup("Could not complete action");
         if(ImGui::BeginPopupModal("Could not complete action",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+460);ImGui::TextUnformatted(error.c_str());ImGui::PopTextWrapPos();if(ImGui::Button("OK",ImVec2(100,0))){error.clear();ImGui::CloseCurrentPopup();}ImGui::EndPopup();}
-        if(help)ImGui::OpenPopup("Using Imgtool Studio");
-        if(ImGui::BeginPopupModal("Using Imgtool Studio",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
-            ImGui::TextUnformatted("ARTWORK & ALIGNMENT PREVIEW");ImGui::Separator();
-            ImGui::TextUnformatted("Open / Save: Ctrl+O / Ctrl+S\nUndo / Redo: Ctrl+Z / Ctrl+Y\nCopy / Cut / Paste: Ctrl+C / Ctrl+X / Ctrl+V\nRectangle / Wand / Lasso: R / W / L\nPencil / Erase / Fill / Pick / Pan: P / E / G / I / H\nLine / Replace / Smart erase: K / B / U\nClone: C   |   Set source: Alt-click\nVariant paint: T   |   Enter applies preview\nBlur / Smudge: O / S\nHeal / Defringe: J / F\nBrush size: [ / ]\nMove selected pixels: V   |   Transform selection: Ctrl+T\nSelect all / Deselect: Ctrl+A / Ctrl+D\nInvert: Ctrl+Shift+I   |   Nudge pixels: Alt+arrows\nBrowse sprites: Up / Down   |   Fit: Ctrl+0\nZoom: mouse wheel   |   Pan: middle-drag\nCancel paste or selection drag: Escape");
-            ImGui::Spacing();ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+490);
-            ImGui::TextUnformatted("Each library keeps its own undo history. Shift adds to a selection; Alt subtracts; Shift+Alt intersects. Paint, erase and fill stay within selected pixels. Copy/cut preserve the shape, including selected transparency: tinted transparent pixels in the paste preview clear the destination. Copy without a selection leaves transparent pixels untouched when pasted. Nudging moves pixels without moving anchors; add Shift to move 10 pixels.");
-            ImGui::Spacing();ImGui::TextUnformatted("Line previews a round/square stroke: Shift snaps directions, release applies, Escape cancels. Replace keeps the color clicked at the stroke's start; All matching pixels replaces across the sprite or selection. Fill and Smart erase choose connected/global matching. Exact index is the default; Match palette colors includes duplicate slots and nearby shades at the chosen tolerance. Transparency stays separate from opaque black. Connected fills cannot cross selection holes.");
-            ImGui::TextWrapped("Clone (C): Alt-click a source on the current sprite, then drag to copy pixels inside the selection. Each stroke freezes its source to prevent overlap feedback. Aligned strokes keep the offset; turn it off to start each stroke at the source. Copy transparent pixels explicitly enables erasing. Escape restores the unfinished stroke.");
-            ImGui::Spacing();ImGui::TextWrapped("Variant (T): choose an opaque palette color, drag to preview, or use Preview selected pixels. Recolors only the painted pixels in this palette while retaining their appearance under other palettes. Transparent pixels stay transparent. The review shows slot reuse, palette growth and LOAD2 PPP limits. Apply/Enter commits pixels and palettes in one undo step; Escape/Cancel/Undo discards the preview. Unused palette entries may be repurposed. No available slots blocks the complete edit.");
-            ImGui::Spacing();ImGui::TextWrapped("Blur (O) softens neighboring selected colors using one frozen source per stroke. Another stroke builds up the effect. Smudge (S) pulls colors along a drag, sampling the preceding brush position at pixel intervals. Both have round/square brushes and Strength controls, match results to existing opaque palette entries, preserve transparent outlines, and limit sampling and writes to the selection. Release commits one undo step; Escape restores the unfinished stroke and keeps its selection. Sparse palettes may limit the visible effect.");
-            ImGui::Spacing();ImGui::TextWrapped("Heal (J) replaces a brushed blemish by diffusing surrounding colors inward, using the frozen source and cumulative brushed area. Fill depth controls how far colors can travel. Defringe (F) cleans an outline band from the sprite interior; drag locally or Clean all/selected edges. Edge width is 1-4 pixels. Both use existing opaque palette colors, preserve transparency and keep unreachable repairs unchanged. Selection limits reads and writes. Release groups a stroke; Escape restores it and keeps the mask. Smart erase (U) has Clean erased edges enabled by default: surviving neighbors adopt safe local colors in the same undo step. Turn it off for a plain matching erase.");
-            ImGui::Spacing();ImGui::TextUnformatted("Move (V) drags selected pixels into a floating preview. Ctrl+T or Move / transform opens its inspector. Drag corners to resize, flip or rotate in 90-degree steps, or enable Duplicate instead of move. Enter or Apply commits one undo step; Escape, Cancel or Ctrl+Z discards the preview. Arrows move the preview by 1, Shift+arrows by 10. Keep it inside the sprite canvas. Anchors and metadata stay unchanged. Palette indices are retained with nearest-pixel sampling from the original selection. Changing the source or workspace cancels an unapplied preview.");
-            ImGui::Spacing();ImGui::TextWrapped("File > Export TGA sprite sheet reviews marked, shown, all or selected full sprites. Exclude rows without unmarking; inspect packed rectangles, anchors and face order, scroll to zoom and middle/right-drag to pan. Indexed output keeps matching palettes or combines exact used RGB555 colors; too many colors blocks instead of degrading art. RGBA supports per-sprite colors/alpha without ANF. Classic ANF stores anchors and faces in library order and requires a 256-wide indexed sheet, sprites up to 256x256, at most 1000 faces and 6000 rows. Both outputs are prepared first; second-replacement failure attempts to restore the first. Two files are not globally atomic against interruption or external changes. Build again after source or destination changes. Source IMG format, pixels, history and marks stay intact.");
-            ImGui::Spacing();ImGui::TextWrapped("File > Export pipeline reviews TBL, IRW and ANILST output for marked, shown, all or selected whole sprites. Build after changing options or destination; exclude blocked rows before exporting. TBL SAGs and IRW pixels use the same uncompressed layout and depth settings, with Word/Nibble/Packed alignment and optional dual-bank addressing. TBL CTRL comes from bit depth, with optional MK3 secondary anchors and palette pointers. ANILST is a sequential sprite list. Source/destination changes require rebuilding; output replacement is atomic. These exports do not reproduce LOAD2 compression, deduplication, scaling or existing ROM allocation.");
-            ImGui::Spacing();ImGui::TextWrapped("File > Open LOD libraries reviews LOAD2 manifests, paths and per-library PPP settings before opening separate IMG tabs. Rebuild after changing folders; resolve or exclude missing/invalid rows. Open tabs retain unsaved edits and current PPP. Other LOAD2 directives are listed but do not run: no ROM or table outputs are written. Cancel leaves libraries unchanged.");
-            ImGui::Spacing();ImGui::TextUnformatted("File > New IMG library (Ctrl+N), Import PNG sprite and Export selected PNG cover the basic file workflow. Sprite commands manage names (F2), copies (Ctrl+J), order and geometry. Right-click a library row for the same actions. The inspector assigns palettes or makes one private before recoloring. Structural edits and geometry changes undo with their metadata and selection.");
-            ImGui::Spacing();ImGui::TextUnformatted("Animation & alignment (Tab): browse name-based frame groups, reconstruct subframes, scrub the timeline and press Space to play/pause. Arrows step frames. World View holds the anchor target fixed; drag a piece to edit its IMG anchor, or enable Drag the whole frame. Escape cancels the gesture. In Artwork, use Select to drag the yellow anchor handle.");
-            ImGui::Spacing();ImGui::TextUnformatted("Project > Create from current preview saves a composition as .ISTUDIO with its own undo history. Add actor lanes and cross-file frames, edit holds and positions, then save referenced IMGs before saving the project. Dragging an actor in a project edits scene placement, not IMG anchors. Motion & timing adds Show/Hide windows, velocity, maximum travel, a freeze tick and a second copy. Scheduled frames can overlap. Follow frame timing connects an effect to another actor's frame; retiming or reordering that frame moves the effect's start. Detach keeps the current start as an independent actor. This follows timing only, not position or visibility. Open project / import WAX accepts these row rules and uniform spawn runs; remaining unsupported rules are reported. Export current scene PNG uses the same scene positions and timing as the canvas.");
-            ImGui::Spacing();ImGui::TextWrapped("Batch geometry: mark sprites with the library checkboxes; Marks can mark every shown sprite or clear membership. Batch... or Sprite > Batch geometry opens a review for Marked, Shown by search, or All sprites in this library. Trim, resize by percent/exact size, canvas size and rotate/flip share the existing geometry behavior. Select a row and compare Before/After at one anchor target; sizes, anchors and cropped pixel counts are shown. Uncheck rows to exclude them. Finish editing settings to refresh the preview. Apply changes all enabled rows in one Undo step; Cancel/Escape leaves the IMG intact. Marks follow stable sprite identities through reorder/Undo and remain session view state. The batch edits whole sprites. Empty trims keep their original canvas, and geometry can affect LOAD2 packing.");
-            ImGui::Spacing();ImGui::TextWrapped("Sprite > Restore child sprites reviews parent-to-child pixel restoration in this library. Scope Marked, Shown by search or All children; choose a searchable parent or use a name rule with one capture (WALK1A -> WALK1). Build preview after settings change. Reconstruct keeps both silhouettes; Diff copies parent pixel changes since load and needs an equal-size baseline; Replace clears the child and copies overlap; Fill writes only transparent child pixels. Palette mismatches, missing/ambiguous parents and absent baselines are excluded. Partial coverage starts unchecked; Parent context shows child bounds in gold and uncovered areas in red. Before/After and Changes compare actual edits. Apply is one Undo step; Cancel/Escape discards the preview. Anchors, geometry and metadata stay intact. Pixel selections do not limit whole-child restoration. New or resized parents may lack a usable Diff baseline; choose another mode. Cross-library restoration is not part of this workflow.");
-            ImGui::Spacing();ImGui::TextUnformatted("Sprite > Extract selection and Split body parts review child sprites before copying or cutting. Adjust part boxes and names, trim borders, and preview the remaining source. Children retain palette and primary-anchor alignment; existing animation references stay on the source. One Undo restores the entire extraction.");
-            ImGui::Spacing();ImGui::TextUnformatted("File > Import indexed LBM / TGA reviews one full-canvas indexed sprite, keeps its source palette order or matches an existing palette, and lets you click the preview to place its anchor. LBM / IFF and indexed TGA drag-and-drop use the same review. File > Export selected LBM / TGA writes a separate indexed image without changing the IMG or history. LBM exports store the primary anchor as GRAB; TGA does not store IMG anchors. Settings and destination changes require rebuilding the review. Full-color TGA remains available through sprite-sheet import. File import also reviews sprite sheets and GIFs, digitizes source frames with material ramps, and captures video into the digitize review. Palette > Manage handles palette files, merging, compaction and gradients. File > Export pipeline writes reviewed TBL, IRW and ANILST files. Every existing IMG keeps its original version and record layout on Save / Save As. Edits that cannot fit that format cannot be saved. Pre-WIMP 5 and transitional 0x632 / 0x633 layouts, additional legacy image variants and game runtime and phase-list authoring remain on the migration list.");
-            ImGui::Spacing();ImGui::TextWrapped("Tools > ASM animations loads a read-only character ASM and resolves multipart frames across open IMG libraries. Choose a preferred library for duplicate names. Arrows step; Space plays; hold ticks override source timing. Flips, offsets, source segments and jumps are inspected; unsupported branches stop visibly and runtime calls are not executed. Feet to floor and object origin change preview placement only. Tools > MK2 strike tables edits an independent ASM document with its own Undo/Redo and reviewed Save. Animation source / Animate previews the move while you resize its strike box. Tools > Strike associations manages the classic .imgtool sidecar beside each strike source. Save associations remembers overrides, including None, with independent Undo/Redo and reviewed writes. Source switching retains unsaved sidecars; quit offers Save/Discard/Keep editing. Associations do not establish active-frame timing. IMG pixels, anchors, history and format stay unchanged.");
-            ImGui::Spacing();ImGui::TextWrapped("Sprite > Copy / move to another library reviews sprites and required palettes between open libraries. Copy is the default. Enable Move from source to append them to the destination and remove them from the source. Both libraries are prepared before either changes. Each has its own Undo step; undo each separately to reverse the complete move, and Save both separately. Embedded-animation and open-scene references protect source sprites; Exclude referenced sprites keeps them. Keep at least one source sprite. Remaining native indices are remapped, source palettes are retained, and neither IMG format changes. External game references and closed projects are not scanned. Native animation records stay in their original library; use the animation transfer tools for records.");
-            ImGui::Spacing();ImGui::TextWrapped("File > Split IMG animations to new library creates a separate IMG tab with selected native sequences/scripts, called sequences and only the artwork/palettes they require. Animation > Split to new library offers the same review in IMG mode. Original names and the source IMG version/layout are retained; the source is unchanged. The new tab opens in IMG animations mode, has no creation Undo and participates in the unsaved-close guard. Save it when ready. Select an animation that references artwork; a library made only of empty records is not created. Unique source sprite names are required, and damage-bound sequences remain unsupported. This copies native IMG records, not scene projects or external game tables, and leaves every clipboard unchanged.");
-            ImGui::Spacing();ImGui::TextWrapped("File > Copy IMG animations to clipboard captures selected records, called sequences and their required artwork into an independent session snapshot. The source may close after copying. File > Paste IMG animations from clipboard reviews captured records against any open destination, with prefixes, manual sprite choices and Copy missing artwork enabled by default. Paste is one destination Undo step; Save separately. Animation menu offers the same commands in IMG animations mode. Edit > Clear animation clipboard releases it; Cancel or failed capture retains the previous clipboard. Pixel, palette and sprite clipboards are separate. Contents last until replaced, cleared or Studio closes. Capture retains names and requires unique source sprite names. Unsupported damage bindings and original-layout constraints still apply; IMG formats never change.");
-            ImGui::Spacing();ImGui::TextWrapped("File > Copy IMG animations to library transfers sequences and scripts between open libraries. Selected scripts include their called sequences. Enable Copy missing artwork to append referenced sprites that have unique missing names and their required palettes. Existing matches stay unchanged; ambiguous names still need manual choices. The sprite prefix also names new artwork. The review labels new sprites Copy and lists palette additions. Without that option, referenced artwork must already exist. Unique names match automatically; use Destination sprite prefix for prefixed artwork, or search each destination dropdown by name or index to bind differently named or duplicate sprites. Manual choices survive prefix and animation selection changes; changing libraries clears them. Reset sprite choices or choose Automatic name match to restore matching. Review sprite indices and geometry, and use an animation prefix for record name conflicts. Apply preserves stored timing, offsets and opaque bytes, remaps incoming targets, and opens the destination for inspection. One destination Undo step includes all copied artwork and records, no autosave and no IMG format changes. Damage-bound sequences and incompatible older-layout fields are blocked; runtime script execution is not included.");
-            ImGui::Spacing();ImGui::TextWrapped("Sprite > Copy to another library appends marked, shown or all sprites to a second open IMG. Review names, an optional prefix, palette assignments and exclusions. Exact palette reuse compares colors and metadata; otherwise required primary/alternate palettes are copied once. Copies keep pixel indices, anchors, points, baselines and metadata, with remapped alternate references. Name collisions, unsupported layouts and stale libraries block Apply. One undo removes destination additions; the source stays unchanged and both IMG formats stay fixed. This copies listed sprites without source sequences/scripts. Sprite > Split to new library creates a separate unsaved IMG tab with the source layout. Copy leaves the source unchanged; Move protects referenced sprites and removes eligible rows in one source undo step. Source Undo restores the sprites while the new tab remains. Save each library explicitly. Sprite > Copy sprites to clipboard captures an owned set that survives source edits and closure during this Studio session. Paste sprites from clipboard uses the same destination review and one undo step. Copy again to replace the snapshot, or clear it from Sprite/Edit. Pixel and palette-color clipboards remain separate. Include child pieces adds direct related sprites with parent labels; ambiguous matches are reported for explicit selection.");
-            ImGui::Spacing();ImGui::TextWrapped("Sprite > Delete multiple sprites reviews marked, shown or all sprites with a preview and exclusions. Embedded sequence and current open Studio scene references block deletion; Exclude referenced sprites keeps them automatically. Only listed rows are deleted and at least one sprite stays. Remaining embedded sprite indices are remapped while script sequence indices remain intact. One undo restores pixels, metadata, references and selection. IMG version and layout stay fixed. Child pieces are not added implicitly; external files and closed scenes are not scanned.");
-            ImGui::Spacing();ImGui::TextWrapped("Palette > Remove unused palettes reviews all primary and alternate uses, with per-palette keep choices and one undo step. Retained references are remapped, without changing colors, pixels or the IMG format. External palette-name references are not scanned. Palette > Assign to multiple sprites reviews marked, shown or all sprites with a before/after primary-palette preview. Match colors keeps transparency and maps opaque colors to opaque destination slots; approximate colors require review. Keep indices changes the palette reference without changing pixel bytes. Remaps that would alter active alternate-palette appearances are blocked; keep indices or exclude those sprites. Apply uses one undo step and keeps metadata, baselines and the IMG version/layout. Palettes are not resized or modified; check LOAD2 packing after palette-size changes.");
-            ImGui::Spacing();ImGui::TextWrapped("Sprite > Batch rename previews numbered names, prepended text or appended text plus numbers for marked, shown or all sprites. Names are limited to 15 printable ASCII characters without spaces. Excluded rows retain their current names and other preview numbers do not move. Collisions against the whole library block Apply. All changed names share one undo step; pixels, metadata and embedded references remain intact. IMG version and layout stay fixed. External ASM / TBL names are not rewritten, and naming changes can affect LOAD2 allocations.");
-            ImGui::Spacing();ImGui::TextWrapped("Sprite > Split to new library offers Include IMG animations with Copy. It copies sequences using only included sprites and scripts whose called sequences are copied. Review copied/skipped records: empty records, outside references and unsupported damage bindings stay out. The sprite set never expands automatically; use Include child pieces or change exclusions to cover a complete animation. The source stays unchanged; the new IMG inherits its original layout and starts unsaved. Move from source is separate and cannot include animation records.");
-            ImGui::Spacing();ImGui::TextWrapped("Tools > Fatality source keeps up to 16 ASM sources open: commands, scom_* combos, or animation data. Add source retains other files and their histories. The source selector restores the last block in each file. Reload source and Close source protect applied edits; Quit checks every modified source. Linked combos prefer the current file, then unique matches in other open sources; choose explicitly if several match. Save As cannot overwrite another open source. Each file saves separately. The label line stays fixed; edit indented body lines, Apply block, then review Save source. Source Undo/Redo is separate from IMG history. Switching blocks resets unapplied text. In-place saves reject external changes, and close/reload/quit protect applied unsaved edits. Inspect animation snapshots applied edits in all open sources, follows unique external jumps and frame groups, and reports ambiguous symbols. Review artwork lists every expanded symbol, counts its uses, locates its first frame, and offers explicit choices among matching sprites in open IMG libraries. Choices are shared with the canvas and reaction table; they last for the loaded source and reset on refresh. Closed or renamed choices stay visibly unavailable until restored or chosen again. Frame locations identify their defining files. Back to fatality source returns to editing; inspect again to refresh the snapshot. This does not assemble code, follow includes, run game routines or infer attacker/victim timing. Existing IMG formats and artwork stay unchanged.");
-            ImGui::Spacing();ImGui::TextWrapped("Tools > Reactions groups the loaded character ASM by Hit, Stagger, Knockdown, Throws, Getup and Death. Search includes thrower names and classification reasons; Show other animations exposes entries the suggestions missed. Choose a frame/piece row to scrub, then Open selected sprite to edit its IMG anchor. Frame anchors refresh after edits, Undo, library changes and facing/convention changes. Missing or ambiguous pieces stay explicit. Placement is relative to object origin using each library's mirror convention. Source ASM is read-only; game routines and attack/reaction timing are not executed or inferred.");
-            ImGui::Spacing();ImGui::TextWrapped("Tools > Strike phase inspector shows which box the loaded source selects as a manually supplied active countdown decreases. Assume stkphase / wunit flags affect only this preview, including conditional slot numbering; build files stay unchanged. Red is the selected box, gray is its base reference. Edit selected strike opens the existing ASM editor. Edit phase rows stages existing thresholds and slots, previews the selection, and applies through the source undo history. Review source save opens the ASM diff before writing. Row counts stay fixed, thresholds decrease to zero, and all consumers must resolve under the chosen preview flags. Build settings and IMG format stay unchanged. Artwork frames are chosen independently; startup, recovery and hit interruption are not inferred.");
-            ImGui::PopTextWrapPos();if(ImGui::Button("Done",ImVec2(100,0))){help=false;ImGui::CloseCurrentPopup();}ImGui::EndPopup();
-        }
+        help_dialog();
+        diagnostics_dialog();
         if(path_dialog)ImGui::OpenPopup(path_save?"Save IMG path":"Open IMG path");
         if(ImGui::BeginPopupModal(path_save?"Save IMG path":"Open IMG path",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
             ImGui::SetNextItemWidth(500);ImGui::InputText("Path",path_input,sizeof path_input);
@@ -1475,7 +1510,10 @@ public:
         }
     }
     void frame(){
+        if(!library_copy.open)clear_library_copy_preview();
+        if(!asm_ui.assets.library_review&&!asm_ui.assets.open){asm_ui.assets.library_preview.reset();asm_ui.assets.library_snapshot.reset();}
         for(auto &t:tabs)synchronize(*t);
+        validate_layer_drag();
         validate_floating();
         validate_paint_line();
         validate_variant();
@@ -1573,7 +1611,9 @@ public:
 #include "studio_bindings_ui.inl"
 #include "studio_strike_phases_ui.inl"
 #include "studio_sequences_ui.inl"
+#include "studio_palette_swatches_ui.inl"
 #include "studio_palette_ui.inl"
+#include "studio_palette_multi_merge_ui.inl"
 #include "studio_palette_merge_ui.inl"
 #include "studio_palette_usage_ui.inl"
 #include "studio_palette_ramps_ui.inl"
@@ -1681,6 +1721,7 @@ struct PaletteCompactionSmoke {
         if(frame==37)check(u.usage_valid&&u.usage_plan.ppp_changed&&!art.dirty());
     }
 };
+#include "studio_palette_multi_merge_smoke.inl"
 struct PaletteMergeSmoke {
     int failures=0;std::vector<unsigned char> pixels;std::vector<unsigned short> words,source_words;std::vector<uint64_t> ids;
     void prepare(App &app,ImGuiIO &io,int frame){
@@ -1763,6 +1804,12 @@ struct EmbeddedSmoke {
         if(frame==27){check(art.count()==8&&art.copy(0,0,0,48,64).pixels==pixels&&(short)art.sprite(0)->anix==anix&&(short)art.sprite(0)->aniy==aniy&&!art.dirty());app.embedded_seek(*t,2);}
     }
 };
+#include "studio_hotkeys_smoke.inl"
+#include "studio_palette_clipboard_smoke.inl"
+#include "studio_palette_swatches_smoke.inl"
+#include "studio_palette_effects_smoke.inl"
+#include "studio_layers_smoke.inl"
+#include "studio_layer_move_smoke.inl"
 #include "studio_selection_smoke.inl"
 #include "studio_regions_smoke.inl"
 #include "studio_selection_transform_smoke.inl"
@@ -1799,6 +1846,8 @@ struct EmbeddedSmoke {
 #include "studio_asm_smoke.inl"
 #include "studio_asm_assets_smoke.inl"
 #include "studio_asm_artwork_library_smoke.inl"
+#include "studio_asm_artwork_copy_smoke.inl"
+#include "studio_asm_artwork_reuse_smoke.inl"
 #include "studio_reactions_smoke.inl"
 #include "studio_fatality_smoke.inl"
 #include "studio_fatality_workspace_smoke.inl"
@@ -1940,6 +1989,13 @@ struct TriggerSmoke {
 
 static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quiet,bool software){
     startup.stage("Initialize SDL video");if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_TIMER)!=0){startup.failure(SDL_GetError(),quiet);return 1;}
+    bool layer_move_preview=argc>=3&&std::string(argv[1])=="--smoke-layer-move-preview";
+    bool layer_move_smoke=argc>=3&&(std::string(argv[1])=="--smoke-layer-move"||layer_move_preview);
+    bool layers_smoke=argc>=3&&std::string(argv[1])=="--smoke-layers";
+    bool effects_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-effects";
+    bool swatches_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-swatches";
+    bool palette_clip_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-clipboard";
+    bool hotkeys_smoke=argc>=3&&std::string(argv[1])=="--smoke-hotkeys";
     bool alignment_smoke=argc>=3&&std::string(argv[1])=="--smoke-alignment";
     bool gesture_smoke=argc>=3&&std::string(argv[1])=="--smoke-gesture";
     bool editing_smoke=argc>=3&&std::string(argv[1])=="--smoke-editing";
@@ -1955,6 +2011,11 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool fatality_workspace_smoke=fatality_linked_smoke||argc>=3&&std::string(argv[1])=="--smoke-fatality-workspace";
     bool fatality_smoke=argc>=3&&std::string(argv[1]).find("--smoke-fatality")==0;
     bool reactions_smoke=argc>=3&&std::string(argv[1]).find("--smoke-reactions")==0;
+    bool asm_artwork_reuse_smoke=argc>=3&&std::string(argv[1]).find("--smoke-asm-reuse")==0;
+    bool asm_artwork_reuse_review_smoke=argc>=3&&std::string(argv[1])=="--smoke-asm-reuse-review";
+    bool asm_artwork_reuse_all_smoke=argc>=3&&std::string(argv[1])=="--smoke-asm-reuse-all";
+    bool asm_artwork_copy_smoke=argc>=3&&std::string(argv[1]).find("--smoke-asm-copy")==0;
+    bool asm_artwork_copy_review_smoke=argc>=3&&std::string(argv[1])=="--smoke-asm-copy-review";
     bool asm_library_smoke=argc>=3&&std::string(argv[1]).find("--smoke-asm-library")==0;
     bool asm_library_review_smoke=argc>=3&&std::string(argv[1])=="--smoke-asm-library-review";
     bool asm_assets_smoke=argc>=3&&std::string(argv[1])=="--smoke-asm-assets";
@@ -1994,6 +2055,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool trigger_smoke=argc>=3&&std::string(argv[1])=="--smoke-trigger";
     bool embedded_smoke=argc>=3&&std::string(argv[1])=="--smoke-embedded";
     bool palette_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette";
+    bool marked_merge_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-marked";
     bool merge_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-merge";
     bool compact_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-compact";
     bool job_smoke=argc>=3&&(std::string(argv[1])=="--smoke-digitize-job"||std::string(argv[1])=="--smoke-digitize-progress");
@@ -2001,7 +2063,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool digitize_smoke=argc>=3&&std::string(argv[1])=="--smoke-digitize";
     bool import_smoke=argc>=3&&(std::string(argv[1])=="--smoke-import"||std::string(argv[1])=="--smoke-import-gif");
     bool ramp_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-ramp";
-    bool smoke=argc>=3&&(std::string(argv[1])=="--smoke"||alignment_smoke||gesture_smoke||editing_smoke||selection_smoke||region_smoke||floating_smoke||paint_smoke||clone_smoke||filters_smoke||repair_smoke||batch_smoke||batch_rename_smoke||batch_palette_smoke||batch_delete_smoke||library_copy_smoke||family_smoke||sprite_clip_smoke||split_smoke||animation_copy_smoke||cleanup_smoke||export_smoke||legacy_img_smoke||legacy_media_smoke||sheet_smoke||stage_smoke||anchor_link_smoke||points_smoke||table_compare_smoke||strikes_smoke||asm_smoke||bindings_smoke||phases_smoke||lod_smoke||restore_smoke||variant_smoke||welcome_smoke||tools_smoke||project_smoke||motion_smoke||trigger_smoke||embedded_smoke||palette_smoke||merge_smoke||compact_smoke||ramp_smoke||import_smoke||digitize_smoke||video_smoke||job_smoke);
+    bool smoke=argc>=3&&(std::string(argv[1])=="--smoke"||layer_move_smoke||layers_smoke||effects_smoke||swatches_smoke||palette_clip_smoke||hotkeys_smoke||alignment_smoke||gesture_smoke||editing_smoke||selection_smoke||region_smoke||floating_smoke||paint_smoke||clone_smoke||filters_smoke||repair_smoke||batch_smoke||batch_rename_smoke||batch_palette_smoke||batch_delete_smoke||library_copy_smoke||family_smoke||sprite_clip_smoke||split_smoke||animation_copy_smoke||cleanup_smoke||export_smoke||legacy_img_smoke||legacy_media_smoke||sheet_smoke||stage_smoke||anchor_link_smoke||points_smoke||table_compare_smoke||strikes_smoke||asm_smoke||bindings_smoke||phases_smoke||lod_smoke||restore_smoke||variant_smoke||welcome_smoke||tools_smoke||project_smoke||motion_smoke||trigger_smoke||embedded_smoke||palette_smoke||marked_merge_smoke||merge_smoke||compact_smoke||ramp_smoke||import_smoke||digitize_smoke||video_smoke||job_smoke);
     auto app_owner=std::make_unique<studio::App>();auto &app=*app_owner;
     app.gesture_smoke=gesture_smoke;
     startup.stage("Create editor window");
@@ -2041,6 +2103,11 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     int frames=0,exit_code=0;
     ImVec2 gesture_start;int original_x=0,original_y=0,expected_x=0,expected_y=0;
     std::vector<unsigned char> original_pixels;
+    studio::LayerMoveSmoke layer_move_check;layer_move_check.preview=layer_move_preview;
+    studio::PaletteEffectsSmoke effects_check;
+    studio::PaletteSwatchesSmoke swatches_check;
+    studio::PaletteClipboardSmoke palette_clip_check;
+    studio::LayersSmoke layers_check;
     studio::EditingSmoke editing_check;
     studio::SelectionSmoke selection_check;
     studio::RegionSmoke region_check;
@@ -2063,9 +2130,12 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     studio::StrikePhasesSmoke phases_check;phases_check.edit=argc>1&&std::string(argv[1])=="--smoke-phases-edit";phases_check.real=argc>1&&std::string(argv[1])=="--smoke-phases-real";
     studio::BindingsSmoke bindings_check;
     studio::StrikesSmoke strikes_check;
+    studio::HotkeysSmoke hotkeys_check;
     studio::FatalityWorkspaceSmoke fatality_workspace_check;
     studio::AsmAssetsSmoke asm_assets_check;
     studio::AsmArtworkLibrarySmoke asm_library_check;
+    studio::AsmArtworkCopySmoke asm_artwork_copy_check;
+    studio::AsmArtworkReuseSmoke asm_artwork_reuse_check;
     studio::FatalitySmoke fatality_check;fatality_check.real=argc>1&&std::string(argv[1])=="--smoke-fatality-real";
     studio::ReactionsSmoke reactions_check;reactions_check.real=argc>1&&std::string(argv[1])=="--smoke-reactions-real";
     studio::AsmSmoke asm_check;asm_check.real=argc>1&&std::string(argv[1])=="--smoke-asm-real";
@@ -2077,6 +2147,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     studio::TriggerSmoke trigger_check;
     studio::EmbeddedSmoke embedded_check;
     studio::PaletteSmoke palette_check;
+    studio::PaletteMultiMergeSmoke marked_merge_check;
     studio::PaletteMergeSmoke merge_check;
     studio::PaletteCompactionSmoke compact_check;
     studio::DigitizeJobSmoke job_check;job_check.preview=argc>1&&std::string(argv[1])=="--smoke-digitize-progress";studio::VideoSmoke video_check;video_check.result=argc>1&&std::string(argv[1])=="--smoke-video-result";studio::DigitizeSmoke digitize_check;studio::PaletteRampSmoke ramp_check;studio::ImportSmoke import_check;import_check.gif=std::string(argc>1?argv[1]:"")=="--smoke-import-gif";
@@ -2106,7 +2177,13 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         if(restore_smoke)restore_check.prepare(app,io,frames);
         if(lod_smoke)lod_check.prepare(app,io,frames);
         if(strikes_smoke)strikes_check.prepare(app,io,frames);
-        if(fatality_workspace_smoke)fatality_workspace_check.prepare(app,io,frames);else if(fatality_smoke)fatality_check.prepare(app,io,frames);else if(reactions_smoke)reactions_check.prepare(app,io,frames);else if(asm_library_smoke)asm_library_check.prepare(app,io,frames);else if(asm_assets_smoke)asm_assets_check.prepare(app,io,frames);else if(asm_smoke)asm_check.prepare(app,io,frames);
+        if(layer_move_smoke)layer_move_check.prepare(app,io,frames);
+        if(effects_smoke)effects_check.prepare(app,io,frames);
+        if(swatches_smoke)swatches_check.prepare(app,io,frames);
+        if(palette_clip_smoke)palette_clip_check.prepare(app,io,frames);
+        if(layers_smoke)layers_check.prepare(app,io,frames);
+        if(hotkeys_smoke)hotkeys_check.prepare(app,io,frames);
+        if(fatality_workspace_smoke)fatality_workspace_check.prepare(app,io,frames);else if(fatality_smoke)fatality_check.prepare(app,io,frames);else if(reactions_smoke)reactions_check.prepare(app,io,frames);else if(asm_artwork_reuse_smoke)asm_artwork_reuse_check.prepare(app,io,frames);else if(asm_artwork_copy_smoke)asm_artwork_copy_check.prepare(app,io,frames);else if(asm_library_smoke)asm_library_check.prepare(app,io,frames);else if(asm_assets_smoke)asm_assets_check.prepare(app,io,frames);else if(asm_smoke)asm_check.prepare(app,io,frames);
         if(bindings_smoke)bindings_check.prepare(app,io,frames);
         if(phases_smoke)phases_check.prepare(app,io,frames);
         if(table_compare_smoke)table_compare_check.prepare(app,io,frames);
@@ -2125,6 +2202,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         if(trigger_smoke)trigger_check.prepare(app,io,frames);
         if(embedded_smoke)embedded_check.prepare(app,io,frames);
         if(palette_smoke)palette_check.prepare(app,io,frames);
+        if(marked_merge_smoke)marked_merge_check.prepare(app,io,frames);
         if(merge_smoke)merge_check.prepare(app,io,frames);
         if(compact_smoke)compact_check.prepare(app,io,frames);
         if(ramp_smoke)ramp_check.prepare(app,io,frames);if(import_smoke)import_check.prepare(app,io,frames);if(digitize_smoke)digitize_check.prepare(app,io,frames);if(video_smoke)video_check.prepare(app,io,frames);if(job_smoke)job_check.prepare(app,io,frames);
@@ -2156,8 +2234,15 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         }
         ImGui::NewFrame();app.frame();ImGui::Render();
         SDL_SetRenderDrawColor(app.renderer,15,18,23,255);SDL_RenderClear(app.renderer);ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(),app.renderer);
-        if(smoke&&((++frames==((video_smoke||digitize_smoke||job_smoke)?600:phases_smoke?(phases_check.edit?104:74):bindings_smoke?100:fatality_linked_smoke?188:fatality_smoke?(fatality_check.real?12:230):reactions_smoke?(reactions_check.real?18:140):asm_library_smoke?(asm_library_review_smoke?38:110):asm_assets_smoke?164:asm_smoke?52:strikes_smoke?97:table_compare_smoke?31:points_smoke?54:anchor_link_smoke?60:stage_smoke?43:sheet_smoke?68:legacy_media_smoke?60:legacy_img_smoke?30:export_smoke?99:lod_smoke?70:restore_smoke?98:animation_split_smoke?130:animation_clipboard_smoke?152:animation_artwork_smoke?140:animation_copy_smoke?244:split_animations_smoke?140:split_smoke?114:sprite_clip_smoke?144:cleanup_smoke?92:family_smoke?74:library_move_smoke?160:library_copy_smoke?110:batch_delete_smoke?112:batch_palette_smoke?118:batch_rename_smoke?92:batch_smoke?66:repair_smoke?63:filters_smoke?43:tools_smoke?50:welcome_smoke?26:variant_smoke?56:clone_smoke?50:paint_smoke?59:floating_smoke?53:region_smoke?38:selection_smoke?58:import_smoke?28:ramp_smoke?49:compact_smoke?40:merge_smoke?36:palette_smoke?43:project_smoke||motion_smoke||trigger_smoke||embedded_smoke?30:editing_smoke?28:gesture_smoke?20:5))||(video_smoke&&video_check.finished)||(digitize_smoke&&digitize_check.finished)||(job_smoke&&job_check.finished))){int w,h;SDL_GetRendererOutputSize(app.renderer,&w,&h);std::vector<unsigned char> pixels((size_t)w*h*4);
+        if(smoke&&((++frames==((video_smoke||digitize_smoke||job_smoke)?600:effects_smoke?176:swatches_smoke?228:palette_clip_smoke?160:layer_move_smoke?(layer_move_preview?24:284):layers_smoke?120:marked_merge_smoke?144:hotkeys_smoke?368:phases_smoke?(phases_check.edit?104:74):bindings_smoke?100:fatality_linked_smoke?188:fatality_smoke?(fatality_check.real?12:230):reactions_smoke?(reactions_check.real?18:140):asm_artwork_reuse_smoke?(asm_artwork_reuse_review_smoke?54:asm_artwork_reuse_all_smoke?105:126):asm_artwork_copy_smoke?(asm_artwork_copy_review_smoke?81:120):asm_library_smoke?(asm_library_review_smoke?38:110):asm_assets_smoke?164:asm_smoke?52:strikes_smoke?97:table_compare_smoke?31:points_smoke?54:anchor_link_smoke?60:stage_smoke?43:sheet_smoke?68:legacy_media_smoke?60:legacy_img_smoke?30:export_smoke?99:lod_smoke?70:restore_smoke?98:animation_split_smoke?130:animation_clipboard_smoke?152:animation_artwork_smoke?140:animation_copy_smoke?244:split_animations_smoke?140:split_smoke?114:sprite_clip_smoke?144:cleanup_smoke?92:family_smoke?74:library_move_smoke?160:library_copy_smoke?110:batch_delete_smoke?112:batch_palette_smoke?118:batch_rename_smoke?92:batch_smoke?66:repair_smoke?63:filters_smoke?43:tools_smoke?50:welcome_smoke?26:variant_smoke?56:clone_smoke?50:paint_smoke?59:floating_smoke?53:region_smoke?38:selection_smoke?58:import_smoke?28:ramp_smoke?49:compact_smoke?40:merge_smoke?36:palette_smoke?43:project_smoke||motion_smoke||trigger_smoke||embedded_smoke?30:editing_smoke?28:gesture_smoke?20:5))||(video_smoke&&video_check.finished)||(digitize_smoke&&digitize_check.finished)||(job_smoke&&job_check.finished))){int w,h;SDL_GetRendererOutputSize(app.renderer,&w,&h);std::vector<unsigned char> pixels((size_t)w*h*4);
             if(SDL_RenderReadPixels(app.renderer,nullptr,SDL_PIXELFORMAT_RGBA32,pixels.data(),w*4)!=0||!stbi_write_png(argv[2],w,h,4,pixels.data(),w*4))exit_code=1;
+            if(effects_check.failures)exit_code=57;
+            if(swatches_check.failures)exit_code=56;
+            if(palette_clip_check.failures)exit_code=55;
+            if(layer_move_check.failures)exit_code=54;
+            if(layers_check.failures)exit_code=53;
+            if(marked_merge_check.failures)exit_code=52;
+            if(hotkeys_check.failures)exit_code=51;
             if(selection_check.failures)exit_code=17;
             if(region_check.failures)exit_code=18;
             if(floating_check.failures)exit_code=19;
@@ -2189,7 +2274,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
             if(points_check.failures)exit_code=36;
             if(table_compare_check.failures)exit_code=37;
             if(strikes_check.failures)exit_code=38;
-            if(asm_library_check.failures||asm_assets_check.failures||asm_check.failures||reactions_check.failures||fatality_check.failures||fatality_workspace_check.failures)exit_code=39;
+            if(asm_artwork_reuse_check.failures||asm_artwork_copy_check.failures||asm_library_check.failures||asm_assets_check.failures||asm_check.failures||reactions_check.failures||fatality_check.failures||fatality_workspace_check.failures)exit_code=39;
             if(bindings_check.failures)exit_code=40;
             if(phases_check.failures)exit_code=41;
             if(!app.error.empty())exit_code=2;if(editing_check.failures)exit_code=4;if(project_check.failures)exit_code=5;if(motion_check.failures)exit_code=6;if(trigger_check.failures)exit_code=7;if(embedded_check.failures)exit_code=8;if(palette_check.failures)exit_code=9;if(merge_check.failures)exit_code=10;if(compact_check.failures)exit_code=11;if(ramp_check.failures)exit_code=12;if(import_check.failures)exit_code=13;if(digitize_check.failures)exit_code=14;if(video_check.failures)exit_code=15;if(job_check.failures)exit_code=16;app.running=false;
@@ -2197,7 +2282,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         SDL_RenderPresent(app.renderer);
         if(first_frame){startup.stage("Editor rendered successfully");first_frame=false;}
     }
-    app.clear_sheet_preview();app.clear_indexed_preview();app.stop_video();app.stop_digitize();app.clear_import_textures();app.clear_region_preview();app.clear_floating();app.clear_paint_line();app.clear_variant();app.clear_batch_textures();app.clear_batch_palette_textures();app.clear_batch_delete_preview();app.clear_library_copy_preview();app.clear_restore_textures();app.clear_lod_preview();app.lod.review={};app.asm_ui.assets=studio::AsmAssetsUi{};app.tabs.clear();if(app.paste_texture)SDL_DestroyTexture(app.paste_texture);if(app.palettes.preview)SDL_DestroyTexture(app.palettes.preview);if(app.palettes.original)SDL_DestroyTexture(app.palettes.original);ImGui_ImplSDLRenderer2_Shutdown();ImGui_ImplSDL2_Shutdown();ImGui::DestroyContext();SDL_DestroyRenderer(app.renderer);SDL_DestroyWindow(app.window);SDL_Quit();startup.stage("Closed normally");return exit_code;
+    app.clear_sheet_preview();app.clear_indexed_preview();app.stop_video();app.stop_digitize();app.clear_import_textures();app.clear_region_preview();app.clear_layer_drag();app.clear_floating();app.clear_paint_line();app.clear_variant();app.clear_batch_textures();app.clear_batch_palette_textures();app.clear_batch_delete_preview();app.clear_library_copy_preview();app.clear_restore_textures();app.clear_lod_preview();app.lod.review={};app.asm_ui.assets=studio::AsmAssetsUi{};app.tabs.clear();if(app.paste_texture)SDL_DestroyTexture(app.paste_texture);if(app.palettes.preview)SDL_DestroyTexture(app.palettes.preview);if(app.palettes.original)SDL_DestroyTexture(app.palettes.original);ImGui_ImplSDLRenderer2_Shutdown();ImGui_ImplSDL2_Shutdown();ImGui::DestroyContext();SDL_DestroyRenderer(app.renderer);SDL_DestroyWindow(app.window);SDL_Quit();startup.stage("Closed normally");return exit_code;
 }
 
 int main(int argc,char **argv){

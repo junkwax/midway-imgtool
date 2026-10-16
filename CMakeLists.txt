@@ -282,6 +282,10 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_library_split_animations.cpp
     platform/studio/studio_sequences.cpp
     platform/studio/studio_palette.cpp platform/color_ops.cpp
+    platform/studio/studio_layers.cpp
+    platform/studio/studio_palette_clipboard.cpp
+    platform/studio/studio_palette_swatches.cpp
+    platform/studio/studio_palette_multi_merge.cpp
     platform/studio/studio_palette_merge.cpp
     platform/studio/studio_palette_cleanup.cpp
     platform/studio/studio_palette_compaction.cpp
@@ -346,6 +350,18 @@ if(WIN32)
     endif()
     add_test(NAME studio_startup COMMAND studio_startup_test)
 endif()
+add_executable(studio_palette_clipboard_test test/studio_palette_clipboard_test.cpp)
+target_link_libraries(studio_palette_clipboard_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_clipboard_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_clipboard COMMAND studio_palette_clipboard_test)
+add_executable(studio_palette_swatches_test test/studio_palette_swatches_test.cpp)
+target_link_libraries(studio_palette_swatches_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_swatches_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_swatches COMMAND studio_palette_swatches_test)
+add_executable(studio_layers_test test/studio_layers_test.cpp)
+target_link_libraries(studio_layers_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_layers_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_layers COMMAND studio_layers_test)
 add_executable(studio_document_test test/studio_document_test.cpp)
 target_link_libraries(studio_document_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_document_test PRIVATE SDL_MAIN_HANDLED)
@@ -386,6 +402,14 @@ add_executable(studio_asm_artwork_library_test test/studio_asm_artwork_library_t
 target_link_libraries(studio_asm_artwork_library_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_asm_artwork_library_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_asm_artwork_library COMMAND studio_asm_artwork_library_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MKJC.ASM" "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_asm_artwork_copy_test test/studio_asm_artwork_copy_test.cpp)
+target_link_libraries(studio_asm_artwork_copy_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_asm_artwork_copy_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_asm_artwork_copy COMMAND studio_asm_artwork_copy_test)
+add_executable(studio_asm_artwork_reuse_test test/studio_asm_artwork_reuse_test.cpp)
+target_link_libraries(studio_asm_artwork_reuse_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_asm_artwork_reuse_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_asm_artwork_reuse COMMAND studio_asm_artwork_reuse_test)
 add_executable(studio_reactions_test test/studio_reactions_test.cpp)
 target_link_libraries(studio_reactions_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_reactions_test PRIVATE SDL_MAIN_HANDLED)
@@ -442,6 +466,10 @@ add_executable(studio_palette_test test/studio_palette_test.cpp)
 target_link_libraries(studio_palette_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_palette_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_palette COMMAND studio_palette_test)
+add_executable(studio_palette_multi_merge_test test/studio_palette_multi_merge_test.cpp)
+target_link_libraries(studio_palette_multi_merge_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_multi_merge_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_multi_merge COMMAND studio_palette_multi_merge_test)
 add_executable(studio_palette_merge_test test/studio_palette_merge_test.cpp)
 target_link_libraries(studio_palette_merge_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_palette_merge_test PRIVATE SDL_MAIN_HANDLED)

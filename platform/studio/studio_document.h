@@ -2,6 +2,7 @@
 #include "img_format.h"
 #include "load2_verify.h"
 #include <memory>
+#include <array>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -11,6 +12,10 @@ namespace studio {
 struct EmbeddedEntryValues;
 struct PointTableEdit;
 struct PaletteMergePlan;
+struct PaletteMultiMergePlan;
+struct PaletteTransfer;
+struct PaletteSwatchClipboard;
+struct PaletteSwatchPlan;
 struct PaletteCompactionPlan;
 struct PaletteCleanupPlan;
 struct ImportBatch;
@@ -87,6 +92,11 @@ public:
     bool clear_selection(int index,const PixelSelection &selection,std::string &error);
     bool move_selection(int index,const PixelSelection &selection,int dx,int dy,std::string &error);
     int extract_regions(const RegionPlan &plan,std::string &error);
+    bool paste_layer(int index,const Clipboard &,int x,int y,std::string &error);
+    bool paste_layer(const SelectionTransform &,std::string &error);
+    bool edit_layer(int index,int x,int y,bool visible,bool flip_h,bool flip_v,std::string &error);
+    bool flatten_layer(int index,std::string &error);
+    bool remove_layer(int index,std::string &error);
     bool apply_selection_transform(const SelectionTransform &transform,std::string &error);
     int paint_stroke(int index,int x0,int y0,int x1,int y1,const PaintBrush &brush,const PixelSelection *selection,std::string &error);
     int fill_matching(int index,int x,int y,int color,bool match_colors,int tolerance,bool contiguous,const PixelSelection *selection,std::string &error);
@@ -123,9 +133,16 @@ public:
     int duplicate_palette(int index, std::string &error, int assign_sprite = -1,const std::string &name = {});
     bool rename_palette(int index,const std::string &name,std::string &error);
     int add_palette(const std::string &name,const std::vector<unsigned short> &words,std::string &error);
+    bool copy_palettes(const std::vector<int> &indices,PaletteTransfer &clipboard,std::string &error) const;
+    // Append every copied palette atomically. Returns the first new palette,
+    // or -1; source data, sprite assignments and clipboard stay unchanged.
+    int paste_palettes(const PaletteTransfer &clipboard,std::string &error);
+    bool copy_palette_swatches(int palette,const std::array<bool,256> &selected,int highlighted,PaletteSwatchClipboard &clipboard,std::string &error) const;
+    bool apply_palette_swatches(const PaletteSwatchPlan &,std::string &error);
     bool delete_unused_palette(int index,std::string &error);
     int apply_palette_cleanup(const PaletteCleanupPlan &plan,std::string &error);
     bool replace_palette_colors(int index,const std::vector<unsigned short> &expected,const std::vector<unsigned short> &words,std::string &error);
+    int merge_marked_palettes(const PaletteMultiMergePlan &,bool allow_approximation,std::string &error);
     bool merge_palette(const PaletteMergePlan &plan,bool allow_approximation,std::string &error);
     bool compact_palette(const PaletteCompactionPlan &plan,std::string &error);
     int import_batch(const ImportBatch &batch,std::string &error);
@@ -154,7 +171,7 @@ private:
         struct Sprite {
             IMG fields{};
             uint64_t id=0;
-            std::vector<unsigned char> pixels, baseline, points, alternate;
+            std::vector<unsigned char> pixels, baseline, points, alternate, layer;
         };
         struct Palette { PAL fields{}; std::vector<unsigned char> colors; };
         std::vector<Sprite> sprites;
@@ -167,6 +184,7 @@ private:
         size_t bytes() const;
         bool same(const State &other) const;
     };
+    bool replace_layer(int index,void *replacement,bool flatten,std::string &error);
     State capture() const;
     void restore(const State &state);
     void trim_history();

@@ -7,7 +7,7 @@ bool plan_palette_compaction(const Artwork &art,const PaletteCompactionOptions &
     PaletteCompactionPlan p;p.owner=&art;p.generation=art.generation();p.options=o;p.original=copy_palette(art,o.palette).words;
     if(p.original.empty()||p.original.size()>256){error="This palette has invalid color data.";return false;}
     for(int i=0;i<art.count();++i){auto im=art.sprite(i);bool primary=im->palnum==o.palette,alternate=false,active=false;if(im->opaltbl_p){auto refs=(const unsigned char *)im->opaltbl_p;active=refs[0]<128;for(int a=0;a<16&&refs[a]<128;++a)alternate|=refs[a]==o.palette+NUMDEFPAL;}
-        if(!primary&&!alternate)continue;p.preview_sprites.push_back(i);if(primary)p.primary_sprites.push_back(i);if(alternate)++p.alternate_sprites;p.indices_locked|=alternate||(primary&&active);
+        if(!primary&&!alternate)continue;if(im->layer_p){error="Flatten or remove overlays using this palette before compaction.";return false;}p.preview_sprites.push_back(i);if(primary)p.primary_sprites.push_back(i);if(alternate)++p.alternate_sprites;p.indices_locked|=alternate||(primary&&active);
         auto pixels=(const unsigned char *)im->data_p;int stride=(im->w+3)&~3;for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x){int c=pixels[y*stride+x];if(c>=(int)p.original.size()){error="Sprite '"+std::string(im->n_s)+"' references a color outside this palette. Compaction is disabled.";return false;}if(primary)++p.primary[c];if(alternate)++p.alternate[c];}}
     p.words.push_back(p.original[0]);int last=0;for(size_t c=1;c<p.original.size();++c)if(p.primary[c]||p.alternate[c])last=(int)c;else ++p.unused;
     bool pack=o.pack_live&&!p.indices_locked;

@@ -1,4 +1,5 @@
 #include "studio_legacy_media.h"
+#include "studio_layers.h"
 #include "studio_palette.h"
 #include "studio_file_io.h"
 #include "palette_math.h"
@@ -127,7 +128,7 @@ bool build_indexed_import(const Artwork &art,const IndexedMedia &m,const std::st
 bool snapshot_indexed_sprite(const Artwork &art,int index,IndexedMedia &out,std::string &error){
     auto im=art.sprite(index);if(!im||!im->data_p||!dimensions(im->w,im->h)){error="Choose a sprite with valid export dimensions.";return false;}IndexedMedia m;m.w=im->w;m.h=im->h;m.anchor_x=(short)im->anix;m.anchor_y=(short)im->aniy;
     m.words=copy_palette(art,im->palnum).words;m.pixels.resize((size_t)m.w*m.h);size_t stride=(m.w+3)&~size_t(3);
-    for(int y=0;y<m.h;++y)memcpy(m.pixels.data()+(size_t)y*m.w,(unsigned char *)im->data_p+y*stride,m.w);
+    checked_layer_bytes(*im);for(int y=0;y<m.h;++y)for(int x=0;x<m.w;++x)m.pixels[(size_t)y*m.w+x]=visible_pixel(*im,x,y);
     if(!valid(m)){error="Sprite dimensions or palette indices are invalid.";return false;}out=std::move(m);error.clear();return true;
 }
 bool encode_indexed_media(const IndexedMedia &m,LegacyMediaKind kind,Bytes &out,std::string &error){

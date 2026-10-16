@@ -42,4 +42,8 @@ void asm_artwork_library_review(){
     if(!v.library_error.empty())ImGui::TextWrapped("%s",v.library_error.c_str());
     if(ImGui::Button("Create unsaved IMG",ImVec2(160,0))&&asm_assets_create_library())ImGui::CloseCurrentPopup();v.create_library_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::SameLine();
     if(ImGui::Button("Back to artwork review",ImVec2(180,0)))v.library_review=false;v.cancel_library_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    ImGui::SameLine();ImGui::BeginDisabled(!tab());
+    if(ImGui::Button("Copy to existing IMG...",ImVec2(180,0))){open_artwork_paste(snapshot,*tab());v.open=false;asm_ui.open=false;ImGui::CloseCurrentPopup();}
+    v.copy_library_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();
+
 }

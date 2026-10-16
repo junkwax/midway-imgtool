@@ -1,4 +1,5 @@
 #include "studio_project.h"
+#include "studio_layers.h"
 #include "stb_image_write.h"
 #include <algorithm>
 #include <cmath>
@@ -415,10 +416,10 @@ bool SceneProject::export_png(const std::string &path,int tick,const SceneSource
     if(stage&&view){for(auto &p:{stage->bdd_path,stage->bdb_path})if(fs::equivalent(dest,fs::u8path(p),ec)){error="PNG export cannot replace source scenery.";return false;}
         if(!blit_stage(*stage,*view,state.width,state.height,rgba,error))return false;}
     for(auto &pose:evaluate_scene(state,tick)){auto art=source(state.assets[pose.sprite.asset].runtime_doc);int index=art?art->sprite_index(pose.sprite.runtime_id):-1;auto im=art?art->sprite(index):nullptr;
-        if(!im){error="A scene source or sprite is missing.";return false;}auto pal=art->palette(im->palnum);auto p=place_sprite(*im,pose.x,pose.y,pose.flip_x,state.convention);
+        if(!im){error="A scene source or sprite is missing.";return false;}checked_layer_bytes(*im);auto pal=art->palette(im->palnum);auto p=place_sprite(*im,pose.x,pose.y,pose.flip_x,state.convention);
         if(pose.flip_y)p.y=pose.y-anipoint_effective((short)im->aniy,im->h,true,state.convention);
         for(int y=std::max(0,p.y);y<std::min(state.height,p.y+p.h);++y)for(int x=std::max(0,p.x);x<std::min(state.width,p.x+p.w);++x){int sx=x-p.x,sy=y-p.y;if(pose.flip_x)sx=im->w-1-sx;if(pose.flip_y)sy=im->h-1-sy;
-            int ci=((unsigned char *)im->data_p)[sy*((im->w+3)&~3)+sx];if(!ci)continue;unsigned char color[3]={255,0,255};if(ci<pal->numc)pal_word_to_rgb8((unsigned char *)pal->data_p+ci*2,color,color+1,color+2);
+            int ci=visible_pixel(*im,sx,sy);if(!ci)continue;unsigned char color[3]={255,0,255};if(ci<pal->numc)pal_word_to_rgb8((unsigned char *)pal->data_p+ci*2,color,color+1,color+2);
             auto target=rgba.data()+((size_t)y*state.width+x)*4;for(int channel=0;channel<3;++channel)target[channel]=(unsigned char)((color[channel]*pose.alpha+target[channel]*(255-pose.alpha)+127)/255);
         }
     }

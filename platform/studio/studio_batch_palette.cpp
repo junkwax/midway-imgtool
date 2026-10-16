@@ -16,7 +16,8 @@ bool plan_batch_palette(const Artwork &art,const std::vector<uint64_t> &ids,cons
         if(!im->data_p||row.w<1||row.h<1||row.w>8192||row.h>8192||(size_t)row.w*row.h>4*1024*1024){error="A sprite has invalid pixel data or dimensions.";return false;}size_t size=(((size_t)row.w+3)&~size_t(3))*row.h;total+=size*2;if(total>256*1024*1024){error="The palette preview exceeds its 256 MiB pixel limit.";return false;}
         row.before.assign((const unsigned char *)im->data_p,(const unsigned char *)im->data_p+size);row.after=row.before;auto source=art.palette(row.source);row.source_words=palette_ok(source)?copy_palette(art,row.source).words:std::vector<unsigned short>{};
         row.changed=row.source!=o.target;if(row.changed){
-            if(!palette_ok(source))row.error="Source palette is unavailable.";
+            if(im->layer_p)row.error="Flatten or remove the overlay before assigning a different palette.";
+            else if(!palette_ok(source))row.error="Source palette is unavailable.";
             else if(o.match&&target->numc<2)row.error="Matching needs at least one opaque destination color.";
             else{unsigned char mapping[256]={};if(o.match)for(int c=1;c<source->numc;++c)mapping[c]=nearest_palette_index_for_word(row.source_words[c],target);else for(int c=1;c<256;++c)mapping[c]=(unsigned char)c;
                 int stride=(row.w+3)&~3;for(int y=0;y<row.h&&row.error.empty();++y)for(int x=0;x<row.w;++x){auto at=y*stride+x;int before=row.before[at];if(o.match&&before>=source->numc){row.error="Unresolved source indices cannot be matched. Keep indices or exclude this sprite.";break;}int after=mapping[before];if(after>=target->numc){row.error="Destination palette is too small for these indices. Match colors or exclude this sprite.";break;}

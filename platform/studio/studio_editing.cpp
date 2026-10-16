@@ -1,4 +1,5 @@
 #include "studio_document.h"
+#include "studio_layers.h"
 #include "img_io.h"
 #include "img_util.h"
 #include "anipoint.h"
@@ -40,7 +41,7 @@ IMG *copy_sprite(Document &d,const IMG &source){
     im->nxt_p=im->temp=im->data_p=im->baseline_p=im->pttbl_p=im->opaltbl_p=im->layer_p=nullptr;
     im->data_p=clone_bytes(source.data_p,pixel_bytes(source.w,source.h));
     im->baseline_p=clone_bytes(source.baseline_p,pixel_bytes(source.baseline_w,source.baseline_h));
-    im->pttbl_p=clone_bytes(source.pttbl_p,40);im->opaltbl_p=clone_bytes(source.opaltbl_p,16);return im;
+    im->pttbl_p=clone_bytes(source.pttbl_p,40);im->opaltbl_p=clone_bytes(source.opaltbl_p,16);im->layer_p=clone_bytes(source.layer_p,checked_layer_bytes(source));return im;
 }
 void replace_pixels(IMG &im,void *pixels,int w,int h){free(im.data_p);im.data_p=pixels;im.w=(unsigned short)w;im.h=(unsigned short)h;}
 void offset_anchors(IMG &im,int dx,int dy){
@@ -122,7 +123,7 @@ bool Artwork::move_sprite(int index,int destination,std::string &error){
     if(!blob.empty())memcpy(data.scrseqmem_p,blob.data(),blob.size());++serial;++structure_serial;commit();return true;
 }
 bool Artwork::resize_sprite(int index,int w,int h,bool quality,bool scale_anchors,std::string &error){
-    error.clear();auto im=sprite(index);if(!im||!dimensions(w,h,error))return false;if(w==im->w&&h==im->h)return true;
+    error.clear();auto im=sprite(index);if(im&&im->layer_p){error="Flatten or remove the overlay before changing geometry or palette assignment.";return false;}if(!im||!dimensions(w,h,error))return false;if(w==im->w&&h==im->h)return true;
     if(!fits_document(*this,w,h,index,error))return false;
     unsigned stride;unsigned char *pixels=quality?ResizeSpritePixelsQuality(im,palette(im->palnum),nullptr,w,h,false,&stride):ResizeSpritePixelsNearest(im,w,h,&stride);
     if(!pixels){error="Not enough memory to resize.";return false;}
@@ -135,13 +136,13 @@ bool Artwork::resize_sprite(int index,int w,int h,bool quality,bool scale_anchor
     replace_pixels(*im,pixels,w,h);++serial;++structure_serial;commit();return true;
 }
 bool Artwork::canvas_size(int index,int w,int h,int placement,std::string &error){
-    error.clear();auto im=sprite(index);if(!im||!dimensions(w,h,error)||!fits_document(*this,w,h,index,error))return false;int dx,dy;CanvasAnchorOffset(im->w,im->h,w,h,placement,&dx,&dy);
+    error.clear();auto im=sprite(index);if(im&&im->layer_p){error="Flatten or remove the overlay before changing geometry or palette assignment.";return false;}if(!im||!dimensions(w,h,error)||!fits_document(*this,w,h,index,error))return false;int dx,dy;CanvasAnchorOffset(im->w,im->h,w,h,placement,&dx,&dy);
     auto pixels=(unsigned char *)calloc(1,pixel_bytes(w,h));if(!pixels){error="Not enough memory for canvas size.";return false;}
     CanvasBlitIndexedOffset((unsigned char *)im->data_p,im->w,im->h,(im->w+3)&~3,pixels,w,h,(w+3)&~3,dx,dy);
     begin("Change canvas size");offset_anchors(*im,dx,dy);replace_pixels(*im,pixels,w,h);++serial;++structure_serial;commit();return true;
 }
 bool Artwork::trim_sprite(int index,std::string &error){
-    error.clear();auto im=sprite(index);if(!im)return false;int left,top,right,bottom;
+    error.clear();auto im=sprite(index);if(im&&im->layer_p){error="Flatten or remove the overlay before changing geometry or palette assignment.";return false;}if(!im)return false;int left,top,right,bottom;
     if(!CanvasIndexedContentBounds((unsigned char *)im->data_p,im->w,im->h,(im->w+3)&~3,&left,&top,&right,&bottom)){error="This sprite is entirely transparent.";return false;}
     int w=right-left+1,h=bottom-top+1;if(!left&&!top&&w==im->w&&h==im->h)return true;
     auto pixels=(unsigned char *)calloc(1,pixel_bytes(w,h));if(!pixels){error="Not enough memory to trim.";return false;}
@@ -149,7 +150,7 @@ bool Artwork::trim_sprite(int index,std::string &error){
     begin("Trim sprite bounds");offset_anchors(*im,-left,-top);replace_pixels(*im,pixels,w,h);++serial;++structure_serial;commit();return true;
 }
 bool Artwork::transform_sprite(int index,Transform op,bool transform_anchors,std::string &error){
-    error.clear();auto im=sprite(index);if(!im)return false;int oldw=im->w,oldh=im->h;
+    error.clear();auto im=sprite(index);if(im&&im->layer_p){error="Flatten or remove the overlay before changing geometry or palette assignment.";return false;}if(!im)return false;int oldw=im->w,oldh=im->h;
     bool quarter=op==Transform::RotateClockwise||op==Transform::RotateCounterclockwise;int w=quarter?oldh:oldw,h=quarter?oldw:oldh;
     auto pixels=(unsigned char *)calloc(1,pixel_bytes(w,h));if(!pixels){error="Not enough memory to transform.";return false;}
     auto transform=[&](int x,int y,int &dx,int &dy){dx=x;dy=y;switch(op){
@@ -168,7 +169,7 @@ bool Artwork::transform_sprite(int index,Transform op,bool transform_anchors,std
     }replace_pixels(*im,pixels,w,h);++serial;++structure_serial;commit();return true;
 }
 bool Artwork::assign_palette(int index,int target,bool match,std::string &error){
-    error.clear();auto im=sprite(index);auto pal=palette(target);if(!im||!pal)return false;if(target==im->palnum)return true;
+    error.clear();auto im=sprite(index);if(im&&im->layer_p){error="Flatten or remove the overlay before changing geometry or palette assignment.";return false;}auto pal=palette(target);if(!im||!pal)return false;if(target==im->palnum)return true;
     auto source=palette(im->palnum);unsigned char map[256]={};
     if(match&&pal->numc<2){error="Color matching needs at least one opaque color in the destination palette.";return false;}
     if(match)for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x)if(((unsigned char *)im->data_p)[y*((im->w+3)&~3)+x]>=source->numc){error="This sprite contains unresolved palette indices. Correct them before matching colors.";return false;}
@@ -215,8 +216,8 @@ int Artwork::import_png(const std::string &path,int match,std::string &error){
 }
 bool Artwork::export_png(int index,const std::string &path,std::string &error) const{
     error.clear();auto im=sprite(index);if(!im){error="Choose a sprite to export.";return false;}auto pal=palette(im->palnum);
-    std::vector<unsigned char> rgba((size_t)im->w*im->h*4);
-    for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x){int ci=((unsigned char *)im->data_p)[y*((im->w+3)&~3)+x];auto p=rgba.data()+((size_t)y*im->w+x)*4;
+    checked_layer_bytes(*im);std::vector<unsigned char> rgba((size_t)im->w*im->h*4);
+    for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x){int ci=visible_pixel(*im,x,y);auto p=rgba.data()+((size_t)y*im->w+x)*4;
         if(ci<pal->numc)pal_word_to_rgb8((unsigned char *)pal->data_p+ci*2,p,p+1,p+2);else{p[0]=255;p[2]=255;}p[3]=ci?255:0;}
     std::vector<unsigned char> png;auto write=[](void *context,void *bytes,int n){auto &out=*(std::vector<unsigned char> *)context;out.insert(out.end(),(unsigned char *)bytes,(unsigned char *)bytes+n);};
     if(!stbi_write_png_to_func(write,&png,im->w,im->h,4,rgba.data(),im->w*4)){error="PNG encoding failed.";return false;}

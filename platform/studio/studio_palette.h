@@ -2,7 +2,10 @@
 #include "studio_document.h"
 #include <array>
 namespace studio {
-struct PaletteTransfer {std::string name;std::vector<unsigned short> words;};
+struct PaletteCopyEntry {PAL fields{};std::vector<unsigned short> words;};
+// name/words also serve the single PAL/ACT exchange path. A palette clipboard
+// additionally owns each selected palette and its metadata; it borrows no IMG.
+struct PaletteTransfer {std::string name;std::vector<unsigned short> words;std::vector<PaletteCopyEntry> entries;};
 struct PaletteUsage {int primary=0,alternate=0;};
 struct PaletteMergeOptions {
     int source=-1,target=-1,ppp=6;
@@ -39,6 +42,10 @@ std::string palette_name(const PAL &pal);
 PaletteTransfer copy_palette(const Artwork &art,int index);
 PaletteUsage palette_usage(const Artwork &art,int index);
 std::vector<unsigned short> adjust_palette(const std::vector<unsigned short> &baseline,const std::array<bool,256> &selected,int hue,int saturation,int lightness);
+enum class PaletteColorEffect {Invert,Reverse};
+// Only explicitly selected opaque slots change. Reverse moves complete words;
+// invert complements RGB555 while preserving the stored high bit.
+std::vector<unsigned short> palette_color_effect(const std::vector<unsigned short> &words,const std::array<bool,256> &selected,PaletteColorEffect effect);
 bool read_palette_file(const std::string &path,PaletteTransfer &out,std::string &error);
 bool write_palette_file(const std::string &path,const PaletteTransfer &palette,bool act,std::string &error);
 }

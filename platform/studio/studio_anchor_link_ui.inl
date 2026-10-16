@@ -85,7 +85,7 @@ void anchor_link_dialog(){
     if(dst){ImGui::SameLine();
         ImGui::BeginDisabled(!dst->art->can_undo());bool undo=ImGui::Button("Undo target");u.undo_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();ImGui::SameLine();
         ImGui::BeginDisabled(!dst->art->can_redo());bool redo=ImGui::Button("Redo target");u.redo_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();
-        if(!ImGui::GetIO().WantTextInput){const auto route=ImGuiInputFlags_RouteGlobal;undo|=ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_Z,route);redo|=ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_Y,route);}
+        if(!ImGui::GetIO().WantTextInput){const auto route=ImGuiInputFlags_RouteGlobal;undo|=ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_Z,route);redo|=(ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_Y,route)||ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiMod_Shift|ImGuiKey_Z,route));}
         if(undo&&dst->art->can_undo()){dst->art->undo();reset_anchor_link();}else if(redo&&dst->art->can_redo()){dst->art->redo();reset_anchor_link();}
         ImGui::SameLine();if(ImGui::Button("Save target IMG")){
 #ifdef _WIN32

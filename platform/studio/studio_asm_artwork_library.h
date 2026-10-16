@@ -1,6 +1,7 @@
 #pragma once
 #include "studio_asm_assets.h"
 namespace studio {
+struct LibraryCopyOptions;struct LibraryCopyPlan;
 struct AsmArtworkOrigin {
     std::string symbol,name,library;uint64_t document=0,sprite=0,generation=0;int target=0,uses=0;
 };
@@ -15,8 +16,11 @@ public:
     const std::string &label()const{return animation_label;}
     bool partial()const{return partial_preview;}
     std::unique_ptr<Artwork> create_library(std::string &error)const;
+    bool plan_copy(const Artwork &target,const LibraryCopyOptions &options,LibraryCopyPlan &out,std::string &error,bool reuse_identical=false)const;
+    int copy_to(Artwork &target,const LibraryCopyPlan &reviewed,std::string &error)const;
 private:
     AsmArtworkLibrary()=default;
+    bool identical_sprite(const Artwork &target,int source_index,int target_index,const std::string &copied_name)const;
     std::unique_ptr<Artwork> storage;std::vector<AsmArtworkOrigin> rows;
     std::string animation_label;bool partial_preview=false;
 };

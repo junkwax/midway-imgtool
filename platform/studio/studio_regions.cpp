@@ -24,6 +24,7 @@ std::vector<RegionRequest> propose_body_regions(const IMG &im,bool &fallback){
 bool build_region_plan(const Artwork &art,int index,const std::vector<RegionRequest> &requests,bool trim,bool cut,RegionPlan &out,std::string &error){
     out={};error.clear();auto im=art.sprite(index);
     if(!im||!im->data_p||im->w<1||im->h<1||im->w>8192||im->h>8192||(size_t)im->w*im->h>4*1024*1024||requests.empty()||requests.size()>32){error="Choose up to 32 regions on a valid source sprite.";return false;}
+    if(im->layer_p){error="Flatten or remove this overlay before extracting sprite regions.";return false;}
     auto pal=art.palette(im->palnum);if(!pal||!pal->data_p||pal->numc<1||pal->numc>256){error="The source palette is unavailable.";return false;}
     RegionPlan plan;plan.owner=&art;plan.generation=art.generation();plan.source=art.sprite_id(index);plan.requests=requests;plan.trim=trim;plan.cut=cut;
     std::set<std::string> names;size_t decoded=0;for(int i=0;i<art.count();++i){auto p=art.sprite(i);names.insert(uppercase(p->n_s));decoded+=bytes(p->w,p->h);}

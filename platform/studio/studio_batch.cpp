@@ -11,6 +11,7 @@ bool options_valid(const BatchGeometryOptions &o){return (o.kind==BatchGeometryK
 bool make_row(const Artwork &art,uint64_t id,const BatchGeometryOptions &o,BatchGeometryRow &row,std::string &error){
     int index=art.sprite_index(id);auto im=art.sprite(index);auto pal=im?art.palette(im->palnum):nullptr;
     if(!im||!im->data_p||!dimensions(im->w,im->h)||!pal||!pal->data_p||pal->numc<1||pal->numc>256){error="A batch sprite or palette is invalid.";return false;}
+    if(im->layer_p){error="Flatten or remove overlays before batch geometry.";return false;}
     row.sprite=id;row.name=im->n_s;row.before_w=im->w;row.before_h=im->h;memcpy(row.source_fields.data(),im,sizeof(IMG));auto src=(unsigned char *)im->data_p;row.before.assign(src,src+bytes(im->w,im->h));row.colors.resize(pal->numc);memcpy(row.colors.data(),pal->data_p,pal->numc*2);
     for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x)if(src[y*((im->w+3)&~3)+x]>=pal->numc){error=row.name+": a pixel index is outside its palette.";return false;}
     if(im->pttbl_p)row.before_points.assign((unsigned char *)im->pttbl_p,(unsigned char *)im->pttbl_p+40);

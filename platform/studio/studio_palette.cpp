@@ -22,6 +22,17 @@ std::vector<unsigned short> adjust_palette(const std::vector<unsigned short> &ba
     HslAdjustPaletteWordsFromBaseline(input.data(),(int)baseline.size(),mask.data(),std::clamp(hue,-180,180),std::clamp(saturation,-100,100),std::clamp(lightness,-100,100),result.data(),nullptr);
     for(size_t i=1;i<out.size();++i)if(mask[i])out[i]=(unsigned short)(read_word(result.data()+i*2)|(baseline[i]&0x8000));return out;
 }
+std::vector<unsigned short> palette_color_effect(const std::vector<unsigned short> &words,const std::array<bool,256> &selected,PaletteColorEffect effect){
+    if(words.empty()||words.size()>256||(effect!=PaletteColorEffect::Invert&&effect!=PaletteColorEffect::Reverse))return {};
+    auto result=words;
+    if(effect==PaletteColorEffect::Invert){
+        for(size_t i=1;i<words.size();++i)if(selected[i])result[i]=(unsigned short)(words[i]^0x7fff);
+    }else{
+        size_t left=1,right=words.size()-1;
+        while(left<right){if(!selected[left]){++left;continue;}if(!selected[right]){--right;continue;}std::swap(result[left++],result[right--]);}
+    }
+    return result;
+}
 bool Artwork::rename_palette(int index,const std::string &name,std::string &error){error.clear();auto p=palette(index);if(!p){error="Choose an existing palette.";return false;}if(!valid_name(name,error))return false;if(palette_name(*p)==name)return true;begin("Rename palette");memset(p->n_s,0,10);memcpy(p->n_s,name.data(),name.size());memset(p->file_name_raw,0,10);++serial;commit();return true;}
 int Artwork::add_palette(const std::string &name,const std::vector<unsigned short> &words,std::string &error){
     error.clear();if(!valid_name(name,error)||!valid_words(words,error))return -1;if(palette_count()>=4093){error="This IMG has reached its palette limit.";return -1;}
