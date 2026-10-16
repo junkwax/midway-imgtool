@@ -1808,3 +1808,220 @@ stale/damage refusal and source/clipboard preservation. Existing animation
 clipboard, artwork-dependency and sprite split UI regressions pass. Moving to
 existing libraries, optional animation-aware sprite splitting and specialist/
 runtime integration remain.
+
+
+**Move sprites between open libraries checkpoint (2026-10-15):** Sprite > Copy /
+move to another library adds optional Move from source to the live transfer review.
+Copy remains the default. Marked/Shown/All scopes, direct child pieces, exclusions,
+prefixes, exact palette reuse and destination selection remain available. Move
+shares the deletion review's embedded-reference and last-source-sprite guards;
+current open-scene references are shown and checked again at Apply. Exclude
+referenced sprites keeps them in the source. External references/closed projects
+are not scanned. Source palettes stay, retained sequence sprite indices remap,
+and native records remain in their original libraries.
+
+Artwork::apply_library_move validates both complete reviews and their identical
+included stable-ID sets. It stages destination buffers, source remapping, legacy
+reserve metadata and both Undo snapshots/capacities before publishing either
+library. Allocation/preparation failure changes neither. The destination receives
+new stable IDs; source survivors retain theirs. Each document has independent
+Undo/Redo and unsaved state; undo each separately to reverse the move, and save
+both separately. No grouped cross-document Undo or paired disk save is implied.
+Existing IMG versions/layouts remain fixed. No clipboard replacement or auto-save.
+
+81/81 Release suites pass. New model coverage includes allocation injection,
+metadata/points/baselines/alternates/raw tails, primary/alternate palette mapping,
+source refs/selection/stable IDs, independent history, stale/tampered/mismatched
+plans, native reference/last-sprite refusal, children/exclusions/no-ops, collision
+prefixes and incompatible layout refusal. Far 0x634 and near 0x610 round trips
+retain layouts, opaque near headers/reserve words and byte-exact original inputs.
+ASAN move/copy/split/delete suites pass. New 160-frame move UI check passes at
+1440x900, 1000x680 and compact ASAN: real controls, references added after review,
+Cancel, paired publication, independent Undo/Redo, unsaved-close guard, save/reopen,
+original byte restoration, stale source/destination refusal and clipboard guards.
+Compact copy/split/sprite-clipboard/delete UI regressions pass. Optional
+animation-aware sprite splitting and specialist/runtime integration remain.
+
+
+**Include native animations in a sprite split checkpoint (2026-10-15):** Sprite >
+Split to new library adds optional Include IMG animations with Copy. The reviewed
+sprite set remains authoritative; no additional artwork is pulled in. Sequences
+must reference artwork and have all positive sprite indices in the included set.
+Scripts must call sequences and have all positive calls included. Negative index
+sentinels remain opaque. Empty, partial, unresolved and damage-bound records are
+skipped with reasons in an expandable record list. Invalid/colliding included
+record names block publication. Scope/children/exclusion changes rebuild records.
+Move and this option are mutually exclusive. The separate native-animation split
+remains available for explicit record choices and empty accompanying records.
+
+studio_library_split_animations builds detached artwork through the existing
+sprite split, maps stable IDs explicitly into the native-animation transfer, then
+retains the canonical source/result blobs, rows, IDs and generations for review.
+Apply regenerates and compares the complete review before returning detached
+storage. Source/history/selection/files and all clipboards remain unchanged.
+The new tab keeps every reviewed sprite, inherits the source IMG version/layout
+and legacy reserve metadata, starts dirty without creation history, and uses the
+normal save and unsaved-close flow. Subsequent edits have normal Undo. Nothing
+saves automatically. Scene projects/external game bindings are not transferred.
+
+82/82 Release suites pass. New model coverage includes fully-contained versus
+partial dependencies, empty/unsupported/unresolved reasons, repeated/negative
+sprite and script indices, retained extra artwork, raw timing/record bytes,
+allocation injection with unchanged source, stale/pending/tampered reviews and
+changed exclusions, independent edit/Undo/save/reopen and near 0x610 metadata
+preservation. Generated original source files remain byte-exact. The new 140-frame
+library-split-animations UI check passes at wide and compact sizes: opt-in controls,
+child/exclusion rebuilds, disabled Move, record details, Cancel, new-tab/history,
+unsaved-close guard, save/reopen, stale refusal, all scopes/no eligible records and
+independent clipboards. Existing compact sprite split, library move and native
+animation split checks also pass.
+ASAN sprite-split-animations, sprite split and animation split model suites pass,
+as does the new compact UI check under ASAN.
+
+
+**Reaction browser and frame-anchor checkpoint (2026-10-15):** Tools > Reactions
+opens a mode of the existing ASM inspector. A cached owned directory reuses the
+classic ReactionClassify vocabulary, grouped by family with other animations
+hidden initially. Source comments, labels, classification rules and spelled-out
+throwers are searchable. Family/Show other animations filters expose missed or
+misclassified entries; selected classification reasons are visible. These are
+suggestions, without persistent overrides or game-runtime claims. The original
+ASM mode and strike association controls remain available separately.
+
+studio_reactions owns directory rows and bounded per-frame/piece anchor reviews.
+Resolution uses existing cross-library stable-ID/preferred-library matching;
+positions use place_asm_piece at object origin 0,0 with per-library mirror math,
+source offsets and horizontal/vertical facing. Stored anchors remain signed.
+Missing/ambiguous entries remain explicit. Reviews stop at 32768 rows with a
+visible truncation notice. The UI cache includes source selection, open library
+UIDs/generations/order, preferred library, facing and each mirror convention.
+Source reload rebuilds directory storage before replacing the current source.
+No borrowed sprite pointers survive review; source/IMG files are never saved by
+browsing. Selecting a row scrubs; Open selected sprite revalidates its stable ID,
+closes the inspector and opens artwork with anchors shown. Subsequent explicit
+edits use normal IMG Undo/save. The table refreshes after edits, Undo or library
+changes. Existing IMG versions/layouts and the classic binary remain unchanged.
+
+83/83 Release suites pass. New model tests cover real MKJC classifications,
+attacker/victim distinctions, thrower/comment/rule searches, group ordering and
+filters, multipart and repeated pieces, missing/ambiguous/preferred/closed library
+resolution, signed anchors, source adjustments/flips, ani2/ganiof placement,
+independent owned snapshots after edits, Undo/deletion identity, empty reviews
+and explicit row bounds. Real source bytes remain exact. New 140-frame reactions
+UI checks pass wide/compact: actual filters/group controls, scrubbing/facing,
+open-artwork navigation, edit/Undo refresh, ambiguity refusal, library changes,
+failed/replacement loads, source sprite deletion/Undo, relative coordinates and
+unchanged generated IMG/ASM files and clipboards. Real Cage source/artwork compact
+inspection passes. Compact ASM, strike bindings and phase editing regressions
+pass. Targeted reactions/ASM model suites and compact reactions UI pass under ASAN.
+This is reaction inspection and artwork-anchor navigation; fatality source
+editing, synchronized attack/reaction runtime and other specialist work remain.
+
+
+**Fatality source block editor checkpoint (2026-10-15):** Tools > Fatality source
+opens one ASM document with Command/Combo/Animation data groups, search, kind and
+body-ending filters. Classic mk2fatal::reparse supplies the catalogue and command
+routine/trigger/transfer/combo hints. A linked combo can be opened within the
+current file. The label line remains fixed; indented body edits are reviewed and
+applied in one source Undo step. New labels, including indented colon labels, are
+refused. Inline label data remains read-only. Reset/block navigation discards
+unapplied review text; saving requires Apply/Reset first. Raw source edits are not
+assembler-validated and may remove a command from the catalogue; Undo restores it.
+
+studio_fatality is an owned, bounded single-file adapter. It never calls the
+legacy load/save or line-edit functions. Two in-memory parser views allow both
+command/combo and animation inspection regardless of filename. Original byte
+ranges preserve the preamble, label and following blocks. No-op mixed endings
+stay exact; changed bodies use their label line's ending and retain a separating
+newline before following source. Source size/line/block/body bounds are 4 MiB,
+100000 lines, 2048 bytes/line, 4096 blocks and 256 KiB/body. History keeps at most
+64 entries / 64 MiB. Apply/history preallocate and reparse detached data before
+publication, including injected-allocation failure checks.
+
+Reviewed saves compare actual destination text, reject stale/tampered reviews,
+external source/destination changes and Save As aliases, and use atomic sibling
+replacement. Baseline/path storage is prepared before writing. Failed writes
+leave dirty state/destination intact; successful Save and history transitions
+invalidate old reviews. Source close/reload/quit have Review save / Discard / Keep
+editing guards. IMG/project/strike destinations are protected by UI checks.
+The ASM inspector can preview an applied in-memory animation snapshot and return
+to its retained source editor; an unsaved source stays in the quit guard chain.
+No IMG data/history/format changes or automatic source/game-asset saves.
+
+84/84 Release suites pass. New model checks cover generated mixed/BOM/CRLF/EOF
+fixtures, command/combo/animation catalogues, exact surrounding bytes, no-ops,
+label/line/body bounds, stale/foreign/tampered patches, allocation injection in
+Apply/save, failed history allocation, Undo/Redo and clean-baseline transitions,
+external edits, destination races, aliases and failed writes. Real MOVES/MKJC
+source inspection leaves original bytes exact. New fatality UI checks pass at
+both sizes, exercising typing/Apply/Undo/Redo, reviewed Cancel/write/Save As,
+close/reload/quit cancellation, linked combo navigation, preview/return, failed
+loads and invalid-body Reset. The extended 230-frame check also verifies discard
+on source replacement and reviewed save on close. Compact real MOVES inspection
+and reactions/ASM/bindings/phase-edit regressions pass. ASAN model and compact UI
+checks pass. Multi-file source coordination, label authoring, fatality asset
+staging and synchronized attacker/victim runtime remain separate migration work.
+
+
+**Fatality source workspace checkpoint (2026-10-15):** Add source keeps up to 16
+ASM documents resident. A source selector marks modified files and restores the
+last selected block; each file retains its source Undo/Redo and baseline. Existing
+paths/aliases activate the same document without rereading unsaved edits. Reload
+is explicit, as is Close source. Done retains the other sources. Quit traverses
+all modified resident documents, including inactive ones, with independent save,
+discard and cancel decisions. No implicit batch save or source manifest.
+
+studio_fatality_workspace owns shared source documents with monotonic IDs and
+replacement epochs. Add/replace prepare ownership/capacity before publication;
+failed preparation never evicts old edits. Replacing a dirty source requires an
+explicit discard flag or a preceding save. Save review/write reject destinations
+owned by another resident source, including aliases and sources opened after the
+review. Save As changes are reflected by live path lookup. Closed IDs never
+recycle. Linked combos prefer current-file matches; otherwise all loaded sources
+participate, with explicit choices for ambiguity. Match snapshots validate document
+ID, replacement epoch, source generation, block index, kind and label, including
+reloads that restart a source generation. UI source switching never changes IMG
+history. Reload after a guard save rereads newly saved bytes rather than installing
+the snapshot prepared before that save.
+
+85/85 Release suites pass. New model coverage includes path/alias deduplication,
+independent dirty/history state, cross-file/preferred/ambiguous/stale/reloaded/
+closed links, transactional allocation failures during add/replace, guarded close,
+Save As identity/collisions, destinations claimed after review, file limits and
+monotonic IDs. New 230-frame fatality-workspace UI checks pass wide/compact:
+actual add/source/ambiguity controls, independent Undo, cross-file combo jumps,
+Save As refusal, quit proceeding from one dirty source to the next, canceling
+close, save/reload freshness, reviewed save-and-close, close-last/reopen, retained
+block selection, preview/return and unchanged IMG fixture bytes/history/format.
+Existing compact fatality, real MOVES browsing, reactions, ASM and bindings checks
+pass. Targeted workspace/fatality model and compact workspace checks pass under
+ASAN. The collection is session-only; label authoring, asset staging and synchronized
+attacker/victim runtime remain pending. Cross-file animation preview is described below.
+
+
+**Linked fatality animation preview checkpoint (2026-10-15):** Inspect animation
+now snapshots applied text from all resident sources and expands just the selected
+animation. The bounded ASM parser keeps independent per-file label scopes; each
+reference prefers its defining file, then a unique external definition. Duplicate
+labels in different files are allowed. Ambiguous jumps/frame groups stop visibly;
+ambiguous local anchor tables are skipped with a notice. Traversal retains offsets,
+flips, no-sleep and segment state across jumps and stops on repeated bodies.
+Unsupported runtime instructions/conditions remain explicit partial previews.
+
+Frame operand paths and original line numbers survive external jumps. Preview
+shows filename plus a full-path hover; reaction anchor tooltips use the same
+provenance. Source bytes are copied before parsing; the expanded result owns its
+strings and survives subsequent edits/Undo/close. No source or IMG history changes
+are needed for preview. Inspect again to refresh; no automatic file discovery,
+assembler execution, asset copying or synchronized fatality runtime was added.
+Bounds: 16 files, 4 MiB/file, 16 MiB total, 200000 total operands, existing frame/
+piece expansion limits; notices are bounded. A parse failure retains the previous
+preview and leaves the source editor open.
+
+Verification: 85/85 Release suites pass, including extended ASM tests for local
+preference after external jumps, unique/ambiguous groups and targets, cycles,
+provenance, snapshot isolation, shared anchor tables, bounds and real MKJC+MOVES
+inspection. Hidden linked-preview UI checks pass wide/compact and verify applied
+unsaved external edits, independent source Undo and exact IMG fixture history/
+bytes. Compact workspace, source editor, real ASM and reaction regressions pass.
+Targeted ASM/reaction model tests and compact linked UI pass under ASAN.

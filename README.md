@@ -170,7 +170,7 @@ embedded animation references remain intact. Existing IMGs retain their version
 and record layout. External ASM / TBL references are not rewritten, and new names
 can change name-based LOAD2 allocation. Save the IMG through its normal save flow.
 
-**Sprite > Copy to another library...** appends sprites to another open IMG
+**Sprite > Copy / move to another library...** transfers sprites to another open IMG
 library. Open both libraries, then start from the source and choose Marked sprites,
 Shown by search, or All sprites. Review copied names, palette assignments and the
 source preview; uncheck rows to exclude them. An optional prefix resolves name
@@ -192,6 +192,20 @@ The destination keeps its existing IMG version and record layout. Apply never
 saves automatically. This pass transfers listed sprites and palettes only, without
 source sequences/scripts. Use the separate sprite clipboard below when the
 source library needs to close before pasting.
+
+**Move from source** is optional; Copy is the default. Move appends the reviewed
+sprites to the destination and removes them from the source together, after
+preparing both libraries and their Undo entries. Sprites used by embedded
+sequences or current open scenes are protected; **Exclude referenced sprites**
+lets you keep them in the source. At least one source sprite must remain.
+Remaining source sequence indices are remapped, while scripts and source palettes
+stay in place. Embedded animation records are not transferred by this workflow.
+External game references and closed scene projects are not scanned.
+
+Each library has its own Undo step: undo each separately to reverse the entire
+move. Save both libraries separately when ready. Neither is saved automatically,
+and each retains its original IMG version and record layout. A stale review,
+incompatible destination, or preparation failure leaves both libraries unchanged.
 
 **File > Copy IMG animations to library...** (also **Animation > Copy to another
 library...** in IMG animations mode) transfers embedded sequences and script call
@@ -301,13 +315,27 @@ to remove the included sprites after the new library is ready. Names stay intact
 only required primary/alternate palettes are copied. The new library inherits the
 source IMG version and record layout, including older layouts.
 
+With Copy, enable **Include IMG animations** to keep sequences that use only
+included sprites, plus scripts whose called sequences are all included. This
+never adds extra artwork: change the sprite scope, child-piece option or row
+exclusions to cover a complete animation. **Animation records: copied / skipped**
+shows every source record and explains skipped records. Empty sequences, scripts
+without sequence calls, outside/unresolved references and unsupported damage
+bindings are skipped. Invalid or colliding names in included records block the
+review. Pixel data, raw record metadata and timing are retained, with sprite and
+sequence indices remapped. Extra reviewed sprites stay in the new library even
+when no animation references them. The source stays unchanged. This option is
+available with Copy; Move continues to protect source animation references.
+For manual record selection or empty records alongside artwork, use **File >
+Split IMG animations to new library...** instead.
+
 Move protects sprites used by embedded sequences or current open Studio scenes.
 **Exclude referenced sprites** keeps them in the source; per-row labels and the
 selected preview show those uses. Open scene references are checked again when
 applying. At least one sprite must remain in the source. External game references
 and closed projects are not scanned. Remaining embedded sprite indices are
 remapped; source palettes and embedded sequences/scripts stay in the source.
-Sequences/scripts are not transferred to the new library.
+Move does not transfer sequences or scripts to the new library.
 
 The new tab starts unsaved and participates in the normal close/quit save guard.
 Move is one source Undo step: Undo restores the source sprites while the new
@@ -945,6 +973,100 @@ animation preview. In the strike editor, **Animate** and the animation selector
 replace manual sprite preview; box resize/apply/source undo keep working while
 you step frames. Associations do not prove active-frame timing. Both viewers leave IMG pixels,
 anchors, history and disk format untouched.
+
+**Tools > Reactions...** opens the reaction view of the same ASM inspector.
+Load a character ASM and its IMG libraries, then browse Hit, Stagger, Knockdown,
+Thrown, Getup and Death groups. Search matches labels, source comments, thrower
+names and classification reasons. Family and **Show other animations** filters
+help inspect entries the name-based suggestions missed. The selected entry shows
+its classification reason; these groups do not establish game behavior.
+
+The **Frame anchors** table lists each frame's pieces, stored signed anchors and
+placement relative to object origin. Select a row to scrub, then **Open selected
+sprite** to edit its IMG anchor in the artwork workspace. Reopen Reactions to
+check the result; edits and Undo refresh the table. Facing and each library's
+`ani2` / `ganiof` mirror convention use the same placement as the preview, including
+source offsets and vertical flips. Missing and ambiguous pieces remain visible;
+choose a preferred library when names repeat. Library changes refresh resolution.
+Very large animations show at most 32768 table rows with an explicit notice.
+
+Browsing changes no IMG data or source files. Opening artwork for edits uses its
+normal history and save flow; its existing IMG version/layout stays fixed. Source
+ASM is read-only. The preview does not run game routines, infer attack/reaction
+synchronization, or save reaction classifications. Use the All animations view
+for strike associations and the full source preview controls.
+
+**Tools > Fatality source...** keeps up to 16 ASM sources open in this Studio
+session. Use **Add source** for MOVES.ASM, button-combo or character animation
+files, then switch with the source selector. Applied edits, Undo/Redo and the last
+selected block stay with each file. The source list marks modified files and
+shows an unsaved count. Adding an already open path or file alias selects its
+existing document without rereading it or losing edits.
+
+Search labels/routines/triggers or filter block types/body endings. **Open linked
+button combo** prefers matching combos in the current source, then a unique match
+in another open source. Multiple matches require an explicit source/line choice;
+missing combos remain visible. No files are loaded automatically to guess a match.
+
+The label line stays fixed. Edit the indented body, then **Apply block** to put
+that change in the source's own Undo history. **Reset block** discards the review;
+choosing another block or source also resets unapplied text. Existing labels cannot be
+renamed or new labels introduced in the body. Inline data on a label line is
+read-only in this pass. Body edits can insert or remove instructions/data lines;
+this is raw source editing, without assembler or game-code validation.
+
+**Save source...** and **Save As...** review the destination's actual text against
+the applied edits before writing. Apply or Reset pending text first. In-place
+saves reject external source changes; every write rechecks its destination and
+uses a temporary sibling file before replacement. Close, reload and quit protect
+applied unsaved edits. **Reload source** rereads the selected file after Save or
+Discard; **Close source** removes that document after its guard completes. Done
+hides the editor after handling the active file; other loaded sources stay in
+memory. Quit checks every modified source, including inactive files. Each source
+saves separately; Save As cannot replace another open source. Source Undo/Redo
+remains independent of IMG history.
+Untouched bytes, BOMs and line endings stay intact; edited bodies use their label
+line's ending, and no-op reviews preserve mixed endings exactly.
+
+**Inspect animation...** snapshots the applied text in all open fatality sources
+and expands the selected animation in the bounded ASM inspector. Jumps and
+multipart frame groups prefer definitions in the referring file, then a unique
+match in another open source. Missing jumps and ambiguous definitions stop with
+a partial-preview message; source names remain case-sensitive. Local anchor
+tables use the same lookup and are skipped if ambiguous. Frames show their
+operand's source filename and line, with the full path on hover. Open the needed
+IMG libraries to resolve artwork independently of the ASM definitions.
+
+The snapshot includes applied unsaved source edits. Returning to editing, Undo,
+reload or closing a source does not alter a preview already captured; inspect
+again to refresh it. **Back to fatality source** returns to editing. Preview is
+limited to 16 sources, 4 MiB per file / 16 MiB total, 200000 total operands and the
+existing expansion limits. Unsupported code stays visible as a preview limitation.
+Nothing here assembles code, follows includes, runs routines, or infers
+attacker/victim timing. The source collection is session-only, without a project
+manifest or batch Save. Asset staging remains separate. IMG artwork and its
+existing version/layout remain unchanged.
+
+**Review artwork...** in the ASM / Reactions preview lists all artwork symbols
+used by the selected expanded animation, with use counts, first frame/source
+locations and matching open IMG libraries. Filter by name or **Unresolved only**;
+**Copy unresolved names** copies the complete animation's missing, ambiguous and
+unavailable choices as one list, independent of the visible filter.
+
+Select a symbol to choose among matching sprites, jump to its first frame, or
+open its resolved sprite in the artwork workspace. A per-symbol choice overrides
+the preferred-library rule for this loaded source preview and is shared with the
+canvas and reaction anchor table. **Automatic** restores normal lookup. Choices
+use stable library/sprite IDs: moving a sprite keeps the choice, while closing its
+library, deleting it or changing its name makes the choice visibly unavailable.
+Studio does not silently substitute another match. Undo can restore a valid choice;
+reopening a library gets a new identity and requires choosing again.
+
+Choices remain while browsing animations in the same loaded source; successful
+source loading/refresh clears them. They are session-only and do not rewrite ASM,
+IMG names, pixels or file formats. Artwork edits use the normal IMG Undo/Save.
+Partial ASM previews explicitly list only the pieces the inspector expanded.
+This review does not copy assets, search unopened libraries or stage game builds.
 
 **Tools > Strike associations...** (or **Manage / save associations...** in the ASM
 viewer) manages explicit move associations. Studio reads the original

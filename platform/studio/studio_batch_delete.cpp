@@ -21,12 +21,17 @@ std::vector<std::string> batch_delete_scene_uses(const BatchDeletePlan &p,uint64
     std::vector<std::string> uses(p.rows.size());std::map<uint64_t,size_t> rows;for(size_t i=0;i<p.rows.size();++i)rows[p.rows[i].sprite]=i;
     for(auto &lane:scene.lanes)for(auto &frame:lane.frames)for(auto &ref:frame.pieces){if(ref.asset<0||ref.asset>=(int)scene.assets.size()||scene.assets[ref.asset].runtime_doc!=document)continue;auto found=rows.find(ref.runtime_id);if(found!=rows.end()&&uses[found->second].empty())uses[found->second]=name+" / "+lane.name+" / "+frame.name;}return uses;
 }
-int Artwork::apply_batch_delete(const BatchDeletePlan &p,std::string &error){
+int Artwork::validate_batch_delete(const BatchDeletePlan &p,std::string &error) const{
     error.clear();if(pending){error="Finish the current edit before deleting sprites.";return -1;}if(p.owner!=this||p.generation!=generation()){error="The library changed. Cancel and reopen the deletion review.";return -1;}
     BatchDeletePlan checked;if(!plan_batch_delete(*this,p.scope.requested,checked,error,p.scope.include_children))return -1;
     if(!(p.scope==checked.scope)||p.sequences!=checked.sequences||p.scripts!=checked.scripts||p.embedded!=checked.embedded||p.rows.size()!=checked.rows.size()){error="Embedded data or the deletion scope changed after review.";return -1;}
     std::set<int> remove;for(size_t i=0;i<p.rows.size();++i){auto &r=p.rows[i];if(!equal_row(r,checked.rows[i])){error="The deletion review no longer matches its source.";return -1;}if(!r.enabled)continue;if(!r.references.empty()){error=r.name+" is used by embedded sequence '"+r.references[0].name+"'. Remove the reference or exclude this sprite.";return -1;}remove.insert(r.index);}
     if(remove.empty())return 0;if(remove.size()>=(size_t)count()){error="Keep at least one sprite in an IMG library.";return -1;}
+    return (int)remove.size();
+}
+int Artwork::apply_batch_delete(const BatchDeletePlan &p,std::string &error){
+    int count_removed=validate_batch_delete(p,error);if(count_removed<=0)return count_removed;
+    std::set<int> remove;for(auto &row:p.rows)if(row.enabled)remove.insert(row.index);
     std::vector<int> mapping(count(),-1);std::vector<IMG *> kept,deleted;std::vector<uint64_t> retained;int first=std::max(0,sprite_index(selected_sprite_id));for(int i=0;i<count();++i){auto im=sprite(i);if(remove.count(i)){deleted.push_back(im);continue;}mapping[i]=(int)kept.size();kept.push_back(im);retained.push_back(sprite_ids[i]);}
     std::vector<unsigned char> blob;if(!remap_sequence_indices(mapping,blob,error))return -1;
     begin("Batch delete sprites");data.img_p=kept.front();for(size_t i=0;i<kept.size();++i)kept[i]->nxt_p=i+1<kept.size()?kept[i+1]:nullptr;for(auto im:deleted)FreeImg(im);data.imgcnt=(unsigned short)kept.size();sprite_ids=std::move(retained);

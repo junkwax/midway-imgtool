@@ -12,7 +12,12 @@ std::string trim(const std::string &s){auto a=s.find_first_not_of(" \t\r\n");if(
 std::string key(std::string s){for(auto &c:s)c=(char)std::toupper((unsigned char)c);return s;}
 bool symbol(const std::string &s){if(s.empty()||!(std::isalpha((unsigned char)s[0])||s[0]=='_'))return false;for(auto c:s)if(!std::isalnum((unsigned char)c)&&c!='_')return false;return true;}
 struct Token {std::string text;int line=0,width=0;};
-struct Body {std::vector<Token> tokens;};
+struct Body {std::vector<Token> tokens;size_t source=0;};
+struct Scope {
+    std::unordered_map<std::string,std::shared_ptr<Body>> bodies;
+    std::vector<std::string> order,tables;
+    std::unordered_map<std::string,std::string> comments;
+};
 bool zero(const std::string &s){int64_t n;return s=="ani_end"||(strike_numeric(s,6,n)&&n==0);}
 std::string at(const Token &t,const std::string &s){return "Line "+std::to_string(t.line)+": "+s;}
 }
@@ -23,21 +28,25 @@ std::unique_ptr<AsmSource> AsmSource::open(const std::string &path,std::string &
         auto result=parse(bytes,error);if(result)result->path=std::filesystem::absolute(p).u8string();return result;
     }catch(const std::exception &e){error=e.what();return {};}
 }
-std::unique_ptr<AsmSource> AsmSource::parse(const std::string &text,std::string &error){
-    error.clear();if(text.size()>4*1024*1024||text.find('\0')!=text.npos){error="Animation source is oversized or contains NUL bytes.";return {};}
-    std::unordered_map<std::string,std::shared_ptr<Body>> bodies;std::vector<std::string> order,tables;
-    std::unordered_map<std::string,std::string> comments;std::shared_ptr<Body> body;bool has_data=false;int line=0;size_t tokens=0;
+namespace {
+std::unique_ptr<AsmSource> parse_sources(const std::vector<AsmSourceInput> &sources,size_t root,const std::string &selected,std::string &error){
+    error.clear();if(sources.empty()||sources.size()>16||root>=sources.size()){error="Choose a root from at most 16 source snapshots.";return {};}
+    size_t bytes=0;for(auto &source:sources){bytes+=source.text.size();if(source.text.size()>4*1024*1024||bytes>16*1024*1024||source.text.find('\0')!=std::string::npos){error="ASM snapshots exceed the 4 MiB per-file / 16 MiB total limit or contain NUL bytes.";return {};}}
+    std::vector<Scope> scopes(sources.size());size_t tokens=0;
+    for(size_t source=0;source<sources.size();++source){
+    auto &text=sources[source].text;auto &scope=scopes[source];auto &bodies=scope.bodies;auto &order=scope.order;auto &tables=scope.tables;auto &comments=scope.comments;
+    std::shared_ptr<Body> body;bool has_data=false;int line=0;
     std::istringstream input(text);std::string raw;
     while(std::getline(input,raw)){
-        if(++line>100000||raw.size()>2048){error="Animation source exceeds line limits.";return {};}
+        if(++line>100000||raw.size()>2048){error=sources[source].path+": Animation source exceeds line limits.";return {};}
         if(line==1&&raw.compare(0,3,"\xef\xbb\xbf")==0)raw.erase(0,3);
         std::string comment;auto sc=raw.find(';');if(sc!=raw.npos){comment=trim(raw.substr(sc+1));raw.resize(sc);}auto work=trim(raw);
         if(work.empty()||work[0]=='*')continue;
         std::string label;bool labeled=raw[0]!=' '&&raw[0]!='\t';auto ws=work.find_first_of(" \t");auto first=work.substr(0,ws);
         if((labeled&&first[0]!='.')||first.back()==':'){
             label=first;if(label.back()==':')label.pop_back();if(!symbol(label)){body.reset();has_data=true;continue;}
-            if(bodies.count(label)){error="Duplicate ASM label: "+label;return {};}
-            if(!body||has_data){body=std::make_shared<Body>();has_data=false;}bodies[label]=body;order.push_back(label);
+            if(bodies.count(label)){error=sources[source].path+": Duplicate ASM label: "+label;return {};}
+            if(!body||has_data){body=std::make_shared<Body>();body->source=source;has_data=false;}bodies[label]=body;order.push_back(label);
             if(key(label).find("ANITAB")!=std::string::npos)tables.push_back(label);
             work=ws==work.npos?"":trim(work.substr(ws));
         }
@@ -46,32 +55,41 @@ std::unique_ptr<AsmSource> AsmSource::parse(const std::string &text,std::string 
         if(!body)continue;
         if(directive!=".LONG"&&directive!=".WORD"){
             // Never turn an instruction/conditional into image data or join aliases across it.
-            body->tokens.push_back({"!"+work,line,0});has_data=true;continue;
+            if(++tokens>200000){error="Too many operands across loaded ASM sources.";return {};}body->tokens.push_back({"!"+work,line,0});has_data=true;continue;
         }
         has_data=true;std::vector<std::string> operands;size_t start=0;
-        do{auto comma=rest.find(',',start);auto op=trim(rest.substr(start,comma==rest.npos?rest.npos:comma-start));if(op.empty()){error=at({"",line,0},"Empty ASM operand.");return {};}
+        do{auto comma=rest.find(',',start);auto op=trim(rest.substr(start,comma==rest.npos?rest.npos:comma-start));if(op.empty()){error=sources[source].path+" / "+at({"",line,0},"Empty ASM operand.");return {};}
             operands.push_back(op);if(comma==rest.npos)break;start=comma+1;}while(true);
-        for(auto &op:operands){if(++tokens>200000){error="Too many animation operands.";return {};}body->tokens.push_back({op,line,directive==".LONG"?32:16});}
+        for(auto &op:operands){if(++tokens>200000){error="Too many operands across loaded ASM sources.";return {};}body->tokens.push_back({op,line,directive==".LONG"?32:16});}
         if(operands.size()==1&&!comment.empty())comments[operands[0]]=comment;
     }
+    }
+    auto &bodies=scopes[root].bodies;auto &order=scopes[root].order;auto &tables=scopes[root].tables;auto &comments=scopes[root].comments;
+    // Resolve in the defining file first. Duplicate external definitions never guess.
+    auto resolve=[&](const std::string &name,size_t source,bool &ambiguous)->std::shared_ptr<Body>{
+        ambiguous=false;auto local=scopes[source].bodies.find(name);if(local!=scopes[source].bodies.end())return local->second;
+        std::shared_ptr<Body> found;for(size_t j=0;j<scopes.size();++j)if(j!=source){auto it=scopes[j].bodies.find(name);if(it!=scopes[j].bodies.end()){if(found){ambiguous=true;return {};}found=it->second;}}return found;
+    };
     std::vector<std::string> labels;std::unordered_set<std::string> seen;
     auto add=[&](const std::string &s){if(symbol(s)&&bodies.count(s)&&s.find("_anipts")==s.npos&&seen.insert(s).second)labels.push_back(s);};
-    for(auto &table:tables)for(auto &t:bodies[table]->tokens)if(t.width==32)add(t.text);
-    for(auto &s:order)if(s.compare(0,2,"a_")==0)add(s);
+    if(!selected.empty()){if(!symbol(selected)||!bodies.count(selected)){error="Selected animation label is absent from its source.";return {};}labels.push_back(selected);}
+    else{for(auto &table:tables)for(auto &t:bodies[table]->tokens)if(t.width==32)add(t.text);
+    for(auto &s:order)if(s.compare(0,2,"a_")==0)add(s);}
     if(labels.size()>4096){error="Too many animation labels.";return {};}
     auto result=std::make_unique<AsmSource>();size_t total_frames=0,total_pieces=0;
     for(auto &label:labels){AsmSourceAnimation a;a.label=label;a.name=comments.count(label)?comments[label]:label;
         auto current=bodies[label];std::unordered_set<const Body*> visited;int dx=0,dy=0,segment=0;bool flip=false,flip_y=false,no_sleep=false;
         bool stop=false;while(current&&!stop){if(!visited.insert(current.get()).second){a.notices.push_back("Jump repeats an earlier source block; traversal stops here.");break;}
             for(size_t i=0;i<current->tokens.size()&&!stop;++i){auto t=current->tokens[i];auto op=t.text;
-                auto issue=[&](const std::string &s){if(a.notices.size()<128)a.notices.push_back(at(t,s));a.partial=true;};
+                auto notice=[&](const std::string &s){if(a.notices.size()<128)a.notices.push_back((sources[current->source].path.empty()?"":sources[current->source].path+" / ")+at(t,s));};
+                auto issue=[&](const std::string &s){notice(s);a.partial=true;};
                 if(no_sleep&&(t.width!=32||zero(op)||op.compare(0,4,"ani_")==0)){issue("No-sleep command requires a frame operand.");stop=true;break;}
                 if(zero(op)&&t.width==32){++segment;continue;}
                 if(t.width!=32){issue("Unexpected word operand; traversal stops.");stop=true;break;}
                 if(op=="ani_jump"){
                     if(i+1>=current->tokens.size()||current->tokens[i+1].width!=32){issue("Missing long jump target.");stop=true;break;}
-                    auto target=current->tokens[++i].text;auto found=bodies.find(target);if(found==bodies.end()){issue("Jump target is outside this source: "+target);stop=true;break;}
-                    a.notices.push_back(at(t,"Jump to "+target));current=found->second;goto next_body;
+                    auto target=current->tokens[++i].text;bool ambiguous=false;auto found=resolve(target,current->source,ambiguous);if(!found){issue((ambiguous?"Ambiguous jump target in open sources: ":"Jump target is outside the loaded sources: ")+target);stop=true;break;}
+                    notice("Jump to "+target+(sources.size()>1?" / "+sources[found->source].path:""));current=std::move(found);goto next_body;
                 }
                 if(op=="ani_flip"){flip=!flip;continue;}if(op=="ani_flip_v"){flip_y=!flip_y;continue;}
                 if(op=="ani_nosleep"){no_sleep=true;continue;}
@@ -86,15 +104,16 @@ std::unique_ptr<AsmSource> AsmSource::parse(const std::string &text,std::string 
                 if(op=="ani_sound"||op=="ani_calla"){
                     if(i+1>=current->tokens.size()||current->tokens[i+1].width!=32){issue("Missing long command operand.");stop=true;break;}
                     auto arg=current->tokens[++i].text;
-                    if(op=="ani_calla")issue("Runtime call not executed: "+arg);else a.notices.push_back(at(t,"Sound: "+arg));continue;
+                    if(op=="ani_calla")issue("Runtime call not executed: "+arg);else notice("Sound: "+arg);continue;
                 }
                 if(t.width!=32||!symbol(op)||op.compare(0,4,"ani_")==0||op.compare(0,2,"a_")==0||op[0]=='_'){
                     issue("Unsupported command or operand: "+op+". Traversal stops.");stop=true;break;
                 }
-                AsmSourceFrame f;f.name=op;f.line=t.line;f.dx=dx;f.dy=dy;f.segment=segment;f.flip=flip;f.flip_y=flip_y;f.no_sleep=no_sleep;no_sleep=false;
-                auto found=bodies.find(op);bool valid=true;
-                if(found==bodies.end())f.pieces.push_back(op);
-                else{bool terminated=false;for(auto &piece:found->second->tokens){if(zero(piece.text)){terminated=true;break;}if(piece.width!=32||!symbol(piece.text)||piece.text.compare(0,4,"ani_")==0){valid=false;break;}f.pieces.push_back(piece.text);if(f.pieces.size()>256){valid=false;break;}}
+                AsmSourceFrame f;f.name=op;f.line=t.line;f.source=sources[current->source].path;f.dx=dx;f.dy=dy;f.segment=segment;f.flip=flip;f.flip_y=flip_y;f.no_sleep=no_sleep;no_sleep=false;
+                bool ambiguous=false;auto found=resolve(op,current->source,ambiguous);bool valid=true;
+                if(ambiguous){issue("Ambiguous multipart frame in open sources: "+op);stop=true;break;}
+                if(!found)f.pieces.push_back(op);
+                else{bool terminated=false;for(auto &piece:found->tokens){if(zero(piece.text)){terminated=true;break;}if(piece.width!=32||!symbol(piece.text)||piece.text.compare(0,4,"ani_")==0){valid=false;break;}f.pieces.push_back(piece.text);if(f.pieces.size()>256){valid=false;break;}}
                     if(!terminated)valid=false;}
                 if(!valid){issue("Invalid multipart frame: "+op);stop=true;break;}
                 if(++total_frames>32768||(total_pieces+=f.pieces.size())>262144){error="Expanded animation exceeds frame/piece limits.";return {};}
@@ -104,8 +123,10 @@ std::unique_ptr<AsmSource> AsmSource::parse(const std::string &text,std::string 
             break;
             next_body: continue;
         }
-        auto local=bodies.find(label+"_local_anipts");if(local!=bodies.end()){
-            auto &ts=local->second->tokens;bool ok=ts.size()==a.frames.size()*2;std::vector<int> values;
+        bool ambiguous=false;auto local=resolve(label+"_local_anipts",root,ambiguous);
+        if(ambiguous){a.partial=true;a.notices.push_back("Ambiguous local anchor table in open sources; not applied.");}
+        if(local){
+            auto &ts=local->tokens;bool ok=ts.size()==a.frames.size()*2;std::vector<int> values;
             for(auto &t:ts){int64_t n;bool numeric=t.width==16&&strike_numeric(t.text,0,n);ok&=numeric;if(numeric)values.push_back((int)(int16_t)n);}
             if(ok)for(size_t i=0;i<a.frames.size();++i){a.frames[i].dx=values[i*2];a.frames[i].dy=values[i*2+1];}
             else{a.partial=true;a.notices.push_back("Local anchor table has invalid values or a different frame count; not applied.");}
@@ -115,13 +136,31 @@ std::unique_ptr<AsmSource> AsmSource::parse(const std::string &text,std::string 
     if(result->animations.empty()){error="No defined animation labels or anitab entries found.";return {};}
     return result;
 }
-std::vector<AsmPiece> resolve_asm_frame(const AsmSourceFrame &f,const std::vector<AsmLibrary> &libs,uint64_t preferred){
-    std::vector<AsmPiece> out;for(auto &s:f.pieces){AsmPiece p;p.symbol=s;int count=0;bool preferred_found=false;
+} // namespace
+std::unique_ptr<AsmSource> AsmSource::parse(const std::string &text,std::string &error){
+    return parse_sources({{"",text}},0,"",error);
+}
+std::unique_ptr<AsmSource> AsmSource::parse_linked(const std::vector<AsmSourceInput> &sources,size_t root,const std::string &label,std::string &error){
+    try{if(label.empty()){error="Choose an animation label to inspect.";return {};}
+        auto result=parse_sources(sources,root,label,error);if(result)result->path=sources[root].path+" [snapshot of "+std::to_string(sources.size())+" open sources]";return result;
+    }catch(const std::exception &e){error=e.what();return {};}
+}
+std::string asm_artwork_key(std::string symbol){return key(std::move(symbol));}
+AsmPiece resolve_asm_candidates(const std::string &symbol,const std::vector<AsmPiece> &candidates,uint64_t preferred,const AsmArtworkChoices &choices){
+    AsmPiece result;result.symbol=symbol;auto choice=choices.find(key(symbol));
+    if(choice!=choices.end()){
+        result.chosen=true;for(auto &p:candidates)if(p.doc==choice->second.first&&p.sprite==choice->second.second){result.doc=p.doc;result.sprite=p.sprite;return result;}
+        result.stale=true;return result; // Never substitute after a chosen library closes or sprite changes name.
+    }
+    bool favored=false;int count=0;for(auto &p:candidates){bool use=p.doc==preferred;if(use&&!favored){count=0;favored=true;}if(favored&&!use)continue;++count;result.doc=p.doc;result.sprite=p.sprite;}
+    if(count!=1){result.doc=result.sprite=0;result.ambiguous=count>1;}return result;
+}
+std::vector<AsmPiece> resolve_asm_frame(const AsmSourceFrame &f,const std::vector<AsmLibrary> &libs,uint64_t preferred,const AsmArtworkChoices &choices){
+    std::vector<AsmPiece> out;for(auto &s:f.pieces){std::vector<AsmPiece> candidates;
         for(auto &lib:libs)if(lib.art)for(int i=0;i<lib.art->count();++i)if(key(lib.art->sprite(i)->n_s)==key(s)){
-            bool favored=lib.uid==preferred;if(favored&&!preferred_found){count=0;preferred_found=true;}if(preferred_found&&!favored)continue;
-            ++count;p.doc=lib.uid;p.sprite=lib.art->sprite_id(i);
+            AsmPiece p;p.symbol=s;p.doc=lib.uid;p.sprite=lib.art->sprite_id(i);candidates.push_back(std::move(p));
         }
-        if(count!=1){p.doc=p.sprite=0;p.ambiguous=count>1;}out.push_back(std::move(p));}return out;
+        out.push_back(resolve_asm_candidates(s,candidates,preferred,choices));}return out;
 }
 SpritePlacement place_asm_piece(const IMG &im,const AsmSourceFrame &f,int x,int y,bool facing,MirrorConvention convention){
     auto p=place_sprite(im,x+(facing?-f.dx:f.dx),y+f.dy,facing!=f.flip,convention);

@@ -78,6 +78,31 @@ int Artwork::apply_library_copy(const Artwork &source,const LibraryCopyPlan &p,s
     try{sprite_ids.reserve(sprite_ids.size()+added);begin("Copy sprites from library");}catch(const std::bad_alloc &){error="Not enough memory to start the complete copy. No sprites were added.";return -1;}
     append_staged_library(*staged,added,true);commit();return added;
 }
+int Artwork::apply_library_move(Artwork &source,const LibraryCopyPlan &copy,const BatchDeletePlan &removal,std::string &error){
+    try{
+        int added=validate_library_copy(source,copy,error);if(added<0)return -1;
+        int removed=source.validate_batch_delete(removal,error);if(removed<0)return -1;
+        std::set<uint64_t> copied,deleted_ids;for(auto &row:copy.rows)if(row.enabled)copied.insert(row.sprite);for(auto &row:removal.rows)if(row.enabled)deleted_ids.insert(row.sprite);
+        if(copied!=deleted_ids||added!=removed){error="The source removal must match the reviewed destination sprites exactly.";return -1;}if(!added)return 0;
+        auto staged=stage_copy(copy,palette_count(),error);if(!staged)return -1;
+        std::vector<int> mapping(source.count(),-1);std::vector<IMG *> kept,deleted;std::vector<uint64_t> retained;
+        int first=std::max(0,source.sprite_index(source.selected_sprite_id));for(int i=0;i<source.count();++i){auto im=source.sprite(i);if(deleted_ids.count(source.sprite_id(i))){deleted.push_back(im);continue;}mapping[i]=(int)kept.size();kept.push_back(im);retained.push_back(source.sprite_id(i));}
+        std::vector<unsigned char> blob;if(!source.remap_sequence_indices(mapping,blob,error))return -1;
+        uint64_t selection=source.selected_sprite_id;if(deleted_ids.count(selection)){int next=std::min(first,(int)kept.size()-1);for(int old=first;old<(int)mapping.size();++old)if(mapping[old]>=0){next=mapping[old];break;}selection=retained[next];}
+        auto reserved=legacy_reserved_alternates;
+        if(disk_version()<0x61d&&source.disk_version()<0x61d){uint64_t next=next_sprite_id;for(auto &row:copy.rows)if(row.enabled){auto found=source.legacy_reserved_alternates.find(row.sprite);if(found!=source.legacy_reserved_alternates.end())reserved[next]=found->second;++next;}}
+        State source_before=source.capture(),target_before=capture();source_before.label="Move sprites to library";target_before.label="Move sprites from library";
+        sprite_ids.reserve(sprite_ids.size()+added);past.reserve(past.size()+1);source.past.reserve(source.past.size()+1);
+        // All storage and both Undo entries exist before either library changes.
+        // Publishing the pair below cannot allocate or fail halfway through.
+        append_staged_library(*staged,added,true);legacy_reserved_alternates.swap(reserved);
+        source.data.img_p=kept.front();for(size_t i=0;i<kept.size();++i)kept[i]->nxt_p=i+1<kept.size()?kept[i+1]:nullptr;
+        for(auto im:deleted)FreeImg(im);source.data.imgcnt=(unsigned short)kept.size();source.sprite_ids.swap(retained);source.selected_sprite_id=selection;
+        if(!blob.empty())memcpy(source.data.scrseqmem_p,blob.data(),blob.size());++source.serial;++source.structure_serial;
+        source.past.push_back(std::move(source_before));source.future.clear();source.revision=source.next_revision++;source.trim_history();
+        past.push_back(std::move(target_before));future.clear();revision=next_revision++;trim_history();return added;
+    }catch(const std::bad_alloc &){error="Not enough memory to prepare the move. Neither library was changed.";return -1;}
+}
 void Artwork::append_staged_library(Artwork &staged,int added,bool select_first){
     // Callers reserve stable-ID capacity before publishing any detached buffers.
     int first=count();IMG **images=(IMG **)&data.img_p;while(*images)images=(IMG **)&(*images)->nxt_p;

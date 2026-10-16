@@ -271,12 +271,15 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_points.cpp
     platform/studio/studio_tbl_compare.cpp
     platform/studio/studio_strikes.cpp platform/mk2_hitbox.cpp
-    platform/studio/studio_asm.cpp platform/strike_bind.cpp
+    platform/studio/studio_asm.cpp platform/studio/studio_asm_assets.cpp platform/strike_bind.cpp
+    platform/studio/studio_reactions.cpp platform/reaction_class.cpp
+    platform/studio/studio_fatality.cpp platform/studio/studio_fatality_workspace.cpp platform/mk2_fatality.cpp
     platform/studio/studio_bindings.cpp
     platform/studio/studio_strike_phases.cpp
     platform/studio/studio_animation_copy.cpp
     platform/studio/studio_animation_clipboard.cpp
     platform/studio/studio_animation_split.cpp
+    platform/studio/studio_library_split_animations.cpp
     platform/studio/studio_sequences.cpp
     platform/studio/studio_palette.cpp platform/color_ops.cpp
     platform/studio/studio_palette_merge.cpp
@@ -375,6 +378,22 @@ add_executable(studio_asm_test test/studio_asm_test.cpp)
 target_link_libraries(studio_asm_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_asm_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_asm COMMAND studio_asm_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MKJC.ASM" "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_asm_assets_test test/studio_asm_assets_test.cpp)
+target_link_libraries(studio_asm_assets_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_asm_assets_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_asm_assets COMMAND studio_asm_assets_test)
+add_executable(studio_reactions_test test/studio_reactions_test.cpp)
+target_link_libraries(studio_reactions_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_reactions_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_reactions COMMAND studio_reactions_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MKJC.ASM")
+add_executable(studio_fatality_test test/studio_fatality_test.cpp)
+target_link_libraries(studio_fatality_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_fatality_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_fatality COMMAND studio_fatality_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MOVES.ASM" "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/src/MKJC.ASM")
+add_executable(studio_fatality_workspace_test test/studio_fatality_workspace_test.cpp)
+target_link_libraries(studio_fatality_workspace_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_fatality_workspace_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_fatality_workspace COMMAND studio_fatality_workspace_test)
 add_executable(studio_bindings_test test/studio_bindings_test.cpp)
 target_link_libraries(studio_bindings_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_bindings_test PRIVATE SDL_MAIN_HANDLED)
@@ -499,6 +518,10 @@ add_executable(studio_library_split_test test/studio_library_split_test.cpp)
 target_link_libraries(studio_library_split_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_library_split_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_library_split COMMAND studio_library_split_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_library_split_animations_test test/studio_library_split_animations_test.cpp)
+target_link_libraries(studio_library_split_animations_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_library_split_animations_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_library_split_animations COMMAND studio_library_split_animations_test)
 add_executable(studio_animation_copy_test test/studio_animation_copy_test.cpp)
 target_link_libraries(studio_animation_copy_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_animation_copy_test PRIVATE SDL_MAIN_HANDLED)
@@ -519,6 +542,10 @@ add_executable(studio_library_copy_test test/studio_library_copy_test.cpp)
 target_link_libraries(studio_library_copy_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_library_copy_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_library_copy COMMAND studio_library_copy_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_library_move_test test/studio_library_move_test.cpp)
+target_link_libraries(studio_library_move_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_library_move_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_library_move COMMAND studio_library_move_test)
 add_executable(studio_export_test test/studio_export_test.cpp)
 target_link_libraries(studio_export_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_export_test PRIVATE SDL_MAIN_HANDLED)

@@ -27,6 +27,7 @@ struct BatchRenamePlan;
 struct BatchPalettePlan;
 struct BatchDeletePlan;
 struct LibraryCopyPlan;
+struct LibrarySplitAnimationPlan;
 struct AnimationCopyPlan;
 struct RestorePlan;
 struct VariantSource;
@@ -97,9 +98,11 @@ public:
     int apply_batch_delete(const BatchDeletePlan &plan,std::string &error);
     int apply_animation_copy(const Artwork &source,const AnimationCopyPlan &plan,std::string &error);
     int apply_library_copy(const Artwork &source,const LibraryCopyPlan &plan,std::string &error);
+    int apply_library_move(Artwork &source,const LibraryCopyPlan &copy,const BatchDeletePlan &removal,std::string &error);
     // A split inherits the source layout; these APIs never convert an IMG.
     std::unique_ptr<Artwork> split_target() const;
     std::unique_ptr<Artwork> prepare_library_split(const LibraryCopyPlan &plan,std::string &error) const;
+    std::unique_ptr<Artwork> prepare_library_split_animations(const LibraryCopyPlan &copy,const LibrarySplitAnimationPlan &animations,std::string &error) const;
     std::unique_ptr<Artwork> prepare_animation_split(const AnimationCopyPlan &plan,std::string &error) const;
     int remove_split_source(const LibraryCopyPlan &copy,const BatchDeletePlan &removal,std::string &error);
     int apply_restore(const RestorePlan &plan,std::string &error);
@@ -143,6 +146,7 @@ private:
     int validate_animation_copy(const Artwork &source,const AnimationCopyPlan &plan,std::string &error) const;
     std::unique_ptr<Artwork> prepare_animation_snapshot(const AnimationCopyPlan &plan,std::string &error) const;
     int validate_library_copy(const Artwork &source,const LibraryCopyPlan &plan,std::string &error) const;
+    int validate_batch_delete(const BatchDeletePlan &plan,std::string &error) const;
     void append_staged_library(Artwork &staged,int added,bool select_first);
     bool install_animation_with_artwork(const Artwork &source,const LibraryCopyPlan &artwork,const std::vector<unsigned char> &blob,unsigned sequences,unsigned scripts,std::string &error);
     struct State {

@@ -4,6 +4,11 @@
 #include "studio_theme.h"
 #include "studio_animation.h"
 #include "studio_asm.h"
+#include "studio_asm_assets.h"
+#include "studio_reactions.h"
+#include "studio_fatality.h"
+#include "studio_fatality_workspace.h"
+#include <tuple>
 #include "studio_bindings.h"
 #include "studio_strike_phases.h"
 #include "strike_bind.h"
@@ -32,6 +37,7 @@
 #include "studio_batch_palette.h"
 #include "studio_batch_delete.h"
 #include "studio_library_copy.h"
+#include "studio_library_split_animations.h"
 #include "studio_animation_copy.h"
 #include "studio_animation_clipboard.h"
 #include "studio_sprite_clipboard.h"
@@ -126,11 +132,12 @@ struct AnimationCopyUi {
     ImVec2 binding_points[6]{},binding_choices[8]{},binding_filter_point,automatic_point,reset_bindings_point,missing_point;
 };
 struct LibraryCopyUi {
-    bool open=false,valid=false,dirty=true,preview_dirty=true,show_target=true,capture_clipboard=false,paste_clipboard=false,split_library=false,move_source=false;uint64_t source=0,target=0,source_generation=0,target_generation=0;
+    bool open=false,valid=false,dirty=true,preview_dirty=true,show_target=true,capture_clipboard=false,paste_clipboard=false,split_library=false,move_source=false,split_animations=false;uint64_t source=0,target=0,source_generation=0,target_generation=0;
+    LibrarySplitAnimationPlan split_animation_plan;
     BatchDeletePlan split_removal;std::vector<std::string> split_scene_uses;
     std::unique_ptr<Artwork> capture_target;std::shared_ptr<const SpriteClipboard> held;
     int scope=0,selected=0;char prefix[16]={};LibraryCopyOptions options;LibraryCopyPlan plan;std::string error;SDL_Texture *preview=nullptr;
-    ImVec2 apply_point,cancel_point,prefix_point,target_point,scope_point,reuse_point,children_point,move_point,exclude_refs_point,target_choices[4]{},scope_choices[3]{},row_points[3]{},name_points[3]{};
+    ImVec2 apply_point,cancel_point,prefix_point,target_point,scope_point,reuse_point,children_point,move_point,animations_point,animation_details_point,exclude_refs_point,target_choices[4]{},scope_choices[3]{},row_points[3]{},name_points[3]{};
 };
 struct RestoreUi {
     bool open=false,build=false,valid=false,preview_dirty=true,preview_ok=false,changes=true;uint64_t doc=0,generation=0;int scope=0,selected=0,view=1;
@@ -413,8 +420,26 @@ struct StrikesUi {
 };
 
 static constexpr ImGuiWindowFlags panel_flags=ImGuiWindowFlags_NoSavedSettings;
+struct ReactionsUi {
+    int family=-1,selected=-1,cache_animation=-1;bool show_all=false,cache_facing=false;
+    uint64_t cache_preferred=0;
+    char search[96]={};std::string error;
+    std::vector<ReactionAnimation> catalogue;std::vector<int> visible;
+    ReactionAnchorReview anchors;
+    std::vector<std::tuple<uint64_t,uint64_t,int>> signature;
+    ImVec2 mode_point,search_point,family_point,show_all_point,open_point,refresh_point,facing_point;
+    ImVec2 choice_points[8]{},row_points[8]{},family_choices[8]{};
+};
+struct AsmAssetsUi {
+    bool open=false,valid=false,unresolved=false;int selected=-1,cache_animation=-1;uint64_t cache_preferred=0;
+    AsmAssetReview review;AsmArtworkChoices choices;std::string error;ImGuiTextFilter filter;
+    std::vector<std::pair<uint64_t,uint64_t>> signature;
+    ImVec2 show_point,close_point,open_point,frame_point,choice_point,auto_point,filter_point,copy_point,unresolved_point;
+    ImVec2 row_points[8]{},choice_points[8]{};
+};
 struct AsmUi {
-    bool open=false,facing=false,overlay=true;int selected=0,hold=4;
+    bool open=false,facing=false,overlay=true,reaction_mode=false;int selected=0,hold=4;
+    ReactionsUi reactions;AsmAssetsUi assets;
     int origin_x=200,origin_y=100;uint64_t preferred=0;
     std::unique_ptr<AsmSource> source;PreviewPlayer player;
     char path[32768]={};std::string error;ImGuiTextFilter filter;
@@ -422,6 +447,18 @@ struct AsmUi {
     std::vector<std::pair<uint64_t,uint64_t>> cache_libraries;
     std::vector<AsmPiece> pieces;float zoom=0;ImVec2 pan;
     ImVec2 next_point,previous_point,play_point,close_point,bind_point,floor_point;
+};
+struct FatalityUi {
+    bool open=false,saving=false,valid=false,dirty_preview=false,save_valid=false,return_preview=false,body_only=false;
+    int guard=0,block=-1,kind=0;uint64_t seen=0;
+    FatalityWorkspace workspace;uint64_t document=0,guard_document=0,pending_document=0;
+    std::shared_ptr<FatalitySource> source;std::unique_ptr<FatalitySource> pending_source;
+    std::map<uint64_t,int> selected_blocks;
+    char path[32768]={},save_path[32768]={};std::vector<char> body;
+    std::string error,save_error,diff,body_baseline;FatalityPatch patch;FatalityWriteReview write_review;
+    ImGuiTextFilter filter;
+    ImVec2 load_point,apply_point,reset_point,undo_point,redo_point,save_point,write_point,cancel_save_point,close_point;
+    ImVec2 guard_save_point,guard_discard_point,guard_cancel_point,preview_point,back_point,body_point,row_points[8]{},combo_point,documents_point,document_choices[16]{},reload_point,close_source_point,combo_choices[16]{};
 };
 struct BindingsUi {
     bool open=false,saving=false,valid=false,return_asm=false;int guard=0;
@@ -488,6 +525,7 @@ public:
     TableCompareUi table_compare;
     StrikesUi strikes;
     AsmUi asm_ui;
+    FatalityUi fatality;
     BindingsUi binding_ui;
     StrikePhasesUi strike_phases;
     bool stage_dialog_open=false;uint64_t stage_doc=0;
@@ -667,7 +705,8 @@ public:
         return true;
     }
     void action(Action a){
-        if(a==Action::Quit){animation_copy.open=false;animation_copy.plan={};animation_copy.held.reset();animation_copy.capture_target.reset();cleanup.open=false;cleanup.plan={};renaming.open=false;batch_palette.open=false;clear_batch_palette_textures();batch_palette.plan={};deleting.open=false;clear_batch_delete_preview();deleting.plan={};library_copy.open=false;clear_library_copy_preview();library_copy.plan={};library_copy.split_removal={};library_copy.split_scene_uses.clear();library_copy.held.reset();library_copy.capture_target.reset();}
+        if(a==Action::Quit){animation_copy.open=false;animation_copy.plan={};animation_copy.held.reset();animation_copy.capture_target.reset();cleanup.open=false;cleanup.plan={};renaming.open=false;batch_palette.open=false;clear_batch_palette_textures();batch_palette.plan={};deleting.open=false;clear_batch_delete_preview();deleting.plan={};library_copy.open=false;clear_library_copy_preview();library_copy.plan={};library_copy.split_removal={};library_copy.split_animation_plan={};library_copy.split_scene_uses.clear();library_copy.held.reset();library_copy.capture_target.reset();}
+        if(a==Action::Quit&&fatality.workspace.first_dirty()){finish();asm_ui.open=false;asm_ui.player.playing=false;uint64_t id=fatality.source&&fatality.source->dirty()?fatality.document:fatality.workspace.first_dirty();if(id!=fatality.document)activate_fatality(id);fatality.open=true;fatality.guard=3;fatality.guard_document=id;return;}
         if(a==Action::Quit&&dirty_bindings()){finish();request_bindings_quit();return;}
         if(a==Action::Quit&&strikes.source&&strikes.source->dirty()){finish();strike_phases.open=false;strike_phases.playing=false;asm_ui.open=false;asm_ui.player.playing=false;strikes.guard=3;strikes.open=true;return;}
         if(!enabled(a))return;if(a==Action::Undo&&tab()&&tab()->wheel.editing){auto mask=tab()->selection;tab()->art->cancel();tab()->wheel=WheelState{};synchronize(*tab());auto im=tab()->art->sprite(tab()->selected);if(mask.fits(im->w,im->h))tab()->selection=std::move(mask);ImGui::ClearActiveID();status="Cancelled palette color edit.";return;}if(variant.active&&a==Action::Undo){cancel_variant();return;}if(paint_line.active&&a==Action::Undo){cancel_paint_line();return;}if(floating.active&&a==Action::Undo){cancel_floating();return;}if((!floating.active&&!paint_line.active&&!variant.active)||a==Action::Quit)finish();auto t=tab();
@@ -741,7 +780,7 @@ public:
         case Action::ZoomIn:case Action::ZoomOut:{float &zoom=t->alignment.enabled?t->alignment.zoom:t->zoom;
             if(t->embedded.enabled)t->embedded.zoom=std::clamp((t->embedded.zoom>0?t->embedded.zoom:1)*(a==Action::ZoomIn?1.25f:.8f),.1f,32.f);else if(t->project&&t->alignment.enabled){t->scene.zoom=std::clamp((t->scene.zoom>0?t->scene.zoom:1)*(a==Action::ZoomIn?1.25f:.8f),.25f,32.f);}else zoom=std::clamp((zoom>0?zoom:1)*(a==Action::ZoomIn?1.25f:.8f),t->alignment.enabled?.25f:1.f,64.f);break;}
         case Action::Close:close_uid=t->uid;break;
-        case Action::Quit:strike_phases.open=false;strike_phases.playing=false;binding_ui.open=false;binding_ui.saving=false;binding_ui.guard=0;binding_ui.pending_reload.reset();asm_ui.open=false;asm_ui.player.playing=false;strikes.open=false;strikes.guard=0;strikes.saving=false;strikes.pending_source.reset();table_compare.open=false;points.open=false;anchor_link.open=false;stage_dialog_open=false;sheet.open=false;legacy_media.open=false;exporting.open=false;lod.open=false;restoring.open=false;batch.open=false;regions.open=false;edit_dialog=EditDialog::None;help=false;path_dialog=false;palettes.open=false;importing.open=false;digitizing.open=false;digitizing.pending=false;if(digitizing.job)digitizing.job->cancel=true;video.open=false;if(video.job)video.job->cancel=true;quitting=true;close_uid=0;break;
+        case Action::Quit:fatality.open=false;fatality.saving=false;fatality.guard=0;fatality.pending_source.reset();strike_phases.open=false;strike_phases.playing=false;binding_ui.open=false;binding_ui.saving=false;binding_ui.guard=0;binding_ui.pending_reload.reset();asm_ui.open=false;asm_ui.player.playing=false;strikes.open=false;strikes.guard=0;strikes.saving=false;strikes.pending_source.reset();table_compare.open=false;points.open=false;anchor_link.open=false;stage_dialog_open=false;sheet.open=false;legacy_media.open=false;exporting.open=false;lod.open=false;restoring.open=false;batch.open=false;regions.open=false;edit_dialog=EditDialog::None;help=false;path_dialog=false;palettes.open=false;importing.open=false;digitizing.open=false;digitizing.pending=false;if(digitizing.job)digitizing.job->cancel=true;video.open=false;if(video.job)video.job->cancel=true;quitting=true;close_uid=0;break;
         }
     }
     void item(const char *label,const char *shortcut,Action a){if(ImGui::MenuItem(label,shortcut,false,enabled(a)))action(a);}
@@ -820,7 +859,7 @@ public:
         if(ImGui::BeginMenu("Project")){
             item("Create from current preview",nullptr,Action::NewProject);item("Open / import WAX...",nullptr,Action::OpenProject);item("Save project",nullptr,Action::SaveProject);item("Save project As...",nullptr,Action::SaveProjectAs);item("Export current scene PNG...",nullptr,Action::ExportScene);item("Close project",nullptr,Action::CloseProject);ImGui::EndMenu();}
         if(ImGui::BeginMenu("Sprite",tab()!=nullptr&&!tab()->embedded.enabled)){
-            item("New sprite...",nullptr,Action::NewSprite);item("Rename...","F2",Action::Rename);item("Batch rename...",nullptr,Action::BatchRename);item("Duplicate","Ctrl+J",Action::Duplicate);item("Delete sprite...",nullptr,Action::Delete);item("Delete multiple sprites...",nullptr,Action::BatchDelete);item("Copy to another library...",nullptr,Action::LibraryCopy);if(tabs.size()<2&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Open a second IMG library to copy sprites into it.");
+            item("New sprite...",nullptr,Action::NewSprite);item("Rename...","F2",Action::Rename);item("Batch rename...",nullptr,Action::BatchRename);item("Duplicate","Ctrl+J",Action::Duplicate);item("Delete sprite...",nullptr,Action::Delete);item("Delete multiple sprites...",nullptr,Action::BatchDelete);item("Copy / move to another library...",nullptr,Action::LibraryCopy);if(tabs.size()<2&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Open a second IMG library to copy sprites into it.");
             item("Split to new library...",nullptr,Action::SplitLibrary);
             ImGui::Separator();item("Copy sprites to clipboard...",nullptr,Action::CopySprites);item("Paste sprites from clipboard...",nullptr,Action::PasteSprites);if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)){if(sprite_clipboard)ImGui::SetTooltip("%d sprites from %s. Available until replaced, cleared or Studio closes.",sprite_clipboard->artwork().count(),sprite_clipboard->label().c_str());else ImGui::SetTooltip("Copy sprites to the sprite clipboard first. Pixel Copy/Paste uses a separate clipboard.");}item("Clear sprite clipboard",nullptr,Action::ClearSpriteClipboard);
             ImGui::Separator();item("Move up",nullptr,Action::MoveUp);item("Move down",nullptr,Action::MoveDown);ImGui::Separator();
@@ -830,7 +869,7 @@ public:
         if(tab()&&tab()->embedded.enabled&&ImGui::BeginMenu("Animation")){auto &e=tab()->embedded;
             item("Copy to another library...",nullptr,Action::AnimationCopy);item("Split to new library...",nullptr,Action::SplitAnimations);item("Copy to animation clipboard...",nullptr,Action::CopyAnimations);animation_paste_item("Paste from animation clipboard...");item("Clear animation clipboard",nullptr,Action::ClearAnimationClipboard);ImGui::Separator();if(ImGui::MenuItem("New sequence"))e.command=EmbeddedCommand::NewSequence;if(ImGui::MenuItem("New script"))e.command=EmbeddedCommand::NewScript;ImGui::Separator();item("Rename animation","F2",Action::Rename);item("Duplicate entry","Ctrl+J",Action::Duplicate);ImGui::EndMenu();}
         if(ImGui::BeginMenu("View")){item("Fit artwork","Ctrl+0",Action::Fit);item("Zoom in","Ctrl++",Action::ZoomIn);item("Zoom out","Ctrl+-",Action::ZoomOut);if(tab()){ImGui::MenuItem("Pixel grid",nullptr,&tab()->grid);ImGui::MenuItem("Animation anchor",nullptr,&tab()->anchors);ImGui::Separator();if(ImGui::MenuItem("Stage reference..."))show_stage_dialog(*tab());if(ImGui::MenuItem("Link animation anchors..."))show_anchor_link(*tab());}ImGui::EndMenu();}
-        if(ImGui::BeginMenu("Tools")){if(ImGui::MenuItem("ASM animations..."))show_asm();if(ImGui::MenuItem("MK2 strike tables..."))show_strikes();if(ImGui::MenuItem("Strike associations..."))show_bindings();if(ImGui::MenuItem("Strike phase inspector..."))show_strike_phases();ImGui::EndMenu();}
+        if(ImGui::BeginMenu("Tools")){if(ImGui::MenuItem("ASM animations..."))show_asm();if(ImGui::MenuItem("Reactions..."))show_reactions();if(ImGui::MenuItem("Fatality source..."))show_fatality();if(ImGui::MenuItem("MK2 strike tables..."))show_strikes();if(ImGui::MenuItem("Strike associations..."))show_bindings();if(ImGui::MenuItem("Strike phase inspector..."))show_strike_phases();ImGui::EndMenu();}
         if(ImGui::BeginMenu("Help")){if(ImGui::MenuItem("Using Studio"))help=true;ImGui::EndMenu();}
         ImGui::EndMenuBar();
     }
@@ -1349,6 +1388,7 @@ public:
         if(batch_palette.open){batch_palette_dialog();return;}
         if(deleting.open){batch_delete_dialog();return;}
         if(library_copy.open){library_copy_dialog();return;}
+        if(fatality.open||fatality.saving||fatality.guard){fatality_dialog();return;}
         if(bindings_dialogs())return;
         if(strike_phases.open){strike_phases_dialog();return;}
         strikes_dialog();
@@ -1395,6 +1435,7 @@ public:
             ImGui::Spacing();ImGui::TextUnformatted("Sprite > Extract selection and Split body parts review child sprites before copying or cutting. Adjust part boxes and names, trim borders, and preview the remaining source. Children retain palette and primary-anchor alignment; existing animation references stay on the source. One Undo restores the entire extraction.");
             ImGui::Spacing();ImGui::TextUnformatted("File > Import indexed LBM / TGA reviews one full-canvas indexed sprite, keeps its source palette order or matches an existing palette, and lets you click the preview to place its anchor. LBM / IFF and indexed TGA drag-and-drop use the same review. File > Export selected LBM / TGA writes a separate indexed image without changing the IMG or history. LBM exports store the primary anchor as GRAB; TGA does not store IMG anchors. Settings and destination changes require rebuilding the review. Full-color TGA remains available through sprite-sheet import. File import also reviews sprite sheets and GIFs, digitizes source frames with material ramps, and captures video into the digitize review. Palette > Manage handles palette files, merging, compaction and gradients. File > Export pipeline writes reviewed TBL, IRW and ANILST files. Every existing IMG keeps its original version and record layout on Save / Save As. Edits that cannot fit that format cannot be saved. Pre-WIMP 5 and transitional 0x632 / 0x633 layouts, additional legacy image variants and game runtime and phase-list authoring remain on the migration list.");
             ImGui::Spacing();ImGui::TextWrapped("Tools > ASM animations loads a read-only character ASM and resolves multipart frames across open IMG libraries. Choose a preferred library for duplicate names. Arrows step; Space plays; hold ticks override source timing. Flips, offsets, source segments and jumps are inspected; unsupported branches stop visibly and runtime calls are not executed. Feet to floor and object origin change preview placement only. Tools > MK2 strike tables edits an independent ASM document with its own Undo/Redo and reviewed Save. Animation source / Animate previews the move while you resize its strike box. Tools > Strike associations manages the classic .imgtool sidecar beside each strike source. Save associations remembers overrides, including None, with independent Undo/Redo and reviewed writes. Source switching retains unsaved sidecars; quit offers Save/Discard/Keep editing. Associations do not establish active-frame timing. IMG pixels, anchors, history and format stay unchanged.");
+            ImGui::Spacing();ImGui::TextWrapped("Sprite > Copy / move to another library reviews sprites and required palettes between open libraries. Copy is the default. Enable Move from source to append them to the destination and remove them from the source. Both libraries are prepared before either changes. Each has its own Undo step; undo each separately to reverse the complete move, and Save both separately. Embedded-animation and open-scene references protect source sprites; Exclude referenced sprites keeps them. Keep at least one source sprite. Remaining native indices are remapped, source palettes are retained, and neither IMG format changes. External game references and closed projects are not scanned. Native animation records stay in their original library; use the animation transfer tools for records.");
             ImGui::Spacing();ImGui::TextWrapped("File > Split IMG animations to new library creates a separate IMG tab with selected native sequences/scripts, called sequences and only the artwork/palettes they require. Animation > Split to new library offers the same review in IMG mode. Original names and the source IMG version/layout are retained; the source is unchanged. The new tab opens in IMG animations mode, has no creation Undo and participates in the unsaved-close guard. Save it when ready. Select an animation that references artwork; a library made only of empty records is not created. Unique source sprite names are required, and damage-bound sequences remain unsupported. This copies native IMG records, not scene projects or external game tables, and leaves every clipboard unchanged.");
             ImGui::Spacing();ImGui::TextWrapped("File > Copy IMG animations to clipboard captures selected records, called sequences and their required artwork into an independent session snapshot. The source may close after copying. File > Paste IMG animations from clipboard reviews captured records against any open destination, with prefixes, manual sprite choices and Copy missing artwork enabled by default. Paste is one destination Undo step; Save separately. Animation menu offers the same commands in IMG animations mode. Edit > Clear animation clipboard releases it; Cancel or failed capture retains the previous clipboard. Pixel, palette and sprite clipboards are separate. Contents last until replaced, cleared or Studio closes. Capture retains names and requires unique source sprite names. Unsupported damage bindings and original-layout constraints still apply; IMG formats never change.");
             ImGui::Spacing();ImGui::TextWrapped("File > Copy IMG animations to library transfers sequences and scripts between open libraries. Selected scripts include their called sequences. Enable Copy missing artwork to append referenced sprites that have unique missing names and their required palettes. Existing matches stay unchanged; ambiguous names still need manual choices. The sprite prefix also names new artwork. The review labels new sprites Copy and lists palette additions. Without that option, referenced artwork must already exist. Unique names match automatically; use Destination sprite prefix for prefixed artwork, or search each destination dropdown by name or index to bind differently named or duplicate sprites. Manual choices survive prefix and animation selection changes; changing libraries clears them. Reset sprite choices or choose Automatic name match to restore matching. Review sprite indices and geometry, and use an animation prefix for record name conflicts. Apply preserves stored timing, offsets and opaque bytes, remaps incoming targets, and opens the destination for inspection. One destination Undo step includes all copied artwork and records, no autosave and no IMG format changes. Damage-bound sequences and incompatible older-layout fields are blocked; runtime script execution is not included.");
@@ -1402,6 +1443,9 @@ public:
             ImGui::Spacing();ImGui::TextWrapped("Sprite > Delete multiple sprites reviews marked, shown or all sprites with a preview and exclusions. Embedded sequence and current open Studio scene references block deletion; Exclude referenced sprites keeps them automatically. Only listed rows are deleted and at least one sprite stays. Remaining embedded sprite indices are remapped while script sequence indices remain intact. One undo restores pixels, metadata, references and selection. IMG version and layout stay fixed. Child pieces are not added implicitly; external files and closed scenes are not scanned.");
             ImGui::Spacing();ImGui::TextWrapped("Palette > Remove unused palettes reviews all primary and alternate uses, with per-palette keep choices and one undo step. Retained references are remapped, without changing colors, pixels or the IMG format. External palette-name references are not scanned. Palette > Assign to multiple sprites reviews marked, shown or all sprites with a before/after primary-palette preview. Match colors keeps transparency and maps opaque colors to opaque destination slots; approximate colors require review. Keep indices changes the palette reference without changing pixel bytes. Remaps that would alter active alternate-palette appearances are blocked; keep indices or exclude those sprites. Apply uses one undo step and keeps metadata, baselines and the IMG version/layout. Palettes are not resized or modified; check LOAD2 packing after palette-size changes.");
             ImGui::Spacing();ImGui::TextWrapped("Sprite > Batch rename previews numbered names, prepended text or appended text plus numbers for marked, shown or all sprites. Names are limited to 15 printable ASCII characters without spaces. Excluded rows retain their current names and other preview numbers do not move. Collisions against the whole library block Apply. All changed names share one undo step; pixels, metadata and embedded references remain intact. IMG version and layout stay fixed. External ASM / TBL names are not rewritten, and naming changes can affect LOAD2 allocations.");
+            ImGui::Spacing();ImGui::TextWrapped("Sprite > Split to new library offers Include IMG animations with Copy. It copies sequences using only included sprites and scripts whose called sequences are copied. Review copied/skipped records: empty records, outside references and unsupported damage bindings stay out. The sprite set never expands automatically; use Include child pieces or change exclusions to cover a complete animation. The source stays unchanged; the new IMG inherits its original layout and starts unsaved. Move from source is separate and cannot include animation records.");
+            ImGui::Spacing();ImGui::TextWrapped("Tools > Fatality source keeps up to 16 ASM sources open: commands, scom_* combos, or animation data. Add source retains other files and their histories. The source selector restores the last block in each file. Reload source and Close source protect applied edits; Quit checks every modified source. Linked combos prefer the current file, then unique matches in other open sources; choose explicitly if several match. Save As cannot overwrite another open source. Each file saves separately. The label line stays fixed; edit indented body lines, Apply block, then review Save source. Source Undo/Redo is separate from IMG history. Switching blocks resets unapplied text. In-place saves reject external changes, and close/reload/quit protect applied unsaved edits. Inspect animation snapshots applied edits in all open sources, follows unique external jumps and frame groups, and reports ambiguous symbols. Review artwork lists every expanded symbol, counts its uses, locates its first frame, and offers explicit choices among matching sprites in open IMG libraries. Choices are shared with the canvas and reaction table; they last for the loaded source and reset on refresh. Closed or renamed choices stay visibly unavailable until restored or chosen again. Frame locations identify their defining files. Back to fatality source returns to editing; inspect again to refresh the snapshot. This does not assemble code, follow includes, run game routines or infer attacker/victim timing. Existing IMG formats and artwork stay unchanged.");
+            ImGui::Spacing();ImGui::TextWrapped("Tools > Reactions groups the loaded character ASM by Hit, Stagger, Knockdown, Throws, Getup and Death. Search includes thrower names and classification reasons; Show other animations exposes entries the suggestions missed. Choose a frame/piece row to scrub, then Open selected sprite to edit its IMG anchor. Frame anchors refresh after edits, Undo, library changes and facing/convention changes. Missing or ambiguous pieces stay explicit. Placement is relative to object origin using each library's mirror convention. Source ASM is read-only; game routines and attack/reaction timing are not executed or inferred.");
             ImGui::Spacing();ImGui::TextWrapped("Tools > Strike phase inspector shows which box the loaded source selects as a manually supplied active countdown decreases. Assume stkphase / wunit flags affect only this preview, including conditional slot numbering; build files stay unchanged. Red is the selected box, gray is its base reference. Edit selected strike opens the existing ASM editor. Edit phase rows stages existing thresholds and slots, previews the selection, and applies through the source undo history. Review source save opens the ASM diff before writing. Row counts stay fixed, thresholds decrease to zero, and all consumers must resolve under the chosen preview flags. Build settings and IMG format stay unchanged. Artwork frames are chosen independently; startup, recovery and hit interruption are not inferred.");
             ImGui::PopTextWrapPos();if(ImGui::Button("Done",ImVec2(100,0))){help=false;ImGui::CloseCurrentPopup();}ImGui::EndPopup();
         }
@@ -1509,7 +1553,7 @@ public:
         if(auto t=tab())if(t->project){apply_scene_command(*t);if(ImGui::IsAnyItemActive())t->scene.playing=false;else if(!t->scene.dragging)t->project->commit();}
         if(have_deferred){have_deferred=false;if(auto t=tab()){int index=t->art->sprite_index(deferred_sprite);if(index>=0){select(index);action(deferred_action);}}}
         if(remove_uid){for(auto it=tabs.begin();it!=tabs.end();++it)if((*it)->uid==remove_uid){int erased=(int)(it-tabs.begin());tabs.erase(it);if(active>=erased)--active;active=std::clamp(active,0,std::max(0,(int)tabs.size()-1));break;}remove_uid=0;paste_mode=false;}
-        if(quitting&&!close_uid&&!scene_guard_uid&&!strikes.guard&&!strikes.saving&&!binding_ui.guard&&!binding_ui.saving){bool projects=false;for(auto &t:tabs)if(t->project){projects=true;break;}if(!projects){if(tabs.empty())running=false;else close_uid=tabs.back()->uid;}}
+        if(quitting&&!close_uid&&!scene_guard_uid&&!fatality.guard&&!fatality.saving&&!strikes.guard&&!strikes.saving&&!binding_ui.guard&&!binding_ui.saving){bool projects=false;for(auto &t:tabs)if(t->project){projects=true;break;}if(!projects){if(tabs.empty())running=false;else close_uid=tabs.back()->uid;}}
     }
 #include "studio_project_ui.inl"
 #include "studio_stage_ui.inl"
@@ -1517,7 +1561,10 @@ public:
 #include "studio_points_ui.inl"
 #include "studio_tbl_compare_ui.inl"
 #include "studio_strikes_ui.inl"
+#include "studio_asm_assets_ui.inl"
 #include "studio_asm_ui.inl"
+#include "studio_reactions_ui.inl"
+#include "studio_fatality_ui.inl"
 #include "studio_bindings_ui.inl"
 #include "studio_strike_phases_ui.inl"
 #include "studio_sequences_ui.inl"
@@ -1723,9 +1770,11 @@ struct EmbeddedSmoke {
 #include "studio_batch_palette_smoke.inl"
 #include "studio_batch_delete_smoke.inl"
 #include "studio_library_copy_smoke.inl"
+#include "studio_library_move_smoke.inl"
 #include "studio_family_smoke.inl"
 #include "studio_sprite_clipboard_smoke.inl"
 #include "studio_library_split_smoke.inl"
+#include "studio_library_split_animations_smoke.inl"
 #include "studio_animation_copy_smoke.inl"
 #include "studio_animation_artwork_smoke.inl"
 #include "studio_animation_clipboard_smoke.inl"
@@ -1743,6 +1792,10 @@ struct EmbeddedSmoke {
 #include "studio_tbl_compare_smoke.inl"
 #include "studio_strikes_smoke.inl"
 #include "studio_asm_smoke.inl"
+#include "studio_asm_assets_smoke.inl"
+#include "studio_reactions_smoke.inl"
+#include "studio_fatality_smoke.inl"
+#include "studio_fatality_workspace_smoke.inl"
 #include "studio_bindings_smoke.inl"
 #include "studio_strike_phases_smoke.inl"
 #include "studio_variant_smoke.inl"
@@ -1892,7 +1945,12 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool variant_smoke=argc>=3&&std::string(argv[1])=="--smoke-variant";
     bool phases_smoke=argc>=3&&std::string(argv[1]).find("--smoke-phases")==0;
     bool bindings_smoke=argc>=3&&std::string(argv[1])=="--smoke-bindings";
-    bool asm_smoke=argc>=3&&std::string(argv[1]).find("--smoke-asm")==0;
+    bool fatality_linked_smoke=argc>=3&&std::string(argv[1])=="--smoke-fatality-linked";
+    bool fatality_workspace_smoke=fatality_linked_smoke||argc>=3&&std::string(argv[1])=="--smoke-fatality-workspace";
+    bool fatality_smoke=argc>=3&&std::string(argv[1]).find("--smoke-fatality")==0;
+    bool reactions_smoke=argc>=3&&std::string(argv[1]).find("--smoke-reactions")==0;
+    bool asm_assets_smoke=argc>=3&&std::string(argv[1])=="--smoke-asm-assets";
+    bool asm_smoke=fatality_smoke||reactions_smoke||(argc>=3&&std::string(argv[1]).find("--smoke-asm")==0);
     bool strikes_smoke=argc>=3&&std::string(argv[1])=="--smoke-strikes";
     bool table_compare_smoke=argc>=3&&std::string(argv[1])=="--smoke-tbl-compare";
     bool points_smoke=argc>=3&&std::string(argv[1])=="--smoke-points";
@@ -1909,10 +1967,12 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool animation_clipboard_smoke=argc>=3&&std::string(argv[1])=="--smoke-animation-clipboard";
     bool animation_artwork_smoke=argc>=3&&std::string(argv[1])=="--smoke-animation-artwork";
     bool animation_copy_smoke=animation_split_smoke||animation_clipboard_smoke||animation_artwork_smoke||(argc>=3&&std::string(argv[1])=="--smoke-animation-copy");
-    bool split_smoke=argc>=3&&std::string(argv[1])=="--smoke-library-split";
+    bool split_animations_smoke=argc>=3&&std::string(argv[1])=="--smoke-library-split-animations";
+    bool split_smoke=split_animations_smoke||(argc>=3&&std::string(argv[1])=="--smoke-library-split");
     bool sprite_clip_smoke=argc>=3&&std::string(argv[1])=="--smoke-sprite-clipboard";
     bool family_smoke=argc>=3&&std::string(argv[1])=="--smoke-family";
-    bool library_copy_smoke=argc>=3&&std::string(argv[1])=="--smoke-library-copy";
+    bool library_move_smoke=argc>=3&&std::string(argv[1])=="--smoke-library-move";
+    bool library_copy_smoke=library_move_smoke||(argc>=3&&std::string(argv[1])=="--smoke-library-copy");
     bool batch_delete_smoke=argc>=3&&std::string(argv[1])=="--smoke-batch-delete";
     bool batch_palette_smoke=argc>=3&&std::string(argv[1])=="--smoke-batch-palette";
     bool batch_rename_smoke=argc>=3&&std::string(argv[1])=="--smoke-batch-rename";
@@ -1981,7 +2041,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     studio::CloneSmoke clone_check;
     studio::FiltersSmoke filters_check;
     studio::RepairSmoke repair_check;
-    studio::BatchSmoke batch_check;studio::BatchRenameSmoke batch_rename_check;studio::BatchPaletteSmoke batch_palette_check;studio::BatchDeleteSmoke batch_delete_check;studio::LibraryCopySmoke library_copy_check;studio::FamilySmoke family_check;studio::SpriteClipboardSmoke sprite_clip_check;studio::LibrarySplitSmoke split_check;studio::AnimationCopySmoke animation_copy_check;studio::AnimationArtworkSmoke animation_artwork_check;studio::AnimationClipboardSmoke animation_clipboard_check;studio::AnimationSplitSmoke animation_split_check;studio::PaletteCleanupSmoke cleanup_check;
+    studio::BatchSmoke batch_check;studio::BatchRenameSmoke batch_rename_check;studio::BatchPaletteSmoke batch_palette_check;studio::BatchDeleteSmoke batch_delete_check;studio::LibraryCopySmoke library_copy_check;studio::LibraryMoveSmoke library_move_check;studio::FamilySmoke family_check;studio::SpriteClipboardSmoke sprite_clip_check;studio::LibrarySplitSmoke split_check;studio::LibrarySplitAnimationsSmoke split_animations_check;studio::AnimationCopySmoke animation_copy_check;studio::AnimationArtworkSmoke animation_artwork_check;studio::AnimationClipboardSmoke animation_clipboard_check;studio::AnimationSplitSmoke animation_split_check;studio::PaletteCleanupSmoke cleanup_check;
     studio::RestoreSmoke restore_check;
     studio::LodSmoke lod_check;
     studio::ExportSmoke export_check;
@@ -1995,6 +2055,10 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     studio::StrikePhasesSmoke phases_check;phases_check.edit=argc>1&&std::string(argv[1])=="--smoke-phases-edit";phases_check.real=argc>1&&std::string(argv[1])=="--smoke-phases-real";
     studio::BindingsSmoke bindings_check;
     studio::StrikesSmoke strikes_check;
+    studio::FatalityWorkspaceSmoke fatality_workspace_check;
+    studio::AsmAssetsSmoke asm_assets_check;
+    studio::FatalitySmoke fatality_check;fatality_check.real=argc>1&&std::string(argv[1])=="--smoke-fatality-real";
+    studio::ReactionsSmoke reactions_check;reactions_check.real=argc>1&&std::string(argv[1])=="--smoke-reactions-real";
     studio::AsmSmoke asm_check;asm_check.real=argc>1&&std::string(argv[1])=="--smoke-asm-real";
     studio::VariantSmoke variant_check;
     studio::ToolsSmoke tools_check;
@@ -2009,7 +2073,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     studio::DigitizeJobSmoke job_check;job_check.preview=argc>1&&std::string(argv[1])=="--smoke-digitize-progress";studio::VideoSmoke video_check;video_check.result=argc>1&&std::string(argv[1])=="--smoke-video-result";studio::DigitizeSmoke digitize_check;studio::PaletteRampSmoke ramp_check;studio::ImportSmoke import_check;import_check.gif=std::string(argc>1?argv[1]:"")=="--smoke-import-gif";
     startup.stage("Enter editor loop");bool first_frame=true;
     while(app.running){
-        SDL_Event e;auto event=[&](){ImGui_ImplSDL2_ProcessEvent(&e);if(e.type==SDL_QUIT){app.finish();app.action(studio::Action::Quit);}if(e.type==SDL_DROPFILE){if(!app.strike_phases.open&&!app.binding_ui.open&&!app.binding_ui.saving&&!app.binding_ui.guard&&!app.asm_ui.open&&!app.strikes.open&&!app.strikes.guard&&!app.strikes.saving&&!app.table_compare.open&&!app.points.open&&!app.anchor_link.open&&!app.stage_dialog_open&&!app.sheet.open&&!app.legacy_media.open&&!app.exporting.open&&!app.lod.open&&!app.restoring.open&&!app.batch.open&&!app.renaming.open&&!app.batch_palette.open&&!app.deleting.open&&!app.library_copy.open&&!app.animation_copy.open&&!app.cleanup.open&&!app.regions.open&&!app.video.open&&!app.digitizing.open&&!app.importing.open&&!app.palettes.open&&!app.close_uid&&!app.help&&app.error.empty()&&!app.path_dialog&&app.edit_dialog==studio::EditDialog::None)app.open(e.drop.file);SDL_free(e.drop.file);}};
+        SDL_Event e;auto event=[&](){ImGui_ImplSDL2_ProcessEvent(&e);if(e.type==SDL_QUIT){app.finish();app.action(studio::Action::Quit);}if(e.type==SDL_DROPFILE){if(!app.fatality.open&&!app.fatality.saving&&!app.fatality.guard&&!app.strike_phases.open&&!app.binding_ui.open&&!app.binding_ui.saving&&!app.binding_ui.guard&&!app.asm_ui.open&&!app.strikes.open&&!app.strikes.guard&&!app.strikes.saving&&!app.table_compare.open&&!app.points.open&&!app.anchor_link.open&&!app.stage_dialog_open&&!app.sheet.open&&!app.legacy_media.open&&!app.exporting.open&&!app.lod.open&&!app.restoring.open&&!app.batch.open&&!app.renaming.open&&!app.batch_palette.open&&!app.deleting.open&&!app.library_copy.open&&!app.animation_copy.open&&!app.cleanup.open&&!app.regions.open&&!app.video.open&&!app.digitizing.open&&!app.importing.open&&!app.palettes.open&&!app.close_uid&&!app.help&&app.error.empty()&&!app.path_dialog&&app.edit_dialog==studio::EditDialog::None)app.open(e.drop.file);SDL_free(e.drop.file);}};
         if(SDL_WaitEventTimeout(&e,16)){event();while(SDL_PollEvent(&e))event();}
         ImGui_ImplSDLRenderer2_NewFrame();ImGui_ImplSDL2_NewFrame();
         if(editing_smoke)editing_check.prepare(app,io,frames);
@@ -2024,16 +2088,16 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         if(batch_rename_smoke)batch_rename_check.prepare(app,io,frames);
         if(batch_palette_smoke)batch_palette_check.prepare(app,io,frames);
         if(batch_delete_smoke)batch_delete_check.prepare(app,io,frames);
-        if(library_copy_smoke)library_copy_check.prepare(app,io,frames);
+        if(library_move_smoke)library_move_check.prepare(app,io,frames);else if(library_copy_smoke)library_copy_check.prepare(app,io,frames);
         if(family_smoke)family_check.prepare(app,io,frames);
         if(sprite_clip_smoke)sprite_clip_check.prepare(app,io,frames);
-        if(split_smoke)split_check.prepare(app,io,frames);
+        if(split_animations_smoke)split_animations_check.prepare(app,io,frames);else if(split_smoke)split_check.prepare(app,io,frames);
         if(animation_split_smoke)animation_split_check.prepare(app,io,frames);else if(animation_clipboard_smoke)animation_clipboard_check.prepare(app,io,frames);else if(animation_artwork_smoke)animation_artwork_check.prepare(app,io,frames);else if(animation_copy_smoke)animation_copy_check.prepare(app,io,frames);
         if(cleanup_smoke)cleanup_check.prepare(app,io,frames);
         if(restore_smoke)restore_check.prepare(app,io,frames);
         if(lod_smoke)lod_check.prepare(app,io,frames);
         if(strikes_smoke)strikes_check.prepare(app,io,frames);
-        if(asm_smoke)asm_check.prepare(app,io,frames);
+        if(fatality_workspace_smoke)fatality_workspace_check.prepare(app,io,frames);else if(fatality_smoke)fatality_check.prepare(app,io,frames);else if(reactions_smoke)reactions_check.prepare(app,io,frames);else if(asm_assets_smoke)asm_assets_check.prepare(app,io,frames);else if(asm_smoke)asm_check.prepare(app,io,frames);
         if(bindings_smoke)bindings_check.prepare(app,io,frames);
         if(phases_smoke)phases_check.prepare(app,io,frames);
         if(table_compare_smoke)table_compare_check.prepare(app,io,frames);
@@ -2083,7 +2147,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         }
         ImGui::NewFrame();app.frame();ImGui::Render();
         SDL_SetRenderDrawColor(app.renderer,15,18,23,255);SDL_RenderClear(app.renderer);ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(),app.renderer);
-        if(smoke&&((++frames==((video_smoke||digitize_smoke||job_smoke)?600:phases_smoke?(phases_check.edit?104:74):bindings_smoke?100:asm_smoke?52:strikes_smoke?97:table_compare_smoke?31:points_smoke?54:anchor_link_smoke?60:stage_smoke?43:sheet_smoke?68:legacy_media_smoke?60:legacy_img_smoke?30:export_smoke?99:lod_smoke?70:restore_smoke?98:animation_split_smoke?130:animation_clipboard_smoke?152:animation_artwork_smoke?140:animation_copy_smoke?244:split_smoke?114:sprite_clip_smoke?144:cleanup_smoke?92:family_smoke?74:library_copy_smoke?110:batch_delete_smoke?112:batch_palette_smoke?118:batch_rename_smoke?92:batch_smoke?66:repair_smoke?63:filters_smoke?43:tools_smoke?50:welcome_smoke?26:variant_smoke?56:clone_smoke?50:paint_smoke?59:floating_smoke?53:region_smoke?38:selection_smoke?58:import_smoke?28:ramp_smoke?49:compact_smoke?40:merge_smoke?36:palette_smoke?43:project_smoke||motion_smoke||trigger_smoke||embedded_smoke?30:editing_smoke?28:gesture_smoke?20:5))||(video_smoke&&video_check.finished)||(digitize_smoke&&digitize_check.finished)||(job_smoke&&job_check.finished))){int w,h;SDL_GetRendererOutputSize(app.renderer,&w,&h);std::vector<unsigned char> pixels((size_t)w*h*4);
+        if(smoke&&((++frames==((video_smoke||digitize_smoke||job_smoke)?600:phases_smoke?(phases_check.edit?104:74):bindings_smoke?100:fatality_linked_smoke?188:fatality_smoke?(fatality_check.real?12:230):reactions_smoke?(reactions_check.real?18:140):asm_assets_smoke?164:asm_smoke?52:strikes_smoke?97:table_compare_smoke?31:points_smoke?54:anchor_link_smoke?60:stage_smoke?43:sheet_smoke?68:legacy_media_smoke?60:legacy_img_smoke?30:export_smoke?99:lod_smoke?70:restore_smoke?98:animation_split_smoke?130:animation_clipboard_smoke?152:animation_artwork_smoke?140:animation_copy_smoke?244:split_animations_smoke?140:split_smoke?114:sprite_clip_smoke?144:cleanup_smoke?92:family_smoke?74:library_move_smoke?160:library_copy_smoke?110:batch_delete_smoke?112:batch_palette_smoke?118:batch_rename_smoke?92:batch_smoke?66:repair_smoke?63:filters_smoke?43:tools_smoke?50:welcome_smoke?26:variant_smoke?56:clone_smoke?50:paint_smoke?59:floating_smoke?53:region_smoke?38:selection_smoke?58:import_smoke?28:ramp_smoke?49:compact_smoke?40:merge_smoke?36:palette_smoke?43:project_smoke||motion_smoke||trigger_smoke||embedded_smoke?30:editing_smoke?28:gesture_smoke?20:5))||(video_smoke&&video_check.finished)||(digitize_smoke&&digitize_check.finished)||(job_smoke&&job_check.finished))){int w,h;SDL_GetRendererOutputSize(app.renderer,&w,&h);std::vector<unsigned char> pixels((size_t)w*h*4);
             if(SDL_RenderReadPixels(app.renderer,nullptr,SDL_PIXELFORMAT_RGBA32,pixels.data(),w*4)!=0||!stbi_write_png(argv[2],w,h,4,pixels.data(),w*4))exit_code=1;
             if(selection_check.failures)exit_code=17;
             if(region_check.failures)exit_code=18;
@@ -2098,13 +2162,13 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
             if(batch_check.failures)exit_code=27;
             if(family_check.failures)exit_code=46;
             if(sprite_clip_check.failures)exit_code=48;
-            if(split_check.failures)exit_code=49;
+            if(split_check.failures||split_animations_check.failures)exit_code=49;
             if(animation_copy_check.failures||animation_artwork_check.failures||animation_clipboard_check.failures||animation_split_check.failures)exit_code=50;
             if(cleanup_check.failures)exit_code=47;
             if(batch_rename_check.failures)exit_code=42;
             if(batch_palette_check.failures)exit_code=43;
             if(batch_delete_check.failures)exit_code=44;
-            if(library_copy_check.failures)exit_code=45;
+            if(library_copy_check.failures||library_move_check.failures)exit_code=45;
             if(restore_check.failures)exit_code=28;
             if(lod_check.failures)exit_code=29;
             if(export_check.failures)exit_code=30;
@@ -2116,7 +2180,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
             if(points_check.failures)exit_code=36;
             if(table_compare_check.failures)exit_code=37;
             if(strikes_check.failures)exit_code=38;
-            if(asm_check.failures)exit_code=39;
+            if(asm_assets_check.failures||asm_check.failures||reactions_check.failures||fatality_check.failures||fatality_workspace_check.failures)exit_code=39;
             if(bindings_check.failures)exit_code=40;
             if(phases_check.failures)exit_code=41;
             if(!app.error.empty())exit_code=2;if(editing_check.failures)exit_code=4;if(project_check.failures)exit_code=5;if(motion_check.failures)exit_code=6;if(trigger_check.failures)exit_code=7;if(embedded_check.failures)exit_code=8;if(palette_check.failures)exit_code=9;if(merge_check.failures)exit_code=10;if(compact_check.failures)exit_code=11;if(ramp_check.failures)exit_code=12;if(import_check.failures)exit_code=13;if(digitize_check.failures)exit_code=14;if(video_check.failures)exit_code=15;if(job_check.failures)exit_code=16;app.running=false;
