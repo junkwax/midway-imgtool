@@ -23,7 +23,7 @@ bool Artwork::copy_palettes(const std::vector<int> &indices,PaletteTransfer &out
         out=std::move(next);return true;
     }catch(const std::bad_alloc &){error="Not enough memory to copy every selected palette. The previous clipboard was kept.";return false;}
 }
-int Artwork::paste_palettes(const PaletteTransfer &clip,std::string &error){
+int Artwork::paste_palettes(const PaletteTransfer &clip,std::string &error,const char *history_label){
     error.clear();if(pending){error="Finish the current edit before pasting palettes.";return -1;}
     try{
         std::vector<PaletteCopyEntry> single;auto entries=&clip.entries;
@@ -44,7 +44,7 @@ int Artwork::paste_palettes(const PaletteTransfer &clip,std::string &error){
             pal->data_p=malloc(e.words.size()*2);if(!pal->data_p)throw std::bad_alloc();
             auto bytes=(unsigned char *)pal->data_p;for(size_t c=0;c<e.words.size();++c){bytes[c*2]=(unsigned char)e.words[c];bytes[c*2+1]=(unsigned char)(e.words[c]>>8);}prepared.push_back(std::move(pal));
         }
-        State before=capture();before.label=prepared.size()==1?"Paste palette":"Paste palettes";past.reserve(past.size()+1);
+        State before=capture();before.label=history_label?history_label:prepared.size()==1?"Paste palette":"Paste palettes";past.reserve(past.size()+1);
         int first=palette_count();PAL **tail=(PAL **)&data.pal_p;while(*tail)tail=(PAL **)&(*tail)->nxt_p;
         // Every allocation is complete. Publication, revision and history updates
         // below cannot fail halfway through a batch.

@@ -256,6 +256,9 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_batch.cpp
     platform/studio/studio_batch_rename.cpp
     platform/studio/studio_batch_palette.cpp
+    platform/studio/studio_ramp_transfer.cpp platform/palette_transfer.cpp
+    platform/studio/studio_costume.cpp platform/studio/studio_costume_presets.cpp platform/palette_layout.cpp
+    platform/studio/studio_palette_transparency.cpp platform/studio/studio_palette_removal.cpp platform/studio/studio_palette_zero.cpp platform/studio/studio_palette_move.cpp platform/studio/studio_palette_isolation.cpp platform/studio/studio_isolation_frames.cpp platform/studio/studio_region_match.cpp platform/studio/studio_region_remap.cpp
     platform/studio/studio_batch_delete.cpp
     platform/studio/studio_sprite_scope.cpp
     platform/studio/studio_library_copy.cpp
@@ -281,6 +284,7 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_animation_split.cpp
     platform/studio/studio_library_split_animations.cpp
     platform/studio/studio_sequences.cpp
+    platform/studio/studio_embedded_metadata.cpp
     platform/studio/studio_palette.cpp platform/color_ops.cpp
     platform/studio/studio_layers.cpp
     platform/studio/studio_palette_clipboard.cpp
@@ -289,6 +293,8 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_palette_merge.cpp
     platform/studio/studio_palette_cleanup.cpp
     platform/studio/studio_palette_compaction.cpp
+    platform/studio/studio_palette_inheritance.cpp
+    platform/studio/studio_palette_reduction.cpp
     platform/studio/studio_palette_ramps.cpp platform/studio/studio_file_io.cpp
     platform/studio/studio_import.cpp platform/studio/studio_legacy_media.cpp platform/studio/studio_sheet.cpp
     platform/studio/studio_digitize.cpp platform/digitize_matte.cpp
@@ -354,6 +360,26 @@ add_executable(studio_palette_clipboard_test test/studio_palette_clipboard_test.
 target_link_libraries(studio_palette_clipboard_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_palette_clipboard_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_palette_clipboard COMMAND studio_palette_clipboard_test)
+add_executable(studio_palette_duplicates_test test/studio_palette_duplicates_test.cpp)
+target_link_libraries(studio_palette_duplicates_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_duplicates_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_duplicates COMMAND studio_palette_duplicates_test)
+add_executable(studio_palette_order_test test/studio_palette_order_test.cpp)
+target_link_libraries(studio_palette_order_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_order_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_order COMMAND studio_palette_order_test)
+add_executable(studio_palette_clean_copy_test test/studio_palette_clean_copy_test.cpp)
+target_link_libraries(studio_palette_clean_copy_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_clean_copy_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_clean_copy COMMAND studio_palette_clean_copy_test)
+add_executable(studio_palette_inheritance_test test/studio_palette_inheritance_test.cpp)
+target_link_libraries(studio_palette_inheritance_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_inheritance_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_inheritance COMMAND studio_palette_inheritance_test)
+add_executable(studio_palette_reduction_test test/studio_palette_reduction_test.cpp)
+target_link_libraries(studio_palette_reduction_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_reduction_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_reduction COMMAND studio_palette_reduction_test)
 add_executable(studio_palette_swatches_test test/studio_palette_swatches_test.cpp)
 target_link_libraries(studio_palette_swatches_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_palette_swatches_test PRIVATE SDL_MAIN_HANDLED)
@@ -462,6 +488,10 @@ add_executable(studio_sequences_test test/studio_sequences_test.cpp)
 target_link_libraries(studio_sequences_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_sequences_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_sequences COMMAND studio_sequences_test)
+add_executable(studio_embedded_metadata_test test/studio_embedded_metadata_test.cpp)
+target_link_libraries(studio_embedded_metadata_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_embedded_metadata_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_embedded_metadata COMMAND studio_embedded_metadata_test)
 add_executable(studio_palette_test test/studio_palette_test.cpp)
 target_link_libraries(studio_palette_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_palette_test PRIVATE SDL_MAIN_HANDLED)
@@ -530,6 +560,50 @@ add_executable(studio_batch_palette_test test/studio_batch_palette_test.cpp)
 target_link_libraries(studio_batch_palette_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_batch_palette_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_batch_palette COMMAND studio_batch_palette_test "${CMAKE_CURRENT_SOURCE_DIR}/../mk2-main/data/CAGE1.IMG")
+add_executable(studio_ramp_transfer_test test/studio_ramp_transfer_test.cpp)
+target_link_libraries(studio_ramp_transfer_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_ramp_transfer_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_ramp_transfer COMMAND studio_ramp_transfer_test)
+add_executable(studio_costume_test test/studio_costume_test.cpp)
+target_link_libraries(studio_costume_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_costume_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_costume COMMAND studio_costume_test)
+add_executable(studio_costume_borrow_test test/studio_costume_borrow_test.cpp)
+target_link_libraries(studio_costume_borrow_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_costume_borrow_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_costume_borrow COMMAND studio_costume_borrow_test)
+add_executable(studio_costume_presets_test test/studio_costume_presets_test.cpp)
+target_link_libraries(studio_costume_presets_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_costume_presets_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_costume_presets COMMAND studio_costume_presets_test)
+add_executable(studio_palette_transparency_test test/studio_palette_transparency_test.cpp)
+target_link_libraries(studio_palette_transparency_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_transparency_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_transparency COMMAND studio_palette_transparency_test)
+add_executable(studio_palette_removal_test test/studio_palette_removal_test.cpp)
+target_link_libraries(studio_palette_removal_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_removal_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_removal COMMAND studio_palette_removal_test)
+add_executable(studio_palette_zero_test test/studio_palette_zero_test.cpp)
+target_link_libraries(studio_palette_zero_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_zero_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_zero COMMAND studio_palette_zero_test)
+add_executable(studio_palette_move_test test/studio_palette_move_test.cpp)
+target_link_libraries(studio_palette_move_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_move_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_move COMMAND studio_palette_move_test)
+add_executable(studio_palette_isolation_test test/studio_palette_isolation_test.cpp)
+target_link_libraries(studio_palette_isolation_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_isolation_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_isolation COMMAND studio_palette_isolation_test)
+add_executable(studio_isolation_frames_test test/studio_isolation_frames_test.cpp)
+target_link_libraries(studio_isolation_frames_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_isolation_frames_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_isolation_frames COMMAND studio_isolation_frames_test)
+add_executable(studio_region_remap_test test/studio_region_remap_test.cpp)
+target_link_libraries(studio_region_remap_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_region_remap_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_region_remap COMMAND studio_region_remap_test)
 add_executable(studio_batch_delete_test test/studio_batch_delete_test.cpp)
 target_link_libraries(studio_batch_delete_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_batch_delete_test PRIVATE SDL_MAIN_HANDLED)

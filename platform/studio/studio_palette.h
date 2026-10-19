@@ -24,11 +24,19 @@ struct PaletteMergePlan {
 };
 bool plan_palette_merge(const Artwork &art,const PaletteMergeOptions &options,PaletteMergePlan &plan,std::string &error);
 std::vector<unsigned char> render_palette_merge(const Artwork &art,const PaletteMergePlan &plan,int sprite,bool merged);
-struct PaletteCompactionOptions {int palette=-1,ppp=6;bool pack_live=true,recompute_depth=false;};
+enum class PaletteColorOrder {Keep,DarkToLight,ColorFamilies};
+struct PaletteCompactionOptions {int palette=-1,ppp=6;bool pack_live=true,recompute_depth=false;PaletteColorOrder order=PaletteColorOrder::Keep;bool copy_only=false;};
+struct PaletteCompactionSprite {
+    int index=-1;uint64_t id=0;
+    std::array<unsigned char,sizeof(IMG)> fields{};
+    std::vector<unsigned char> pixels,alternate,layer,preview_pixels;
+};
 struct PaletteCompactionPlan {
     const Artwork *owner=nullptr;uint64_t generation=0;
     PaletteCompactionOptions options;
     std::vector<unsigned short> original,words;
+    std::array<unsigned char,sizeof(PAL)> palette_fields{};
+    std::vector<PaletteCompactionSprite> source_sprites;
     std::array<unsigned char,256> mapping{};
     std::array<uint64_t,256> primary{},alternate{};
     std::vector<int> primary_sprites,preview_sprites;
@@ -38,6 +46,31 @@ struct PaletteCompactionPlan {
 };
 bool plan_palette_compaction(const Artwork &art,const PaletteCompactionOptions &options,PaletteCompactionPlan &plan,std::string &error);
 std::vector<unsigned char> render_palette_compaction(const Artwork &art,const PaletteCompactionPlan &plan,int sprite,bool compacted);
+struct PaletteInheritanceOptions {int target=-1,source=-1,ppp=6;bool perceptual=false;};
+struct PaletteInheritancePlan {
+    const Artwork *owner=nullptr;uint64_t generation=0;
+    PaletteInheritanceOptions options;
+    std::array<unsigned char,sizeof(PAL)> target_fields{},source_fields{};
+    std::vector<unsigned short> original,words;
+    std::vector<PaletteCompactionSprite> sprites;
+    std::array<unsigned char,256> mapping{};
+    std::array<uint64_t,256> usage{};
+    uint64_t index_changes=0,color_changes=0;
+    int approximate_colors=0;bool ppp_changed=false,changed=false;
+};
+bool plan_palette_inheritance(const Artwork &art,const PaletteInheritanceOptions &options,PaletteInheritancePlan &plan,std::string &error);
+std::vector<unsigned char> render_palette_inheritance(const Artwork &art,const PaletteInheritancePlan &plan,int sprite,bool inherited);
+struct PaletteReductionOptions {int palette=-1,depth=7,ppp=6;};
+struct PaletteReductionPlan {
+    PaletteReductionOptions options;
+    // Owned usage snapshot and remapped before/after rendering use the same
+    // representation as exact palette organization; Apply has a distinct API.
+    PaletteCompactionPlan preview;
+    int active_colors=0,approximate_colors=0,max_distance=0;
+    uint64_t color_changes=0;
+    bool quantized=false,changed=false;
+};
+bool plan_palette_reduction(const Artwork &art,const PaletteReductionOptions &options,PaletteReductionPlan &plan,std::string &error);
 std::string palette_name(const PAL &pal);
 PaletteTransfer copy_palette(const Artwork &art,int index);
 PaletteUsage palette_usage(const Artwork &art,int index);

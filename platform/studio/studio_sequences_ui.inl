@@ -68,6 +68,7 @@ void embedded_inspector(Tab &t){
     auto &e=t.embedded;auto r=embedded_record(t);ImGui::TextUnformatted("Animation properties");ImGui::TextWrapped("Changes here are stored in the IMG. Preview position and facing are view settings.");ImGui::Separator();if(!r)return;
     char name[17]={};memcpy(name,r->name.data(),std::min<size_t>(16,r->name.size()));if(e.rename_focus){ImGui::SetKeyboardFocusHere();e.rename_focus=false;}ImGui::SetNextItemWidth(-1);
     if(ImGui::InputText("##embedded-name",name,sizeof(name))&&name[0]){e.playing=false;if(!t.art->embedded_rename(e.record,name,error))return;}if(ImGui::IsItemDeactivatedAfterEdit())t.art->commit();ImGui::TextDisabled("Name (up to 16 ASCII characters)");
+    if(ImGui::Button("Edit stored metadata..."))show_embedded_metadata(t);e.metadata_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     bool entry=!r->entries.empty();EmbeddedEntryValues v=entry?r->entries[e.entry].values:EmbeddedEntryValues{};
     int count=r->script?(int)t.art->data.seqcnt:t.art->count();int target=entry?v.index:e.target;
     auto target_name=[&](int index)->std::string{if(index<0||index>=count)return "Choose a target";return r->script?e.records[index].name:t.art->sprite(index)->n_s;};

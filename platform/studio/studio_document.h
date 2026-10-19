@@ -10,6 +10,7 @@
 
 namespace studio {
 struct EmbeddedEntryValues;
+struct EmbeddedMetadataPlan;
 struct PointTableEdit;
 struct PaletteMergePlan;
 struct PaletteMultiMergePlan;
@@ -17,6 +18,17 @@ struct PaletteTransfer;
 struct PaletteSwatchClipboard;
 struct PaletteSwatchPlan;
 struct PaletteCompactionPlan;
+struct PaletteInheritancePlan;
+struct PaletteReductionPlan;
+struct RampTransferPlan;
+struct CostumePlan;
+struct PaletteTransparencyPlan;
+struct PaletteRemovalPlan;
+struct PaletteZeroPlan;
+struct PaletteMovePlan;
+struct PaletteIsolationPlan;
+struct IsolationFramesPlan;
+struct RegionRemapPlan;
 struct PaletteCleanupPlan;
 struct ImportBatch;
 struct PixelSelection;
@@ -105,6 +117,15 @@ public:
     int apply_batch_geometry(const BatchGeometryPlan &plan,std::string &error);
     int apply_batch_rename(const BatchRenamePlan &plan,std::string &error);
     int apply_batch_palette(const BatchPalettePlan &plan,bool allow_approximation,std::string &error);
+    int apply_ramp_transfer(const RampTransferPlan &reviewed,bool allow_color_changes,std::string &error);
+    int create_costume_palette(const CostumePlan &reviewed,std::string &error);
+    int apply_palette_transparency(const PaletteTransparencyPlan &reviewed,std::string &error);
+    bool remove_palette_slots(const PaletteRemovalPlan &reviewed,std::string &error);
+    bool remap_similar_regions(const RegionRemapPlan &reviewed,std::string &error);
+    bool isolate_colors_across_frames(const IsolationFramesPlan &reviewed,bool allow_approximation,std::string &error);
+    bool isolate_selection_colors(const PaletteIsolationPlan &reviewed,bool allow_approximation,std::string &error);
+    bool move_palette_colors_to_end(const PaletteMovePlan &reviewed,std::string &error);
+    bool copy_zero_to_opaque(const PaletteZeroPlan &reviewed,bool allow_recolor,std::string &error);
     int apply_batch_delete(const BatchDeletePlan &plan,std::string &error);
     int apply_animation_copy(const Artwork &source,const AnimationCopyPlan &plan,std::string &error);
     int apply_library_copy(const Artwork &source,const LibraryCopyPlan &plan,std::string &error);
@@ -136,7 +157,8 @@ public:
     bool copy_palettes(const std::vector<int> &indices,PaletteTransfer &clipboard,std::string &error) const;
     // Append every copied palette atomically. Returns the first new palette,
     // or -1; source data, sprite assignments and clipboard stay unchanged.
-    int paste_palettes(const PaletteTransfer &clipboard,std::string &error);
+    int paste_palettes(const PaletteTransfer &clipboard,std::string &error,const char *history_label=nullptr);
+    int copy_clean_palette(const PaletteCompactionPlan &reviewed,std::string &error);
     bool copy_palette_swatches(int palette,const std::array<bool,256> &selected,int highlighted,PaletteSwatchClipboard &clipboard,std::string &error) const;
     bool apply_palette_swatches(const PaletteSwatchPlan &,std::string &error);
     bool delete_unused_palette(int index,std::string &error);
@@ -145,6 +167,8 @@ public:
     int merge_marked_palettes(const PaletteMultiMergePlan &,bool allow_approximation,std::string &error);
     bool merge_palette(const PaletteMergePlan &plan,bool allow_approximation,std::string &error);
     bool compact_palette(const PaletteCompactionPlan &plan,std::string &error);
+    bool inherit_palette_colors(const PaletteInheritancePlan &reviewed,bool allow_approximation,std::string &error);
+    bool reduce_palette_colors(const PaletteReductionPlan &reviewed,bool allow_approximation,std::string &error);
     int import_batch(const ImportBatch &batch,std::string &error);
     int import_png(const std::string &path, int match_palette, std::string &error);
     bool export_png(int index, const std::string &path, std::string &error) const;
@@ -155,6 +179,7 @@ public:
     bool embedded_move(int record,int entry,int destination,std::string &error);
     int embedded_add_record(bool script,const std::string &name,std::string &error);
     bool embedded_rename(int record,const std::string &name,std::string &error);
+    bool edit_embedded_metadata(const EmbeddedMetadataPlan &,std::string &error);
     L2Report check(int ppp);
     Document data{}; // Owned codec data; UI reads through sprite()/palette().
 private:

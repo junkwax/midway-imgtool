@@ -30,7 +30,9 @@ void selection_controls(Tab &t){
         button("Copy",Action::Copy);ImGui::SameLine();button("Cut",Action::Cut);ImGui::SameLine();button("Clear",Action::Clear);
         button("Extract into sprite...",Action::ExtractSelection);
         button("Move / transform...",Action::TransformSelection);
+        ImGui::BeginDisabled(!enabled(Action::ManagePalettes)||t.flip||paste_mode||t.alignment.enabled||t.embedded.enabled);if(ImGui::Button("Isolate selection colors..."))begin_selection_isolation(t);ImGui::EndDisabled();
         if(ImGui::CollapsingHeader("Selection actions")){
+            ImGui::BeginDisabled(!enabled(Action::ManagePalettes)||t.flip||paste_mode||t.alignment.enabled||t.embedded.enabled||t.color<=0);if(ImGui::Button("Remap Similar Regions..."))begin_region_remap(t);ImGui::EndDisabled();
             button("Deselect",Action::Deselect);ImGui::SameLine();button("Invert",Action::InvertSelection);
             ImGui::BeginDisabled(t.flip||paste_mode);
             const char *labels[]={"Left","Right","Up","Down"};const int dx[]={-1,1,0,0},dy[]={0,0,-1,1};

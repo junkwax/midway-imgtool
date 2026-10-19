@@ -2385,3 +2385,693 @@ assets, original UI or format adapters changed. Help, README and shortcut notes
 updated. Screens: build-studio-artwork/effects-palette-effects-{small,wide}/result.png
 and build-studio-memory/palette-effects-check/small.png. Current binary remains
 the artwork build. No commit/push.
+
+
+**Duplicate palette checkpoint (2026-10-16):** Palette > Merge duplicate palettes
+reviews exact color-count/stored-word/depth matches, including zero/high bits.
+Later duplicates default to their earliest match. Keep individual rows or all,
+filter duplicates and inspect survivor colors/name/depth plus resulting indices.
+First-match palettes stay protected. Survivor metadata is retained; merged names
+and metadata are removed. External ASM/TBL/closed-project palette names are not
+scanned; keep identities still needed by those files.
+
+Primary and active alternate references remap through one final table, retaining
+default alternate indices, terminator tails and full active blocks. Pixel indices,
+colors, layers/baselines, metadata on surviving palettes/sprites, IDs/selection,
+anchors/points and embedded records stay intact. Different high bits, depth or
+count prevent a match. Apply records one Undo step and Save keeps the original
+IMG version/layout. Cancel and no-op leave history unchanged. Shared cleanup
+planning now has an explicit mode; existing unused-only callers retain behavior.
+Both modes allocate the review/history/capacity before publishing any removal;
+replanning/comparison guards reject stale/foreign/forged/pending/raw mismatches.
+
+New model suite passes Release/ASAN, including keep/matching distinctions,
+reference/default/tail/full-block/index-127 handling, layers/pointer retention,
+Undo/Redo, 360 allocation-failure positions across both modes and five original-
+layout save/reopen/byte-exact Undo rounds. New 108-frame actual-input duplicate
+check passes wide/compact Release and compact ASAN. Unused cleanup passes compact
+Release/ASAN; marked merge and Help/hotkey regressions pass. Full Release result
+is 93/94 with the same external MK2 roster assertion (25 expected, 26 present).
+Classic/CLI/Studio build. No game source/assets or classic UI changed. Help,
+README and shortcut notes updated. Screens live under duplicate-palette-duplicates
+in the artwork/memory build folders. Verified binary remains the artwork build,
+3.37.0-dev+943e451. No commit/push.
+
+
+**Palette ordering checkpoint (2026-10-16):** Usage / compact adds Original order,
+Dark to light and Group like colors while packing used slots. Ordering follows
+classic neutral/hue/luma/saturation/RGB/index comparisons. Result swatches and
+old/new slot counts expose changes; primary pixels remap with full color words
+for exact appearance. Transparency/opaque black/high bits remain distinct and
+duplicate live colors stay separate. Tail-only mode keeps indices/order; active
+alternate users lock sorting. Relevant overlays require flatten/removal first.
+Depth recalculation remains opt-in, PPP/count/depth changes remain visible.
+Apply organization records one Undo; Cancel discards the review.
+
+Compaction source snapshots now own relevant sprite pixels/metadata/alternates
+and palette fields/words. Previews stay frozen; source revision/raw changes refuse
+Apply. Authoritative derived mapping is recomputed from options, preserving the
+existing API behavior for derived-array tampering. Colors/history/capacity are
+prepared before mutation for both original compaction and sorting. Failure retains
+bytes/history/Redo; no-op adds no history. Baselines, pixel padding, IDs, metadata,
+assignments and original IMG versions/layouts stay intact.
+
+New model suite passes explicit classic orders, RGBA equality, opaque black/
+high-bit/duplicate ties, idempotence, pointers/padding/baselines, no-op/Undo/Redo,
+tail/alternate/overlay guards, stale/raw/foreign/pending refusal, 420 allocation
+positions across three orders and five original-layout save/reopen/byte-exact Undo
+rounds. Existing compaction also passes; both pass ASAN. New 158-frame actual-input
+order check passes wide/compact Release and compact ASAN. Compaction passes compact
+Release/ASAN; palette/swatches/marked merge/Help-hotkey regressions pass. Full
+Classic/CLI/Studio build passes; CTest is 94/95, only the known external MK2 roster
+count assertion fails. No game source/assets or original UI/format adapters changed.
+Help, README and shortcut notes updated. Screens under order-palette-order in the
+artwork/memory folders. Current binary remains the artwork build, 3.37.0-dev+943e451.
+No commits/pushes.
+
+
+**Clean palette copy checkpoint (2026-10-16):** Palette manager > Clean copy
+reviews a new unassigned palette from retained colors, with unique name,
+Original/Dark-to-light(default)/Family ordering and independent opt-in depth.
+Create appends once with one Undo; Cancel adds nothing. Source palette words,
+metadata, pixel/baseline/layer buffers, sprite identities and primary/alternate
+assignments remain unchanged. Unreferenced source palettes retain every color.
+All primary/active alternate and opaque layer colors count, including hidden/
+off-canvas layers and base colors hidden beneath them. The copy can sort alternate
+users because it remaps no existing pixels. Visible previews use frozen composites.
+
+The shared plan's explicit copy_only option routes to copy_clean_palette; wrong
+in-place/copy API use refuses. Source colors/pixels/metadata/alternate/layer bytes
+are owned and revalidated before creating a local palette transfer. Reusing atomic
+palette append preserves unique names, metadata/high bits and history/capacity
+failure behavior with a clean-copy-specific Undo label. Existing paste calls and
+all user clipboards keep their behavior. No format conversion is introduced.
+
+New model suite passes source retention, alternate/layer coverage, frozen preview,
+naming/depth/no-user handling, stale/raw/pending/foreign/wrong-mode guards, invalid
+layer/capacity, 180 allocation-failure positions and five original-layout save/
+reopen/byte-exact Undo rounds. Copy/order/compaction/clipboard models pass ASAN.
+New 138-frame actual-input Clean Copy check passes wide/compact Release and compact
+ASAN. Ordering/compaction/clipboard/palette/Help-hotkey regressions pass; ordering
+and clipboard also pass compact ASAN. Full Classic/CLI/Studio build passes; CTest
+is 95/96, with only the known external roster-count assertion failing. Help,
+README and shortcut notes updated. Screens under clean-copy-palette-clean-copy in
+artwork/memory folders. Current binary remains the artwork build, 3.37.0-dev+943e451.
+No game source/assets, original UI or IMG format adapters changed. No commit/push.
+
+
+**Palette inheritance checkpoint (2026-10-16):** Palette manager now offers
+Inherit colors from marked. Exactly one other marked palette identifies the
+source, regardless of library filtering; the selected destination keeps its
+name/identity, metadata and sprite assignments. Colors/count/depth/padding
+follow the source; all primary sprite pixels match the nearest opaque slot.
+RGB distance matches classic by default, with optional perceptual distance.
+Before/after review reports remapped pixels, used approximations and PPP fallback
+changes. Approximate appearance needs an explicit checkbox; matching changes
+reset that approval. Index zero remains transparent, including opaque black in
+nonzero slots. Active alternate users and overlays are refused with instructions
+rather than silently recolored. Source palettes/sprites and all clipboards stay
+unchanged. Apply is one atomic Undo command; no-op adds no history. Cancel changes
+nothing. Generation plus owned palette/sprite snapshots reject changed reviews.
+Per-sprite dimensions and total 256 MiB review budget limit allocations.
+
+The model check covers exact/perceptual matching, approximation approval,
+transparency/high bits, metadata/baselines/pixel padding/IDs, primary/alternate-only
+reference and overlay protection, stale source pixels/colors/metadata, no-op,
+foreign/pending review, unused destination, 180 allocation-failure positions and
+five original IMG layouts with Save/reopen and byte-exact Undo. Actual compact and
+wide UI checks cover marking, entry, Cancel, Apply, Undo/Redo, approximation gating,
+matching reset, stale review, alternate/overlay protection and independent
+clipboards. Help and README updated. Original UI and format adapters unchanged.
+
+Validation: full Release build passes; CTest is 96/97 with only the existing
+external MK2 roster assertion. Inheritance model and compact actual-input UI
+pass ASAN. Compact/wide inheritance UI and compact clean-copy, order, swatches,
+marked-merge and hotkeys/Help regressions pass. Original IMG adapters unchanged;
+no game source/asset edits, commits or pushes.
+
+
+**Palette downscaling checkpoint (2026-10-16):** Palette manager > Downscale
+reviews a 4-8 bpp limit (16/32/64/128/256 colors including zero). Below the cap,
+original colors/indices stay fixed and only declared depth changes. Above the
+cap, primary usage drives exact packing or classic pixel-weighted median cut
+plus up to eight centroid refinements. Matching uses actual resulting RGB555
+words, avoiding discrepancies caused by matching unrounded RGB8 representatives.
+Before/after sprites, resulting swatches and impact counts expose approximated
+colors, changed pixels, remapped indices, declared depth and PPP fallback.
+Approximation approval is explicit and resets when the limit changes, including
+unused palettes (equal-weight inputs). Transparency remains zero and opaque
+black remains nonzero. Transparency-only palettes may pack to one entry.
+
+Downscaling is a separate Apply API/command using the existing owned palette
+usage snapshot and preview representation. Apply replans and validates original
+metadata/colors/padded sprite pixels/IDs/alternate bytes plus owner/generation
+and pending status, preallocates colors/history, then publishes one Undo step.
+Failure preserves library/history/Redo; no-op adds no history. Names, other
+metadata, primary assignments, baselines and padding stay fixed. Active alternate
+references and overlays are refused until resolved. Dimensions and the 256 MiB
+pixel review budget are checked before capture. Exact packing retains stored
+words; weighted merging generates RGB555 representatives. No IMG layout adapters
+or classic UI were changed. Help and README explain behavior and limitations.
+
+Validation: full Release build passes; CTest is 97/98 with only the known
+external MK2 roster assertion. New model tests cover all color limits and all
+256 indices, weighted/degenerate quantization, transparency and stored words,
+metadata/identities/padding/baselines, stale/pending/foreign review, alternate/
+hidden-overlay blocking, unused palettes, 260 injected new-failure positions,
+and exact/lossy round trips plus byte-exact Undo in five unchanged IMG layouts.
+Model and compact actual-input UI pass ASAN. Compact/wide downscale UI and
+compact compaction, order, clean-copy, inheritance, swatches and hotkeys/Help
+regressions pass. No game source/asset edits, original UI edits, commits or pushes.
+
+
+**Ramp transfer checkpoint (2026-10-17):** Palette > Transfer palette by ramps
+now moves indexed sprites onto a different palette with the existing pure
+DetectPaletteRampBlocks, SuggestTransferPairs and BuildPaletteTransferMap core.
+Selected/marked/all scopes restrict membership to the chosen source palette;
+whole sprites transfer independently of the canvas selection. Source/destination
+split controls, editable pairings, explicit nearest-color fallback and reset
+suggestions expose the inferred materials. Relative shading and absolute
+brightness matching stay confined to paired ramps. Source/result color strips
+and per-row before/after previews show the reviewed result. Scope counts include
+excluded sprites; change/PPP summaries cover included rows. Fallback counts are
+explicit. Included color changes require approval, reset by settings/inclusions.
+
+Overlays and alternate-index-changing remaps are visible blocked rows that can
+be excluded; identity remaps retain alternate tables. Unresolved source indices
+are blocked. Empty/mixed/duplicate/stale scopes, invalid palettes/angles/modes/
+pairings, dimensions and the 256 MiB review pixel limit are checked. Apply
+replans and validates both palette metadata/words, effective pairs/map and
+sprite metadata/padded before/after buffers/complete alternate blocks plus
+owner/generation/pending status, then preallocates history and publishes one
+atomic Undo. Both palettes, their names/metadata/depths, sprite IDs, baselines,
+point tables, padding and clipboards stay intact. Fully excluded reviews add
+no history. Preview textures survive the applying frame's draw list and release
+on next open/shutdown. New modal pauses animation, blocks drops and participates
+in Quit cleanup. Classic UI, pure algorithms and IMG adapters are unchanged.
+
+Validation: full Release build passes; CTest is 98/99 with only the existing
+external MK2 roster assertion. New model passes ASAN, with 220 injected new
+failures, 256-index/64-block overflow coverage, and five unchanged-layout
+Save/reopen plus byte-exact Undo rounds. Compact/wide actual-input transfer UI
+and compact ASAN pass. Compact batch assignment, downscale, inheritance, marked
+merge and hotkeys/Help regressions pass. Small layout visually inspected after
+moving PPP warnings above previews. No game-source/asset edits, commits or pushes.
+
+**Alternate costume tint checkpoint (2026-10-17):** Palette > Alternate costume
+(tint) creates a reviewed palette copy using the original ColorizeRamp core.
+Source selection, detected ramp checkboxes, split control, manual nonadjacent
+slot ranges, tint presets/color picker and strength expose the material edit.
+Before/after sprites include visible overlays; two swatch grids highlight tinted
+slots. Automatic source/hue names and explicit nine-character names receive
+case-insensitive collision suffixes. Unassigned is the default; optional selected,
+marked or all primary source users can receive the copy. Alternate-only users
+and all alternate tables remain fixed. Borrowed named material sections and
+saved layouts/templates remain separate pending workflows.
+
+The owned review captures palette metadata/words, primary and active alternate
+users, padded pixels, complete alternate blocks and layers. Apply replans and
+checks ownership/generation/pending state and source/result/assignment snapshots,
+then uses the atomic palette append transaction with preallocated assignments.
+The copy and optional primary assignments form one Undo step. Failed allocation
+or stale review preserves data/history/Redo. Original palette metadata/count/
+depth/words, sprite IDs, pixels, baselines, point tables, padding and clipboards
+stay intact. Index zero, unselected slots and stored high bits are preserved.
+The existing IMG format adapters and classic UI are unchanged.
+
+Validation: full Release build passes; CTest is 99/100, with the same external
+MK2 roster assertion. The new model passes Release and ASAN, including all 256
+slots, partial tint, 240 injected allocation-failure positions and five original
+IMG-layout Save/reopen plus byte-exact Undo rounds. Compact/wide actual-input
+costume UI and compact ASAN pass; compact layout visually inspected. Regression
+UI checks pass for ramp transfer, clean copy, downscale, palette editing and
+hotkeys/Help. No game-source/asset edits, commits or pushes. The earlier reported
+Windows launch-crash cause remains unproven by these local memory checks.
+
+
+**Costume material borrowing checkpoint (2026-10-17):** Palette > Alternate
+costume now offers Tint material ramps and Borrow material colors. Borrowing
+uses the existing pure BorrowRampByCoverage and IsCostumeFamily functions.
+Up to 16 named material sections pair separate multi-range slot sets on the
+source and reference palettes. Enabled sections cannot overlap on either side;
+disabled sections leave those source colors fixed. Add/remove/rename/enable,
+reference selection, equal weights/palette coverage/family coverage, highlighted
+source/copy/reference grids, base-pixel counts and before/after composite previews
+provide review before creating a palette. Family is the default; it pools palettes
+sharing a quarter of opaque slots regardless of section order. Only primary base
+pixels weight coverage; padding, overlays and alternate-only users do not. Empty
+sides fall back to equal weights. Saved layouts/templates remain pending.
+
+Borrowing extends the existing owned costume copy transaction. All used family
+palettes and their primary/active-alternate user data are captured, bounded to
+4000 captured users and 256 MiB pixels/layers across snapshots. Apply replans and
+checks both colors and pool membership, raw palette metadata, padded pixels,
+complete alternate tables and layers as well as owner/generation/pending state.
+The donor and source stay intact. Result count/depth/metadata, unselected words,
+index zero, stored high bits, sprite identity/pixels/baselines/points/padding,
+alternate references and independent clipboards stay intact. Copy plus optional
+primary assignments remains one atomic Undo step. Failed allocation or stale
+review preserves data/history/Redo. Classic UI and IMG layout adapters unchanged.
+
+Validation: Release build passes; full CTest is 100/101, with only the existing
+external MK2 roster assertion. Borrow model covers palette/family/equal weighting,
+section-order independence, unequal ramps/all 256 indices, disabled/overlap/name
+validation, raw edits to donor/family/padded pixels/alternate tails, newly joined
+family members, invalid geometry, 640 injected allocation-failure positions and
+five original-layout Save/reopen plus byte-exact Undo rounds. Borrow and tint
+models pass Release and ASAN. Actual-input borrowing checks cover section edits,
+invalid Create, Cancel, optional assignments, Save/reopen, Undo/Redo and stale
+family data. Compact layout adjusted after the first check exposed a clipped
+reference input; final compact/wide Release and compact ASAN borrowing checks
+pass and layouts were visually inspected. Compact tint, ramp-transfer and
+hotkeys/Help UI regressions pass. Final full Release build and CTest confirm
+100/101 (same roster failure). No game-source/asset edits, commits or pushes.
+
+
+**Saved costume mappings checkpoint (2026-10-17):** Borrow material colors now
+opens a Saved mappings manager for one-palette layouts and paired templates.
+The pure palette_layout parser/formatter is shared with classic. Studio stores
+its own palette_layouts.txt / costume_templates.txt in its SDL settings folder;
+classic preferences and IMG files are untouched. Material names pair without
+regard to case; palette-name/count associations suggest a layout for review.
+Use mapping replaces the costume draft only, after a mapping-table review.
+Incompatible color counts, out-of-bounds ranges and overlapping material slots
+are blocked without clipping. Unpaired materials are visibly disabled. No preset
+loads automatically. Enabled materials alone are saved; preset names permit
+31 characters and saved material names 15 without separators. Counts may be zero
+for classic wildcard files; ranges must still fit the current palettes.
+
+The new bounded store validates both classic text schemas before publication:
+256 entries / 1 MiB, unique names, section counts/ranges/ownership and numeric
+fields. Reads preserve the previous cache on failure and block UI writes until
+reload. Writes compare the loaded file existence/bytes, prepare replacement
+content/cache, then use the existing atomic file writer. Changed external files,
+malformed input and write/allocation failures keep existing data. Replacement is
+explicit. Save/delete persist immediately even if the editor is later canceled;
+they leave artwork, clipboards and Undo history unchanged. Reload handles external
+edits. The selected mapping is never an IMG-format extension.
+
+Validation: Release and ASAN model checks pass, including format compatibility,
+case-insensitive pairing, unpaired/disabled sections, counts/wildcards, overlap
+and malformed file handling, external edits/disappearance, write failures,
+200 injected allocation-failure positions, capacity bounds and no artwork/history
+changes. Full Release build passes; CTest is 101/102 with the same external MK2
+roster assertion. The 360-frame actual-input preset check passes in compact/wide Release and
+compact ASAN, including durable presets after editor Cancel/reopen and a byte-exact
+IMG. Compact/wide layouts were visually inspected. Borrowing, tint and hotkey/Help
+UI regressions all pass.
+No game-source/assets, classic UI or IMG adapter edits; no commits or pushes.
+
+
+**Palette transparency checkpoint (2026-10-17):** Palette manager and the swatch
+context menu now open a reviewed Make colors transparent workflow. It supports
+current artwork sprite, arbitrary canvas selection mask, marked source users and
+all primary source users. The chosen palette is fixed; mismatched/missing scopes
+are refused. Opaque swatches can toggle in review; zero is protected. Before/after
+base-pixel previews, per-sprite inclusion rows and removal counts expose the result.
+Changed overlay/active-alternate users and unresolved indices require resolution
+or exclusion. No-change alternate users are allowed. This slice preserves palette
+slots/count/depth/words/assignments; slot deletion and shifting remain separate.
+A concrete LOAD2 silhouette warning accompanies removal. Help has a dedicated
+searchable topic (avoiding MSVC's per-literal size limit).
+
+The planner owns raw palette fields/words, padded before/after sprite data,
+IMG metadata/IDs, complete alternate blocks, overlay bytes and selection masks.
+Per-image dimensions, 2000-sprite scope and 256 MiB review pixel budget are bounded.
+Apply replans and checks ownership/generation/pending state plus all reviewed input
+and output data, including all-primary membership. Exclusions are honored; included
+blocked rows fail. All allocations/history preparation precede publication, so
+failure preserves artwork/history/Redo. Zero matching or included edits add no
+history. One Undo restores the complete edit. Metadata, baselines, points, padding,
+IDs, other sprites and independent clipboards stay fixed. Nested modal owns keys,
+preview textures survive the applying frame, and source palettes are null-checked
+when stale. Apply preserves the palette manager's selected swatches and canvas
+selection. Original UI and IMG format adapters are unchanged.
+
+The new model suite passes Release and ASAN: arbitrary masks/rectangles, selection
+holes, exclusions, all-source membership, no-op/Redo, alternate/hidden-overlay guards,
+raw palette/padded-pixel/alternate/layer changes, invalid/mixed scopes, stale/pending/
+foreign/tampered review, unknown indices, index 255, metadata/baseline/padding/IDs,
+240 allocation-failure positions and five original-layout Save/reopen/byte-exact
+Undo rounds. Full Release build passes; full CTest is 102/103 with the existing
+external MK2 roster failure. Compact/wide actual-input UI and compact ASAN pass;
+layouts visually inspected. Compact effects, swatches, basic palette editing and
+hotkeys/Help UI regressions pass. No game source/assets, commits or pushes.
+
+
+**Palette slot removal checkpoint (2026-10-18):** Palette manager > Remove slots
+and the swatch context action Remove selected color slots now provide palette-wide
+removal. Target swatches can toggle; zero stays protected. The review shows all
+primary/active-alternate users, old-to-new indices, removed slots, cleared primary
+pixels, shifted primary indices, before/after appearance and PPP color-limit impact.
+All opaque slots may be removed, leaving zero. Declared depth remains unchanged,
+matching classic. Shared-palette deletion cannot exclude individual users or obey
+canvas selections/marks. Blocked alternate/overlay users must be resolved first;
+unreferenced tails can be deleted when every relevant base/layer index stays fixed.
+Unused palettes support palette-only review. Stored survivor words/order, metadata,
+assignments, baselines, point/alternate tables and padding are retained. Swatch
+selection clears, highlight follows the map, and canvas selection survives Apply.
+
+The new planner reuses owned compaction snapshots after checking bounds: up to
+2000 primary/alternate users and 256 MiB captured pixels/layers, with <=8192 and
+4 Mi-pixel dimensions. It snapshots raw palette fields/words, IMG fields/IDs,
+padded pixels, complete alternate blocks and layers. Apply replans and validates
+all source/result fields, refusing stale/foreign/pending/tampered reviews and
+recomputed blockers. Color/history allocations precede publication; one Undo
+covers all palette/primary pixel changes, and failures preserve history/Redo.
+The shared mapped-preview renderer now derives alpha from the mapped index, so
+removed pixels actually appear transparent. Classic UI and IMG adapters unchanged.
+A dedicated searchable Help topic covers scope, blockers and save/packing behavior.
+
+Release model tests pass for nonadjacent deletion, stable survivor words, alpha,
+all-primary remaps, metadata/baselines/points/padding/IDs, active/alternate-only/
+hidden-overlay protection, safe tails, raw stale sources, added users, unknown
+indices, index 255, all-opaque and unused palettes, 300 injected allocation-failure
+positions and five original IMG-layout Save/reopen plus byte-exact Undo rounds.
+The compact actual-input check exercises deletion, Cancel/Undo/Redo, PPP warning,
+blockers, safe tails, stale sources, context fallback, unused palettes, independent
+clipboards and nested key ownership. Final compact/wide Release and compact ASAN
+UI checks pass; layouts visually inspected. Compact transparency, ordering,
+compaction and hotkeys/Help regressions pass. Full Release build passes and CTest
+is 103/104, with only the existing external MK2 roster assertion. No game-source/
+assets, classic UI/IMG adapter edits, commits or pushes.
+
+
+**Index-zero opaque color checkpoint (2026-10-18):** Palette manager now has
+#0 to opaque, plus automatic and explicit-destination swatch context actions.
+The default copies the complete stored word from index zero without editing
+pixels or zero itself. Automatic placement appends until full, then considers
+slots unused by all primary/active-alternate users and all overlays (hidden and
+off-canvas included), then exact stored-word reuse. Explicit placement supports
+1-255, black-filled gaps and count growth; declared depth increases only when
+needed. Existing RGB-changing destination usages require explicit recoloring
+approval, reset by settings changes. Primary/alternate user rows and frozen
+composite before/after previews show the effect.
+
+Optional current-artwork or captured-canvas-selection scopes replace target base
+zero pixels with the destination. Current includes the transparent background;
+mask holes stay untouched. The selected artwork target is independent of the
+palette preview selector. Changed target overlays/active alternates block this
+remap; copy-only remains available. The review shows newly opaque pixels, existing
+recolored references, growth/depth and PPP impact, with a silhouette-packing
+warning. Apply preserves canvas/swatch selections and highlights the destination.
+Nested review owns keyboard input, uses existing animation/drop guards, and keeps
+preview textures alive through the applying draw list.
+
+The bounded planner owns palette fields/words, IMG fields/IDs, padded pixels,
+complete alternate blocks, layers and the target-after buffer/selection. Limits
+are 2000 users, 8192 per dimension, 4 Mi-pixel sprites/masks and a 256 MiB review
+pixel budget. Apply replans and compares source snapshots plus the resulting
+words/slot/depth/target pixels, rejecting stale/foreign/pending/tampered input
+and recomputed blockers. It allocates color/history storage before publication;
+one Undo covers copy/remap, failure preserves data/history/Redo and no-ops retain
+Redo. Names, other metadata, baselines, points, IDs, padding, assignments, other
+sprite indices and independent clipboards stay fixed. Original UI and IMG format
+adapters are unchanged. Help has a separate searchable topic and README covers
+the workflow, scopes and LOAD2 impact.
+
+Release and ASAN model checks pass: automatic/exact/full-palette placement,
+alternate-only and hidden/off-canvas slot reservations, explicit approval/growth,
+index 255/black gaps, stored high bits, current/rectangle/arbitrary masks, exact
+preview alpha, metadata and padding preservation, blockers, unknown indices,
+raw stale sources and added users, pending/foreign/tampered reviews, no-op Redo,
+300 allocation-failure positions and five original-layout Save/reopen/byte-exact
+Undo rounds. Full Release build passes; CTest is 104/105 with only the known
+external MK2 roster assertion. The new 320-frame actual-input UI check passes
+compact/wide Release and compact ASAN, covering both entries, Cancel, copy-only,
+explicit recoloring approval/reset, current and masked Apply/Undo/Redo, byte-exact
+Undo, alternate/hidden-overlay blockers, stale/missing-selection reviews, shared
+previews, nested key ownership and clipboards. Initial UI fixture had an empty
+overlay; adding actual opaque fixture pixels resolved that test setup failure.
+Both final layouts were visually inspected. Existing compact swatches, removal,
+transparency and hotkeys/Help interaction regressions pass. No commits/pushes or
+game-source/assets edits.
+
+
+**Move selected palette colors checkpoint (2026-10-19):** Palette manager and
+swatch context menu now open Move palette colors to end. Unselected opaque slots
+come first and selected slots last, with each group's original order retained.
+Index zero is fixed. Complete stored words and every unused color survive;
+count/depth/metadata and silhouettes stay unchanged. The review has editable
+source swatches, a resulting grid, old-to-new mapping, mandatory primary/active
+alternate user rows and frozen before/after composite previews. Palette marks
+and canvas pixel selections do not limit the shared operation. The context action
+can use its clicked opaque slot when nothing is selected; the manager button
+opens an empty-set error in that case. All-opaque or already-final selections
+show an explicit no-op message and disable Apply without consuming Undo/Redo.
+
+All primary users remap together to retain appearance. Index-changing alternate
+appearances or overlays (including hidden/off-canvas) block the whole edit;
+reordering unused colors is allowed when all guarded base/layer indices stay
+fixed. Alternate-only previews leave their primary pixels unmapped to expose
+the changed alternate colors; visible overlays retain their unchanged indices.
+Apply replans and compares owned raw palette/IMG/padded pixels/alt blocks/layer
+snapshots, source membership, resulting words and mapping. It refuses stale,
+foreign, pending and tampered reviews, recomputes blockers and preallocates all
+history before publishing. One Undo restores the complete palette/pixel edit;
+allocation failure keeps data/history/Redo. Baselines, points, padding, IDs and
+assignments are retained. Chosen swatches and the highlighted color follow the
+mapping; canvas selection and independent clipboards stay fixed. Nested keyboard,
+texture lifetime, drop/pause and Quit/shutdown behavior follow prior reviews.
+
+Preflight bounds are 2000 users, <=8192 per dimension, 4 Mi-pixel sprites and
+256 MiB reviewed pixels/layers/composites. New model checks pass Release/ASAN:
+stable nonadjacent partition, exact RGBA, duplicate words without index merging,
+full 256-color palettes/high bits/index 255, unused and no-op palettes, mandatory
+users, primary/alternate-only/hidden-overlay guards, safe unused-tail reordering,
+raw stale bytes/added users, unknown indices, malformed/pending/foreign/tampered
+reviews, no-op Redo, metadata/IDs/baselines/points/padding and 300 injected
+allocation failures. Five original layouts Save/reopen with byte-exact Undo.
+
+Full Release build passes; CTest is 105/106, with only the existing external MK2
+roster assertion. The 268-frame actual-input UI check passes compact/wide Release
+and compact ASAN: source toggles and zero protection, empty/all-opaque/no-op,
+Cancel, Apply/Undo/Redo/byte-exact Undo, selection/highlight mapping, alternate and
+hidden-overlay conflicts, safe unused-tail edits and original-format reopen,
+stale review, context fallback, unused palettes, nested keys and clipboards.
+The first compact check exposed swatch-column reflow when the source panel's
+scrollbar disappeared for an empty set. Reserving its scrollbar keeps click
+positions stable; all three checks pass after the fix. Compact/wide final layouts
+were visually inspected. Existing compact zero-copy, removal, swatch clipboard,
+ordering and hotkeys/Help regressions pass. Dedicated Help topic and README added.
+Classic UI and IMG adapters remain unchanged; no game-source/assets or commits/pushes.
+
+
+**Selection color isolation checkpoint (2026-10-19):** Added reviewed current-sprite
+isolation through Palette > Isolate selection colors, the selection inspector,
+and Palette manager's swatch context menu. This is distinct from Variant paint:
+selected opaque pixels keep their original indices and colors; matching pixels
+outside the captured canvas mask move to duplicate destinations. Mask holes are
+outside. Reserved swatches are selected for subsequent palette editing after
+Apply. The review explicitly warns that other frames keep their indices and
+shows their remaining reserved-index references. Automatic cross-frame matching
+and propagation remain separate work.
+
+The planner reuses classic PlanPaletteIsolation: exact complete stored words,
+unused slots, appended duplicates, then nearest unreserved colors only when full.
+Live-slot accounting includes all source primary/active-alternate users and all
+hidden/off-canvas overlays. RGB-changing approximation requires explicit approval,
+reset on packing-setting changes. Any unresolved contested color blocks the whole
+operation. A target with actual remaps and an overlay or active alternate refs
+is blocked; already-exclusive targets may remain no-ops. Index zero, silhouettes,
+other sprite indices, assignments, baseline/point data, pixel padding, identity
+and unrelated metadata remain intact. Count growth raises declared depth only
+when needed, with PPP impact shown. Save preserves the existing IMG layout.
+
+Owned raw PAL/word and IMG/ID/padded-pixel/alternate/layer snapshots plus the
+selection and target-after buffer are captured after 2000-user, 8192-dimension,
+4 Mi-pixel and 256 MiB pixel-budget checks. Apply replans, compares raw sources,
+source membership and result words/pixels/destinations, recomputes blockers and
+approximation requirements, and preallocates colors/history before publication.
+One Undo covers the whole edit; failure and no-ops preserve history/Redo.
+Nested palette modal owns keys; existing drop/pause guards apply. Textures survive
+the applying draw list and release on next open/Quit/shutdown. The target is
+independent of palette preview browsing and swatch selection; mismatched palette,
+missing/transparent-only selection and changed source data are refused. Composite
+before/after previews can show the protected selection outline and other users.
+All clipboards remain independent.
+
+Release/ASAN model tests pass for exact/recycled/appended destinations, high-bit
+words, growth/depth/PPP, arbitrary masks and holes, actual color preservation,
+other-user protection, active alternate and hidden overlay target guards,
+alternate-only/layer live-slot reservations, full256 approved approximation,
+all-reserved unresolved cases, no-op Redo, stale raw fields/padded pixels/alt
+tails/layers, added users, invalid/pending/foreign/tampered plans and mask edits,
+300 allocation-failure positions and five existing layouts Save/reopen plus
+byte-exact Undo. Full Release build passes; CTest is 106/107 with only the known
+external MK2 roster count assertion. The 282-frame actual-input UI check passes
+compact/wide Release and compact ASAN, covering context entry, shared-user previews,
+selection outline, Cancel/Apply/Undo/Redo/exact Undo, reserved-swatch selection,
+empty/transparent/no-op/stale reviews, target guards, appended growth/PPP warning,
+approximation approval/reset/Apply/Undo, independent clipboards and nested keys.
+Final layouts visually inspected. Existing compact Variant, selection, swatch,
+move-to-end and hotkeys/Help regressions pass. Dedicated Help topic and README
+updated. No classic UI/IMG adapter or game-source/assets changes; no commits/pushes.
+
+
+**Cross-frame color isolation checkpoint (2026-10-19):** Added Palette > Isolate
+selection across frames, a swatch-context entry and Across frames from the
+current-sprite review. The new nested review inventories every primary user of
+the source palette in this IMG. Source mask/identity stay captured independently
+of preview browsing, marks, swatches and stored animation sequences. Source is
+pinned; matched frames start included and no-match rows start off. Source only,
+Matched and All scope controls plus per-frame checkboxes make the scope explicit.
+Selecting a row shows its feature outline and before/after composite. No-match
+inclusion and omitted/alternate-only reserved references have explicit warnings.
+
+The matcher preserves classic behavior: opaque source-index colors, row-major
+sampled seeds (up to 768), signed animation-point-relative placement, nearest
+seed search radius 6-18, four-connected regions, area ratio 0.04-8 and centroid
+reach max(28, 2.5*source_extent+12). Source retains its exact opaque mask and holes;
+other regions can expand or misidentify the feature, so previews remain suggestions.
+One immutable owned capture supports inclusion/PPP replanning without repeated
+matching. One shared slot allocation uses contested colors from all included
+regions. Exact word reuse, globally unused slots and appended duplicates retain
+appearance; actual full-palette RGB approximation requires approval. Scope/PPP
+changes reset approval. Actual remaps on included overlay/active-alternate frames
+block until resolved or excluded. Every contested color needs a destination.
+
+Capture preflights 2000 users, 8192-dimension/4 Mi-pixel sprites and a 256 MiB
+pixel/mask/planned-output/matcher-scratch budget. Nearest-search and flood work
+have a 64 Mi-step cap for adversarial no-match libraries. Other primary/active-alt
+users and hidden/off-canvas overlays reserve live slots. Apply recaptures/rematches,
+compares raw palette/IMG/padded pixels/complete alternate/layer state, source
+membership and masks, replans scope and checks output words/maps/padded buffers.
+Blockers and approximation are recomputed; all colors/history allocations precede
+publication. One Undo covers palette plus every included remap. Failure keeps
+data/history/Redo; no-ops retain Redo. Exclusions, other palette users, source
+selection, clipboards, silhouettes/transparency, metadata, IDs, assignments,
+baselines/points and padding remain fixed. Save retains the existing IMG layout.
+Textures live through the applying frame and release on next open/Quit/shutdown;
+parent keyboard, pause/drop guards cover the nested review.
+
+Release/ASAN model checks pass for anchored/signed shifts, exact source mask holes,
+region area/centroid rejection, remote/no-match reserved pixels, shared-only
+contests, source pinning/inclusion validation, exact RGBA, safe alternate-only/
+hidden-layer slot reservations, blocked target frames and exclusions, stale raw
+palette/padding/alt tails/layers/anchors and membership, tampered masks/results,
+foreign/pending reviews, no-op Redo, appended depth/PPP, full256 approximation and
+unresolved all-reserved refusal, 360 allocation-failure positions, bounded matcher
+work and five original-layout Save/reopen plus byte-exact Undo rounds. Full Release
+build passes. CTest is 107/108 with only the existing external MK2 roster assertion;
+standalone strike-phase fixtures still pass.
+
+The 270-frame actual-input cross-frame check passes compact/wide Release and
+compact ASAN: matched/no-match previews and outline toggle, explicit no-match
+inclusion, source-only/matched scope, source pinning, Cancel/Apply/Undo/Redo/exact
+Undo, all included-frame output and reserved-swatch selection, unchanged excluded/
+other-palette users, alternate/hidden-overlay blocking and exclusion, original-
+format reopen, stale/missing/no-op reviews, appended growth/PPP, approximation
+approval/reset/Apply/Undo, independent clipboards and nested keys. Final layouts
+visually inspected. Existing compact single-isolation, swatch clipboard, selection
+and hotkeys/Help regressions pass. Help has a dedicated topic; README updated.
+Classic UI and IMG adapters unchanged; no game-source/assets or commits/pushes.
+
+
+### Reviewed Remap Similar Regions — 2026-10-19
+
+The classic ApplySelectionRemapToMatchingSprites workflow is now available from
+Palette > Remap Similar Regions, the selection inspector and the source
+palette's destination-swatch context. It directly recolors matched feature
+pixels, while the preceding isolation workflow moves outside pixels for later
+palette editing. Both share one extracted pure matcher; classic UI is unchanged.
+The sample excludes the destination index from colors and seeds, preserving the
+classic partial-remap behavior. The source retains exact selected opaque mask
+holes; other primary users use anchor-relative seeds and connected components
+with area/centroid gates. Suggestions may be wrong and require per-frame review.
+
+Existing opaque destinations only: palette words/count/depth never change. The
+review has per-frame outlines and before/after composites, changed index/RGB
+counts, Source only/Matched/All/None and individual exclusions, including source.
+No-match rows start excluded; including them performs no edits. Changing the
+destination rematches and resets scope. Destination selection remains enabled
+after a destination-only sample error. Actual remaps with active alternate
+references or any overlay, including hidden/off-canvas, need resolution or
+exclusion. Metadata, padding, baseline/points, IDs, assignments, transparency,
+silhouettes, outside pixels, excluded users and independent clipboards stay fixed.
+
+Immutable owned captures include raw palette fields/words, all primary/active-
+alternate users, padded base pixels, alternate tails and full layer bytes. Apply
+recaptures/rematches, validates scope/masks/outputs and recomputes blockers. All
+history allocations precede publication; one Undo covers included pixel edits.
+Stale, forged or allocation-failed reviews cannot partially apply. Empty/no-match
+scopes retain Redo. Capture uses the existing 2000-user, 8192-dimension, 4 Mi-pixel,
+256 MiB pixel/mask/output/scratch and 64 Mi matching-step limits. Save and Save As
+retain the original IMG version/layout, without adding a conversion path.
+
+Release and AddressSanitizer model checks pass: partial-remap destination
+exclusion, source holes, signed anchors/remote components, duplicate RGB words,
+full256 destination, empty/no-match/source-excluded scopes, alt/hidden-overlay
+blockers, stale raw sources/membership, forged masks/outputs, foreign/pending
+reviews, metadata/padding/history preservation, 360 allocation-failure positions,
+bounded matcher work and five original-layout Save/reopen + byte-exact Undo rounds.
+Full Release build passes; CTest is 108/109 with only the existing external MK2
+roster-count assertion. Standalone strike-phase fixtures pass.
+
+The 246-frame actual-input check passes compact/wide Release and compact ASAN:
+context destination, per-frame/no-match/outline previews, all scope controls and
+source exclusion, Cancel, nested keys, Apply/Undo/Redo/exact Undo, blockers and
+exclusions, destination-only refusal/recovery and scope reset, stale/missing
+samples, palette/clipboard preservation and original-format Save/reopen. The
+compact layout was expanded after this check exposed a short frame list and
+clipped impact text. Final compact/wide layouts were visually inspected. Help
+has a dedicated topic and README documents the workflow. No classic UI, IMG
+adapters or game-source/assets were changed in this slice.
+Compact cross-frame isolation, single-selection isolation, palette-swatches,
+selection and hotkeys/Help regressions pass after the extraction and topic
+addition. git diff --check and new-file whitespace checks pass.
+
+
+### Raw embedded animation metadata and current port ledger — 2026-10-19
+
+IMG animations > Edit stored metadata ports classic SeqScrDrawRecordEditor's
+record flags/Start X/Y/damage refs and selected entry spare-word controls. The
+new pure studio_embedded_metadata model captures the complete animation blob,
+sequence/script counts, original/current layout versions, global damage refs and
+buffer-script bytes. The UI uses the existing edit-dialog modal guard, pausing
+playback and protecting shortcuts, file drops and workspace changes. No classic
+UI or IMG adapter changes are involved. Whole-record deletion is not a classic
+raw-editor command and was not added as a supposed missing port.
+
+The review stages unsigned16 flags with a hex readout, signed16 start coordinates,
+six damage refs and three selected-entry signed spare words. Empty records omit
+entry changes. Sequence entries use reversed disk/playback mapping; script entries
+are forward. Damage choices resolve sequence/script names; None stores -1.
+Unusual/unresolved existing bytes remain exact unless edited. New references must
+resolve, fit signed8 and be supported by the original layout. The global damage
+table and buffer-script field are never edited. Start values are raw game/WIMP
+metadata, not Studio stage placement or an executed runtime instruction.
+
+Only the selected header fields and selected entry spares can change. Apply
+recaptures the full sources and re-derives the output, rejecting stale/foreign/
+pending/tampered reviews. History capture/capacity allocations precede memcpy;
+one Undo covers the result and allocation failure cannot publish partially.
+No-op retains Redo. Names, counts/order, targets, ticks/deltas, pointer/reserved
+bytes, other records, sprite pixels/anchors/metadata/IDs, palettes, baselines,
+points and padding remain fixed. Save retains each original IMG version/layout.
+
+Release and ASAN model tests pass: exact changed-byte whitelist, reversed/forward
+entry indexing, empty records, full signed16/flags ranges, valid/invalid/unusual
+damage refs, stale raw blob/table/buffer bytes, forged output/offsets, foreign/
+pending/invalid records, 240 allocation-failure positions, Undo/Redo and five
+original-layout Save/reopen + byte-exact Undo rounds. Full Release build passes.
+Full CTest is 109/110, with the same existing external MK2 roster assertion.
+
+The 318-frame actual-input check passes compact/wide Release and compact ASAN:
+all field types, resolved damage pickers, unusual-byte retention, Cancel/no live
+edit, modal key ownership, Apply/Undo/Redo, script/empty-record editing, no stage
+or pixel/global-table changes, original-format reopen/exact Undo, stale/range
+refusal and corrected-value recovery. Final layouts inspected. Help has a
+Stored animation metadata topic; README describes the review.
+
+STUDIO_PORT_STATUS.md is now the current code-checked known-gap list, linked from
+README. It separates implemented palette gradients from missing sprite opacity/
+ramp pixel gradients, region extraction from the precise full-canvas overlay-
+frame command, and implemented preview/source editing from remaining WAX/runtime/
+damage-bound transfer/legacy-adapter behavior. Historical pending paragraphs are
+not authoritative current status. Remaining work is not reduced to a percentage
+or claimed exhaustive parity certification. The old Windows launch-memory report
+remains unproven by these checks. No game sources/assets or commits/pushes.
+Compact embedded, sprite-editing, hotkeys/Help and animation-copy actual-input
+regressions pass. The final metadata footer was shortened to fit the compact
+review. Standalone strike-phase fixtures pass without the external roster.

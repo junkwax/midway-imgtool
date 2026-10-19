@@ -8,7 +8,7 @@ void refresh_swatch_review(Tab &t){
     u.swatch_valid=plan_palette_swatches(*t.art,u.index,u.swatch_source,(SwatchPaste)u.swatch_kind,u.swatch_slot,t.ppp,u.swatch_plan,u.swatch_error);
 }
 void start_swatch_review(Tab &t,SwatchPaste mode,int slot){
-    auto &u=palettes;if(palette_pending()||u.merge_mode||u.usage_mode||u.ramp_mode||u.swatch_mode)return;
+    auto &u=palettes;if(palette_pending()||u.merge_mode||u.usage_mode||u.ramp_mode||u.swatch_mode||u.inherit_mode)return;
     finish();u.swatch_source=swatch_clipboard;u.swatch_generation=t.art->generation();u.swatch_kind=(int)mode;u.swatch_slot=slot;u.swatch_mode=true;u.swatch_plan={};u.error.clear();u.swatch_error.clear();refresh_swatch_review(t);
 }
 void swatch_copy_menu(Tab &t,int slot){
@@ -16,6 +16,14 @@ void swatch_copy_menu(Tab &t,int slot){
     if(ImGui::MenuItem("Copy this color"))copy_swatch_colors(t,slot,true);u.copy_one_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     int count=0;for(size_t i=0;i<u.baseline.size();++i)count+=u.selected[i];if(!count)count=1;
     if(ImGui::MenuItem(("Copy selected colors ("+std::to_string(count)+")").c_str()))copy_swatch_colors(t,slot,false);u.copy_swatches_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::MenuItem("Make colors transparent..."))start_palette_transparency(t,slot);u.transparency_menu_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::MenuItem("Remove selected color slots..."))start_palette_removal(t,slot);u.remove_slots_menu_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::MenuItem("Move selected colors to end..."))start_palette_move(t,slot);u.move_menu_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::MenuItem("Isolate canvas selection colors..."))start_palette_isolation(t);u.isolation_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::MenuItem("Isolate selection across frames..."))start_isolation_frames(t);u.frames_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::MenuItem("Remap Similar Regions to this color...",nullptr,false,slot>0))start_region_remap(t,slot);u.remap_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::MenuItem("Copy #0 to opaque slot..."))start_palette_zero(t,-1);u.zero_menu_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::MenuItem("Copy #0 here...",nullptr,false,slot>0))start_palette_zero(t,slot);u.zero_here_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     ImGui::Separator();bool any=!swatch_clipboard.slots.empty();
     ImGui::TextDisabled("%zu copied colors",swatch_clipboard.slots.size());if(any)ImGui::TextDisabled("From %s",swatch_clipboard.source.c_str());
     if(ImGui::MenuItem("Paste copied color here",nullptr,false,swatch_clipboard.slots.size()==1&&slot>0))start_swatch_review(t,SwatchPaste::AtSlot,slot);u.paste_one_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;

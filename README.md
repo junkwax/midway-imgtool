@@ -747,6 +747,10 @@ For an isolated workspace build, use `-BuildRoot .\build-studio`; the executable
 is then `build-studio\build\Release\imgtool-studio.exe`. Keep `SDL2.dll` beside
 the executable. On other platforms, build the CMake target `imgtool-studio`.
 
+For the current list of remaining ports and known boundaries, see
+[Studio port status](STUDIO_PORT_STATUS.md). Older checkpoint notes below describe
+earlier stages of the migration.
+
 Open an IMG or choose **Explore sample**. **H / F1** opens searchable Help,
 with the current keyboard reference, Studio workflows, frame-origin/anchor and
 file-format explanations, and the original DMA2 hardware reference. **F9** toggles
@@ -821,6 +825,21 @@ Apply never saves automatically, and Save retains the original IMG version and
 record layout. External palette-name references in ASM/TBL files or closed
 projects are not scanned; keep palettes still needed by those sources.
 
+**Palette > Merge duplicate palettes...** reviews exact matches across the library.
+Matching requires identical complete RGB555 words (including index zero and stored
+high bits), color count and declared depth. The earliest matching palette keeps
+its name and metadata. Later duplicates start checked for merging; uncheck any
+separately named palette you still need, or use **Keep all**. **Only duplicates**
+hides unique palettes; select a row to inspect its survivor and resulting index.
+
+**Merge selected duplicates** remaps primary and active alternate references in
+one Undo step, preserving pixel colors and indices, layers, anchors and embedded
+data. Default alternate references and bytes after the terminator stay intact.
+Colors and depth differences stay separate. Cancel edits nothing; a changed
+library requires reopening the review. Save separately in the original IMG format.
+External palette names in ASM/TBL or closed projects are not scanned, so keep
+palettes still required by those sources.
+
 Click a swatch to select one color, **Ctrl-click** to toggle colors, or
 **Shift-click** for a range. **All opaque** and **Used in preview** provide quick
 selection. RGB555 and hue/saturation/lightness adjustments use a before/after
@@ -875,17 +894,333 @@ alternate palettes are skipped, and their source palette remains available.
 remain; merging and removal undo together. The existing destination's sprites keep
 their colors, and transparency remains index zero.
 
-**Usage / compact...** shows a per-color histogram of primary and alternate
-pixel references and a preview of the resulting palette. **Pack used colors
-together** removes unused gaps while retaining used colors in their original
-order; turning it off trims only an unused tail. Alternate references keep
-indices fixed automatically, so those palettes use tail trimming. Declared depth
-stays unchanged unless **Recompute declared color depth** is checked. The preview
-reports color-count, index and packing changes; **Apply compaction** is one undo
-step, and **Cancel compaction** leaves the IMG untouched. Used duplicate colors
-remain separate, and no colors are approximated. General color-count resizing,
-multi-source merging remain pending. Digitize imports provide material-mask and
-footage-ramp fitting in their own source review.
+**Remap Similar Regions:** select a feature on the canvas, choose an opaque
+destination swatch and open **Palette > Remap Similar Regions...** or the
+selection inspector's action. Palette manager's swatch context action uses the
+clicked destination on the artwork sprite's own palette. Review each included
+frame's matched outline and before/after preview. The source uses its exact mask
+with holes; other primary users use animation-point-relative seeds and connected
+source indices. These are heuristic suggestions and can match the wrong feature.
+Destination-colored pixels never seed or bridge matches, allowing partial remaps
+to be reviewed without reseeding already recolored pixels.
+
+**Matched**, **Source only**, **All**, **None** and individual checkboxes set
+scope. The source can be excluded; no-match rows start unchecked and including
+one changes nothing. Changing the destination rematches and resets scope.
+Only matched pixels on included frames change indices. Actual remaps on frames
+with overlays or active alternate references require resolution or exclusion.
+Palette words, count/depth, transparency, silhouettes and outside pixels stay
+fixed; the destination must be an existing opaque slot. Apply uses one Undo step,
+keeps the canvas selection and highlights the destination. Cancel, stale reviews
+and allocation failures preserve artwork/history; unchanged scopes retain Redo.
+Save retains the original IMG version/layout. Help contains a searchable
+**Remap Similar Regions** topic. Matching uses the same bounded budgets below.
+
+**Isolate colors across frames:** select a feature on the canvas and choose
+**Palette > Isolate selection across frames...**, **Across frames...** in the
+single-sprite review, or the source palette's swatch context action. This reviews
+all primary users of that palette in the current IMG, independently of sprite
+marks and stored animation sequences. The source keeps its exact opaque mask;
+other frames use animation-point-relative seeds, matching source indices and
+connected components with size/distance gates. Suggested regions may expand or
+match the wrong feature: inspect every included outline and before/after preview.
+
+The source is pinned. **Matched** includes it and suggested matches; **Source
+only** isolates just the source; **All** explicitly includes no-match frames.
+No-match rows start unchecked. Including one remaps all of its reserved-index
+pixels away from the feature indices, so it will stop following later feature
+recoloring. Excluded and alternate-only users retain their indices; the review
+counts remaining references that can still follow shared recoloring.
+
+One shared plan covers contested colors outside all included regions. Exact
+stored words, safe unused slots and appended duplicates preserve appearance.
+Full-palette approximation requires approval when RGB changes, reset by inclusion
+or packing changes. Actual remaps on a frame with an overlay or active alternate
+references require resolution or exclusion. Source cannot be excluded, and every
+contested color needs a destination. Usage includes hidden/off-canvas overlays
+and active alternate users. Count/depth growth and PPP crossings are reviewed.
+
+Apply records one Undo step for the palette and all included frames, then selects
+reserved swatches for later recoloring. It recaptures/rematches and validates
+sources, masks, scope and outputs before publication. Cancel, stale reviews and
+allocation failures leave document/history intact. Already-exclusive scopes keep
+Redo. Matching is bounded by a 256 MiB pixel/mask/output/scratch budget and 64 Mi
+work steps, with up to 2000 palette users and 4 Mi-pixel sprites. The canvas
+selection, clipboards, transparency, silhouettes, metadata, baselines, points,
+padding, IDs and assignments stay fixed. Save retains the existing IMG
+version/layout; verify LOAD2 packing after count/depth growth. Help contains a
+searchable **Isolate colors across frames** topic.
+
+**Isolate selection colors:** make a Marquee/Lasso/Wand canvas selection, then
+choose **Palette > Isolate selection colors...** or the selection inspector's
+button. The Palette manager's swatch context menu also offers **Isolate canvas
+selection colors...**; choose the artwork sprite's own palette first. Selected
+opaque pixels keep their indices, while pixels outside the captured mask that
+use those same colors move to duplicate slots. Mask holes count as outside.
+This prepares independent recoloring of a feature within the current sprite.
+
+The planner uses exact stored-word matches, then unused slots, then appended
+duplicates. Usage includes every primary/active-alternate source user and all
+overlays, including hidden/off-canvas overlays. A full palette can use nearest
+unreserved colors only after **Allow approximate outside colors** is checked
+when RGB changes. Changing packing settings resets approval. If any contested
+color has no destination, the whole operation is blocked. Resolve a target's
+overlay or active alternate references before changing its outside indices.
+
+Review reserved colors and outside mappings, unchanged shared-user previews,
+recycled/appended/approximate destinations, count/depth and LOAD2 PPP impact.
+Selection outlines show the protected mask. **Other frames keep their indices**;
+the review counts references that still share the reserved colors. Use **Across frames...** for the separate cross-frame matching/inclusion review.
+
+Apply records one Undo step and selects the reserved swatches for later palette
+editing. No recoloring of the selected feature happens automatically. Already
+exclusive selections keep Undo/Redo history, while missing or transparent-only
+selections are refused. Cancel changes nothing; stale sources and allocation
+failures preserve document/history. Palette growth raises depth only when needed.
+Transparency, silhouettes, metadata, baselines, points, padding, IDs, assignments,
+the canvas mask and independent clipboards remain intact. Save retains the
+original IMG version/layout; verify LOAD2 packing after palette growth/depth
+changes. Help has a searchable **Isolate selection colors** topic.
+
+**Move selected colors to the end:** select opaque swatches in Palette manager
+and choose **Move to end...** (**Move...** in a narrow panel), or use **Move selected
+colors to end...** on a swatch's context menu. With no selection, the context
+action uses the clicked opaque color. The review can change the set. Unselected
+colors come first, selected colors last; both groups keep their original order.
+Unused colors and complete stored words are retained. The result swatches and
+old-to-new map show the outcome.
+
+Every primary palette user remaps together to preserve its appearance. Sprite
+marks and canvas selections do not limit this shared edit. Resolve blocked
+overlays or alternate appearances before moving their referenced indices; moving
+unused colors is allowed when every guarded index stays fixed. Alternate-only
+previews retain their indices to show the affected appearance. No users can be
+excluded. Palette count/depth, transparency, silhouettes, metadata, baselines,
+points, padding, identities and assignments stay fixed.
+
+Apply uses one Undo step, and the chosen swatches/highlight follow their new
+indices. Cancel leaves the IMG intact. Already-final or all-opaque selections
+are no-ops, retain Redo and add no history; empty sets are refused. Changed sources
+invalidate review; allocation failure preserves document/history/Redo. Canvas
+selection and independent clipboards stay intact. This differs from **Reverse
+selected order**, which changes colors at fixed indices. Save keeps the existing
+IMG version/layout. Help has a **Move palette colors to end** topic.
+
+**Copy index zero to an opaque color:** choose **#0 to opaque...** in Palette
+manager, or right-click a swatch for automatic placement or **Copy #0 here...**.
+The default **Copy color only / leave pixels** copies index zero's complete
+stored color word into a nonzero slot. Index zero stays unchanged and transparent.
+Automatic placement appends while space remains; a full palette first finds a
+slot unused by every primary/active-alternate user and overlay (including hidden
+and off-canvas overlays), then tries an identical stored color. Explicit placement
+can grow through slot 255, filling gaps with black. Growth raises declared depth
+only when needed.
+
+Optionally **Remap current artwork sprite** or **Remap canvas selection only**
+to make its base zero pixels opaque. Current includes the transparent canvas
+background; selection respects arbitrary mask holes captured at review entry.
+The target is the selected artwork sprite on this palette, independently of the
+manager's preview selector. Resolve target overlays or active alternate references
+before remapping transparent pixels. Copy-only remains available.
+
+The review shows shared users, destination usage/colors, before/after composite
+previews, pixels made opaque, palette growth/depth and LOAD2 PPP impact. Replacing
+an already-used destination with different RGB requires explicit approval to
+recolor its existing users; changing settings resets approval. Other sprites'
+pixel indices and assignments stay fixed. Apply is one Undo step, Cancel changes
+nothing, and changed sources invalidate review. Identical no-op copies retain
+Redo and add no history. Canvas/swatch selections and independent clipboards stay
+intact; the destination is highlighted after Apply. Save retains the original
+IMG version/layout. Check LOAD2 packing after palette growth or silhouette changes.
+Help has a searchable **Copy zero color to opaque** topic.
+
+**Remove palette slots:** select opaque swatches in Palette manager and choose
+**Remove slots...**, or **Remove selected color slots...** on a swatch's right-click
+menu. The review shows all primary and active alternate users, the old-to-new slot
+map, cleared pixels, shifted indices, and before/after appearance. Matching primary
+pixels become transparent; surviving stored colors keep their order and shift down.
+Index zero is protected. All opaque slots can be removed, leaving zero only.
+
+Slot removal changes the shared palette, so individual sprites cannot be excluded
+and canvas selections/marks do not limit it. Resolve every blocked user first.
+Overlays and alternate appearances whose referenced indices would change are
+blocked; unused-tail removal is allowed when every relevant index stays fixed.
+Unused palettes have a palette-only review. Declared depth, other metadata,
+assignments, baselines, points, alternate tables and padding stay unchanged.
+
+**Apply** records one Undo step for the palette and all primary pixel remaps.
+**Cancel** changes nothing. Palette swatch selection clears because slot numbers
+changed; the highlighted slot follows the mapping, and the canvas selection stays.
+The PPP control compares color-count limits without changing depth. Check LOAD2
+packing after palette-size or silhouette changes. Save retains the original IMG
+version/layout. Pixel, palette and swatch clipboards are independent.
+
+**Make colors transparent:** in Palette manager, select swatches and choose
+**Make colors transparent...**, or use the action on a swatch's right-click menu.
+With no opaque colors selected, the clicked/highlighted nonzero swatch is used.
+The review can toggle colors and choose **Current sprite**, **Canvas selection
+only**, **Marked on this palette**, or **All sprites on this palette**. Current
+and canvas selection refer to the selected artwork sprite at entry, independently
+of the palette preview selector. Scope stays on the chosen palette; alternate-only
+users and marked sprites on other palettes are excluded. Canvas masks keep holes.
+
+Review before/after base pixels and uncheck rows to exclude them. Overlays, active
+alternate appearances and unresolved indices that need attention are shown as
+blocked rows. Apply makes matching pixels index zero in one Undo step. Palette
+words, slots, count/depth, assignments, baselines, points and pixel padding stay
+fixed. This does not remove palette entries or shift higher indices. Empty edits
+add no history; Cancel changes nothing. Selected palette swatches and the canvas
+selection remain intact after Apply, and clipboards are independent. Save retains
+the IMG version/layout. Removing pixels changes silhouettes and can affect LOAD2
+zero-shape packing; verify packing before building game data.
+
+**Alternate costume tint:** choose **Palette > Alternate costume...** with a
+sprite selected, then **Tint material ramps**. Choose the source palette, tint color and strength,
+then select detected ramps or enter manual slot ranges such as `1-5, 10-32`.
+The first detected ramp starts selected as a suggestion; confirm the material.
+Review before/after sprites and source/copy swatches. Tinting uses the original
+tool's luminance-preserving colorization. A blank name uses the source and tint
+hue; collisions receive a unique number. Names allow up to nine letters, digits
+or underscores.
+
+**Create only / unassigned** is the default. Optionally assign the new palette
+to the selected sprite, marked sprites on the source palette, or all primary
+users of that palette. Copy creation and assignments undo together. Pixel
+indices, transparency, source colors, the copied palette's count/depth metadata
+and alternate references stay fixed; the library gains one palette. Overlays use
+the new primary colors while alternate appearances retain their palettes.
+Cancel changes nothing; changed source data requires a fresh review. Save
+retains the IMG's original version/layout.
+
+**Borrow costume materials:** in **Palette > Alternate costume...**, choose
+**Borrow material colors**, then a different reference palette. Name each
+material and enter its slot ranges on both palettes (for example `1-5, 10-32`
+here and `31-48` in reference). Add up to 16 sections; enable the materials to
+borrow. Enabled sections must own separate slots on both sides. The before/after
+sprites and highlighted source/copy/reference swatches show the result.
+
+Choose **Costume family's pixel coverage** (default), **This palette's pixel
+coverage**, or **Equal shade weights**. Coverage matches shades by their share
+of base pixels, preserving brightness order even when ramp lengths differ.
+Family coverage pools same-size palettes sharing at least a quarter of opaque
+slots, independently of section ranges/order. Counts show pooled palettes and
+sprites plus each section's pixels. Padding, overlays and alternate-only users
+do not contribute coverage; an empty side falls back to equal weights.
+
+Borrowing creates a copy with the source's slot layout/count/depth and metadata.
+It preserves transparency, unselected words and stored high bits. Reference
+palettes and sprite pixels stay fixed. Automatic names combine source/reference
+stems; optional primary sprite assignments undo with the copy. Changes to colors,
+family membership or captured sprite data require a new review. Save keeps the
+existing IMG version/layout. Use Saved mappings to keep material sections for reuse.
+
+**Saved costume mappings:** in Borrow material colors, click **Saved mappings...**.
+**Paired templates** store both palettes' ranges. **One-palette layouts** replace
+only **This palette** or **Reference palette**, pairing material names without
+regard to case. An associated layout is suggested by palette name and color
+count. Review the mapping table, then **Use mapping** to update the costume draft.
+Nothing is applied automatically. Incompatible color counts, out-of-bounds ranges
+and overlaps are blocked without clipping; unmatched materials are disabled until
+you fill the missing side and enable them in the costume editor.
+
+**Save current** stores enabled materials only. Preset names allow 1-31 characters;
+saved material names allow 1-15, without separators `| ; = ,`. Colors, coverage
+choice and sprite assignments are not stored. Updating a matching name requires
+**Replace existing**. **Delete selected preset** leaves the current draft intact.
+Saving/deleting takes effect immediately and persists if you later Cancel the
+costume editor. **Reload presets** reads external changes; malformed files block
+writes, and changed files require reload before replacement. Preset operations
+leave IMG data and Undo history unchanged.
+
+Studio keeps `palette_layouts.txt` and `costume_templates.txt` in its settings
+folder (hover the displayed filename for its full path), using the original tool's
+text format. Each file supports 256 presets / 1 MiB. Classic settings are not read
+or changed automatically. Presets never enter an IMG file; Save and Save As keep
+the original IMG version and record layout.
+
+**Transfer palette by ramps:** choose **Palette > Transfer palette by ramps...**
+with a sprite selected. Pick a destination and transfer the selected sprite,
+marked sprites on its source palette, or all sprites on that palette. Review
+and correct the automatically suggested ramp pairings. **Relative shading**
+stretches dark/light positions within the paired ramp; **Match brightness** uses
+nearest luminance inside it. Adjust the split angles to re-detect ramps, choose
+another destination ramp, or explicitly use nearest-color fallback. The review
+shows each source/result strip and previews every sprite. Scope usage counts
+include excluded sprites; change and packing summaries cover included sprites.
+
+Uncheck rows to exclude them. Overlays and remaps that would alter active
+alternate appearances need resolution or exclusion; identity maps retain
+alternate tables. **Allow color changes** is required when included pixels
+change appearance and resets after settings/inclusion changes. Apply transfers
+all included sprites in one Undo step. Cancel changes nothing. Both palettes,
+their colors/depth/metadata, sprite identities, baselines, point tables, padding
+and independent clipboards stay unchanged. Index zero stays transparent and
+opaque pixels remain opaque. Save retains the original IMG version/layout;
+review the LOAD2 packing report before building game data.
+
+**Downscale palette:** choose **Downscale...** in Palette manager and review a
+4-8 bpp color limit (16-256 total colors). The review keeps the original colors
+and indices when they already fit, packs used colors exactly when possible,
+and otherwise uses the original tool's pixel-weighted color merging. Preview
+all affected sprites and result swatches, then check **Allow approximate colors**
+when colors change. Changing the limit resets that approval. **Apply downscale**
+commits one Undo step and sets the declared depth; Cancel changes nothing.
+
+Transparency stays at index zero; opaque pixels always map to opaque slots.
+Names, other metadata, sprite assignments, baselines and pixel padding stay
+fixed. Alternate references and overlays block downscaling until resolved.
+An unreferenced palette gives all opaque slots equal weight and still requires
+approval for color loss. Review color-count/depth and LOAD2 PPP impact before
+building game data. Save retains the IMG's existing version and record layout.
+
+**Inherit palette colors:** in Palette manager, mark one other palette, select
+its destination and choose **Inherit colors from marked...**. Review the before/
+after sprites, color approximations and LOAD2 packing impact. RGB matching
+follows the original tool; perceptual matching is optional. Used colors that
+change require **Allow approximate colors**; changing matching resets that
+approval. Apply copies the marked source's colors, count, depth and padding into
+the destination and remaps its sprites to opaque slots in one Undo step. The
+destination keeps its name, other metadata and assignments. The source and all
+clipboards stay unchanged. Cancel discards the review. Active alternate references
+and overlays block this operation until resolved to protect shared appearances.
+Save retains the IMG's original version and record layout.
+
+**Clean palette copy:** choose **Clean copy...** in Palette manager to create a
+trimmed, sorted palette without editing the source or assigning the result.
+The review names the new palette and previews its colors. Choose original,
+dark-to-light (default), or hue-family order; depth recalculation is separate
+and defaults off. **Create clean copy** appends a uniquely numbered palette in
+one Undo step. Cancel adds nothing; Save keeps the original IMG version/layout.
+
+Usage includes primary and active alternate references plus all opaque overlay
+colors, including hidden/off-canvas overlays. Base colors under overlays stay
+available too. Sorting is allowed for the copy because source indices and
+assignments never move. An unreferenced palette retains all its colors rather
+than treating them as disposable. Source metadata and full stored words are
+copied; obsolete raw name bytes clear when the new name is numbered. Pixel,
+swatch, whole-palette, sprite and animation clipboards stay independent. Source
+changes invalidate the review; allocation or capacity failure appends nothing.
+
+**Palette color organization:** in **Usage / compact...**, enable **Pack used
+colors together**, then choose **Original order**, **Dark to light**, or **Group
+like colors**. Grouping puts neutral shades first and creates a dark-to-light
+ramp for each hue family, following the original tool's ordering. The resulting
+swatches and old/new index table show the changes. Sprite appearance stays exact:
+used pixels remap with complete stored color words, keeping transparency,
+opaque black, high bits and separate duplicate live slots intact.
+
+Turning packing off keeps indices/order fixed and trims only unused tail slots.
+Alternate-palette users lock shared indices and disable sorting; flatten or
+remove relevant overlays before compaction/organization. **Recompute declared
+color depth** stays an independent, opt-in choice. Review PPP/count/depth impact,
+then **Apply organization** for one Undo step or **Cancel compaction** to discard.
+Source changes require reopening the review. Apply validates the captured colors,
+metadata, pixels and alternate references before changing anything. Save retains
+the original IMG version and record layout.
+
+The usage histogram lists primary/alternate pixel counts and old/new indices.
+Used duplicate colors remain separate, and no colors are approximated. Digitize
+imports provide material-mask and footage-ramp fitting in their own source review.
 
 Select swatches, then **Shading / gradients...** to recolor that selection.
 **Single-color shading** combines a base color with each original swatch's
@@ -918,8 +1253,18 @@ Scripts show their stored call list; **Open sequence** previews the called seque
 This does not execute script control flow. **Create scene snapshot** copies a
 sequence's order, timing, offsets and facing into a separate composition. Snapshot
 edits stay in that scene; they do not update the original embedded sequence.
-Record deletion, advanced header editing and WAX rows driven by embedded records
-remain pending.
+**Edit stored metadata...** in the animation inspector reviews record flags,
+signed Start X/Y, six damage references and the selected entry's three spare
+words. Damage choices resolve existing sequence/script targets; **None** clears
+a binding. Existing unusual bytes stay fixed until edited; new bindings must
+resolve and fit the original IMG layout. Empty records have no entry spares.
+Start coordinates are stored game/WIMP data and do not move Studio's stage.
+Apply records one Undo step; Cancel/stale/allocation-failed reviews preserve data
+and history. Other header/entry bytes, pixels, palettes and the global damage
+table stay unchanged. Save retains the original IMG version/layout. Help has a
+**Stored animation metadata** topic. WAX rows driven by embedded records and
+script runtime execution remain incomplete; whole-record deletion is an extension
+beyond classic's entry-deletion controls.
 
 **Feet to floor** places the current frame once; the anchor target then stays
 fixed while you browse. Drag an opaque piece to adjust its primary IMG anchor.
