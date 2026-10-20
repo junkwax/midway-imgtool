@@ -166,7 +166,7 @@ void project_controls(Tab &t){
     ImGui::SameLine();if(ImGui::Button("Fit")){u.zoom=0;u.pan=ImVec2();}
     ImGui::TextDisabled("Drag actors to place them. Scene edits save separately from IMG.");
 }
-SpritePlacement scene_placement(const IMG &im,const ScenePose &pose,const SceneState &s){auto p=place_sprite(im,pose.x,pose.y,pose.flip_x,s.convention);if(pose.flip_y)p.y=pose.y-anipoint_effective((short)im.aniy,im.h,true,s.convention);return p;}
+SpritePlacement scene_placement(const IMG &im,const ScenePose &pose,const SceneState &s){return scene_pose_placement(im,pose,s.convention);}
 Tab *scene_sprite(const SceneState &s,const SceneSprite &ref,int &index){auto source=find(s.assets[ref.asset].runtime_doc);index=source?source->art->sprite_index(ref.runtime_id):-1;return index>=0?source:nullptr;}
 void draw_scene_pose(const SceneState &s,const ScenePose &pose,ImDrawList *dl,ImVec2 stage,float zoom,ImU32 color){
     int index;auto source=scene_sprite(s,pose.sprite,index);if(!source)return;auto im=source->art->sprite(index);auto p=scene_placement(*im,pose,s);
@@ -194,13 +194,13 @@ void project_canvas(Tab &t,float height){
         if(s.ghost_facing&&pose.lane==u.lane){auto ghost=pose;ghost.flip_x=!ghost.flip_x;draw_scene_pose(s,ghost,dl,stage,z,IM_COL32(255,152,163,80));}
         draw_scene_pose(s,pose,dl,stage,z,IM_COL32(255,255,255,pose.alpha));
         if(pose.lane==u.lane&&pose.frame==u.frame){dl->AddRect(stage+ImVec2(p.x*z,p.y*z),stage+ImVec2((p.x+p.w)*z,(p.y+p.h)*z),pose.dual?IM_COL32(235,164,92,190):IM_COL32(226,86,104,190));
-            if(u.smoke){bool found=false;for(int y=0;y<im->h&&!found;++y)for(int x=0;x<im->w;++x)if(((unsigned char *)im->data_p)[y*((im->w+3)&~3)+x]){u.probe=stage+ImVec2((p.x+(pose.flip_x?im->w-1-x:x)+.5f)*z,(p.y+(pose.flip_y?im->h-1-y:y)+.5f)*z);found=true;break;}}
+            if(u.smoke){bool found=false;for(int y=0;y<im->h&&!found;++y)for(int x=0;x<im->w;++x)if(((unsigned char *)im->data_p)[y*((im->w+3)&~3)+x]){u.probe=stage+ImVec2((p.x+((pose.flip_x?im->w-1-x:x)+.5f)*pose.magnification)*z,(p.y+((pose.flip_y?im->h-1-y:y)+.5f)*pose.magnification)*z);found=true;break;}}
         }
     }
     ImVec2 anchor=stage+ImVec2(s.origin_x*z,s.origin_y*z);dl->AddLine(anchor-ImVec2(8,0),anchor+ImVec2(8,0),IM_COL32(239,193,94,255));dl->AddLine(anchor-ImVec2(0,8),anchor+ImVec2(0,8),IM_COL32(239,193,94,255));
     dl->PopClipRect();dl->AddRect(stage,end,IM_COL32(90,96,106,255));char label[120];snprintf(label,sizeof label,"SCENE  %d x %d  |  %.0f%%  |  tick %d",s.width,s.height,z*100,(int)u.tick);dl->AddText(pos+ImVec2(10,6),IM_COL32(165,176,192,255),label);if(missing)dl->AddText(pos+ImVec2(10,28),IM_COL32(255,100,120,255),"Missing sprite. Replace its frame in the inspector.");dl->PopClipRect();
     if(hovered&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)){float wx=(io.MousePos.x-stage.x)/z,wy=(io.MousePos.y-stage.y)/z;
-        for(auto it=poses.rbegin();it!=poses.rend();++it){int index;auto source=scene_sprite(s,it->sprite,index);if(!source||!it->alpha)continue;auto im=source->art->sprite(index);auto p=scene_placement(*im,*it,s);int x=(int)std::floor(wx-p.x),y=(int)std::floor(wy-p.y);
+        for(auto it=poses.rbegin();it!=poses.rend();++it){int index;auto source=scene_sprite(s,it->sprite,index);if(!source||!it->alpha)continue;auto im=source->art->sprite(index);auto p=scene_placement(*im,*it,s);int x=(int)std::floor((wx-p.x)/it->magnification),y=(int)std::floor((wy-p.y)/it->magnification);
             if(x<0||y<0||x>=im->w||y>=im->h)continue;if(it->flip_x)x=im->w-1-x;if(it->flip_y)y=im->h-1-y;
             if(!((unsigned char *)im->data_p)[y*((im->w+3)&~3)+x])continue;
             t.project->commit();t.project->begin("Move actor");u.lane=it->lane;u.frame=it->frame;u.playing=false;u.dragging=true;u.drag_mouse=io.MousePos;u.drag_x=s.lanes[u.lane].x;u.drag_y=s.lanes[u.lane].y;break;
@@ -225,8 +225,8 @@ void project_timeline(Tab &t,float height){
     int lane_start=scene_lane_start(s,u.lane),cursor_tick=0;
     for(int f=0;f<(int)lane.frames.size();++f){int seek=lane_start+(lane.frames[f].scheduled()?lane.frames[f].visible_from:cursor_tick);cursor_tick+=lane.frames[f].ticks;if(f)ImGui::SameLine(0,6);ImGui::PushID(f);ImVec2 a=ImGui::GetCursorScreenPos();
         if(ImGui::Selectable("##frame",u.frame==f,0,ImVec2(85,85)))scene_seek(t,f);
-        auto &frame=lane.frames[f];int left=32767,top=32767,right=-32768,bottom=-32768;std::vector<ScenePose> poses;
-        for(auto &ref:frame.pieces){ScenePose pose{ref,0,0,0,255,u.lane,f,lane.flip_x!=frame.flip_x,frame.flip_y};int index;if(auto source=scene_sprite(s,ref,index)){auto p=scene_placement(*source->art->sprite(index),pose,s);left=std::min(left,p.x);top=std::min(top,p.y);right=std::max(right,p.x+p.w);bottom=std::max(bottom,p.y+p.h);}poses.push_back(pose);}
+        auto &frame=lane.frames[f];int left=INT_MAX,top=INT_MAX,right=INT_MIN,bottom=INT_MIN;std::vector<ScenePose> poses;
+        for(auto &ref:frame.pieces){ScenePose pose{ref,0,0,0,255,u.lane,f,lane.flip_x!=frame.flip_x,frame.flip_y,false,lane.magnification};int index;if(auto source=scene_sprite(s,ref,index)){auto p=scene_placement(*source->art->sprite(index),pose,s);left=std::min(left,p.x);top=std::min(top,p.y);right=std::max(right,p.x+p.w);bottom=std::max(bottom,p.y+p.h);}poses.push_back(pose);}
         auto dl=ImGui::GetWindowDrawList();dl->PushClipRect(a,a+ImVec2(85,85),true);
         if(right>left&&bottom>top){float z=std::min(68.f/(right-left),42.f/(bottom-top));ImVec2 origin=a+ImVec2((85-(right-left)*z)*.5f,(48-(bottom-top)*z)*.5f)-ImVec2(left*z,top*z);for(auto &p:poses)draw_scene_pose(s,p,dl,origin,z,IM_COL32(255,255,255,255));}
         dl->AddText(a+ImVec2(5,49),ImGui::GetColorU32(ImGuiCol_Text),frame.name.c_str());char text[40];if(frame.scheduled())snprintf(text,sizeof text,"@%d%s",frame.visible_from,frame.dual?"  2 copies":"");else snprintf(text,sizeof text,"%d ticks%s",frame.ticks,frame.dual?"  x2":"");dl->AddText(a+ImVec2(5,67),ImGui::GetColorU32(ImGuiCol_TextDisabled),text);dl->PopClipRect();
@@ -236,16 +236,21 @@ void project_timeline(Tab &t,float height){
 void project_inspector(Tab &t){
     auto &s=t.project->state;auto &u=t.scene;clamp_scene_ui(t);auto &lane=s.lanes[u.lane];auto &frame=lane.frames[u.frame];
     if(u.motion_smoke&&ImGui::GetWindowHeight()<650)ImGui::SetScrollY(300);
+    if(u.subframe_smoke&&ImGui::GetWindowHeight()<650)ImGui::SetScrollY(220);
     ImGui::TextUnformatted("SCENE ACTOR");ImGui::Separator();char name[129];snprintf(name,sizeof name,"%s",lane.name.c_str());ImGui::SetNextItemWidth(-1);if(ImGui::InputText("##lane-name",name,sizeof name))lane.name=name;
     int xy[]={lane.x,lane.y};ImGui::SetNextItemWidth(-1);if(ImGui::InputInt2("##lane-position",xy)){lane.x=std::clamp(xy[0],-4096,4096);lane.y=std::clamp(xy[1],-4096,4096);}ImGui::TextDisabled("Actor offset X / Y");
     ImGui::Checkbox("Visible",&lane.visible);ImGui::SameLine();ImGui::Checkbox("Facing left",&lane.flip_x);
     ImGui::Checkbox("Loop actor",&lane.loop);ImGui::SameLine();ImGui::Checkbox("Hold end",&lane.hold_end);
     ImGui::SetNextItemWidth(100);if(ImGui::InputInt(lane.trigger_lane?"Delay after source":"Start tick",&lane.delay))lane.delay=std::clamp(lane.delay,0,100000);ImGui::SetNextItemWidth(-1);ImGui::SliderInt("Opacity",&lane.alpha,0,255);
+    const char *scales[]={"1x","2x","3x","4x"};int scale=lane.magnification-1;ImGui::SetNextItemWidth(90);
+    if(ImGui::BeginCombo("Magnification",scales[scale])){for(int i=0;i<4;++i){if(ImGui::Selectable(scales[i],i==scale)){lane.magnification=i+1;u.playing=false;}u.magnification_choices[i]=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;}ImGui::EndCombo();}u.magnification_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    ImGui::SetItemTooltip("Scales this actor around its origin, including frame offsets and motion. Preview and PNG only; IMG pixels and anchors stay unchanged.");
     project_trigger_controls(t,lane);
     ImGui::Spacing();ImGui::Text("FRAME %d / %d",u.frame+1,(int)lane.frames.size());ImGui::TextWrapped("%s",frame.name.c_str());
     int offset[]={frame.x,frame.y};ImGui::SetNextItemWidth(-1);if(ImGui::InputInt2("##frame-offset",offset)){frame.x=std::clamp(offset[0],-4096,4096);frame.y=std::clamp(offset[1],-4096,4096);}ImGui::TextDisabled("Frame offset X / Y");
     ImGui::SetNextItemWidth(100);if(ImGui::InputInt("Depth",&frame.z))frame.z=std::clamp(frame.z,-4096,4096);ImGui::Checkbox("Flip frame X",&frame.flip_x);ImGui::SameLine();ImGui::Checkbox("Flip Y",&frame.flip_y);
     project_motion_controls(t,lane,frame);
+    if(ImGui::Button("Swap with subframes..."))show_subframe_swap(t);u.subframe_swap_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     bool frame_used=scene_uses_frame(s,frame.id);ImGui::BeginDisabled(lane.frames.size()==1||frame_used);if(ImGui::Button("Remove frame"))u.command=SceneCommand::DeleteFrame;ImGui::EndDisabled();if(frame_used&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("An effect follows this frame. Detach the effect before removing its source.");
     ImGui::Spacing();ImGui::SeparatorText("Add artwork");
     auto source=find(u.source_doc);if(!source){source=&t;u.source_doc=t.uid;u.source_sprite=t.selected_id;}
@@ -288,18 +293,20 @@ void project_motion_controls(Tab &t,SceneLane &lane,SceneFrame &frame){
     if(t.scene.motion_smoke)ImGui::SetNextItemOpen(true,ImGuiCond_Always);
     if(!ImGui::CollapsingHeader("Motion & timing"))return;
     bool changed=false;
+    changed|=ImGui::Checkbox("Independent timing",&frame.independent_timing);
+    ImGui::SetItemTooltip("Schedules this frame independently, including an open-ended start at actor tick zero. Show/Hide also enable scheduling.");
     ImGui::TextDisabled("Frame visibility (actor ticks)");
     ImGui::SetNextItemWidth(105);if(ImGui::InputInt("Show at",&frame.visible_from)){frame.visible_from=std::clamp(frame.visible_from,0,99999);changed=true;}
     ImGui::SetItemTooltip("Starts at this actor tick, inclusive. A nonzero Show or Hide schedules the entry independently of the frame sequence.");
     ImGui::SetNextItemWidth(105);if(ImGui::InputInt("Hide at",&frame.visible_until)){frame.visible_until=std::clamp(frame.visible_until,0,99999);changed=true;}
-    ImGui::SetItemTooltip("Hidden at this tick and later. Zero means no end. Show=0 and Hide=0 restores sequential playback.");
+    ImGui::SetItemTooltip("Hidden at this tick and later. Zero means no end. Show=0 and Hide=0 with Independent timing off restores sequential playback.");
     int actor_now=std::clamp((int)t.scene.tick-scene_lane_start(t.project->state,t.scene.lane),0,99999);if(lane.stop_tick>0)actor_now=std::min(actor_now,lane.stop_tick);
-    if(ImGui::SmallButton("Show here")){frame.visible_from=actor_now;changed=true;}t.scene.show_here_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::SameLine();
+    if(ImGui::SmallButton("Show here")){frame.visible_from=actor_now;frame.independent_timing=true;changed=true;}t.scene.show_here_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::SameLine();
     if(ImGui::SmallButton("Hide here")){frame.visible_until=actor_now;changed=true;}ImGui::SameLine();
-    if(ImGui::SmallButton("Clear")){frame.visible_from=frame.visible_until=0;changed=true;}
+    if(ImGui::SmallButton("Clear")){frame.visible_from=frame.visible_until=0;frame.independent_timing=false;changed=true;}
     if(frame.visible_until&&frame.visible_until<=frame.visible_from)ImGui::TextColored(accent_surface(1),"Empty window: this entry stays hidden.");
     int velocity[]={frame.vx,frame.vy};ImGui::SetNextItemWidth(-1);if(ImGui::InputInt2("##frame-speed",velocity)){frame.vx=std::clamp(velocity[0],-128,128);frame.vy=std::clamp(velocity[1],-128,128);changed=true;}
-    ImGui::TextDisabled("Motion X / Y (pixels per tick)");ImGui::SetItemTooltip("Positive X moves right; positive Y moves down. Motion starts at Show at for scheduled entries, or at the first frame tick otherwise. Actor loops keep motion running; scene loops restart it.");
+    ImGui::TextDisabled("Motion X / Y (pixels per tick)");ImGui::SetItemTooltip("Positive X moves right; positive Y moves down. Actor magnification scales this motion and maximum travel. Motion starts at Show at for scheduled entries, or at the first frame tick otherwise. Actor loops keep motion running; scene loops restart it.");
     int caps[]={frame.cap_x,frame.cap_y};ImGui::SetNextItemWidth(-1);if(ImGui::InputInt2("##frame-travel",caps)){frame.cap_x=std::clamp(caps[0],0,99999);frame.cap_y=std::clamp(caps[1],0,99999);changed=true;}
     ImGui::TextDisabled("Maximum travel X / Y (0 = unlimited)");
     ImGui::SetNextItemWidth(105);if(ImGui::InputInt("Freeze actor at",&lane.stop_tick)){lane.stop_tick=std::clamp(lane.stop_tick,0,99999);changed=true;}

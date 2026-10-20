@@ -5,6 +5,7 @@
 #include <memory>
 
 namespace studio {
+struct SubframeSwapPlan;
 struct SceneAsset {
     std::string path, absolute_path, digest;
     uint64_t runtime_doc=0;
@@ -23,7 +24,8 @@ struct SceneFrame {
     int vx=0,vy=0,cap_x=0,cap_y=0;    // Screen pixels/tick and maximum travel; 0 cap is unlimited.
     bool dual=false;
     int dual_x=0,dual_y=0,dual_z=0;    // Absolute second-copy frame offsets, not primary-relative.
-    bool scheduled() const {return visible_from>0||visible_until>0;}
+    bool independent_timing=false; // Explicit open-ended scheduling from actor tick zero.
+    bool scheduled() const {return independent_timing||visible_from>0||visible_until>0;}
     uint64_t id=0; // Composition identity; independent of referenced IMG sprites.
 };
 struct SceneLane {
@@ -33,6 +35,7 @@ struct SceneLane {
     std::vector<SceneFrame> frames;
     int stop_tick=0; // 0 disables; otherwise freezes the actor's local clock.
     uint64_t id=0,trigger_lane=0,trigger_frame=0;
+    int magnification=1; // Display/export scale about the actor origin; never resizes IMG.
 };
 struct SceneState {
     int width=400,height=254,origin_x=200,origin_y=20,floor=234;
@@ -52,7 +55,9 @@ struct ScenePose {
     int x=0,y=0,z=0,alpha=255,lane=0,frame=0;
     bool flip_x=false,flip_y=false;
     bool dual=false;
+    int magnification=1;
 };
+SpritePlacement scene_pose_placement(const IMG &,const ScenePose &,MirrorConvention);
 int scene_duration(const SceneState &scene);
 int scene_frame_at(const SceneLane &lane,int tick);
 int scene_frame_start(const SceneLane &lane,int frame);
@@ -95,6 +100,7 @@ public:
     const std::string &opened_from() const {return original_path;}
     bool imported_wax() const {return imported;}
     bool uses_doc(uint64_t uid) const;
+    int apply_subframe_swap(const SubframeSwapPlan &,const SceneSource &,std::string &error);
     uint64_t allocate_id(){return next_entity_id++;}
     SceneState state;
 private:

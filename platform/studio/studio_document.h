@@ -11,6 +11,8 @@
 namespace studio {
 struct EmbeddedEntryValues;
 struct EmbeddedMetadataPlan;
+struct OpacityGradientPlan;
+struct SpriteRampPlan;
 struct PointTableEdit;
 struct PaletteMergePlan;
 struct PaletteMultiMergePlan;
@@ -33,6 +35,7 @@ struct PaletteCleanupPlan;
 struct ImportBatch;
 struct PixelSelection;
 struct RegionPlan;
+struct OverlayFramePlan;
 struct SelectionTransform;
 struct PaintBrush;
 struct PaintLineReview;
@@ -104,6 +107,7 @@ public:
     bool clear_selection(int index,const PixelSelection &selection,std::string &error);
     bool move_selection(int index,const PixelSelection &selection,int dx,int dy,std::string &error);
     int extract_regions(const RegionPlan &plan,std::string &error);
+    int create_overlay_frame(const OverlayFramePlan &reviewed,std::string &error);
     bool paste_layer(int index,const Clipboard &,int x,int y,std::string &error);
     bool paste_layer(const SelectionTransform &,std::string &error);
     bool edit_layer(int index,int x,int y,bool visible,bool flip_h,bool flip_v,std::string &error);
@@ -180,6 +184,8 @@ public:
     int embedded_add_record(bool script,const std::string &name,std::string &error);
     bool embedded_rename(int record,const std::string &name,std::string &error);
     bool edit_embedded_metadata(const EmbeddedMetadataPlan &,std::string &error);
+    int apply_opacity_gradient(const OpacityGradientPlan &,std::string &error);
+    int apply_sprite_ramp(const SpriteRampPlan &,std::string &error);
     L2Report check(int ppp);
     Document data{}; // Owned codec data; UI reads through sprite()/palette().
 private:

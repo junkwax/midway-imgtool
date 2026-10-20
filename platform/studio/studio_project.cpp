@@ -77,6 +77,8 @@ void put(std::ostream &out,const std::string &key,const std::string &value){out<
 template<class T>void put(std::ostream &out,const std::string &key,T value){out<<key<<'='<<value<<'\n';}
 std::string encode(const SceneState &s,bool history){
     int version=3;for(auto &lane:s.lanes)for(auto &frame:lane.frames)if(frame.ticks>120)version=4;
+    for(auto &lane:s.lanes)if(lane.magnification!=1)version=5;
+    for(auto &lane:s.lanes)for(auto &frame:lane.frames)if(frame.independent_timing)version=6;
     std::ostringstream out;out<<std::setprecision(17);out<<"format=imgtool_studio_project\nversion="<<version<<'\n';
     put(out,"world.w",s.width);put(out,"world.h",s.height);put(out,"world.origin_x",s.origin_x);put(out,"world.origin_y",s.origin_y);put(out,"world.floor",s.floor);
     put(out,"world.onion",s.onion);put(out,"world.loop",s.loop);put(out,"world.ghost_facing",s.ghost_facing);put(out,"world.convention",(int)s.convention);put(out,"world.tick_hz",s.tick_hz);
@@ -86,10 +88,12 @@ std::string encode(const SceneState &s,bool history){
     put(out,"lane.count",s.lanes.size());for(size_t i=0;i<s.lanes.size();++i){auto &l=s.lanes[i];std::string p="lane."+number((int)i)+".";
         put(out,p+"name",l.name);put(out,p+"x",l.x);put(out,p+"y",l.y);put(out,p+"delay",l.delay);put(out,p+"alpha",l.alpha);put(out,p+"visible",l.visible);put(out,p+"loop",l.loop);put(out,p+"hold_end",l.hold_end);put(out,p+"flip",l.flip_x);
         put(out,p+"stop_tick",l.stop_tick);
+        if(history||version>=5)put(out,p+"magnification",l.magnification);
         put(out,p+"id",l.id);put(out,p+"trigger_lane",l.trigger_lane);put(out,p+"trigger_frame",l.trigger_frame);
         put(out,p+"frame.count",l.frames.size());for(size_t f=0;f<l.frames.size();++f){auto &frame=l.frames[f];std::string q=p+"frame."+number((int)f)+".";
             put(out,q+"name",frame.name);put(out,q+"ticks",frame.ticks);put(out,q+"x",frame.x);put(out,q+"y",frame.y);put(out,q+"z",frame.z);put(out,q+"flip_x",frame.flip_x);put(out,q+"flip_y",frame.flip_y);
             put(out,q+"visible_from",frame.visible_from);put(out,q+"visible_until",frame.visible_until);
+            if(history||version>=6)put(out,q+"independent_timing",frame.independent_timing);
             put(out,q+"vx",frame.vx);put(out,q+"vy",frame.vy);put(out,q+"cap_x",frame.cap_x);put(out,q+"cap_y",frame.cap_y);
             put(out,q+"dual",frame.dual);put(out,q+"dual_x",frame.dual_x);put(out,q+"dual_y",frame.dual_y);put(out,q+"dual_z",frame.dual_z);
             put(out,q+"id",frame.id);
@@ -99,7 +103,7 @@ std::string encode(const SceneState &s,bool history){
     }return out.str();
 }
 SceneState decode_native(const Values &v){
-    int version=integer(v,"version",0);if(version<1||version>4)throw std::runtime_error("Unsupported Studio project version.");SceneState s;
+    int version=integer(v,"version",0);if(version<1||version>6)throw std::runtime_error("Unsupported Studio project version.");SceneState s;
     s.width=integer(v,"world.w",400,64,2048);s.height=integer(v,"world.h",254,64,2048);s.origin_x=integer(v,"world.origin_x",200,-4096,4096);s.origin_y=integer(v,"world.origin_y",20,-4096,4096);s.floor=integer(v,"world.floor",s.height,0,s.height);
     s.onion=boolean(v,"world.onion",true);s.loop=boolean(v,"world.loop",true);s.ghost_facing=boolean(v,"world.ghost_facing",false);s.convention=(MirrorConvention)integer(v,"world.convention",0,0,1);s.tick_hz=real(v,"world.tick_hz",mk2_tick_hz);
     s.background[0]=integer(v,"world.background_r",28,0,255);s.background[1]=integer(v,"world.background_g",32,0,255);s.background[2]=integer(v,"world.background_b",40,0,255);
@@ -108,10 +112,14 @@ SceneState decode_native(const Values &v){
     for(int i=0;i<lanes;++i){SceneLane l;std::string p="lane."+number(i)+".";l.name=quoted(v,p+"name","Actor");l.x=integer(v,p+"x",0,-4096,4096);l.y=integer(v,p+"y",0,-4096,4096);l.delay=integer(v,p+"delay",0,0,100000);l.alpha=integer(v,p+"alpha",255,0,255);
         l.visible=boolean(v,p+"visible",true);l.loop=boolean(v,p+"loop",true);l.hold_end=boolean(v,p+"hold_end",true);l.flip_x=boolean(v,p+"flip",false);
         l.stop_tick=integer(v,p+"stop_tick",0,0,99999);
+        l.magnification=integer(v,p+"magnification",1,1,4);
+        if(version<5&&l.magnification!=1)throw std::runtime_error("Magnification requires Studio project version 5.");
         if(version>=3){l.id=integer(v,p+"id",0,1,INT_MAX);if(!l.id)throw std::runtime_error("A project lane is missing its identity.");l.trigger_lane=integer(v,p+"trigger_lane",0,0,INT_MAX);l.trigger_frame=integer(v,p+"trigger_frame",0,0,INT_MAX);}
         int frames=integer(v,p+"frame.count",0,1,4096);total+=frames;if(total>8192)throw std::runtime_error("A project can hold at most 8192 frames.");
         for(int f=0;f<frames;++f){SceneFrame item;std::string q=p+"frame."+number(f)+".";item.name=quoted(v,q+"name");item.ticks=integer(v,q+"ticks",4,1,version>=4?255:120);item.x=integer(v,q+"x",0,-4096,4096);item.y=integer(v,q+"y",0,-4096,4096);item.z=integer(v,q+"z",0,-4096,4096);item.flip_x=boolean(v,q+"flip_x",false);item.flip_y=boolean(v,q+"flip_y",false);
             item.visible_from=integer(v,q+"visible_from",0,0,99999);item.visible_until=integer(v,q+"visible_until",0,0,99999);
+            item.independent_timing=boolean(v,q+"independent_timing",false);
+            if(version<6&&item.independent_timing)throw std::runtime_error("Explicit independent timing requires Studio project version 6.");
             item.vx=integer(v,q+"vx",0,-128,128);item.vy=integer(v,q+"vy",0,-128,128);item.cap_x=integer(v,q+"cap_x",0,0,99999);item.cap_y=integer(v,q+"cap_y",0,0,99999);
             item.dual=boolean(v,q+"dual",false);item.dual_x=integer(v,q+"dual_x",0,-4096,4096);item.dual_y=integer(v,q+"dual_y",0,-4096,4096);item.dual_z=integer(v,q+"dual_z",0,-4096,4096);
             if(version>=3){item.id=integer(v,q+"id",0,1,INT_MAX);if(!item.id)throw std::runtime_error("A project frame is missing its identity.");}
@@ -133,13 +141,13 @@ SceneState decode_wax(const Values &v){
     std::vector<int> row_order,saved_slots,spawn_source,spawn_entry;
     uint64_t next_id=1;
     for(int slot=0;slot<slots;++slot){std::string p="slot."+number(slot)+".";auto indices=integers(v,p+(v.count(p+"sequence_frames")?"sequence_frames":"default_frames"));if(indices.empty())continue;
-        if(integer(v,p+"zoom",1)!=1)throw std::runtime_error("WAX lane "+number(slot)+" uses magnified sprites, which have not migrated yet.");
         // auto_* and chain_* numeric fields are generator inputs, not live
         // animation. Their applied result is already in the per-frame arrays.
-        for(const char *key:{"subframe_swap_tick","subframe_waterline_y"})if(integer(v,p+key,0)!=0)throw std::runtime_error("WAX lane "+number(slot)+" uses "+key+", which has not migrated yet.");
+        for(const char *key:{"subframe_swap_tick","subframe_waterline_y"})if(integer(v,p+key,0)!=0)throw std::runtime_error("WAX lane "+number(slot)+" has "+key+" settings, but its complete generated piece lists are not stored in WAX. Open it in classic or rebuild its handoff in Studio.");
         if(integer(v,p+"subframe_fine_source",-1)!=-1)throw std::runtime_error("This WAX has substituted subframes. Open it in classic imgtool.");
         int doc=integer(v,p+"doc_idx",-1,-1,docs-1);std::string path=raw(v,p+"doc_path");
         int asset=doc>=0||!path.empty()?add_asset(doc,path):-1;SceneLane lane;lane.name="WAX row "+number(slot+1);lane.visible=boolean(v,p+"visible",true);lane.hold_end=boolean(v,p+"hold_end",true);lane.loop=!lane.hold_end;lane.flip_x=boolean(v,p+"mirror",false);
+        lane.magnification=std::clamp(integer(v,p+"zoom",1),1,4); // Matches classic WorldMarkedLaneZoom.
         lane.stop_tick=integer(v,p+"stop_tick",0,0,99999);
         lane.id=next_id++;
         auto delays=integers(v,p+"frame_delays"),dx=integers(v,p+"local_dx"),dy=integers(v,p+"local_dy"),mirror=integers(v,p+"frame_mirror"),depth=integers(v,p+"frame_z"),overrides=integers(v,p+"frame_doc_idx");
@@ -318,7 +326,8 @@ std::vector<ScenePose> evaluate_scene(const SceneState &scene,int tick){
             auto copy=[&](bool dual){
                 int x=moving_offset(dual?frame.dual_x:frame.x,frame.vx,elapsed,frame.cap_x,flip_x);
                 int y=moving_offset(dual?frame.dual_y:frame.y,frame.vy,elapsed,frame.cap_y,flip_y);
-                for(auto &piece:frame.pieces)poses.push_back({piece,scene.origin_x+lane.x+x,scene.origin_y+lane.y+y,dual?frame.dual_z:frame.z,lane.alpha,i,f,flip_x,flip_y,dual});
+                int scale=std::clamp(lane.magnification,1,4);
+                for(auto &piece:frame.pieces)poses.push_back({piece,scene.origin_x+lane.x+x*scale,scene.origin_y+lane.y+y*scale,dual?frame.dual_z:frame.z,lane.alpha,i,f,flip_x,flip_y,dual,scale});
             };
             copy(false);if(frame.dual)copy(true);
         };
@@ -332,6 +341,12 @@ std::vector<ScenePose> evaluate_scene(const SceneState &scene,int tick){
 std::string scene_sprite_key(const IMG &image){
     unsigned char name[16];memcpy(name,image.file_name_raw,16);size_t n=strnlen(image.n_s,15);memcpy(name,image.n_s,n);name[n]=0;
     const char *hex="0123456789abcdef";std::string out;for(auto b:name){out+=hex[b>>4];out+=hex[b&15];}return out;
+}
+SpritePlacement scene_pose_placement(const IMG &im,const ScenePose &pose,MirrorConvention convention){
+    int scale=std::clamp(pose.magnification,1,4);
+    return {pose.x-anipoint_effective((short)im.anix,im.w,pose.flip_x,convention)*scale,
+            pose.y-anipoint_effective((short)im.aniy,im.h,pose.flip_y,convention)*scale,
+            im.w*scale,im.h*scale};
 }
 SceneSprite scene_sprite_reference(const Artwork &art,int asset,int index){auto im=art.sprite(index);if(!im)return {asset,index,{},{},0};return {asset,index,scene_sprite_key(*im),im->n_s,art.sprite_id(index)};}
 std::string scene_asset_candidate(const SceneAsset &asset,const std::string &project_path){
@@ -348,7 +363,7 @@ bool validate_scene(const SceneState &s,std::string &error){
     auto identity=[&](uint64_t id){return id<=INT_MAX&&(!id||identities.insert(id).second);};
     size_t frames=0,pieces=0;for(auto &lane:s.lanes){
         if(!identity(lane.id)){error="Duplicate or invalid actor identity.";return false;}
-        if(lane.name.size()>128||lane.frames.empty()||lane.frames.size()>4096||lane.delay<0||lane.delay>100000||lane.stop_tick<0||lane.stop_tick>99999||lane.alpha<0||lane.alpha>255||std::abs((long long)lane.x)>4096||std::abs((long long)lane.y)>4096){error="Invalid lane settings or frame count.";return false;}
+        if(lane.name.size()>128||lane.frames.empty()||lane.frames.size()>4096||lane.delay<0||lane.delay>100000||lane.stop_tick<0||lane.stop_tick>99999||lane.alpha<0||lane.alpha>255||lane.magnification<1||lane.magnification>4||std::abs((long long)lane.x)>4096||std::abs((long long)lane.y)>4096){error="Invalid lane settings, magnification or frame count.";return false;}
         frames+=lane.frames.size();for(auto &f:lane.frames){if(f.ticks<1||f.ticks>255||f.pieces.empty()||f.pieces.size()>32||f.name.size()>128||std::abs((long long)f.x)>4096||std::abs((long long)f.y)>4096||std::abs((long long)f.z)>4096){error="Invalid frame duration, placement or pieces.";return false;}
             if(!identity(f.id)){error="Duplicate or invalid frame identity.";return false;}
             if(f.visible_from<0||f.visible_from>99999||f.visible_until<0||f.visible_until>99999||std::abs((long long)f.vx)>128||std::abs((long long)f.vy)>128||f.cap_x<0||f.cap_x>99999||f.cap_y<0||f.cap_y>99999||std::abs((long long)f.dual_x)>4096||std::abs((long long)f.dual_y)>4096||std::abs((long long)f.dual_z)>4096){error="Invalid visibility, motion or second-copy settings.";return false;}
@@ -416,9 +431,8 @@ bool SceneProject::export_png(const std::string &path,int tick,const SceneSource
     if(stage&&view){for(auto &p:{stage->bdd_path,stage->bdb_path})if(fs::equivalent(dest,fs::u8path(p),ec)){error="PNG export cannot replace source scenery.";return false;}
         if(!blit_stage(*stage,*view,state.width,state.height,rgba,error))return false;}
     for(auto &pose:evaluate_scene(state,tick)){auto art=source(state.assets[pose.sprite.asset].runtime_doc);int index=art?art->sprite_index(pose.sprite.runtime_id):-1;auto im=art?art->sprite(index):nullptr;
-        if(!im){error="A scene source or sprite is missing.";return false;}checked_layer_bytes(*im);auto pal=art->palette(im->palnum);auto p=place_sprite(*im,pose.x,pose.y,pose.flip_x,state.convention);
-        if(pose.flip_y)p.y=pose.y-anipoint_effective((short)im->aniy,im->h,true,state.convention);
-        for(int y=std::max(0,p.y);y<std::min(state.height,p.y+p.h);++y)for(int x=std::max(0,p.x);x<std::min(state.width,p.x+p.w);++x){int sx=x-p.x,sy=y-p.y;if(pose.flip_x)sx=im->w-1-sx;if(pose.flip_y)sy=im->h-1-sy;
+        if(!im){error="A scene source or sprite is missing.";return false;}checked_layer_bytes(*im);auto pal=art->palette(im->palnum);auto p=scene_pose_placement(*im,pose,state.convention);
+        for(int y=std::max(0,p.y);y<std::min(state.height,p.y+p.h);++y)for(int x=std::max(0,p.x);x<std::min(state.width,p.x+p.w);++x){int sx=(x-p.x)/pose.magnification,sy=(y-p.y)/pose.magnification;if(pose.flip_x)sx=im->w-1-sx;if(pose.flip_y)sy=im->h-1-sy;
             int ci=visible_pixel(*im,sx,sy);if(!ci)continue;unsigned char color[3]={255,0,255};if(ci<pal->numc)pal_word_to_rgb8((unsigned char *)pal->data_p+ci*2,color,color+1,color+2);
             auto target=rgba.data()+((size_t)y*state.width+x)*4;for(int channel=0;channel<3;++channel)target[channel]=(unsigned char)((color[channel]*pose.alpha+target[channel]*(255-pose.alpha)+127)/255);
         }

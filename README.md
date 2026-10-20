@@ -894,6 +894,67 @@ alternate palettes are skipped, and their source palette remains available.
 remain; merging and removal undo together. The existing destination's sprites keep
 their colors, and transparency remains index zero.
 
+**Full-canvas overlay frames:** select pixels and choose **Sprite > Split
+Selection to Overlay Frame...** or **Copy Selection to Overlay Frame...**;
+both actions are also in the selection inspector. Review the original source,
+remaining source and new frame. Split moves selected opaque pixels; Copy keeps
+the source unchanged. The new sprite retains the full source canvas, original
+pixel coordinates, palette, flags, both animation points, alternate palette table
+and source group. Selection holes stay transparent. This creates a separate
+sprite, distinct from a pasted overlay layer or region-sized extraction.
+
+The frame name defaults to the first twelve source-name characters plus `OVR`;
+collisions receive an independent `_COPY` suffix. The new record starts with
+frame number zero and no point table or packing baseline, matching classic's
+command. Existing source metadata, palette words, padded bytes and animation
+references remain fixed. Pasted overlays must be flattened or removed first.
+Apply creates the frame and any source clearing in one Undo, selects the child
+and clears canvas selection. Cancel, empty, stale or failed reviews leave the
+document/history intact. Save keeps the original IMG layout; review LOAD2
+packing after adding a frame or changing a silhouette. Search Help for
+**Split / Copy Selection to Overlay Frame**.
+
+**Sprite Ramp Gradient:** open **Sprite > Sprite Ramp Gradient...** or the
+Sprite inspector's **More...** action to move original tones across a new
+palette-index ramp. Review current, selected-mask or marked sprites with
+individual exclusions. **Colors** provides an index ceiling, requested size,
+free-run fill, 2–11 RGB stops, source-tone seeding and reverse. **Sweep** has
+axes/radial/edge-inward directions, original-luminance shading width, endpoints,
+content/canvas bounds, depth bands and None/Noise/Checker/Bayer dithering.
+**Saved** shares Studio palette-gradient presets; saving affects settings only.
+
+The same lowest free block must fit all included palettes. Usage reserves all
+primary/active-alternate users and hidden/off-canvas overlays. Exclusions
+recalculate placement; reduced ramp sizes are reported. The ceiling limits new
+indices; actual pixel depth and palette count/depth/PPP impact are reported
+separately. Palette size/depth can grow and never shrink. Other live colors,
+silhouettes, geometry, metadata and padding stay fixed. Changed overlay/active-
+alternate targets need resolution or exclusion. Apply installs every palette
+and included sprite atomically in one Undo; stale/failed/tampered reviews cannot
+leave partial ramps. Empty scopes retain Redo. Save keeps the original IMG
+layout; verify LOAD2 packing after new indices or growth. Help has a searchable
+**Sprite Ramp Gradient** topic.
+
+**Sprite opacity gradient:** choose **Sprite > Opacity gradient...** or the
+Sprite inspector's **More...** action. Review **Current sprite**, **Canvas
+selection**, or **Marked sprites**, with individual exclusions and before/after
+base-pixel previews. Directional/radial fades, silhouette-following edge feather,
+classic noise/checker/Bayer patterns, seed, opaque-content/canvas bounds and
+depth limits control which pixels become transparent index zero. This writes
+pixels rather than storing alpha or recoloring palette swatches. Selection
+masks limit writes; the original silhouette and content/canvas still define
+the gradient. Release a control or press Enter to refresh its reviewed output.
+
+Optional **Trim changed sprites** rebases anchors and point coordinates, crops
+only sprites that lose pixels, and retains the canvas for empty results. It
+starts off. Changed overlay/active-alternate rows require resolution or exclusion;
+trim coordinate overflow and unknown indices block affected rows. Apply uses one
+Undo step; Cancel, stale or allocation-failed reviews preserve artwork/history,
+and unchanged scopes retain Redo. Surviving colors, palette size/depth, assignments
+and saved baselines stay fixed. Without trim, geometry/points/padding also stay
+fixed. Save retains the original IMG layout; verify LOAD2 packing after a fade
+or trim. Help has a searchable **Sprite opacity gradient** topic. Sprite Ramp Gradient is a separate pixel-recolor workflow.
+
 **Remap Similar Regions:** select a feature on the canvas, choose an opaque
 destination swatch and open **Palette > Remap Similar Regions...** or the
 selection inspector's action. Palette manager's swatch context action uses the
@@ -1282,15 +1343,45 @@ start tick, opacity, looping and hold-at-end controls. Dragging an actor changes
 its scene offset while leaving its IMG anchors untouched. **Ctrl+Z/Y** acts on
 the project in this workspace and on artwork in the Artwork workspace.
 
+**Magnification** in the actor inspector offers 1x–4x preview/export scale.
+Sprites and their anchor offsets grow together around the actor origin, including
+multipart spacing, frame/second-copy offsets and motion. Actor/world placement
+and timing stay fixed. Picking, dragging, onion skins, facing ghosts and scene
+PNG export use that same scale. This does not resize or edit IMG pixels, anchors,
+palettes or format, and each actor has an independent scale with project Undo.
+
 Expand **Motion & timing** for scheduled effects: **Show at** is inclusive and
 **Hide at** is exclusive, in ticks from the actor's start. Zero Hide leaves the
-end open; setting both to zero restores ordinary frame sequencing. Scheduled
-entries can appear together. Motion X/Y is measured in screen pixels per tick
+end open; setting both to zero with **Independent timing** off restores ordinary
+frame sequencing. Scheduled
+entries can appear together. Motion X/Y is measured in pixels per tick before
+actor magnification
 (positive right/down), with optional maximum travel. **Freeze actor at** stops
 that actor's clock and motion while other actors continue. **Second copy** adds
 another instance of the frame with its own offset and depth. These settings have
 project undo and use the same playback and PNG evaluator. Replacing a frame's
 artwork retains its timing, motion and placement settings.
+
+**Swap with subframes...** in the scene frame inspector reviews a timed
+parent-to-composite handoff. Choose a parent-only frame, set the actor tick and
+review the matched children and before/after scene. Child names follow classic's
+rules (for example `POSE1A`/`POSE1B` for `POSE1`, or numbered/grid suffixes) and
+must share its source group. All matched children draw together at the original
+anchors; no IMG pixels, metadata or format are edited.
+
+The command preserves facing/depth and carries remaining motion/travel caps
+through the handoff. The new composite has one copy; the parent's second copy
+ends with the parent. Parent hold follows classic's 1–120 tick clamp. Retiming
+can move later sequential frames and their following effects. An adjacent
+matching handoff is replaced with its identity retained; unrelated composites
+are preserved. Apply has one project Undo; no-op retiming keeps Redo. At tick
+zero, explicit **Independent timing** makes the composite visible immediately.
+The Motion & timing **Clear** action restores ordinary sequential playback.
+
+This authoring command saves full piece references in `.ISTUDIO`. The classic
+WAX writer omits its generated composite piece lists; imports with subframe/
+waterline settings remain guarded rather than guessing them. Waterline cutting
+is a separate remaining port. Search Help for **Timed subframe swap**.
 
 **Follow frame timing** connects an effect actor to a particular frame in another
 actor. Choose the source actor and frame, then **Follow frame**. The effect's
@@ -1315,15 +1406,19 @@ without editor guides or ghosts.
 classic WAX/WVP files containing explicit sprite rows. WAX import converts classic
 anipoint offsets to screen offsets and preserves frame holds, facing, cross-file
 references, depth order, solid background, visibility windows, capped motion,
-freeze ticks and second copies. Uniform spawned-effect rows import as frame
+freeze ticks, second copies and per-row magnification (clamped to classic's
+1x–4x range). Uniform spawned-effect rows import as frame
 timing bindings. Spawn rows moved by hand or with custom schedules/freeze rules
 need to be detached in classic before importing. Substitution rules,
-magnification, ASM and embedded sequences are
+ASM and embedded sequences are
 reported as unsupported. This imports the stored rows and origin; it does not
 reconstruct runtime game placement or settings absent from the WAX file. Imports
 save to `.ISTUDIO`; the original WAX is kept as the classic project. Studio reads
-versions 1–4. It writes version 3 normally and version 4 when a frame exceeds
-120 ticks, so older builds reject long-hold projects instead of shortening them.
+versions 1–6. It writes version 3 normally, version 4 when a frame exceeds
+120 ticks, version 5 for actor magnification, and version 6 for explicit
+independent timing (including a handoff at tick zero). Older builds
+reject those projects instead of silently losing their scale or long holds.
+These are Studio project versions; the original IMG version/layout stays fixed.
 
 **View > Stage reference...** loads a matching BDD/BDB pair behind animation,
 embedded-sequence, and scene previews. Choose either file, select a plane, then

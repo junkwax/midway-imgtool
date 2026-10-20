@@ -3075,3 +3075,224 @@ remains unproven by these checks. No game sources/assets or commits/pushes.
 Compact embedded, sprite-editing, hotkeys/Help and animation-copy actual-input
 regressions pass. The final metadata footer was shortened to fit the compact
 review. Standalone strike-phase fixtures pass without the external roster.
+
+
+### Reviewed sprite opacity gradients — 2026-10-19
+
+Sprite > Opacity gradient and Sprite inspector > More now port the classic
+opacity pixel workflow. studio_opacity_gradient.{h,cpp} owns captured scope,
+pure planning and atomic Apply; _ui.inl uses the existing edit-dialog guard and
+keeps SDL preview textures alive through the applying frame. Classic UI and IMG
+adapters remain unchanged. The separate Sprite Ramp Gradient is covered below.
+
+Directional/radial Start/End fades, swap/reset, content/canvas bounds, limited
+pixel depth, silhouette-following two-pass chamfer feather, defined unsigned
+noise hash/seed and exact classic 2x2/4x4 thresholds are preserved. One-pixel
+feather follows classic's solid-result behavior. Noise retains source library
+index semantics and ordered patterns ignore seed. Controls recompute on release/
+Enter from the captured pixels; Apply and before/after use that same output.
+Scopes are Current sprite, Canvas selection or Marked sprites, with exclusions.
+Selection limits writes while the original sprite defines bounds/silhouette;
+selection holes are not new feather edges. IMG has no alpha: removed pixels
+become index zero; surviving indices and all palette words/count/depth stay fixed.
+
+Optional Trim changed sprites starts off. It trims only rows losing pixels,
+rebases primary/active secondary anchors and point coordinates, and keeps empty
+results on their original canvas. Unlike classic's post-batch crop, unaffected
+included rows are not trimmed. Coordinate overflow blocks trim rather than
+saturating placement. Geometry changes use the normal structural refresh; absent
+trim, canvas selection/geometry/points/padding stay fixed. Saved baselines remain
+the loaded packing reference. Actual remaps on active-alt or any-layer rows need
+resolution/exclusion; unknown palette indices need repair/exclusion.
+
+Captures own raw IMG/PAL fields, padded pixels, point/alternate tables and full
+hidden/off-canvas layer bytes. Apply recaptures scope, validates raw inputs and
+re-derives every output/trim/blocker before staging. Allocation/history preparation
+precedes publication; one Sprite opacity gradient Undo covers every included
+fade/trim. No-op retains Redo; stale, foreign, pending or tampered reviews and
+allocation failure cannot publish partially. Names/raw metadata/IDs, assignments,
+other records and independent clipboards stay exact. Save and Save As retain
+original IMG version/layout; silhouette/geometry edits require packing review.
+Limits: 2000 sprites, 8192 per dimension, 4 Mi-pixel sprites, 64 Mi-pixel captured
+work, and 256 MiB source/output/crop/edge-scratch budget.
+
+Release and ASAN model checks pass: exact checker/Bayer output and padding,
+linear/radial endpoints and content/canvas/depth behavior, feather/trim/anchor/
+point rebasing, empty results, source selection holes, deterministic noise with
+extreme seeds/indexes, alt/hidden-layer guards and exclusions, raw stale pixels/
+padding/metadata/palette words/points/alternate tails/layers, forged outputs,
+foreign/pending/invalid reviews, unknown indices/overflow, no-op Redo, 300
+allocation-failure positions and five original layouts 60a/61c/61d/631/634
+Save/reopen + byte-exact Undo. Full x64 Release builds; CTest is 110/111 with
+only the existing external MK2 roster-count assertion. Standalone strike-phase
+fixtures pass without that external file.
+
+The 320-frame actual-input smoke passes compact/wide Release and compact ASAN:
+pattern/direction/edge controls, classic feather band, optional trim/placement,
+Cancel, modal Undo ownership, Apply/Undo/Redo/exact Undo and original-format
+reopen, source selection mask/holes, marked rows/empty row/exclusion, alt/hidden-
+layer blockers, no-op scope/100% opacity, stale/missing selection and recovery,
+Bayer/depth interior retention, swap/reset and independent clipboards. Layouts
+visually inspected. Compact batch geometry, selection, sprite-editing, hotkeys/
+Help and overlay regressions pass. Help/README/current port status updated.
+No game-source/assets edits, commits, pushes or releases.
+
+### Reviewed Sprite Ramp Gradient — 2026-10-19
+
+Sprite > Sprite Ramp Gradient and Sprite inspector > More now port classic's
+spatial index-ramp workflow. The unchanged, tested sprite_gradient core supplies
+tone fitting, axes/radials/edge-inward, depth bands and None/Noise/Checker/Bayer
+patterns. Studio adds owned scope capture, original-tone seeding, editable RGB
+stops, shading width, current/selection/marked scopes with exclusions, before/
+after previews and a shared Studio gradient preset browser. Preset saves reread
+disk data and preserve malformed files; they change no IMG/history.
+
+All primary/active-alternate users and hidden/off-canvas overlays reserve their
+live indices, including targets. Every active palette receives the same lowest
+free block. Requested counts clamp visibly to the common free run; fewer than
+two free opaque slots blocks Apply. The new-index ceiling is separate from
+reported actual pixel depth and palette/PPP growth. Existing size/depth never
+shrink. Selection limits writes; whole original pixels supply tones/bounds/edge
+distance. Changed active-alternate/overlay rows require resolution or exclusion.
+
+Apply recaptures raw shared users and palettes, validates target membership and
+re-derives output/blockers. All buffers/history are prepared before publication;
+one Undo covers palette installation and every included pixel remap. No-op
+retains Redo. Stale/foreign/pending/tampered or allocation-failed reviews cannot
+publish partially. Silhouettes, geometry, anchors, points, baselines, assignments,
+other raw words and padding remain unchanged. Save retains original IMG layout;
+new indices/palette growth can still change LOAD2 packing. No classic UI/core,
+IMG adapter or game-source/asset edits.
+
+Release and ASAN model/core checks pass: common-slot allocation, every direction/
+dither, scope masks/exclusions, high surviving indices, alt/hidden-layer guards,
+raw stale/forged data, no-op Redo, 360 allocation-failure positions and five
+original layouts 60a/61c/61d/631/634 Save/reopen with byte-exact Undo. Full x64
+Release builds; CTest 111/112 with only the existing external MK2 roster-count
+assertion. Standalone strike fixtures pass without that external file.
+
+The 394-frame actual-input smoke passes compact/wide Release and compact ASAN:
+stop/sweep/dither/band controls, shared-palette scope and exclusions, Apply/Undo/
+Redo/exact Undo, same-format reopen, modal keys, selection holes, blockers,
+no-room/recovery, shared preset save/replace and malformed-file preservation,
+stale/missing-scope recovery and independent clipboards. Both layouts inspected.
+Compact opacity-gradient, palette-ramp, palette-isolation and hotkeys/Help
+regressions pass. Help/README/current port status and migration checkpoint are
+updated. Next focused port: exact full-canvas Split/Copy Selection to Overlay
+Frame, including inherited secondary metadata. Historical launch-memory cause
+remains unproven. No commits, pushes or releases.
+
+### Full-canvas Split/Copy Selection to Overlay Frame — 2026-10-19
+
+Sprite menu and selection inspector now expose both classic full-canvas
+commands. The review shows Original source, Source after and New frame, with
+Copy/Split mode and an editable collision-safe name. This creates a separate
+IMG sprite. Region-sized extraction and pasted overlay layers remain distinct.
+Only selected opaque pixels copy, at original coordinates; Split clears those
+source pixels too. Selection holes stay empty. Both animation points, full
+canvas, palette, flags, alternate palette table and source group are inherited.
+As in classic, the new record starts with frame number zero and no point table,
+baseline, layer, raw name tail or source record offsets. Existing animation
+references, source metadata, palettes and padded bytes stay fixed.
+
+The model captures raw source/palette/pixels/points/alternates/baseline, and
+recaptures/re-derives output at Apply. Staging buffers, history and ID/history
+capacity allocation precede publication. One Undo restores the source and new
+child; Redo keeps its stable ID. Empty, stale, foreign, pending, forged or memory-
+failed reviews preserve data/history/Redo. Hidden/off-canvas pasted layers need
+flatten/removal first; alternate references are independently copied. Commands
+require an artwork selection and are disabled in flipped/alignment/embedded
+views. Names default to 12 source characters + OVR; collisions use _COPY rather
+than the numeric suffix that denotes grid children elsewhere.
+
+Release and ASAN models pass: Copy/Split masks/holes/full canvas/padding,
+inherited metadata/independent alternates/new-record defaults, stable IDs and
+animation references, raw stale/forged data, blocked layers/unknown indices,
+empty/foreign/pending reviews, 250 allocation-failure positions and five
+60a/61c/61d/631/634 Save/reopen with byte-exact Undo. Full x64 Release builds;
+CTest 112/113 with only the existing external MK2 roster-count assertion.
+Standalone strike fixtures pass without the optional external file.
+
+The 236-frame actual-input smoke passes compact/wide Release and compact ASAN:
+mode/name/collision/Cancel, modal keys, Apply/Undo/Redo/exact Undo, saved-file
+reopen, holes/metadata/Copy source, raw point changes, hidden layers, empty/stale
+scopes, workspace guards and independent clipboards. Layouts inspected. Compact
+regions, selection, pasted-overlay and hotkeys/Help regressions pass. Help,
+README, checkpoint and port list updated. WAX/runtime, damage-bound transfers,
+legacy adapters and pipeline integration remain. Original IMG layouts/classic
+code stay fixed. No game assets/sources, commits, pushes or releases changed.
+
+
+### WAX / scene actor magnification — 2026-10-19
+
+The actor inspector now offers 1x–4x Magnification; explicit WAX rows import their
+zoom with classic's clamp. Bitmap extents, primary/mirrored anchor offset,
+multipart spacing, local/dual offsets and motion/travel scale about the actor
+origin. Actor/world translation, timing, visibility, depth and triggers remain
+unchanged. IMG art/anchors/palettes/version/layout are never modified. This is
+separate from resizing art and from zooming the entire canvas.
+
+A shared scene_pose_placement feeds canvas/PNG, onion/ghosts, outlines and
+thumbnails; export and picking sample the original pixel coordinates at the
+scaled size. Dragging uses world pixels and project Undo/cancel. Each actor's
+scale is independent, and new lanes default 1x. Native .ISTUDIO version 5 stores
+magnification so older readers reject the project; unscaled scenes keep version 3 or 4 for
+long holds. Versions 1–5 read. IMG codecs and classic code remain unchanged.
+
+Release/ASAN model checks pass, including 64 independent pixel goldens over
+scales/mirror conventions/XY facing/clipping, multipart spacing, visible layers
+and alpha; motion/caps/dual/freeze/trigger timing, extreme anchors, native 3/4/5
+byte-stable roundtrips/Undo, invalid versions/scales and WAX clamps/conversion.
+Full x64 Release builds; CTest 113/114 with only the existing external MK2 roster
+assertion. Standalone strike fixtures pass without that optional source.
+
+The 152-frame actual-input check passes compact/wide Release and compact ASAN:
+WAX 2x import, 4x/3x/1x selector and Undo/Redo, project save/reopen, scaled picking/
+drag/Undo/cancel, mirrored PNG, independent new-lane default and unchanged IMG/
+WAX source bytes/anchors/history. Layouts inspected. Existing compact scene,
+motion, timing-binding and hotkeys/Help regressions pass. Help/README/checkpoint/
+port list updated. Remaining WAX subframe/waterline/substitution, dummy-body and
+ASM/embedded-driven rules need separate work; generator inputs must be compared
+with actual saved row reconstruction. No game-source/assets, commits, pushes or
+releases. Historical launch-memory cause is not established by these tests.
+
+
+### Reviewed timed subframe swap — 2026-10-20
+
+Scene frame inspector > Swap with subframes now reviews and authors the parent-
+to-composite handoff using classic name/source-group matching and library order.
+Actor tick/Now, matched names, motion/cap details and before/after scene preview
+make the change reviewable. All children draw together. Position, facing, depth,
+scale and remaining capped motion continue through the boundary. Parent dual
+copy ends; child starts with one copy. Parent hold follows classic's 1–120 clamp;
+retiming may move later entries/effects. Adjacent matching handoff is replaced
+with its identity retained. Unrelated composites are preserved, unlike classic's
+broad deletion rule. Project Undo covers the whole operation; no-op keeps Redo.
+
+Tick zero uses explicit Independent timing (new native project version 6) and a
+bounded empty parent window, with original motion origin retained for retiming.
+Motion & timing exposes that flag; Clear resets it and Show here works at zero.
+Other native scenes keep versions 3/4/5 as applicable; versions 1–6 read. Original
+IMG version/record layout, pixels/anchors/palettes/metadata remain unchanged.
+
+Owned project/raw source snapshots revalidate membership, pixels, palette words,
+alternates/layers and output. All state/history allocations precede publication;
+stale/foreign/pending/tampered or failed reviews cannot publish partially. Limits
+and frozen/unavailable/already-composite cases are explicit. Classic matching
+recognizes POSE1A/B and numeric/grid suffixes, not arbitrary body-part labels.
+
+Classic WAX saves subframe/waterline generator inputs and timing arrays but
+omits the complete entry-piece list. Imports requiring that omitted state remain
+guarded with an updated explanation. The new authoring command saves complete
+piece references in .ISTUDIO. Waterline cutting remains a separate port.
+
+Full x64 Release build passes. CTest 114/115 with only the existing external MK2
+roster assertion; standalone fixtures pass. Release/ASAN models cover stitched
+PNG/placement continuity, caps/dual/facing/scale, repeat/effect IDs, immediate
+scheduling and native roundtrips, stale/forged/guarded cases, no-op history and
+1600 allocation-failure positions. The 232-frame input check passes compact/wide
+Release and compact ASAN, including save/reopen/Undo and exact untouched IMG.
+Layouts inspected; compact scene/motion/trigger/magnification/hotkeys/Help
+regressions pass. Help/README/checkpoint/port list updated. No classic/IMG codec,
+game-source/assets, commits, pushes or releases changed. Historical launch-memory
+cause remains unproven by these checks.

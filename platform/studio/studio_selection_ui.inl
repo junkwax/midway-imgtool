@@ -29,6 +29,8 @@ void selection_controls(Tab &t){
         ImGui::TextWrapped("Paint, erase and fill stay inside the selection.");
         button("Copy",Action::Copy);ImGui::SameLine();button("Cut",Action::Cut);ImGui::SameLine();button("Clear",Action::Clear);
         button("Extract into sprite...",Action::ExtractSelection);
+        button("Split to overlay frame...",Action::SplitOverlay);
+        button("Copy to overlay frame...",Action::CopyOverlay);
         button("Move / transform...",Action::TransformSelection);
         ImGui::BeginDisabled(!enabled(Action::ManagePalettes)||t.flip||paste_mode||t.alignment.enabled||t.embedded.enabled);if(ImGui::Button("Isolate selection colors..."))begin_selection_isolation(t);ImGui::EndDisabled();
         if(ImGui::CollapsingHeader("Selection actions")){

@@ -268,6 +268,8 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_variant.cpp
     platform/studio/studio_paint.cpp
     platform/studio/studio_regions.cpp platform/body_split.cpp
+    platform/studio/studio_overlay_frame.cpp
+    platform/studio/studio_subframe_swap.cpp
     platform/studio/studio_project.cpp
     platform/studio/studio_stage.cpp
     platform/studio/studio_anchor_link.cpp
@@ -285,6 +287,8 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_library_split_animations.cpp
     platform/studio/studio_sequences.cpp
     platform/studio/studio_embedded_metadata.cpp
+    platform/studio/studio_opacity_gradient.cpp
+    platform/studio/studio_sprite_ramp.cpp platform/sprite_gradient.cpp
     platform/studio/studio_palette.cpp platform/color_ops.cpp
     platform/studio/studio_layers.cpp
     platform/studio/studio_palette_clipboard.cpp
@@ -476,6 +480,14 @@ add_executable(studio_project_test test/studio_project_test.cpp)
 target_link_libraries(studio_project_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_project_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_project COMMAND studio_project_test)
+add_executable(studio_magnification_test test/studio_magnification_test.cpp)
+target_link_libraries(studio_magnification_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_magnification_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_magnification COMMAND studio_magnification_test)
+add_executable(studio_subframe_swap_test test/studio_subframe_swap_test.cpp)
+target_link_libraries(studio_subframe_swap_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_subframe_swap_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_subframe_swap COMMAND studio_subframe_swap_test)
 add_executable(studio_motion_test test/studio_motion_test.cpp)
 target_link_libraries(studio_motion_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_motion_test PRIVATE SDL_MAIN_HANDLED)
@@ -492,6 +504,14 @@ add_executable(studio_embedded_metadata_test test/studio_embedded_metadata_test.
 target_link_libraries(studio_embedded_metadata_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_embedded_metadata_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_embedded_metadata COMMAND studio_embedded_metadata_test)
+add_executable(studio_opacity_gradient_test test/studio_opacity_gradient_test.cpp)
+target_link_libraries(studio_opacity_gradient_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_opacity_gradient_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_opacity_gradient COMMAND studio_opacity_gradient_test)
+add_executable(studio_sprite_ramp_test test/studio_sprite_ramp_test.cpp)
+target_link_libraries(studio_sprite_ramp_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_sprite_ramp_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_sprite_ramp COMMAND studio_sprite_ramp_test)
 add_executable(studio_palette_test test/studio_palette_test.cpp)
 target_link_libraries(studio_palette_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_palette_test PRIVATE SDL_MAIN_HANDLED)
@@ -532,6 +552,10 @@ add_executable(studio_regions_test test/studio_regions_test.cpp)
 target_link_libraries(studio_regions_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_regions_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_regions COMMAND studio_regions_test)
+add_executable(studio_overlay_frame_test test/studio_overlay_frame_test.cpp)
+target_link_libraries(studio_overlay_frame_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_overlay_frame_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_overlay_frame COMMAND studio_overlay_frame_test)
 add_executable(studio_selection_transform_test test/studio_selection_transform_test.cpp)
 target_link_libraries(studio_selection_transform_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_selection_transform_test PRIVATE SDL_MAIN_HANDLED)
