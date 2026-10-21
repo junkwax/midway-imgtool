@@ -3296,3 +3296,270 @@ Layouts inspected; compact scene/motion/trigger/magnification/hotkeys/Help
 regressions pass. Help/README/checkpoint/port list updated. No classic/IMG codec,
 game-source/assets, commits, pushes or releases changed. Historical launch-memory
 cause remains unproven by these checks.
+
+
+### Reviewed waterline cutting — 2026-10-20
+
+Scene frame inspector > Cut at waterline now reviews a moving parent handing
+off to individually scheduled fine pieces. World-Y/Use floor, a separate open
+IMG/fine-parent picker, searchable parent names, per-piece expiry and a scrubbed
+original/proposed comparison expose the result before Apply. Full canvas bounds
+count, including transparent margins. The red guide is absent from PNG export.
+
+Crossings use actual native placement, vertical facing, both mirror conventions,
+actor/world offsets, magnification, capped motion and freeze. This differs from
+classic's cap/scale-ignoring estimate and fallback lifetime. Parent must cross
+within 9999 elapsed actor ticks and the scheduling bound; fine pieces unable to
+cross stay visible. Minimum interval is one tick. Motion/depth/facing and
+remaining caps continue, parent hold/original motion origin are retained and its
+second copy ends. Complete adjacent matching runs replace with stable IDs;
+unrelated entries remain. Inserted rows can shift later sequential frames/effects.
+
+The moving parent may be multipart and fine artwork may come from another IMG.
+Classic's case-sensitive source/name matching and order are shared with timed
+swaps in studio_subframes, together with raw source capture, motion sampling and
+atomic reviewed-state/history publication. Stale sources/project, tampered,
+foreign or pending reviews are rejected. Apply has one Undo and identical reviews
+preserve Redo. Native projects save complete references/timing with no new version.
+IMG bytes, version and record layout remain unchanged; no classic codec changed.
+WAX generated-list import guards remain because classic omits those lists.
+
+Full Release builds Studio/classic/CLI. CTest 115/116; only the existing optional
+external MK2 roster assertion fails, and its standalone fixtures pass. Release
+and ASAN waterline/subframe-swap/project/motion/trigger/magnification models pass,
+including individual down/up crossings, stitched PNGs, scale/facing/cap/freeze,
+late motion origins, cross-source/composite parents, repeat/no-op/effect identity,
+native round trips, stale/forged inputs and 1800 allocation-failure positions.
+The 278-frame input smoke passes wide/compact Release and compact ASAN, including
+selectors, scrub, Apply/Undo/Redo/save/reopen, cross-source retention, rejection
+guards and exact unchanged IMG. Screens inspected. Compact neighboring swap,
+project, motion, trigger, magnification and hotkeys/Help checks pass. Help, README,
+port status and checkpoint updated. No game source/assets, commits, pushes or
+releases changed. The historical memory launch cause remains unproven.
+
+
+### Reviewed dummy-body actor authoring — 2026-10-20
+
+Project > Build dummy body and the scene inspector now review a classic dummy
+decapitation actor. Source/family selectors, add/reset, new-actor facing, seven
+source-frame membership, 13 stock holds and scrubbed original/proposed scenes
+make the generated content visible before Apply. It is an ordinary Studio actor
+with project Undo, native persistence and the common PNG renderer.
+
+Discovery uses case-insensitive prefix/DECAP1–7 wrapper names or complete
+DECAPLEG/DECAPTORSO sets. Heads are excluded; whole wrappers take priority,
+otherwise legs paint before torsos, sorted by raw name within kind. It preserves
+all part anchors. Duplicate wrappers and incomplete/oversized sources block.
+Capture limits are 32 pieces per source frame and 128 MiB pixels/layers. Current
+library complete families take priority, then another open library; the review
+exposes its initial choice and permits changing it.
+
+The exact classic order is 1,2,3,4,3,4,3,4,3,4,5,6,7 with holds
+48,6,6,10,10,10,10,10,10,6,6,6,6 (144 ticks). New actor faces opposite the
+selected actor by default, with no looping and final-frame hold. Reset rebuilds
+artwork/holds/local motion/schedules/copies while preserving actor settings and
+surviving frame identities/facing/depth by position. An effect attached to a
+removed frame blocks reset; retained IDs keep following effects linked. Identical
+resets preserve Redo. Stale/project/raw-source/tampered/foreign/pending reviews
+cannot publish. History is prepared before publication with the shared scene
+review installer. Cross-library tabs stay retained by current/history references.
+
+IMG data/version/layout remain fixed and no Studio version bump is needed.
+WAX generated dummy imports remain guarded, with a direct pointer to the new
+rebuild workflow. This authors the canned preview, not a game fatality runtime.
+
+Full x64 Release builds Studio/classic/CLI. CTest 116/117; only the existing
+external MK2 roster assertion fails, and its standalone fixtures pass. Release
+and ASAN body/waterline/swap/project/motion/trigger/magnification models pass,
+including exact stock timing, discovery/piece order/priority, reset/effect IDs,
+cross-source persistence, no-op/Redo, native byte round trip, stale/forged/guarded
+inputs, actor/source/identity limits and 2200 allocation-failure positions. The
+232-frame actual-input smoke passes wide/compact Release and compact ASAN,
+covering actual selectors, scrub/facing, add/reset/cancel, Undo/Redo/save/reopen/
+PNG, multipart cross-library reset, incomplete/stale guards and unchanged IMG.
+Layouts inspected. Compact waterline/project/trigger/hotkeys/Help regressions
+pass. Help, README, port list and checkpoint updated; no commits/pushes/releases,
+classic UI/codec or game source/assets changes. Historic launch-memory cause
+remains unproven by these checks.
+
+
+### Extra Halfbrite ILBM import — 2026-10-20
+
+The indexed LBM/TGA review now handles Extra Halfbrite ILBM: CAMG 0x80, six
+bitplanes and at least 32 base palette entries. The palette resolves to base
+colors 0–31 and derived half-intensity RGB555 colors 32–63, with each channel
+masked separately to prevent cross-channel carry. Extra stored upper palette
+entries are ignored and explicitly noted. No mode is inferred without its flag.
+CAMG must contain four bytes before BODY; the final pre-BODY mode applies.
+Primary format references are linked from README (Amiga Hardware Reference
+Manual and Electronic Arts ILBM specification).
+
+Raw and ByteRun1 rows, masks, transparent-color indices, GRAB anchors, reviewed
+new/existing palette import, Undo/Redo and original-layout IMG saving retain
+their existing paths. No-mask index zero still follows IMG transparency;
+explicit masks preserve opaque zero by moving it to a free palette slot when
+needed. LBM/TGA exports retain the resolved indexed colors rather than recreating
+Amiga display metadata. HAM, DEST merging and IFF ANIM remain unsupported.
+Existing source images and IMG formats are untouched by review/export.
+
+Full x64 Release Studio/classic/CLI builds pass. CTest 117/118; only the existing
+external MK2 roster assertion fails; standalone fixtures pass. New halfbrite
+and existing legacy-media/import tests pass in Release and ASAN. Coverage checks
+all full/half colors and six-bit indices, compressed/plain/masked variants,
+extra palette handling, opaque-zero remapping, signed anchors, truncation and
+invalid mode/depth/palette output preservation, import history/palette matching,
+original-layout save/reopen and ordinary indexed export round trips. The
+96-frame input smoke passes wide/compact Release and compact ASAN with Cancel,
+modal capture, Import/Undo/Redo, exact palette/pixel/format round trips, resolved
+LBM export, existing-palette matching and unchanged source IMG. Screens
+inspected; compact legacy-media and hotkeys/Help regressions pass. Help, README,
+checkpoint and port status updated. No commits/pushes/releases, classic UI/IMG
+codec or game-source/assets changes. Historic launch-memory cause is unproven.
+
+
+### Complete ILBM DEST plane mapping — 2026-10-20
+
+The existing indexed-image review now handles self-contained ILBM DEST files.
+DEST scatters successive source planes into ascending planePick bits and supplies
+other destination bits from planeOnOff. Depths 1–8, ignored high bits/reserved
+byte and zero-plane constant images are supported. All low planeMask bits must
+be writable; background-dependent partial masks remain explicitly rejected.
+Malformed properties, PBM DEST and missing referenced colors block import.
+
+The effective destination depth controls Extra Halfbrite interpretation. Raw/RLE
+rows, word padding, mask coverage and signed anchors use the existing decoder.
+Transparent-color keys compare source indices before scattering. Mapped opaque
+zero uses existing safe-slot handling; unmasked destination zero follows IMG
+transparency. The review explains remapping and retains palette order. Existing
+palette matching, anchor placement, Undo/Redo, original-layout save/reopen and
+ordinary indexed LBM/TGA export apply. No DEST metadata is recreated on export.
+Primary EA ILBM DEST/masking references are linked in README. Source files/IMG
+format stay unchanged, and no existing background is silently inferred.
+
+Full x64 Release Studio/classic/CLI builds pass. CTest 118/119; only the existing
+external MK2 roster assertion fails, and standalone fixtures pass. Release/ASAN
+DEST/halfbrite/legacy-media/import models pass. Tests cover sparse/constant/high-
+bit/identity/8-bit mappings, raw/RLE padding and masks, source-key ordering,
+opaque-zero preservation, EHB after remapping, zero-plane constants, invalid/
+partial inputs preserving prior output, new/existing palette import/history,
+original-layout save/reopen and indexed exports. The shared input harness adds
+--smoke-iff-dest (120 frames), passing wide/compact Release and compact ASAN:
+independent expected map, review/note/texture/Cancel/modal capture, Import/Undo/
+Redo, exact palette/pixel/format round trip, export, matching, partial-mask guard
+and unchanged IMG. Layouts inspected. Compact Halfbrite/legacy-media/hotkeys/
+Help regressions pass. Help, README, checkpoint and port list updated; stale
+phase-list-authoring Help gap removed. No commits/pushes/releases, classic UI/
+IMG-codec or game-source/assets changes. Historic memory-launch cause is unproven.
+
+### WAX dummy-body recovery — 2026-10-20
+
+Classic WAX dummy-body lanes now reconstruct canonical whole-body or leg/torso
+references from their saved source IMG and family prefix. Legacy ten-source
+boundaries and newer saved boundaries work. Saved motion, offsets, visibility,
+facing, magnification, depth and second copies are retained; pending reset applies
+classic stock holds and clears the matching placement/motion fields. Uniform
+following effects keep their timing. Native save/reopen retains complete piece
+references and stable frame IDs without changing source WAX or IMG data/layout.
+
+Project source binding now validates a candidate state and publishes only when all
+dependencies resolve. Missing, ambiguous or incomplete families and allocation
+failures preserve the open scene and unbound pending project, allowing retry or
+Cancel. The source dialog displays global errors. Dummy rows lacking a saved
+source or using custom overrides/spawn rules remain guarded, as do ASM/embedded
+rows and omitted arbitrary composite lists.
+
+Full Release Studio/classic/CLI builds pass. CTest 119/120; only the existing
+external MK2 roster assertion fails, and standalone fixtures pass. Eight related
+ASAN model suites pass. New tests cover old/new boundaries, multipart discovery,
+saved/reset settings, following effects, stable native round trips, PNG export,
+unchanged sources, atomic retry and 1800 allocation-failure positions. The new
+54-frame --smoke-wax-dummy passes wide/compact Release and compact ASAN, checking
+actual opening/dragging/Undo/Redo/save/reopen/export and failed-source Cancel.
+Screens inspected. Compact project/dummy-body/magnification/trigger/hotkeys
+regressions pass. Help, README, checkpoint and port list updated. No commits,
+pushes/releases, classic UI/IMG-codec or external game-source/assets changes.
+Historic memory-launch cause remains unproven. Remaining-work estimates are
+five known areas rather than an audited completion percentage; prioritize WAX
+and damage-bound animation compatibility before more rare-media additions.
+
+
+### Damage-bound animation transfers — 2026-10-20
+
+Copy IMG animations, animation clipboard capture/paste, selected-animation
+extraction and sprite splits with Include IMG animations now retain resolved
+damage-table bindings. Sequence/script/damage dependencies are followed
+transitively, including cycles. Reached {kind,index} word pairs are remapped to
+signed-byte slots 0–127; duplicate remapped pairs reuse a slot. Existing destination
+table bytes remain intact. Script damage bytes stay opaque, matching the format's
+sequence-only damage binding semantics (doc/wimp/wmpstruc.txt). Unresolved reached
+bindings, full destination slots and incompatible original layouts block transfer.
+
+The review lists required dependencies and exposes global slot mappings in a
+Damage bindings tooltip. Automatic sprite splitting excludes records whose full
+dependency chain needs outside artwork; the reviewed sprite set never expands.
+Selected extraction and clipboard capture own all required records/artwork/table
+slots and remain valid after source closure. Artwork history now includes damage
+counts/bytes; buffers and history storage prepare before one atomic publish.
+Copy/paste Undo restores records, artwork and damage references together. Save
+and Save As retain the original IMG version and record layout.
+
+Full Release Studio/classic/CLI builds pass. CTest 120/121; only the existing
+external MK2 roster-count assertion fails; standalone strike-phase fixtures pass.
+Seven related ASAN model suites pass. New tests cover cycles, duplicate slots,
+#127 reuse, exhausted tables, invalid signed indices/flags/targets, opaque script
+bytes, changed raw tables and review tampering, original-layout 0x634/0x654 save
+round trips and 0x610 refusal, preserved sources, clipboard source closure,
+selected/automatic split containment, Undo/Redo and allocation failures with and
+without required artwork additions. The 84-frame --smoke-animation-damage passes
+wide/compact Release and compact ASAN with actual Cancel/Copy/Undo/Redo, save/reopen,
+selected extraction, clipboard capture and paste after source closure. Screens
+inspected. Compact animation copy/artwork/clipboard/split, automatic split,
+embedded-metadata and hotkeys/Help regressions pass. Help, README, checkpoint and
+port list updated. Four known remaining migration areas replace the prior five;
+there is no audited completion percentage. No commits/pushes/releases, classic
+UI/IMG-codec or external game-source/assets edits. The historical launch-memory
+fault's cause remains unproven.
+
+
+### Embedded-sequence WAX recovery and Help bounds repair — 2026-10-21
+
+Saved embedded sprite-sequence rows import as editable Studio scene snapshots,
+using legacy ten-source or newer saved special-slot boundaries. The root saved
+source selection takes precedence over the reserved row's document field;
+per-frame source overrides remain supported. Saved frames, holds, labels, local
+offsets, facing, scale, depth, visibility, capped motion, freeze and second copies
+use ordinary scene controls. Uniform following effects retain frame identities
+and retime with their source. Missing source files or sprite indices fail atomic
+binding and support retry/Cancel without replacing the active scene.
+
+The saved WAX row stays authoritative even when the current IMG record differs.
+Imported labels survive repeated binding and native save/reopen; missing labels
+use sprite names. Native projects preserve references/IDs and PNG export works.
+Source IMG records/files and WAX files remain unchanged. Empty rows are refused;
+the importer does not resurrect defaults or guess from current record contents.
+Other recoverable rows import alongside the sequence. Classic's active workspace
+mode is not restored. ASM rows, omitted generated composites and embedded-script
+call-thumbnail previews remain guarded. Scripts pause and use representative
+images in classic; treating those as playable sprite sequences would be incorrect.
+
+Release Studio/classic/CLI builds pass. CTest 121/122, only the unchanged external
+MK2 roster-count assertion; standalone strike-phase fixtures pass. Six related
+ASAN model suites pass. New tests cover source precedence/overrides, old/new slot
+boundaries, authoritative snapshots, labels, settings, long holds, stable native
+round trips/PNG, following-effect retiming, invalid/missing/script/composite guards,
+loop eligibility, exact source preservation and 500 allocation-failure positions.
+The 56-frame --smoke-wax-embedded passes wide/compact Release and compact ASAN:
+actual open/drag/Undo/Redo/save/reopen/export, missing-reference dialog/Cancel,
+script rejection and unchanged IMG bytes/history. Screens inspected. Compact dummy
+WAX/project/magnification/trigger regressions pass.
+
+Hotkeys/Help regression found a memory overwrite: Help rendered 61 topics into
+App's fixed 48-element topic-point array, corrupting neighboring state. Release
+crashed during App destruction; ASAN confirmed corrupted vector metadata there.
+The array capacity now derives from the actual topic list. Wide/compact Release
+and compact ASAN hotkeys/Help runs pass through clean shutdown. Compact Release/
+ASAN embedded import was rechecked after the repair. This identifies this specific
+Help/shutdown crash; the historical launch fault's cause remains unproven.
+Help, README, checkpoint and port list updated. No commits/pushes/releases,
+classic UI/IMG-codec or external game-source/assets edits. IMG version/layout
+remain fixed. Four known migration areas remain; there is no audited percentage.

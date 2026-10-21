@@ -19,15 +19,22 @@ struct AnimationCopyBinding {
     std::string name,target_name,error;
     std::array<unsigned char,sizeof(IMG)> source_fields{},target_fields{};
 };
+struct AnimationDamageBinding {
+    int source=-1,target=-1,record=-1;bool script=false;
+    std::string name;
+};
 struct AnimationCopyPlan {
     const Artwork *source=nullptr,*target=nullptr;uint64_t source_generation=0,target_generation=0;
     unsigned source_sequences=0,source_scripts=0,target_sequences=0,target_scripts=0;
     AnimationCopyOptions options;std::vector<AnimationCopyRow> rows;std::vector<AnimationCopyBinding> bindings;
     std::vector<unsigned char> source_blob,target_blob,result_blob;
+    std::vector<unsigned char> source_damage,target_damage,result_damage;
+    std::vector<AnimationDamageBinding> damage_bindings;
     LibraryCopyPlan artwork;
     int added_sequences=0,added_scripts=0;
 };
 // Match existing artwork or optionally append missing unique names. Never replaces
-// sprites, existing animations or opaque entry bytes other than target indices.
+// sprites or existing animations. Includes transitive sequence/script/damage
+// dependencies and remaps only record, sprite and damage-reference indices.
 bool plan_animation_copy(const Artwork &source,const Artwork &target,const AnimationCopyOptions &options,AnimationCopyPlan &out,std::string &error);
 }

@@ -270,6 +270,9 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_regions.cpp platform/body_split.cpp
     platform/studio/studio_overlay_frame.cpp
     platform/studio/studio_subframe_swap.cpp
+    platform/studio/studio_subframes.cpp
+    platform/studio/studio_waterline.cpp
+    platform/studio/studio_dummy_body.cpp
     platform/studio/studio_project.cpp
     platform/studio/studio_stage.cpp
     platform/studio/studio_anchor_link.cpp
@@ -282,6 +285,7 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_bindings.cpp
     platform/studio/studio_strike_phases.cpp
     platform/studio/studio_animation_copy.cpp
+    platform/studio/studio_animation_dependencies.cpp
     platform/studio/studio_animation_clipboard.cpp
     platform/studio/studio_animation_split.cpp
     platform/studio/studio_library_split_animations.cpp
@@ -464,6 +468,14 @@ add_executable(studio_legacy_media_test test/studio_legacy_media_test.cpp)
 target_link_libraries(studio_legacy_media_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_legacy_media_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_legacy_media COMMAND studio_legacy_media_test)
+add_executable(studio_halfbrite_test test/studio_halfbrite_test.cpp)
+target_link_libraries(studio_halfbrite_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_halfbrite_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_halfbrite COMMAND studio_halfbrite_test)
+add_executable(studio_iff_dest_test test/studio_iff_dest_test.cpp)
+target_link_libraries(studio_iff_dest_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_iff_dest_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_iff_dest COMMAND studio_iff_dest_test)
 add_executable(studio_legacy_img_test test/studio_legacy_img_test.cpp)
 target_link_libraries(studio_legacy_img_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_legacy_img_test PRIVATE SDL_MAIN_HANDLED)
@@ -488,6 +500,26 @@ add_executable(studio_subframe_swap_test test/studio_subframe_swap_test.cpp)
 target_link_libraries(studio_subframe_swap_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_subframe_swap_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_subframe_swap COMMAND studio_subframe_swap_test)
+add_executable(studio_waterline_test test/studio_waterline_test.cpp)
+target_link_libraries(studio_waterline_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_waterline_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_waterline COMMAND studio_waterline_test)
+add_executable(studio_dummy_body_test test/studio_dummy_body_test.cpp)
+target_link_libraries(studio_dummy_body_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_dummy_body_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_dummy_body COMMAND studio_dummy_body_test)
+add_executable(studio_wax_dummy_test test/studio_wax_dummy_test.cpp)
+target_link_libraries(studio_wax_dummy_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_wax_dummy_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_wax_dummy COMMAND studio_wax_dummy_test)
+add_executable(studio_wax_embedded_test test/studio_wax_embedded_test.cpp)
+target_link_libraries(studio_wax_embedded_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_wax_embedded_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_wax_embedded COMMAND studio_wax_embedded_test)
+add_executable(studio_animation_damage_test test/studio_animation_damage_test.cpp)
+target_link_libraries(studio_animation_damage_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_animation_damage_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_animation_damage COMMAND studio_animation_damage_test)
 add_executable(studio_motion_test test/studio_motion_test.cpp)
 target_link_libraries(studio_motion_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_motion_test PRIVATE SDL_MAIN_HANDLED)

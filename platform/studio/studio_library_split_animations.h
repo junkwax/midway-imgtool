@@ -12,7 +12,7 @@ struct LibrarySplitAnimationPlan {
     uint64_t source_generation=0,target_generation=0;
     std::vector<uint64_t> sprites;
     std::vector<LibrarySplitAnimationRow> rows;
-    std::vector<unsigned char> source_blob,result_blob;
+    std::vector<unsigned char> source_blob,result_blob,source_damage,result_damage;
     unsigned sequences=0,scripts=0;
 };
 // Copy only records fully supported by the reviewed sprite set. Never extends

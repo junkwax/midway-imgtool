@@ -1,5 +1,6 @@
 #include "studio_project.h"
 #include "studio_layers.h"
+#include "studio_dummy_body.h"
 #include "stb_image_write.h"
 #include <algorithm>
 #include <cmath>
@@ -132,21 +133,40 @@ SceneState decode_native(const Values &v){
 }
 SceneState decode_wax(const Values &v){
     if(integer(v,"version",0)!=1)throw std::runtime_error("Unsupported classic WAX version.");
-    if(boolean(v,"asm.player.enabled",false)||boolean(v,"asm.opp.enabled",false)||boolean(v,"state.embedded_active",false)||boolean(v,"state.dummy_decap_body",false))throw std::runtime_error("This WAX uses ASM, embedded sequences or dummy-body lanes, which have not migrated yet. Open it in classic imgtool.");
+    if(boolean(v,"asm.player.enabled",false)||boolean(v,"asm.opp.enabled",false))throw std::runtime_error("This WAX uses ASM lanes that this importer cannot reconstruct. Open it in classic imgtool.");
+    bool has_embedded=boolean(v,"state.embedded_active",false);
+    if(has_embedded&&boolean(v,"state.embedded_is_script",false))throw std::runtime_error("This WAX contains an embedded script call preview, not a playable sprite sequence. Open it in classic imgtool or use Studio's IMG script inspector.");
+    bool has_dummy=boolean(v,"state.dummy_decap_body",false),dummy_reset=boolean(v,"state.dummy_decap_reset",true),special_loops=false;
     SceneState s;s.width=integer(v,"world.w",400,64,2048);s.height=integer(v,"world.h",254,64,2048);s.origin_x=integer(v,"world.origin_x",200,-4096,4096);s.origin_y=integer(v,"world.origin_y",20,-4096,4096);s.floor=s.height;s.onion=boolean(v,"world.onion",false);s.tick_hz=mk2_tick_hz;
     bool solid=boolean(v,"world.bg_solid",false);s.background[0]=solid?integer(v,"world.bg_solid_r",0,0,255):0;s.background[1]=solid?integer(v,"world.bg_solid_g",0,0,255):0;s.background[2]=solid?integer(v,"world.bg_solid_b",0,0,255):0;
     int docs=integer(v,"doc.count",0,1,128),slots=integer(v,"slot.count",0,1,64),hold=integer(v,"state.default_hold",4,1,120);
+    int dummy_slot=integer(v,"slot.source_tabs",10,1,63);
+    if(has_dummy&&dummy_slot>=slots)throw std::runtime_error("This WAX does not contain the saved dummy-body slot. Open it in classic or rebuild the body in Studio.");
+    int embedded_slot=dummy_slot+3;
+    if(has_embedded&&(embedded_slot>=slots||integer(v,"state.embedded_record_index",-1)<0))throw std::runtime_error("This WAX is missing its saved embedded sequence row or record selection.");
+    int embedded_labels=has_embedded?integer(v,"state.embedded_label_count",0,0,4096):0;
+    std::string dummy_prefix=raw(v,"state.dummy_decap_prefix");for(char &c:dummy_prefix)if(c>='a'&&c<='z')c-=32;
+    if(has_dummy&&(dummy_prefix.size()>15||dummy_prefix.find(char(0))!=std::string::npos))throw std::runtime_error("Invalid saved dummy-body prefix.");
     auto add_asset=[&](int index,const std::string &path){std::string name=path.empty()?raw(v,field("doc",index,"path")):path;if(name.empty())throw std::runtime_error("A WAX lane is missing its IMG path.");
         for(int i=0;i<(int)s.assets.size();++i)if(s.assets[i].path==name)return i;s.assets.push_back({name,name,{ },0});if(s.assets.size()>64)throw std::runtime_error("Too many IMG dependencies.");return (int)s.assets.size()-1;};
     std::vector<int> row_order,saved_slots,spawn_source,spawn_entry;
     uint64_t next_id=1;
-    for(int slot=0;slot<slots;++slot){std::string p="slot."+number(slot)+".";auto indices=integers(v,p+(v.count(p+"sequence_frames")?"sequence_frames":"default_frames"));if(indices.empty())continue;
+    for(int slot=0;slot<slots;++slot){
+        bool dummy=has_dummy&&slot==dummy_slot,embedded=has_embedded&&slot==embedded_slot;
+        if(slot>=dummy_slot&&!dummy&&!embedded)continue;
+        std::string p="slot."+number(slot)+".";
+        auto indices=dummy?std::vector<int>(dummy_body_order.begin(),dummy_body_order.end()):integers(v,p+(v.count(p+"sequence_frames")?"sequence_frames":"default_frames"));
+        if(indices.empty()){if(embedded)throw std::runtime_error("This WAX has no saved embedded sequence frames. Open it in classic and save the complete row.");continue;}
         // auto_* and chain_* numeric fields are generator inputs, not live
         // animation. Their applied result is already in the per-frame arrays.
         for(const char *key:{"subframe_swap_tick","subframe_waterline_y"})if(integer(v,p+key,0)!=0)throw std::runtime_error("WAX lane "+number(slot)+" has "+key+" settings, but its complete generated piece lists are not stored in WAX. Open it in classic or rebuild its handoff in Studio.");
         if(integer(v,p+"subframe_fine_source",-1)!=-1)throw std::runtime_error("This WAX has substituted subframes. Open it in classic imgtool.");
         int doc=integer(v,p+"doc_idx",-1,-1,docs-1);std::string path=raw(v,p+"doc_path");
+        if(dummy){doc=integer(v,"state.dummy_decap_doc_idx",-1,-1,docs-1);path=raw(v,"state.dummy_decap_doc_path");if(doc<0&&path.empty())throw std::runtime_error("This WAX has no saved dummy-body source. Open it in classic or rebuild the body in Studio.");}
+        if(embedded){doc=integer(v,"state.embedded_doc_idx",-1,-1,docs-1);path=raw(v,"state.embedded_doc_path");if(doc<0&&path.empty())throw std::runtime_error("This WAX is missing its embedded sequence source IMG.");}
         int asset=doc>=0||!path.empty()?add_asset(doc,path):-1;SceneLane lane;lane.name="WAX row "+number(slot+1);lane.visible=boolean(v,p+"visible",true);lane.hold_end=boolean(v,p+"hold_end",true);lane.loop=!lane.hold_end;lane.flip_x=boolean(v,p+"mirror",false);
+        if(dummy)lane.name="Dummy body ["+dummy_prefix+"]";
+        if(embedded)lane.name="Sequence: "+raw(v,"state.embedded_name","Embedded");
         lane.magnification=std::clamp(integer(v,p+"zoom",1),1,4); // Matches classic WorldMarkedLaneZoom.
         lane.stop_tick=integer(v,p+"stop_tick",0,0,99999);
         lane.id=next_id++;
@@ -154,9 +174,11 @@ SceneState decode_wax(const Values &v){
         auto from=integers(v,p+"visible_from"),until=integers(v,p+"visible_until"),vx=integers(v,p+"motion_dx"),vy=integers(v,p+"motion_dy"),capx=integers(v,p+"motion_cap_x"),capy=integers(v,p+"motion_cap_y");
         auto dual=integers(v,p+"dual_on"),dualx=integers(v,p+"dual_dx"),dualy=integers(v,p+"dual_dy"),dualz=integers(v,p+"dual_z");
         int default_hold=boolean(v,p+"hold_custom",false)?integer(v,p+"hold",hold,1,120):hold;
+        if(dummy&&(dummy_reset||delays.size()!=13)){delays.clear();dx.clear();dy.clear();from.clear();until.clear();vx.clear();vy.clear();capx.clear();capy.clear();}
         auto at=[](const std::vector<int> &a,size_t i,int fallback){return i<a.size()?a[i]:fallback;};
         for(size_t f=0;f<indices.size();++f){int index=indices[f],source=at(overrides,f,-1);if(index<0||index>1999||source>=docs||source<-1)throw std::runtime_error("Invalid WAX frame reference.");int bits=at(mirror,f,0);if(bits<0||bits>3)throw std::runtime_error("Invalid WAX mirror flags.");
-            SceneFrame frame;frame.name="Frame "+number((int)f+1);frame.ticks=at(delays,f,default_hold);frame.z=at(depth,f,0);frame.flip_x=(bits&1)!=0;frame.flip_y=(bits&2)!=0;
+            if(dummy&&source>=0)throw std::runtime_error("This WAX overrides a generated dummy-body frame's source. Rebuild it in Studio.");
+            SceneFrame frame;frame.name=dummy?dummy_prefix+"DECAP"+number(index):embedded&&f<(size_t)embedded_labels?raw(v,field("embedded_label",(int)f,"text")):std::string();frame.ticks=at(delays,f,dummy?dummy_body_holds[f]:default_hold);frame.z=at(depth,f,0);frame.flip_x=(bits&1)!=0;frame.flip_y=(bits&2)!=0;
             frame.id=next_id++;
             // Classic adjusts the anipoint before mirroring. Convert to our
             // absolute screen offsets using the entry's final facing.
@@ -168,7 +190,11 @@ SceneState decode_wax(const Values &v){
             int second_x=at(dualx,f,0),second_y=at(dualy,f,0);if(second_x<-4096||second_x>4096||second_y<-4096||second_y>4096)throw std::runtime_error("WAX second-copy offsets exceed the Studio limit.");
             frame.dual_x=(lane.flip_x!=frame.flip_x)?second_x:-second_x;frame.dual_y=frame.flip_y?second_y:-second_y;frame.dual_z=at(dualz,f,0);
             if(source<0&&asset<0)throw std::runtime_error("WAX row "+number(slot)+" frame "+number((int)f)+" has no source document.");
-            frame.pieces.push_back({source<0?asset:add_asset(source,{}),index,{},{},0});lane.frames.push_back(std::move(frame));}
+            // This marker is only produced by the WAX decoder. bind() resolves
+            // the saved family against source names, never guessed indices.
+            frame.pieces.push_back({source<0?asset:add_asset(source,{}),dummy?index-1:index,dummy?"wax-dummy:"+dummy_prefix:std::string(),{},0});lane.frames.push_back(std::move(frame));}
+        if(dummy){if(integer(v,p+"spawn_slot",-1)!=-1)throw std::runtime_error("This WAX spawns its dummy body from another row. Rebuild the body in Studio.");special_loops|=lane.visible&&!lane.hold_end&&!lane.stop_tick;}
+        if(embedded)special_loops|=lane.visible&&!lane.hold_end&&!lane.stop_tick&&!boolean(v,p+"chain_pingpong",false);
         int spawned=integer(v,p+"spawn_slot",-1,-1,slots-1);
         if(spawned>=0){
             if(lane.stop_tick)throw std::runtime_error("This WAX combines a spawn binding with a freeze tick. Detach that row in classic before importing it.");
@@ -193,7 +219,7 @@ SceneState decode_wax(const Values &v){
     std::stable_sort(order.begin(),order.end(),[&](int a,int b){return row_order[a]>row_order[b];});
     static const int alpha[]={255,185,170,155,205,235,190,220,175,210};
     auto lanes=std::move(s.lanes);for(int i:order){auto lane=std::move(lanes[i]);int display=(int)order.size()-1-(int)s.lanes.size();lane.alpha=alpha[display%10];s.lanes.push_back(std::move(lane));}
-    s.loop=false;for(int slot=0;slot<slots;++slot){auto p="slot."+number(slot)+".";
+    s.loop=special_loops;for(int slot=0;slot<std::min(slots,dummy_slot);++slot){auto p="slot."+number(slot)+".";
         if(!integers(v,p+(v.count(p+"sequence_frames")?"sequence_frames":"default_frames")).empty()&&boolean(v,p+"visible",true)&&!boolean(v,p+"hold_end",true)&&!boolean(v,p+"chain_pingpong",false)&&integer(v,p+"stop_tick",0)==0)s.loop=true;}
     return s;
 }
@@ -386,16 +412,27 @@ std::unique_ptr<SceneProject> SceneProject::read(const std::string &path,std::st
     }catch(const std::exception &e){error=e.what();return {};}
 }
 bool SceneProject::bind(const SceneBinder &provider,std::vector<SceneIssue> &issues){
-    issues.clear();for(int a=0;a<(int)state.assets.size();++a){auto binding=provider(a,state.assets[a]);if(!binding.art){issues.push_back({a,"Could not load IMG: "+state.assets[a].path});continue;}
-        auto &asset=state.assets[a];asset.runtime_doc=binding.uid;bool unchanged=!binding.art->dirty()&&!asset.digest.empty()&&file_digest(binding.art->path())==asset.digest;
-        for(auto &lane:state.lanes)for(auto &frame:lane.frames)for(auto &ref:frame.pieces)if(ref.asset==a){
-            int index=-1;if(imported&&ref.key.empty())index=ref.index;
-            else{std::vector<int> matches;for(int i=0;i<binding.art->count();++i)if(scene_sprite_key(*binding.art->sprite(i))==ref.key)matches.push_back(i);
-                if(matches.size()==1)index=matches.front();else if(unchanged&&std::find(matches.begin(),matches.end(),ref.index)!=matches.end())index=ref.index;}
-            if(!binding.art->sprite(index)){issues.push_back({a,"Missing or ambiguous sprite: "+(ref.name.empty()?number(ref.index):ref.name)});continue;}
-            ref=scene_sprite_reference(*binding.art,a,index);if(frame.name.empty()||imported)frame.name=ref.name;
+    issues.clear();try{SceneState candidate=state;
+        for(int a=0;a<(int)candidate.assets.size();++a){auto binding=provider(a,candidate.assets[a]);if(!binding.art||!binding.uid){issues.push_back({a,"Could not load IMG: "+candidate.assets[a].path});continue;}
+            auto &asset=candidate.assets[a];asset.runtime_doc=binding.uid;bool unchanged=!binding.art->dirty()&&!asset.digest.empty()&&file_digest(binding.art->path())==asset.digest;
+            std::vector<DummyBodyFamily> bodies;bool discovered=false;size_t body_budget=0;std::set<std::string> checked_bodies;
+            for(auto &lane:candidate.lanes)for(auto &frame:lane.frames)for(size_t j=0;j<frame.pieces.size();++j){auto &ref=frame.pieces[j];if(ref.asset!=a)continue;
+                if(imported&&ref.key.compare(0,10,"wax-dummy:")==0){
+                    std::string prefix=ref.key.substr(10),error;if(!discovered){if(!discover_dummy_bodies(*binding.art,bodies,error)){issues.push_back({a,error});break;}discovered=true;}
+                    auto family=std::find_if(bodies.begin(),bodies.end(),[&](const DummyBodyFamily &f){return f.prefix==prefix;});
+                    if(frame.pieces.size()!=1||ref.index<0||ref.index>6||family==bodies.end()||!family->error.empty()){issues.push_back({a,"Dummy body "+prefix+": "+(family!=bodies.end()?family->error:"saved family is missing")});break;}
+                    if(checked_bodies.insert(prefix).second){bool valid=true;for(auto &pieces:family->pieces)for(int index:pieces){SubframeSpriteSnapshot captured;if(!capture_subframe_sprite(*binding.art,index,body_budget,captured,error)){valid=false;break;}}if(!valid){issues.push_back({a,error});break;}}
+                    std::vector<SceneSprite> pieces;for(int index:family->pieces[ref.index])pieces.push_back(scene_sprite_reference(*binding.art,a,index));frame.pieces=std::move(pieces);break;
+                }
+                bool legacy_ref=imported&&ref.key.empty();int index=-1;if(legacy_ref)index=ref.index;
+                else{std::vector<int> matches;for(int i=0;i<binding.art->count();++i)if(scene_sprite_key(*binding.art->sprite(i))==ref.key)matches.push_back(i);
+                    if(matches.size()==1)index=matches.front();else if(unchanged&&std::find(matches.begin(),matches.end(),ref.index)!=matches.end())index=ref.index;}
+                if(!binding.art->sprite(index)){issues.push_back({a,"Missing or ambiguous sprite: "+(ref.name.empty()?number(ref.index):ref.name)});continue;}
+                ref=scene_sprite_reference(*binding.art,a,index);if(frame.name.empty())frame.name=ref.name;
+            }
         }
-    }return issues.empty();
+        if(!issues.empty())return false;std::string error;if(!validate_scene(candidate,error)){issues.push_back({-1,error});return false;}state=std::move(candidate);return true;
+    }catch(const std::bad_alloc &){issues.clear();issues.push_back({-1,"Not enough memory to bind project sources. The project is unchanged."});return false;}
 }
 void SceneProject::establish_loaded(){pending.reset();past.clear();future.clear();revision=imported?next_revision++:0;saved_revision=0;}
 bool SceneProject::same(const SceneState &a,const SceneState &b){return encode(a,true)==encode(b,true);}

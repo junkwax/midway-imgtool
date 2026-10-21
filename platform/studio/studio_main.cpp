@@ -20,6 +20,8 @@
 #include "studio_strikes.h"
 #include "studio_project.h"
 #include "studio_subframe_swap.h"
+#include "studio_waterline.h"
+#include "studio_dummy_body.h"
 #include "studio_sequences.h"
 #include "studio_embedded_metadata.h"
 #include "studio_opacity_gradient.h"
@@ -214,7 +216,7 @@ enum class Action { Open, OpenLod, ExportTbl, ExportIrw, ExportAnilst, ImportInd
     Cut,SelectAll,Deselect,InvertSelection,SelectOpaque,ExtractSelection,SplitOverlay,CopyOverlay,SplitBody,TransformSelection,BatchGeometry,BatchRename,BatchPalette,RampTransfer,Costume,BatchDelete,LibraryCopy,AnimationCopy,SplitAnimations,CopyAnimations,PasteAnimations,ClearAnimationClipboard,SplitLibrary,CopySprites,PasteSprites,ClearSpriteClipboard,PaletteCleanup,PaletteDuplicates,RestoreChildren, Help,Diagnostics,Points,CopyNew,CutNew,PasteNew,Mark,MarkAll,UnmarkAll,PaletteAssign,PaletteAssignMarked,PaletteRename,PaletteMerge,ReduceMarked,PreviewEarlier,PreviewLater };
 #include "studio_shortcut_bindings.inl"
 #include "studio_help_topics.inl"
-enum class EditDialog { None, EmbeddedMetadata, NewSprite, Rename, Delete, Resize, CanvasSize, Transform, ImportPng, ExportPng, OpacityGradient, SpriteRamp, OverlayFrame, SubframeSwap };
+enum class EditDialog { None, EmbeddedMetadata, NewSprite, Rename, Delete, Resize, CanvasSize, Transform, ImportPng, ExportPng, OpacityGradient, SpriteRamp, OverlayFrame, SubframeSwap, Waterline, DummyBody };
 using Selection=PixelSelection;
 struct Texture { SDL_Texture *value=nullptr; uint64_t revision=0; };
 enum class SceneCommand { None, AddFrame, DuplicateFrame, MoveLeft, MoveRight, DeleteFrame, AddLane, RemoveLane, ReplaceFrame, FollowFrame, DetachTrigger };
@@ -230,7 +232,7 @@ struct SceneUi {
     bool smoke=false;
     bool motion_smoke=false,subframe_smoke=false;
     ImVec2 show_here_point;
-    ImVec2 magnification_point,magnification_choices[4]{},subframe_swap_point;
+    ImVec2 magnification_point,magnification_choices[4]{},subframe_swap_point,waterline_point,dummy_body_point;
     uint64_t trigger_source_lane=0,trigger_source_frame=0;
     bool trigger_smoke=false;
     ImVec2 follow_point,detach_point;
@@ -299,6 +301,16 @@ struct SpriteRampUi {
 struct SubframeSwapUi {
     uint64_t doc=0,lane=0,frame=0;int tick=0;bool valid=false,dirty=false;SubframeSwapPlan plan;std::string error;
     ImVec2 tick_point,now_point,apply_point,cancel_point;
+};
+struct WaterlineUi {
+    uint64_t doc=0;WaterlineOptions options;WaterlinePlan plan;int preview_tick=0;
+    bool valid=false,dirty=false;std::string error;ImGuiTextFilter filter;
+    ImVec2 line_point,floor_point,library_point,parent_point,apply_point,cancel_point,seek_point,library_choices[8]{},parent_choices[4]{};
+};
+struct DummyBodyUi {
+    uint64_t doc=0,selected_lane=0;DummyBodyOptions options;DummyBodyPlan plan;
+    std::vector<DummyBodyFamily> families;int tick=0;bool replace=false,valid=false,dirty=false;std::string error;
+    ImVec2 library_point,family_point,replace_point,facing_point,apply_point,cancel_point,seek_point,library_choices[8]{},family_choices[8]{};
 };
 struct OverlayFrameUi {
     uint64_t source=0,generation=0;bool split=false,valid=false,dirty=false,preview_dirty=true,preview_ok=false;
@@ -687,7 +699,8 @@ public:
     SDL_Texture *paste_texture=nullptr;
     uint64_t paste_generation=0,paste_uid=0;
     int paste_sprite=-1;
-    ImGuiTextFilter help_search;int help_topic=0;ImVec2 help_done_point,help_search_point,help_topic_points[48]{};
+    ImGuiTextFilter help_search;int help_topic=0;ImVec2 help_done_point,help_search_point;
+    std::array<ImVec2,sizeof(help_topics)/sizeof(help_topics[0])> help_topic_points{};
     int paste_x=0,paste_y=0;uint64_t space_mark_doc=0,space_mark_sprite=0;
     bool running=true,quitting=false,help=false,diagnostics=false,paste_mode=false,stroke=false,select_drag=false,anchor_drag=false;
     ImVec2 anchor_drag_mouse;
@@ -717,6 +730,8 @@ public:
     SpriteRampUi sprite_ramp;
     OverlayFrameUi overlay_frame;
     SubframeSwapUi subframe_swap;
+    WaterlineUi waterline;
+    DummyBodyUi dummy_body;
     OpacityGradientUi opacity_gradient;
     EmbeddedMetadataUi embedded_metadata;
     EditDialog edit_dialog=EditDialog::None;
@@ -740,7 +755,7 @@ public:
     bool scene_path_dialog=false,scene_path_save=false,scene_path_export=false;
     char scene_path_input[2048]={};
     std::string scene_error;
-    ImVec2 scene_cancel_point;
+    ImVec2 scene_cancel_point,scene_sources_cancel_point;
     PaletteUi palettes;
     PaletteTransfer palette_clipboard;
     PaletteSwatchClipboard swatch_clipboard;
@@ -864,7 +879,7 @@ public:
         return true;
     }
     void action(Action a){
-        if(a==Action::Quit){subframe_swap.plan={};clear_overlay_frame_textures();overlay_frame.plan={};clear_sprite_ramp_textures();sprite_ramp.plan={};sprite_ramp.source.reset();clear_opacity_gradient_textures();opacity_gradient.plan={};opacity_gradient.source.reset();palettes.remap.open=false;clear_region_remap_textures();palettes.remap.plan={};palettes.remap.captured.reset();palettes.frames.open=false;clear_isolation_frames_textures();palettes.frames.plan={};palettes.frames.captured.reset();palettes.isolation.open=false;clear_palette_isolation_textures();palettes.isolation.plan={};palettes.move.open=false;clear_palette_move_textures();palettes.move.plan={};palettes.zero.open=false;clear_palette_zero_textures();palettes.zero.plan={};palettes.removal.open=false;clear_palette_removal_textures();palettes.removal.plan={};palettes.transparency.open=false;clear_palette_transparency_textures();palettes.transparency.plan={};animation_copy.open=false;animation_copy.plan={};animation_copy.held.reset();animation_copy.capture_target.reset();cleanup.open=false;cleanup.plan={};renaming.open=false;costume.open=false;clear_costume_textures();costume.plan={};ramp_transfer.open=false;clear_ramp_transfer_textures();ramp_transfer.plan={};batch_palette.open=false;clear_batch_palette_textures();batch_palette.plan={};deleting.open=false;clear_batch_delete_preview();deleting.plan={};library_copy.open=false;clear_library_copy_preview();library_copy.plan={};library_copy.split_removal={};library_copy.split_animation_plan={};library_copy.split_scene_uses.clear();library_copy.held.reset();library_copy.held_artwork.reset();library_copy.artwork_return=false;library_copy.capture_target.reset();}
+        if(a==Action::Quit){dummy_body.plan={};waterline.plan={};subframe_swap.plan={};clear_overlay_frame_textures();overlay_frame.plan={};clear_sprite_ramp_textures();sprite_ramp.plan={};sprite_ramp.source.reset();clear_opacity_gradient_textures();opacity_gradient.plan={};opacity_gradient.source.reset();palettes.remap.open=false;clear_region_remap_textures();palettes.remap.plan={};palettes.remap.captured.reset();palettes.frames.open=false;clear_isolation_frames_textures();palettes.frames.plan={};palettes.frames.captured.reset();palettes.isolation.open=false;clear_palette_isolation_textures();palettes.isolation.plan={};palettes.move.open=false;clear_palette_move_textures();palettes.move.plan={};palettes.zero.open=false;clear_palette_zero_textures();palettes.zero.plan={};palettes.removal.open=false;clear_palette_removal_textures();palettes.removal.plan={};palettes.transparency.open=false;clear_palette_transparency_textures();palettes.transparency.plan={};animation_copy.open=false;animation_copy.plan={};animation_copy.held.reset();animation_copy.capture_target.reset();cleanup.open=false;cleanup.plan={};renaming.open=false;costume.open=false;clear_costume_textures();costume.plan={};ramp_transfer.open=false;clear_ramp_transfer_textures();ramp_transfer.plan={};batch_palette.open=false;clear_batch_palette_textures();batch_palette.plan={};deleting.open=false;clear_batch_delete_preview();deleting.plan={};library_copy.open=false;clear_library_copy_preview();library_copy.plan={};library_copy.split_removal={};library_copy.split_animation_plan={};library_copy.split_scene_uses.clear();library_copy.held.reset();library_copy.held_artwork.reset();library_copy.artwork_return=false;library_copy.capture_target.reset();}
         if(a==Action::Quit&&fatality.workspace.first_dirty()){finish();asm_ui.open=false;asm_ui.player.playing=false;uint64_t id=fatality.source&&fatality.source->dirty()?fatality.document:fatality.workspace.first_dirty();if(id!=fatality.document)activate_fatality(id);fatality.open=true;fatality.guard=3;fatality.guard_document=id;return;}
         if(a==Action::Quit&&dirty_bindings()){finish();request_bindings_quit();return;}
         if(a==Action::Quit&&strikes.source&&strikes.source->dirty()){finish();strike_phases.open=false;strike_phases.playing=false;asm_ui.open=false;asm_ui.player.playing=false;strikes.guard=3;strikes.open=true;return;}
@@ -1033,7 +1048,7 @@ public:
             item("Explore sample",nullptr,Action::Demo);item("Close library","Ctrl+W",Action::Close);item("Quit",nullptr,Action::Quit);ImGui::EndMenu();}
         if(ImGui::BeginMenu("Edit")){item("Undo","Ctrl+Z",Action::Undo);item("Redo","Ctrl+Y",Action::Redo);ImGui::Separator();item("Copy pixels","Ctrl+C",Action::Copy);item("Cut pixels","Ctrl+X",Action::Cut);item("Paste pixels","Ctrl+V",Action::Paste);if(ImGui::MenuItem("Keep paste as overlay","L",false,tab()&&(paste_mode||(floating.active&&floating.stage.clipboard))))drop_paste_layer();item("Clear selection","Delete",Action::Clear);item("Copy selection to new sprite...",nullptr,Action::CopyNew);item("Cut selection to new sprite...",nullptr,Action::CutNew);item("Paste pixels as new sprite",nullptr,Action::PasteNew);item("Transform selection...","Ctrl+T",Action::TransformSelection);ImGui::Separator();item("Select all","Ctrl+A",Action::SelectAll);item("Select artwork",nullptr,Action::SelectOpaque);item("Invert selection","Ctrl+Shift+I",Action::InvertSelection);item("Deselect","Ctrl+D",Action::Deselect);ImGui::Separator();item("Clear sprite clipboard",nullptr,Action::ClearSpriteClipboard);item("Clear animation clipboard",nullptr,Action::ClearAnimationClipboard);ImGui::EndMenu();}
         if(ImGui::BeginMenu("Project")){
-            item("Create from current preview",nullptr,Action::NewProject);item("Open / import WAX...",nullptr,Action::OpenProject);item("Save project",nullptr,Action::SaveProject);item("Save project As...",nullptr,Action::SaveProjectAs);item("Export current scene PNG...",nullptr,Action::ExportScene);item("Close project",nullptr,Action::CloseProject);ImGui::EndMenu();}
+            item("Create from current preview",nullptr,Action::NewProject);item("Open / import WAX...",nullptr,Action::OpenProject);item("Save project",nullptr,Action::SaveProject);item("Save project As...",nullptr,Action::SaveProjectAs);item("Export current scene PNG...",nullptr,Action::ExportScene);if(ImGui::MenuItem("Build dummy body...",nullptr,false,tab()&&tab()->project!=nullptr))show_dummy_body(*tab());item("Close project",nullptr,Action::CloseProject);ImGui::EndMenu();}
         if(ImGui::BeginMenu("Sprite",tab()!=nullptr&&!tab()->embedded.enabled)){
             item("New sprite...",nullptr,Action::NewSprite);item("Rename...","F2",Action::Rename);item("Batch rename...",nullptr,Action::BatchRename);item("Duplicate","Ctrl+J",Action::Duplicate);item("Delete sprite...",nullptr,Action::Delete);item("Delete multiple sprites...",nullptr,Action::BatchDelete);item("Copy / move to another library...",nullptr,Action::LibraryCopy);if(tabs.size()<2&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Open a second IMG library to copy sprites into it.");
             item("Split to new library...",nullptr,Action::SplitLibrary);
@@ -1539,12 +1554,16 @@ public:
     }
     #include "studio_welcome_ui.inl"
     #include "studio_subframe_swap_ui.inl"
+    #include "studio_waterline_ui.inl"
+    #include "studio_dummy_body_ui.inl"
     #include "studio_overlay_frame_ui.inl"
     #include "studio_sprite_ramp_ui.inl"
     #include "studio_opacity_gradient_ui.inl"
     #include "studio_embedded_metadata_ui.inl"
     void editing_dialog(){
         if(edit_dialog==EditDialog::SubframeSwap){subframe_swap_dialog();return;}
+        if(edit_dialog==EditDialog::Waterline){waterline_dialog();return;}
+        if(edit_dialog==EditDialog::DummyBody){dummy_body_dialog();return;}
         if(edit_dialog==EditDialog::OverlayFrame){overlay_frame_dialog();return;}
         if(edit_dialog==EditDialog::SpriteRamp){sprite_ramp_dialog();return;}
         if(edit_dialog==EditDialog::OpacityGradient){opacity_gradient_dialog();return;}
@@ -1554,7 +1573,7 @@ public:
         if(!ImGui::BeginPopupModal("Edit sprite",nullptr,ImGuiWindowFlags_AlwaysAutoResize))return;
         auto target=find(edit_doc);int index=target?target->art->sprite_index(edit_sprite):-1;
         auto im=target?target->art->sprite(index):nullptr;
-        const char *titles[]={"","Animation metadata","New sprite","Rename sprite","Delete sprite","Resize artwork","Canvas size","Rotate / flip artwork","Import PNG sprite","Export PNG sprite","Sprite opacity gradient","Sprite Ramp Gradient","Selection to Overlay Frame","Swap with subframes"};
+        const char *titles[]={"","Animation metadata","New sprite","Rename sprite","Delete sprite","Resize artwork","Canvas size","Rotate / flip artwork","Import PNG sprite","Export PNG sprite","Sprite opacity gradient","Sprite Ramp Gradient","Selection to Overlay Frame","Swap with subframes","Cut at waterline","Build dummy body"};
         ImGui::TextUnformatted(titles[(int)edit_dialog]);ImGui::Separator();
         if(im)ImGui::TextDisabled("%s / %s",target->name().c_str(),im->n_s);
         bool name=edit_dialog==EditDialog::NewSprite||edit_dialog==EditDialog::Rename;
@@ -1982,6 +2001,10 @@ struct EmbeddedSmoke {
 #include "studio_overlay_frame_smoke.inl"
 #include "studio_magnification_smoke.inl"
 #include "studio_subframe_swap_smoke.inl"
+#include "studio_waterline_smoke.inl"
+#include "studio_dummy_body_smoke.inl"
+#include "studio_wax_dummy_smoke.inl"
+#include "studio_wax_embedded_smoke.inl"
 #include "studio_layers_smoke.inl"
 #include "studio_layer_move_smoke.inl"
 #include "studio_selection_smoke.inl"
@@ -2004,6 +2027,7 @@ struct EmbeddedSmoke {
 #include "studio_animation_copy_smoke.inl"
 #include "studio_animation_artwork_smoke.inl"
 #include "studio_animation_clipboard_smoke.inl"
+#include "studio_animation_damage_smoke.inl"
 #include "studio_animation_split_smoke.inl"
 #include "studio_palette_cleanup_smoke.inl"
 #include "studio_palette_duplicates_smoke.inl"
@@ -2020,6 +2044,7 @@ struct EmbeddedSmoke {
 #include "studio_export_smoke.inl"
 #include "studio_legacy_img_smoke.inl"
 #include "studio_legacy_media_smoke.inl"
+#include "studio_halfbrite_smoke.inl"
 #include "studio_sheet_smoke.inl"
 #include "studio_stage_smoke.inl"
 #include "studio_anchor_link_smoke.inl"
@@ -2209,6 +2234,8 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool anchor_link_smoke=argc>=3&&std::string(argv[1])=="--smoke-anchor-link";
     bool stage_smoke=argc>=3&&std::string(argv[1])=="--smoke-stage";
     bool sheet_smoke=argc>=3&&std::string(argv[1])=="--smoke-sheet";
+    bool iff_dest_smoke=argc>=3&&std::string(argv[1])=="--smoke-iff-dest";
+    bool halfbrite_smoke=iff_dest_smoke||(argc>=3&&std::string(argv[1])=="--smoke-halfbrite");
     bool legacy_media_smoke=argc>=3&&std::string(argv[1])=="--smoke-legacy-media";
     bool legacy_img_smoke=argc>=3&&std::string(argv[1])=="--smoke-legacy-img";
     bool export_smoke=argc>=3&&std::string(argv[1])=="--smoke-export";
@@ -2231,10 +2258,11 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool order_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-order";
     bool duplicates_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-duplicates";
     bool cleanup_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-cleanup";
+    bool animation_damage_smoke=argc>=3&&std::string(argv[1])=="--smoke-animation-damage";
     bool animation_split_smoke=argc>=3&&std::string(argv[1])=="--smoke-animation-split";
     bool animation_clipboard_smoke=argc>=3&&std::string(argv[1])=="--smoke-animation-clipboard";
     bool animation_artwork_smoke=argc>=3&&std::string(argv[1])=="--smoke-animation-artwork";
-    bool animation_copy_smoke=animation_split_smoke||animation_clipboard_smoke||animation_artwork_smoke||(argc>=3&&std::string(argv[1])=="--smoke-animation-copy");
+    bool animation_copy_smoke=animation_damage_smoke||animation_split_smoke||animation_clipboard_smoke||animation_artwork_smoke||(argc>=3&&std::string(argv[1])=="--smoke-animation-copy");
     bool split_animations_smoke=argc>=3&&std::string(argv[1])=="--smoke-library-split-animations";
     bool split_smoke=split_animations_smoke||(argc>=3&&std::string(argv[1])=="--smoke-library-split");
     bool sprite_clip_smoke=argc>=3&&std::string(argv[1])=="--smoke-sprite-clipboard";
@@ -2252,6 +2280,10 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool project_smoke=argc>=3&&std::string(argv[1])=="--smoke-project";
     bool motion_smoke=argc>=3&&std::string(argv[1])=="--smoke-motion";
     bool trigger_smoke=argc>=3&&std::string(argv[1])=="--smoke-trigger";
+    bool wax_embedded_smoke=argc>=3&&std::string(argv[1])=="--smoke-wax-embedded";
+    bool wax_dummy_smoke=argc>=3&&std::string(argv[1])=="--smoke-wax-dummy";
+    bool dummy_body_smoke=argc>=3&&std::string(argv[1])=="--smoke-dummy-body";
+    bool waterline_smoke=argc>=3&&std::string(argv[1])=="--smoke-waterline";
     bool subframe_swap_smoke=argc>=3&&std::string(argv[1])=="--smoke-subframe-swap";
     bool magnification_smoke=argc>=3&&std::string(argv[1])=="--smoke-magnification";
     bool overlay_frame_smoke=argc>=3&&std::string(argv[1])=="--smoke-overlay-frame";
@@ -2268,7 +2300,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     bool digitize_smoke=argc>=3&&std::string(argv[1])=="--smoke-digitize";
     bool import_smoke=argc>=3&&(std::string(argv[1])=="--smoke-import"||std::string(argv[1])=="--smoke-import-gif");
     bool ramp_smoke=argc>=3&&std::string(argv[1])=="--smoke-palette-ramp";
-    bool smoke=argc>=3&&(std::string(argv[1])=="--smoke"||layer_move_smoke||layers_smoke||effects_smoke||swatches_smoke||palette_clip_smoke||hotkeys_smoke||alignment_smoke||gesture_smoke||editing_smoke||selection_smoke||region_smoke||floating_smoke||paint_smoke||clone_smoke||filters_smoke||repair_smoke||batch_smoke||batch_rename_smoke||batch_palette_smoke||batch_delete_smoke||library_copy_smoke||family_smoke||sprite_clip_smoke||split_smoke||animation_copy_smoke||region_remap_smoke||isolation_frames_smoke||isolation_smoke||palette_move_smoke||zero_smoke||removal_smoke||transparency_smoke||costume_presets_smoke||costume_borrow_smoke||costume_smoke||ramp_transfer_smoke||reduce_smoke||inherit_smoke||clean_copy_smoke||order_smoke||duplicates_smoke||cleanup_smoke||export_smoke||legacy_img_smoke||legacy_media_smoke||sheet_smoke||stage_smoke||anchor_link_smoke||points_smoke||table_compare_smoke||strikes_smoke||asm_smoke||bindings_smoke||phases_smoke||lod_smoke||restore_smoke||variant_smoke||welcome_smoke||tools_smoke||project_smoke||motion_smoke||trigger_smoke||subframe_swap_smoke||magnification_smoke||overlay_frame_smoke||sprite_ramp_smoke||opacity_smoke||metadata_smoke||embedded_smoke||palette_smoke||marked_merge_smoke||merge_smoke||compact_smoke||ramp_smoke||import_smoke||digitize_smoke||video_smoke||job_smoke);
+    bool smoke=argc>=3&&(std::string(argv[1])=="--smoke"||layer_move_smoke||layers_smoke||effects_smoke||swatches_smoke||palette_clip_smoke||hotkeys_smoke||alignment_smoke||gesture_smoke||editing_smoke||selection_smoke||region_smoke||floating_smoke||paint_smoke||clone_smoke||filters_smoke||repair_smoke||batch_smoke||batch_rename_smoke||batch_palette_smoke||batch_delete_smoke||library_copy_smoke||family_smoke||sprite_clip_smoke||split_smoke||animation_copy_smoke||region_remap_smoke||isolation_frames_smoke||isolation_smoke||palette_move_smoke||zero_smoke||removal_smoke||transparency_smoke||costume_presets_smoke||costume_borrow_smoke||costume_smoke||ramp_transfer_smoke||reduce_smoke||inherit_smoke||clean_copy_smoke||order_smoke||duplicates_smoke||cleanup_smoke||export_smoke||legacy_img_smoke||legacy_media_smoke||halfbrite_smoke||sheet_smoke||stage_smoke||anchor_link_smoke||points_smoke||table_compare_smoke||strikes_smoke||asm_smoke||bindings_smoke||phases_smoke||lod_smoke||restore_smoke||variant_smoke||welcome_smoke||tools_smoke||project_smoke||motion_smoke||trigger_smoke||subframe_swap_smoke||waterline_smoke||dummy_body_smoke||wax_dummy_smoke||wax_embedded_smoke||magnification_smoke||overlay_frame_smoke||sprite_ramp_smoke||opacity_smoke||metadata_smoke||embedded_smoke||palette_smoke||marked_merge_smoke||merge_smoke||compact_smoke||ramp_smoke||import_smoke||digitize_smoke||video_smoke||job_smoke);
     auto app_owner=std::make_unique<studio::App>();auto &app=*app_owner;
     app.gesture_smoke=gesture_smoke;
     startup.stage("Create editor window");
@@ -2337,12 +2369,13 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     studio::CloneSmoke clone_check;
     studio::FiltersSmoke filters_check;
     studio::RepairSmoke repair_check;
-    studio::BatchSmoke batch_check;studio::BatchRenameSmoke batch_rename_check;studio::BatchPaletteSmoke batch_palette_check;studio::BatchDeleteSmoke batch_delete_check;studio::LibraryCopySmoke library_copy_check;studio::LibraryMoveSmoke library_move_check;studio::FamilySmoke family_check;studio::SpriteClipboardSmoke sprite_clip_check;studio::LibrarySplitSmoke split_check;studio::LibrarySplitAnimationsSmoke split_animations_check;studio::AnimationCopySmoke animation_copy_check;studio::AnimationArtworkSmoke animation_artwork_check;studio::AnimationClipboardSmoke animation_clipboard_check;studio::AnimationSplitSmoke animation_split_check;studio::PaletteCleanupSmoke cleanup_check;
+    studio::BatchSmoke batch_check;studio::BatchRenameSmoke batch_rename_check;studio::BatchPaletteSmoke batch_palette_check;studio::BatchDeleteSmoke batch_delete_check;studio::LibraryCopySmoke library_copy_check;studio::LibraryMoveSmoke library_move_check;studio::FamilySmoke family_check;studio::SpriteClipboardSmoke sprite_clip_check;studio::LibrarySplitSmoke split_check;studio::LibrarySplitAnimationsSmoke split_animations_check;studio::AnimationDamageSmoke animation_damage_check;studio::AnimationCopySmoke animation_copy_check;studio::AnimationArtworkSmoke animation_artwork_check;studio::AnimationClipboardSmoke animation_clipboard_check;studio::AnimationSplitSmoke animation_split_check;studio::PaletteCleanupSmoke cleanup_check;
     studio::RestoreSmoke restore_check;
     studio::LodSmoke lod_check;
     studio::ExportSmoke export_check;
     studio::LegacyImgSmoke legacy_img_check;
     studio::LegacyMediaSmoke legacy_media_check;
+    studio::HalfbriteSmoke halfbrite_check;halfbrite_check.destination=iff_dest_smoke;
     studio::SheetSmoke sheet_check;
     studio::StageSmoke stage_check;
     studio::AnchorLinkSmoke anchor_link_check;
@@ -2373,6 +2406,9 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
     studio::OverlayFrameSmoke overlay_frame_check;
     studio::MagnificationSmoke magnification_check;
     studio::SubframeSwapSmoke subframe_swap_check;
+    studio::WaterlineSmoke waterline_check;
+    studio::DummyBodySmoke dummy_body_check;
+    studio::WaxDummySmoke wax_dummy_check;studio::WaxEmbeddedSmoke wax_embedded_check;
     studio::PaletteSmoke palette_check;
     studio::PaletteMultiMergeSmoke marked_merge_check;
     studio::PaletteMergeSmoke merge_check;
@@ -2399,7 +2435,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         if(family_smoke)family_check.prepare(app,io,frames);
         if(sprite_clip_smoke)sprite_clip_check.prepare(app,io,frames);
         if(split_animations_smoke)split_animations_check.prepare(app,io,frames);else if(split_smoke)split_check.prepare(app,io,frames);
-        if(animation_split_smoke)animation_split_check.prepare(app,io,frames);else if(animation_clipboard_smoke)animation_clipboard_check.prepare(app,io,frames);else if(animation_artwork_smoke)animation_artwork_check.prepare(app,io,frames);else if(animation_copy_smoke)animation_copy_check.prepare(app,io,frames);
+        if(animation_damage_smoke)animation_damage_check.prepare(app,io,frames);else if(animation_split_smoke)animation_split_check.prepare(app,io,frames);else if(animation_clipboard_smoke)animation_clipboard_check.prepare(app,io,frames);else if(animation_artwork_smoke)animation_artwork_check.prepare(app,io,frames);else if(animation_copy_smoke)animation_copy_check.prepare(app,io,frames);
         if(costume_smoke)costume_check.prepare(app,io,frames);
         if(costume_borrow_smoke)costume_borrow_check.prepare(app,io,frames);
         if(costume_presets_smoke)costume_presets_check.prepare(app,io,frames);
@@ -2435,6 +2471,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         if(stage_smoke)stage_check.prepare(app,io,frames);
         if(sheet_smoke)sheet_check.prepare(app,io,frames);
         if(legacy_media_smoke)legacy_media_check.prepare(app,io,frames);
+        if(halfbrite_smoke)halfbrite_check.prepare(app,io,frames);
         if(legacy_img_smoke)legacy_img_check.prepare(app,io,frames);
         if(export_smoke)export_check.prepare(app,io,frames);
         if(variant_smoke)variant_check.prepare(app,io,frames);
@@ -2450,6 +2487,10 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         if(overlay_frame_smoke)overlay_frame_check.prepare(app,io,frames);
         if(magnification_smoke)magnification_check.prepare(app,io,frames);
         if(subframe_swap_smoke)subframe_swap_check.prepare(app,io,frames);
+        if(waterline_smoke)waterline_check.prepare(app,io,frames);
+        if(dummy_body_smoke)dummy_body_check.prepare(app,io,frames);
+        if(wax_dummy_smoke)wax_dummy_check.prepare(app,io,frames);
+        if(wax_embedded_smoke)wax_embedded_check.prepare(app,io,frames);
         if(palette_smoke)palette_check.prepare(app,io,frames);
         if(marked_merge_smoke)marked_merge_check.prepare(app,io,frames);
         if(merge_smoke)merge_check.prepare(app,io,frames);
@@ -2483,7 +2524,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         }
         ImGui::NewFrame();app.frame();ImGui::Render();
         SDL_SetRenderDrawColor(app.renderer,15,18,23,255);SDL_RenderClear(app.renderer);ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(),app.renderer);
-        if(smoke&&((++frames==((video_smoke||digitize_smoke||job_smoke)?600:subframe_swap_smoke?232:magnification_smoke?152:overlay_frame_smoke?236:sprite_ramp_smoke?394:opacity_smoke?320:metadata_smoke?318:region_remap_smoke?246:isolation_frames_smoke?270:isolation_smoke?282:palette_move_smoke?268:zero_smoke?320:removal_smoke?250:transparency_smoke?240:costume_presets_smoke?360:costume_borrow_smoke?316:costume_smoke?234:ramp_transfer_smoke?182:reduce_smoke?186:inherit_smoke?148:clean_copy_smoke?138:order_smoke?158:duplicates_smoke?108:effects_smoke?176:swatches_smoke?228:palette_clip_smoke?160:layer_move_smoke?(layer_move_preview?24:284):layers_smoke?120:marked_merge_smoke?144:hotkeys_smoke?368:phases_smoke?(phases_check.edit?104:74):bindings_smoke?100:fatality_linked_smoke?188:fatality_smoke?(fatality_check.real?12:230):reactions_smoke?(reactions_check.real?18:140):asm_artwork_reuse_smoke?(asm_artwork_reuse_review_smoke?54:asm_artwork_reuse_all_smoke?105:126):asm_artwork_copy_smoke?(asm_artwork_copy_review_smoke?81:120):asm_library_smoke?(asm_library_review_smoke?38:110):asm_assets_smoke?164:asm_smoke?52:strikes_smoke?97:table_compare_smoke?31:points_smoke?54:anchor_link_smoke?60:stage_smoke?43:sheet_smoke?68:legacy_media_smoke?60:legacy_img_smoke?30:export_smoke?99:lod_smoke?70:restore_smoke?98:animation_split_smoke?130:animation_clipboard_smoke?152:animation_artwork_smoke?140:animation_copy_smoke?244:split_animations_smoke?140:split_smoke?114:sprite_clip_smoke?144:cleanup_smoke?92:family_smoke?74:library_move_smoke?160:library_copy_smoke?110:batch_delete_smoke?112:batch_palette_smoke?118:batch_rename_smoke?92:batch_smoke?66:repair_smoke?63:filters_smoke?43:tools_smoke?50:welcome_smoke?26:variant_smoke?56:clone_smoke?50:paint_smoke?59:floating_smoke?53:region_smoke?38:selection_smoke?58:import_smoke?28:ramp_smoke?49:compact_smoke?40:merge_smoke?36:palette_smoke?43:project_smoke||motion_smoke||trigger_smoke||embedded_smoke?30:editing_smoke?28:gesture_smoke?20:5))||(video_smoke&&video_check.finished)||(digitize_smoke&&digitize_check.finished)||(job_smoke&&job_check.finished))){int w,h;SDL_GetRendererOutputSize(app.renderer,&w,&h);std::vector<unsigned char> pixels((size_t)w*h*4);
+        if(smoke&&((++frames==((video_smoke||digitize_smoke||job_smoke)?600:wax_embedded_smoke?56:wax_dummy_smoke?54:dummy_body_smoke?232:waterline_smoke?278:subframe_swap_smoke?232:magnification_smoke?152:overlay_frame_smoke?236:sprite_ramp_smoke?394:opacity_smoke?320:metadata_smoke?318:region_remap_smoke?246:isolation_frames_smoke?270:isolation_smoke?282:palette_move_smoke?268:zero_smoke?320:removal_smoke?250:transparency_smoke?240:costume_presets_smoke?360:costume_borrow_smoke?316:costume_smoke?234:ramp_transfer_smoke?182:reduce_smoke?186:inherit_smoke?148:clean_copy_smoke?138:order_smoke?158:duplicates_smoke?108:effects_smoke?176:swatches_smoke?228:palette_clip_smoke?160:layer_move_smoke?(layer_move_preview?24:284):layers_smoke?120:marked_merge_smoke?144:hotkeys_smoke?368:phases_smoke?(phases_check.edit?104:74):bindings_smoke?100:fatality_linked_smoke?188:fatality_smoke?(fatality_check.real?12:230):reactions_smoke?(reactions_check.real?18:140):asm_artwork_reuse_smoke?(asm_artwork_reuse_review_smoke?54:asm_artwork_reuse_all_smoke?105:126):asm_artwork_copy_smoke?(asm_artwork_copy_review_smoke?81:120):asm_library_smoke?(asm_library_review_smoke?38:110):asm_assets_smoke?164:asm_smoke?52:strikes_smoke?97:table_compare_smoke?31:points_smoke?54:anchor_link_smoke?60:stage_smoke?43:sheet_smoke?68:iff_dest_smoke?120:halfbrite_smoke?96:legacy_media_smoke?60:legacy_img_smoke?30:export_smoke?99:lod_smoke?70:restore_smoke?98:animation_damage_smoke?84:animation_split_smoke?130:animation_clipboard_smoke?152:animation_artwork_smoke?140:animation_copy_smoke?244:split_animations_smoke?140:split_smoke?114:sprite_clip_smoke?144:cleanup_smoke?92:family_smoke?74:library_move_smoke?160:library_copy_smoke?110:batch_delete_smoke?112:batch_palette_smoke?118:batch_rename_smoke?92:batch_smoke?66:repair_smoke?63:filters_smoke?43:tools_smoke?50:welcome_smoke?26:variant_smoke?56:clone_smoke?50:paint_smoke?59:floating_smoke?53:region_smoke?38:selection_smoke?58:import_smoke?28:ramp_smoke?49:compact_smoke?40:merge_smoke?36:palette_smoke?43:project_smoke||motion_smoke||trigger_smoke||embedded_smoke?30:editing_smoke?28:gesture_smoke?20:5))||(video_smoke&&video_check.finished)||(digitize_smoke&&digitize_check.finished)||(job_smoke&&job_check.finished))){int w,h;SDL_GetRendererOutputSize(app.renderer,&w,&h);std::vector<unsigned char> pixels((size_t)w*h*4);
             if(SDL_RenderReadPixels(app.renderer,nullptr,SDL_PIXELFORMAT_RGBA32,pixels.data(),w*4)!=0||!stbi_write_png(argv[2],w,h,4,pixels.data(),w*4))exit_code=1;
             if(costume_check.failures)exit_code=64;
             if(costume_borrow_check.failures)exit_code=65;
@@ -2501,6 +2542,10 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
             if(overlay_frame_check.failures)exit_code=77;
             if(magnification_check.failures)exit_code=78;
             if(subframe_swap_check.failures)exit_code=79;
+            if(waterline_check.failures)exit_code=80;
+            if(dummy_body_check.failures)exit_code=81;
+            if(wax_dummy_check.failures)exit_code=83;
+            if(wax_embedded_check.failures)exit_code=84;
             if(ramp_transfer_check.failures)exit_code=63;
             if(reduce_check.failures)exit_code=62;
             if(inherit_check.failures)exit_code=61;
@@ -2528,7 +2573,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
             if(family_check.failures)exit_code=46;
             if(sprite_clip_check.failures)exit_code=48;
             if(split_check.failures||split_animations_check.failures)exit_code=49;
-            if(animation_copy_check.failures||animation_artwork_check.failures||animation_clipboard_check.failures||animation_split_check.failures)exit_code=50;
+            if(animation_damage_check.failures||animation_copy_check.failures||animation_artwork_check.failures||animation_clipboard_check.failures||animation_split_check.failures)exit_code=50;
             if(cleanup_check.failures)exit_code=47;
             if(batch_rename_check.failures)exit_code=42;
             if(batch_palette_check.failures)exit_code=43;
@@ -2539,6 +2584,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
             if(export_check.failures)exit_code=30;
             if(legacy_img_check.failures)exit_code=31;
             if(legacy_media_check.failures)exit_code=32;
+            if(halfbrite_check.failures)exit_code=82;
             if(sheet_check.failures)exit_code=33;
             if(stage_check.failures)exit_code=34;
             if(anchor_link_check.failures)exit_code=35;
@@ -2553,7 +2599,7 @@ static int studio_run(int argc,char **argv,studio::StartupLog &startup,bool quie
         SDL_RenderPresent(app.renderer);
         if(first_frame){startup.stage("Editor rendered successfully");first_frame=false;}
     }
-    app.subframe_swap.plan={};app.clear_overlay_frame_textures();app.clear_sprite_ramp_textures();app.clear_opacity_gradient_textures();app.clear_region_remap_textures();app.clear_isolation_frames_textures();app.clear_palette_isolation_textures();app.clear_palette_move_textures();app.clear_palette_zero_textures();app.clear_palette_removal_textures();app.clear_palette_transparency_textures();app.clear_sheet_preview();app.clear_indexed_preview();app.stop_video();app.stop_digitize();app.clear_import_textures();app.clear_region_preview();app.clear_layer_drag();app.clear_floating();app.clear_paint_line();app.clear_variant();app.clear_batch_textures();app.clear_costume_textures();app.clear_ramp_transfer_textures();app.clear_batch_palette_textures();app.clear_batch_delete_preview();app.clear_library_copy_preview();app.clear_restore_textures();app.clear_lod_preview();app.lod.review={};app.asm_ui.assets=studio::AsmAssetsUi{};app.tabs.clear();if(app.paste_texture)SDL_DestroyTexture(app.paste_texture);if(app.palettes.preview)SDL_DestroyTexture(app.palettes.preview);if(app.palettes.original)SDL_DestroyTexture(app.palettes.original);ImGui_ImplSDLRenderer2_Shutdown();ImGui_ImplSDL2_Shutdown();ImGui::DestroyContext();SDL_DestroyRenderer(app.renderer);SDL_DestroyWindow(app.window);SDL_Quit();startup.stage("Closed normally");return exit_code;
+    app.dummy_body.plan={};app.waterline.plan={};app.subframe_swap.plan={};app.clear_overlay_frame_textures();app.clear_sprite_ramp_textures();app.clear_opacity_gradient_textures();app.clear_region_remap_textures();app.clear_isolation_frames_textures();app.clear_palette_isolation_textures();app.clear_palette_move_textures();app.clear_palette_zero_textures();app.clear_palette_removal_textures();app.clear_palette_transparency_textures();app.clear_sheet_preview();app.clear_indexed_preview();app.stop_video();app.stop_digitize();app.clear_import_textures();app.clear_region_preview();app.clear_layer_drag();app.clear_floating();app.clear_paint_line();app.clear_variant();app.clear_batch_textures();app.clear_costume_textures();app.clear_ramp_transfer_textures();app.clear_batch_palette_textures();app.clear_batch_delete_preview();app.clear_library_copy_preview();app.clear_restore_textures();app.clear_lod_preview();app.lod.review={};app.asm_ui.assets=studio::AsmAssetsUi{};app.tabs.clear();if(app.paste_texture)SDL_DestroyTexture(app.paste_texture);if(app.palettes.preview)SDL_DestroyTexture(app.palettes.preview);if(app.palettes.original)SDL_DestroyTexture(app.palettes.original);ImGui_ImplSDLRenderer2_Shutdown();ImGui_ImplSDL2_Shutdown();ImGui::DestroyContext();SDL_DestroyRenderer(app.renderer);SDL_DestroyWindow(app.window);SDL_Quit();startup.stage("Closed normally");return exit_code;
 }
 
 int main(int argc,char **argv){

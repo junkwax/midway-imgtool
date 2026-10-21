@@ -1,4 +1,5 @@
 #include "studio_animation_copy.h"
+#include "studio_animation_dependencies.h"
 #include "anipoint.h"
 #include <algorithm>
 #include <map>
@@ -8,8 +9,10 @@ std::string key(std::string s){for(char &c:s)if(c>='a'&&c<='z')c-=32;return trim
 bool valid_name(const std::string &s){return !s.empty()&&s.size()<=16&&std::all_of(s.begin(),s.end(),[](unsigned char c){return c>=32&&c<127;});}
 std::vector<unsigned char> blob(const Artwork &art){auto p=(const unsigned char *)art.data.scrseqmem_p;return p?std::vector<unsigned char>(p,p+art.data.scrseqbytes):std::vector<unsigned char>{};}
 void word(unsigned char *p,int n){p[0]=(unsigned char)n;p[1]=(unsigned char)(n>>8);}
-void append(std::vector<unsigned char> &out,const EmbeddedRecord &r,const std::map<int,int> *mapping,const std::string *name){
-    auto header=r.raw;if(name){memcpy(header.data(),name->data(),name->size());if(name->size()<16)header[name->size()]=0;}out.insert(out.end(),header.begin(),header.end());
+void append(std::vector<unsigned char> &out,const EmbeddedRecord &r,const std::map<int,int> *mapping,const std::string *name,const std::map<int,int> *damage=nullptr){
+    auto header=r.raw;if(name){memcpy(header.data(),name->data(),name->size());if(name->size()<16)header[name->size()]=0;}
+    if(damage&&!r.script)for(int j=88;j<94;++j)if(header[j]!=255)header[j]=(unsigned char)damage->at(header[j]);
+    out.insert(out.end(),header.begin(),header.end());
     for(size_t i=0;i<r.entries.size();++i){auto &entry=r.entries[r.script?i:r.entries.size()-1-i];auto raw=entry.raw;if(mapping&&entry.values.index>=0)word(raw.data()+4,mapping->at(entry.values.index));out.insert(out.end(),raw.begin(),raw.end());}
 }
 bool same(const AnimationCopyRow &a,const AnimationCopyRow &b){return a.source==b.source&&a.target==b.target&&a.entries==b.entries&&a.script==b.script&&a.included==b.included&&a.dependency==b.dependency&&a.name==b.name&&a.copied_name==b.copied_name&&a.error==b.error;}
@@ -23,16 +26,35 @@ bool plan_animation_copy(const Artwork &source,const Artwork &target,const Anima
         for(auto &binding:o.sprite_bindings)if(source.sprite_index(binding.first)<0||target.sprite_index(binding.second)<0){error="A manual sprite binding no longer exists in the chosen libraries. Reset the binding and choose again.";return false;}
         for(auto &r:dst)for(auto &e:r.entries)if(e.values.index>=0&&e.values.index>=(r.script?(int)target.data.seqcnt:target.count())){error="An existing destination animation has an unresolved target. Repair it before copying animations.";return false;}
         AnimationCopyPlan p;p.source=&source;p.target=&target;p.source_generation=source.generation();p.target_generation=target.generation();p.source_sequences=source.data.seqcnt;p.source_scripts=source.data.scrcnt;p.target_sequences=target.data.seqcnt;p.target_scripts=target.data.scrcnt;p.options=o;p.source_blob=blob(source);p.target_blob=blob(target);
-        std::set<int> included=o.requested;for(int i:o.requested)if(src[i].script)for(auto &e:src[i].entries)if(e.values.index>=0&&e.values.index<(int)source.data.seqcnt)included.insert(e.values.index);
+        std::vector<AnimationDependencies> dependencies,existing_dependencies;
+        if(!read_animation_dependencies(source,src,p.source_damage,dependencies,error)||!read_animation_dependencies(target,dst,p.target_damage,existing_dependencies,error))return false;
+        for(auto &dependency:existing_dependencies)if(!dependency.error.empty()){error="An existing destination animation has an unresolved binding. Repair it before copying animations: "+dependency.error;return false;}
+        std::set<int> included=o.requested;std::vector<int> work(included.begin(),included.end());
+        for(size_t cursor=0;cursor<work.size();++cursor)for(int dependency:dependencies[work[cursor]].records)if(included.insert(dependency).second)work.push_back(dependency);
         std::map<std::string,int> names;for(auto &r:dst)++names[key(r.name)];for(int i:included)++names[key(o.prefix+src[i].name)];
         std::map<int,int> sequence_map;std::set<int> sprites;
         for(int i=0;i<(int)src.size();++i){auto &r=src[i];AnimationCopyRow row;row.source=i;row.entries=(int)r.entries.size();row.script=r.script;row.included=included.count(i)!=0;row.dependency=row.included&&!o.requested.count(i);row.name=r.name;row.copied_name=o.prefix+r.name;
             if(row.included){std::string original;for(unsigned char c:r.raw){if(original.size()==16||!c)break;original+=(char)c;}if(!valid_name(original))row.error="Rename this source animation to 1 to 16 printable ASCII characters before copying.";else if(!valid_name(row.copied_name))row.error="The copied animation name must fit 1 to 16 printable ASCII characters.";else if(names[key(row.copied_name)]>1)row.error="Animation name collision. Change the prefix or exclude the animation.";
                 if(row.script){row.target=(int)target.data.scrcnt+p.added_scripts++;for(auto &e:r.entries)if(e.values.index>=(int)source.data.seqcnt)row.error="The script has an unresolved source sequence call.";}
                 else{row.target=(int)target.data.seqcnt+p.added_sequences++;sequence_map[i]=row.target;for(auto &e:r.entries)if(e.values.index>=0)sprites.insert(e.values.index);}}
-            if(row.included&&!row.script&&std::any_of(r.raw.begin()+88,r.raw.begin()+94,[](unsigned char n){return n!=255;}))row.error="This sequence uses damage-table bindings. Copying those bindings is not supported yet.";
+            if(row.included&&!dependencies[i].error.empty())row.error=dependencies[i].error;
+            if(row.included&&!dependencies[i].damage.empty()&&target.disk_version()<0x634)row.error="Damage bindings cannot fit the destination's original IMG layout.";
             if(row.included&&target.disk_version()<0x634){bool fits=true;for(int j=0;j<16;++j)fits&=!r.raw[22+j*4]&&!r.raw[23+j*4];for(int j=88;j<94;++j)fits&=r.raw[j]==255;fits&=!r.raw[94]&&!r.raw[95];for(auto &e:r.entries)fits&=!e.raw[2]&&!e.raw[3];if(!fits)row.error="Stored far-pointer bytes cannot fit the destination's original IMG layout.";}
             p.rows.push_back(std::move(row));
+        }
+        // Resolve only reached slots. Existing destination references stay byte
+        // exact; duplicates of the same remapped pair share one signed-byte slot.
+        std::map<int,int> damage_map;std::set<int> required_damage;
+        for(int i:included)required_damage.insert(dependencies[i].damage.begin(),dependencies[i].damage.end());
+        p.result_damage=p.target_damage;
+        for(int slot:required_damage){auto raw=p.source_damage.data()+slot*4;bool script=raw[0]==0;
+            int record=raw[2]|(raw[3]<<8),source_record=script?(int)source.data.seqcnt+record:record;
+            int mapped=p.rows[source_record].target,kind=script?0:0x40,destination=-1;
+            for(int j=0;j<(int)p.result_damage.size()/4&&j<128;++j){auto d=p.result_damage.data()+j*4;
+                if(d[0]==kind&&!d[1]&&(d[2]|(d[3]<<8))==mapped){destination=j;break;}}
+            if(destination<0&&p.result_damage.size()/4<128){destination=(int)p.result_damage.size()/4;p.result_damage.resize(p.result_damage.size()+4);auto d=p.result_damage.data()+destination*4;word(d,kind);word(d+2,mapped);}
+            if(destination<0){for(int i:included)if(std::find(dependencies[i].damage.begin(),dependencies[i].damage.end(),slot)!=dependencies[i].damage.end())p.rows[i].error="The destination has no free signed-byte damage-reference slots (limit 128).";}
+            else{damage_map[slot]=destination;p.damage_bindings.push_back({slot,destination,source_record,script,o.prefix+src[source_record].name});}
         }
         std::map<std::string,std::vector<int>> source_names,target_names;for(int i=0;i<source.count();++i)source_names[key(source.sprite(i)->n_s)].push_back(i);for(int i=0;i<target.count();++i)target_names[key(target.sprite(i)->n_s)].push_back(i);
         std::map<int,int> sprite_map;std::vector<uint64_t> missing;
@@ -73,7 +95,7 @@ bool plan_animation_copy(const Artwork &source,const Artwork &target,const Anima
         bool ready=std::none_of(p.rows.begin(),p.rows.end(),[](const AnimationCopyRow &r){return r.included&&!r.error.empty();})&&std::none_of(p.bindings.begin(),p.bindings.end(),[](const AnimationCopyBinding &b){return !b.error.empty();});
         if(dst.size()+included.size()>4096){error="The destination would exceed 4096 embedded records.";return false;}
         size_t total=p.target_blob.size();for(int i:included)total+=98+src[i].entries.size()*18;if(total>32*1024*1024){error="The destination embedded records would exceed 32 MiB.";return false;}
-        if(ready){for(unsigned i=0;i<target.data.seqcnt;++i)append(p.result_blob,dst[i],nullptr,nullptr);for(unsigned i=0;i<source.data.seqcnt;++i)if(included.count(i))append(p.result_blob,src[i],&sprite_map,o.prefix.empty()?nullptr:&p.rows[i].copied_name);for(size_t i=target.data.seqcnt;i<dst.size();++i)append(p.result_blob,dst[i],nullptr,nullptr);for(size_t i=source.data.seqcnt;i<src.size();++i)if(included.count((int)i))append(p.result_blob,src[i],&sequence_map,o.prefix.empty()?nullptr:&p.rows[i].copied_name);}
+        if(ready){for(unsigned i=0;i<target.data.seqcnt;++i)append(p.result_blob,dst[i],nullptr,nullptr);for(unsigned i=0;i<source.data.seqcnt;++i)if(included.count(i))append(p.result_blob,src[i],&sprite_map,o.prefix.empty()?nullptr:&p.rows[i].copied_name,&damage_map);for(size_t i=target.data.seqcnt;i<dst.size();++i)append(p.result_blob,dst[i],nullptr,nullptr);for(size_t i=source.data.seqcnt;i<src.size();++i)if(included.count((int)i))append(p.result_blob,src[i],&sequence_map,o.prefix.empty()?nullptr:&p.rows[i].copied_name);}
         out=std::move(p);return true;
     }catch(const std::bad_alloc &){error="Not enough memory for the animation-copy review.";return false;}
 }
@@ -81,6 +103,8 @@ int Artwork::validate_animation_copy(const Artwork &source,const AnimationCopyPl
     try{
     error.clear();if(pending||source.pending){error="Finish edits in both libraries before copying animations.";return -1;}if(p.source!=&source||p.target!=this||p.source_generation!=source.generation()||p.target_generation!=generation()){error="A library changed. Cancel and reopen animation copy.";return -1;}
     AnimationCopyPlan checked;if(!plan_animation_copy(source,*this,p.options,checked,error))return -1;
+    if(p.source_damage!=checked.source_damage||p.target_damage!=checked.target_damage||p.result_damage!=checked.result_damage||p.damage_bindings.size()!=checked.damage_bindings.size()){error="The damage-reference review changed. Reopen animation copy.";return -1;}
+    for(size_t i=0;i<p.damage_bindings.size();++i){auto &a=p.damage_bindings[i];auto &b=checked.damage_bindings[i];if(a.source!=b.source||a.target!=b.target||a.record!=b.record||a.script!=b.script||a.name!=b.name){error="A damage binding no longer matches the review.";return -1;}}
     if(p.source_sequences!=checked.source_sequences||p.source_scripts!=checked.source_scripts||p.target_sequences!=checked.target_sequences||p.target_scripts!=checked.target_scripts||p.source_blob!=checked.source_blob||p.target_blob!=checked.target_blob||p.result_blob!=checked.result_blob||p.added_sequences!=checked.added_sequences||p.added_scripts!=checked.added_scripts||p.rows.size()!=checked.rows.size()||p.bindings.size()!=checked.bindings.size()||!same_library_copy_plan(p.artwork,checked.artwork)){error="The animation-copy review no longer matches the libraries.";return -1;}
     for(size_t i=0;i<p.rows.size();++i)if(!same(p.rows[i],checked.rows[i])){error="An animation no longer matches the review.";return -1;}
     for(size_t i=0;i<p.bindings.size();++i)if(!same(p.bindings[i],checked.bindings[i])){error="A sprite binding no longer matches the review.";return -1;}
@@ -90,7 +114,7 @@ int Artwork::validate_animation_copy(const Artwork &source,const AnimationCopyPl
 }
 int Artwork::apply_animation_copy(const Artwork &source,const AnimationCopyPlan &p,std::string &error){
     try{int count=validate_animation_copy(source,p,error);if(count<=0)return count;
-        return install_animation_with_artwork(source,p.artwork,p.result_blob,data.seqcnt+p.added_sequences,data.scrcnt+p.added_scripts,error)?count:-1;
+        return install_animation_with_artwork(source,p.artwork,p.result_blob,data.seqcnt+p.added_sequences,data.scrcnt+p.added_scripts,p.result_damage,error)?count:-1;
     }catch(const std::bad_alloc &){error="Not enough memory to prepare animation copy. Please reopen the review.";return -1;}
 }
 }

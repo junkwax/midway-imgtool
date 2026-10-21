@@ -291,16 +291,24 @@ for inspection; the source library and existing destination artwork stay unchang
 
 Copy never saves automatically and never changes either IMG version or record
 layout. Unsupported far-pointer fields are blocked for older destinations.
-Sequences with active damage-table bindings are not supported in this transfer
-pass; damage tables and external engine/runtime bindings are not transferred.
+Resolved damage-table bindings are included: the review follows sequence/script
+and damage dependencies transitively, including cycles, and remaps their global
+reference slots along with record and artwork indices. Hover **Damage bindings**
+to inspect each source/destination slot and target animation. Only reached slots
+are copied; identical remapped pairs share a slot. Existing destination table
+bytes remain intact. New references must fit signed-byte slots 0–127. Unresolved
+bindings, exhausted slots and damage data incompatible with the destination's
+original layout block Apply. One Undo includes the damage table. External engine
+bindings are not transferred.
 Script runtime execution is still outside Studio's current playback scope.
 
 **File > Copy IMG animations to clipboard...** captures selected embedded records,
 called sequences and all required sprite artwork/palettes into an independent
 snapshot. You can close the source library afterward. Capture keeps original
 names and does not change source artwork, history or saved files. Choose at least
-one record; source sprite names must be unique. Unsupported damage bindings and
-other transfer constraints still apply. Cancel or failed capture keeps the
+one record; source sprite names must be unique. Resolved damage dependencies
+and their table slots are owned by the snapshot; the ordinary transfer constraints
+still apply. Cancel or failed capture keeps the
 previous animation clipboard.
 
 **File > Paste IMG animations from clipboard...** opens the transfer review
@@ -318,7 +326,8 @@ An already-open paste review retains its snapshot until that review closes.
 
 **File > Split IMG animations to new library...** (also **Animation > Split to
 new library...** in IMG animations mode) creates a new IMG tab from selected
-native sequences/scripts. Scripts include their called sequences. The review
+native sequences/scripts. Scripts and damage bindings include their required
+animations transitively. The review
 shows exactly which records, sprites and palettes will be included; Select all
 and Clear choices adjust the set. Original names are retained. Only referenced
 sprites and their primary/active alternate palettes are copied, with incoming
@@ -333,8 +342,8 @@ stay unchanged.
 
 Choose at least one animation that references artwork. Empty sequences can be
 included alongside it; a new library containing only records without artwork
-is refused. Source sprite names must be unique, and damage-bound sequences and
-other transfer limits still apply. This extracts native IMG records; scene
+is refused. Source sprite names must be unique. Resolved damage dependencies
+are retained; other transfer limits still apply. This extracts native IMG records; scene
 projects and external game bindings remain separate.
 
 **Sprite > Split to new library...** creates a separate IMG tab from Marked,
@@ -348,9 +357,10 @@ With Copy, enable **Include IMG animations** to keep sequences that use only
 included sprites, plus scripts whose called sequences are all included. This
 never adds extra artwork: change the sprite scope, child-piece option or row
 exclusions to cover a complete animation. **Animation records: copied / skipped**
-shows every source record and explains skipped records. Empty sequences, scripts
-without sequence calls, outside/unresolved references and unsupported damage
-bindings are skipped. Invalid or colliding names in included records block the
+shows every source record and explains skipped records. Damage-bound records
+are included only if their full dependency chain uses reviewed artwork. No extra
+sprites are added. Empty records without dependencies, outside references,
+unresolved damage bindings and records depending on skipped animations stay out. Invalid or colliding names in included records block the
 review. Pixel data, raw record metadata and timing are retained, with sprite and
 sequence indices remapped. Extra reviewed sprites stay in the new library even
 when no animation references them. The source stays unchanged. This option is
@@ -544,8 +554,41 @@ nonzero palette origins, 15/16/24/32-bit color maps and both image origins.
 Unmasked artwork treats index zero as IMG transparency. Explicit mask/alpha may
 move an opaque color zero to an available slot; the review reports this. Colors
 reduce to RGB555 without reordering by frequency. Partial alpha, 256 distinct
-opaque entries plus IMG transparency, HAM / Extra Halfbrite, IFF ANIM and destination
-plane merging are rejected. Full-color TGA still uses the sprite-sheet review.
+opaque entries plus IMG transparency, HAM, IFF ANIM and background-dependent
+destination merging are rejected. Full-color TGA still uses the sprite-sheet review.
+
+**ILBM DEST plane mapping** uses the same import review for files whose
+`DEST` chunk specifies every destination bit. Stored source planes scatter into
+`planePick` positions; unpicked positions use `planeOnOff`. Destination depths
+1–8, zero-plane constant images, raw/ByteRun1 rows, masks, transparent-color keys
+and GRAB anchors are supported. Keys are matched before scattering, as specified
+by the [Electronic Arts ILBM specification](https://documentation.help/LightWave/ilbm.html).
+Bits above the destination depth are ignored. Extra Halfbrite interpretation
+uses the effective destination depth after mapping.
+
+The review explains the remapping and retains palette order. Keep that palette
+or match an existing one, then import with the normal Undo/Redo and original-layout
+IMG saving. A partial `planeMask` depends on existing background bits and is
+rejected explicitly; merge that source with its background first. PBM DEST,
+malformed mappings and missing referenced colors are also rejected. LBM/TGA
+export writes resolved indexed pixels rather than recreating `DEST` metadata.
+
+**Extra Halfbrite ILBM** also uses this review. An ILBM with six destination planes,
+the Halfbrite CAMG flag and at least 32 base palette entries expands to 64 RGB555
+colors: the base 32 and their derived half-bright counterparts. Stored upper
+palette entries are ignored in favor of derived colors; the review explains
+that choice. Raw and ByteRun1 rows, mask planes, transparent-color indices and
+GRAB anchors use the existing import path. Without a source mask, index zero
+uses the same IMG-transparency policy as ordinary indexed import. With a mask,
+opaque color zero can move to a free slot to preserve its color.
+
+Keep the resolved palette or match an existing one, then Import for one Undo.
+Save/reopen keeps the destination IMG's original version and record layout.
+LBM/TGA export writes the resolved palette as an ordinary indexed image; it does
+not recreate Amiga display-mode metadata. HAM and background-dependent destination merging
+remain unsupported. The display-mode interpretation follows the
+[Amiga Hardware Reference Manual](https://www.amigadev.elowar.com/read/ADCD_2.1/Hardware_Manual_guide/node0098.html)
+and [ILBM property specification](https://documentation.help/LightWave/ilbm.html).
 
 **File > Export selected LBM... / TGA...** reviews an indexed output with the
 source palette order and visible pixel indices. LBM writes uncompressed IFF PBM
@@ -1323,8 +1366,9 @@ Start coordinates are stored game/WIMP data and do not move Studio's stage.
 Apply records one Undo step; Cancel/stale/allocation-failed reviews preserve data
 and history. Other header/entry bytes, pixels, palettes and the global damage
 table stay unchanged. Save retains the original IMG version/layout. Help has a
-**Stored animation metadata** topic. WAX rows driven by embedded records and
-script runtime execution remain incomplete; whole-record deletion is an extension
+**Stored animation metadata** topic. Saved WAX embedded sprite-sequence rows now
+import as scene snapshots; embedded-script previews and script runtime execution
+remain incomplete; whole-record deletion is an extension
 beyond classic's entry-deletion controls.
 
 **Feet to floor** places the current frame once; the anchor target then stays
@@ -1380,8 +1424,46 @@ The Motion & timing **Clear** action restores ordinary sequential playback.
 
 This authoring command saves full piece references in `.ISTUDIO`. The classic
 WAX writer omits its generated composite piece lists; imports with subframe/
-waterline settings remain guarded rather than guessing them. Waterline cutting
-is a separate remaining port. Search Help for **Timed subframe swap**.
+waterline settings remain guarded rather than guessing them. Search Help for
+**Timed subframe swap**.
+
+**Cut at waterline...** reviews a moving parent handing off to individual fine
+pieces. Set a world Y line or **Use floor**, then choose an open IMG and its
+fine-piece parent. The moving parent can be a composite, and fine artwork can
+come from another library. Scrub the original/proposed scenes and review each
+piece's hide tick before applying. The red line is only a preview guide.
+
+The parent hides when its full canvas bounds first cross the line; each fine
+piece hides on its own crossing. Calculations include actual motion, remaining
+travel caps, vertical facing, actor scale and freeze. A parent unable to cross
+within 9999 actor ticks is refused; a fine piece unable to cross stays visible.
+Transparent margins count. Parent hold is retained, facing/depth/motion continue,
+and its second copy ends. Inserted one-tick entries can shift later sequential
+frames/effects. A complete adjacent matching run is replaced with frame IDs
+retained; unrelated entries remain. Apply has one project Undo, saves full
+references/timing in `.ISTUDIO`, and leaves IMG bytes/format unchanged.
+Classic's crossing estimate ignores caps/scale/freeze; Studio's review follows its
+actual playback and PNG evaluator. Search Help for **Waterline cutting**.
+
+**Project > Build dummy body...** (also in the scene inspector) reviews a stock
+body actor from any open IMG. Pick a DECAP family, inspect its seven frames and
+scrub the original/proposed scenes. Whole `LKDECAP1`–`LKDECAP7` frames take
+priority; otherwise all seven frames need `LKDECAPLEG` and `LKDECAPTORSO` parts.
+Matching is case-insensitive, head sprites are excluded and legs draw before
+torsos at their existing anchors. Duplicate whole-frame names block the review.
+
+The classic pattern is `1,2,3,4,3,4,3,4,3,4,5,6,7` with holds
+`48,6,6,10,10,10,10,10,10,6,6,6,6` (13 entries, 144 ticks). A new actor faces
+opposite the selected actor by default, does not loop and holds its last frame.
+**Reset selected actor** rebuilds its sequence, clearing local offsets, motion,
+schedules and second copies while retaining actor settings and surviving frame
+identities/facing/depth. Effects following retained entries stay linked; an
+effect following a removed entry blocks reset until detached. Apply has one
+project Undo; identical resets preserve Redo. The resulting actor uses existing
+Studio controls, `.ISTUDIO` saving and PNG export. IMG data/format stay fixed.
+This is the canned body preview. WAX import now recovers generated dummy lanes
+when their saved source and body prefix resolve to a complete family. Search Help for
+**Dummy decapitation body**.
 
 **Follow frame timing** connects an effect actor to a particular frame in another
 actor. Choose the source actor and frame, then **Follow frame**. The effect's
@@ -1402,6 +1484,34 @@ open until that project is closed. **Project > Export current scene PNG** export
 the current tick on the chosen background, including enabled reference scenery,
 without editor guides or ghosts.
 
+**WAX dummy-body recovery** resolves a saved body source and DECAP prefix to
+whole-body or leg/torso references. Legacy 10-row and newer saved slot boundaries
+are supported, with saved facing, scale, depth, complete timing arrays and uniform
+following effects. A pending body reset or incomplete timing array uses classic's
+stock reset behavior. Inactive reserved slots stay inactive.
+
+Binding is atomic across all dependencies: a missing or ambiguous body family
+leaves the current composition in place and opens the source-location dialog.
+Retry loading or Cancel there. Imported bodies become ordinary Studio actors;
+Save as `.ISTUDIO` keeps every piece and its identity. No WAX or IMG is rewritten.
+Files lacking a saved body selection, custom body-source overrides and spawned
+dummy rows still need rebuilding. Arbitrary generated composites omitted by WAX,
+plus ASM-driven rows and embedded-script previews, remain separate import work.
+
+**WAX embedded sequence recovery** imports the saved sprite-sequence row as a
+Studio composition snapshot, alongside other recoverable rows. Legacy 10-source
+and newer saved special-slot boundaries are supported. The embedded source IMG,
+per-frame source overrides, saved frame order, holds, labels, placement, facing,
+magnification, depth, visibility, motion/caps, freeze ticks and second copies are
+retained. Uniform effects following an embedded entry retain their timing links.
+Missing source files or sprite indices use the existing location/retry/Cancel
+flow without changing the open scene. Save as `.ISTUDIO` preserves complete source
+references and stable identities. Source WAX/IMG files and embedded records stay
+unchanged. Studio uses the saved row rather than replacing it with the current
+IMG record. Empty saved rows and omitted generated composite lists remain guarded.
+Embedded-script rows still need separate handling: classic shows representative
+sequence-call thumbnails and pauses playback; they are not sprite sequences.
+
 **Open project / import WAX** (**Ctrl+Shift+O**) reads native Studio projects and
 classic WAX/WVP files containing explicit sprite rows. WAX import converts classic
 anipoint offsets to screen offsets and preserves frame holds, facing, cross-file
@@ -1410,8 +1520,7 @@ freeze ticks, second copies and per-row magnification (clamped to classic's
 1x–4x range). Uniform spawned-effect rows import as frame
 timing bindings. Spawn rows moved by hand or with custom schedules/freeze rules
 need to be detached in classic before importing. Substitution rules,
-ASM and embedded sequences are
-reported as unsupported. This imports the stored rows and origin; it does not
+ASM-driven rows and embedded-script call previews are reported as unsupported. This imports the stored rows and origin; it does not
 reconstruct runtime game placement or settings absent from the WAX file. Imports
 save to `.ISTUDIO`; the original WAX is kept as the classic project. Studio reads
 versions 1–6. It writes version 3 normally, version 4 when a frame exceeds

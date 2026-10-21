@@ -120,13 +120,17 @@ void Artwork::append_staged_library(Artwork &staged,int added,bool select_first)
     for(int i=0;i<added;++i)sprite_ids.push_back(next_sprite_id++);
     if(select_first)selected_sprite_id=sprite_ids[first];++serial;++structure_serial;
 }
-bool Artwork::install_animation_with_artwork(const Artwork &source,const LibraryCopyPlan &p,const std::vector<unsigned char> &blob,unsigned sequences,unsigned scripts,std::string &error){
+bool Artwork::install_animation_with_artwork(const Artwork &source,const LibraryCopyPlan &p,const std::vector<unsigned char> &blob,unsigned sequences,unsigned scripts,const std::vector<unsigned char> &damage,std::string &error){
     int added=0;if(!p.rows.empty()){added=validate_library_copy(source,p,error);if(added<=0){if(!added)error="The animation artwork review is empty.";return false;}}
     if(blob.size()>32*1024*1024){error="Embedded animation data exceeds 32 MiB.";return false;}
     std::unique_ptr<Artwork> staged;if(added){staged=stage_copy(p,palette_count(),error);if(!staged)return false;}
     std::unique_ptr<void,decltype(&free)> replacement(blob.empty()?nullptr:malloc(blob.size()),&free);
     if(!blob.empty()&&!replacement){error="Could not allocate animation data. No artwork was added.";return false;}
     if(replacement)memcpy(replacement.get(),blob.data(),blob.size());
+    if(damage.size()%4||damage.size()/4>32767||(disk_version()<0x634&&!damage.empty())){error="Damage references cannot fit the destination's original IMG layout.";return false;}
+    std::unique_ptr<void,decltype(&free)> damage_replacement(damage.empty()?nullptr:malloc(damage.size()),&free);
+    if(!damage.empty()&&!damage_replacement){error="Could not allocate damage references. Nothing was copied.";return false;}
+    if(damage_replacement)memcpy(damage_replacement.get(),damage.data(),damage.size());
     try{
         State before=capture();before.label=added?"Copy animations and artwork":"Copy embedded animations";
         sprite_ids.reserve(sprite_ids.size()+added);past.reserve(past.size()+1);
@@ -134,6 +138,7 @@ bool Artwork::install_animation_with_artwork(const Artwork &source,const Library
         // together. Existing sprite/palette pointers and selection stay intact.
         if(added)append_staged_library(*staged,added,false);else ++serial;
         free(data.scrseqmem_p);data.scrseqmem_p=replacement.release();data.scrseqbytes=(unsigned)blob.size();data.seqcnt=sequences;data.scrcnt=scripts;
+        free(data.damtbl_p);data.damtbl_p=damage_replacement.release();data.damtblbytes=(unsigned)damage.size();data.damcnt=(unsigned)(damage.size()/4);
         past.push_back(std::move(before));future.clear();revision=next_revision++;trim_history();return true;
     }catch(const std::bad_alloc &){error="Not enough memory to prepare animation history. Nothing was copied.";return false;}
 }

@@ -202,14 +202,16 @@ Artwork::State Artwork::capture() const {
     }
     s.seqcnt=data.seqcnt;s.scrcnt=data.scrcnt;
     if(data.scrseqmem_p)s.sequences.assign((unsigned char *)data.scrseqmem_p,(unsigned char *)data.scrseqmem_p+data.scrseqbytes);
+    s.damcnt=data.damcnt;
+    if(data.damtbl_p)s.damage.assign((unsigned char *)data.damtbl_p,(unsigned char *)data.damtbl_p+data.damtblbytes);
     return s;
 }
 size_t Artwork::State::bytes() const {
-    size_t n=sequences.size();for(auto &v:sprites)n+=sizeof(v.fields)+v.pixels.size()+v.baseline.size()+v.points.size()+v.alternate.size()+v.layer.size();
+    size_t n=sequences.size()+damage.size();for(auto &v:sprites)n+=sizeof(v.fields)+v.pixels.size()+v.baseline.size()+v.points.size()+v.alternate.size()+v.layer.size();
     for(auto &v:palettes)n+=sizeof(v.fields)+v.colors.size();return n;
 }
 bool Artwork::State::same(const State &s) const {
-    if(sprites.size()!=s.sprites.size()||palettes.size()!=s.palettes.size()||sequences!=s.sequences||seqcnt!=s.seqcnt||scrcnt!=s.scrcnt)return false;
+    if(sprites.size()!=s.sprites.size()||palettes.size()!=s.palettes.size()||sequences!=s.sequences||seqcnt!=s.seqcnt||scrcnt!=s.scrcnt||damage!=s.damage||damcnt!=s.damcnt)return false;
     for(size_t i=0;i<sprites.size();++i){auto &a=sprites[i];auto &b=s.sprites[i];
         if(a.id!=b.id||memcmp(&a.fields,&b.fields,sizeof(IMG))||a.pixels!=b.pixels||a.points!=b.points||a.alternate!=b.alternate||a.layer!=b.layer)return false;
     }
@@ -230,10 +232,13 @@ void Artwork::restore(const State &s) {
         }
         for(auto &item:s.palettes){PAL *pal=AllocPal();if(!pal)throw std::bad_alloc();void *next=pal->nxt_p;*pal=item.fields;pal->nxt_p=next;pal->data_p=allocate(item.colors);}
         replacement->data.scrseqmem_p=allocate(s.sequences);replacement->data.scrseqbytes=(unsigned)s.sequences.size();
+        replacement->data.damtbl_p=allocate(s.damage);replacement->data.damtblbytes=(unsigned)s.damage.size();
     }
     std::swap(data.img_p,replacement->data.img_p);std::swap(data.imgcnt,replacement->data.imgcnt);
     std::swap(data.pal_p,replacement->data.pal_p);std::swap(data.palcnt,replacement->data.palcnt);
     std::swap(data.scrseqmem_p,replacement->data.scrseqmem_p);std::swap(data.scrseqbytes,replacement->data.scrseqbytes);
+    std::swap(data.damtbl_p,replacement->data.damtbl_p);std::swap(data.damtblbytes,replacement->data.damtblbytes);
+    data.damcnt=s.damcnt;
     data.seqcnt=s.seqcnt;data.scrcnt=s.scrcnt;
     sprite_ids.clear();for(auto &item:s.sprites)sprite_ids.push_back(item.id);
     revision = s.revision;selected_sprite_id=s.selection; ++serial;if(structural)++structure_serial;

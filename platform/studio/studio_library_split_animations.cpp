@@ -1,5 +1,6 @@
 #include "studio_library_split_animations.h"
 #include "studio_animation_copy.h"
+#include "studio_animation_dependencies.h"
 #include <algorithm>
 #include <set>
 
@@ -19,31 +20,23 @@ bool build(const Artwork &source,const LibraryCopyPlan &copy,LibrarySplitAnimati
     std::vector<EmbeddedRecord> records;if(!read_embedded(source,records,error))return false;
     auto bytes=(const unsigned char *)source.data.scrseqmem_p;
     if(source.data.scrseqbytes)p.source_blob.assign(bytes,bytes+source.data.scrseqbytes);
-    std::set<int> sequences;
+    std::vector<AnimationDependencies> dependencies;
+    if(!read_animation_dependencies(source,records,p.source_damage,dependencies,error))return false;
+    std::vector<std::vector<int>> followers(records.size());std::vector<int> blocked;
     for(int i=0;i<(int)records.size();++i){
-        auto &record=records[i];LibrarySplitAnimationRow row;
-        row.source=i;row.script=record.script;row.name=record.name;bool positive=false;
-        if(!record.script){
-            if(std::any_of(record.raw.begin()+88,record.raw.begin()+94,[](unsigned char n){return n!=255;}))
-                row.reason="Damage-table bindings are unsupported";
-            for(auto &entry:record.entries)if(entry.values.index>=0){
-                positive=true;
-                if(entry.values.index>=source.count()){row.reason="Unresolved source sprite";break;}
-                if(!sprites.count(entry.values.index)&&row.reason.empty())row.reason="Uses artwork outside this split";
-            }
-            if(!positive&&row.reason.empty())row.reason="No artwork references";
-            if(row.reason.empty())sequences.insert(i);
-        }else{
-            for(auto &entry:record.entries)if(entry.values.index>=0){
-                positive=true;
-                if(entry.values.index>=(int)source.data.seqcnt){row.reason="Unresolved sequence call";break;}
-                if(!sequences.count(entry.values.index)&&row.reason.empty())row.reason="Calls a sequence outside this split";
-            }
-            if(!positive&&row.reason.empty())row.reason="No sequence calls";
-        }
-        row.included=row.reason.empty();if(row.included)options.requested.insert(i);
-        p.rows.push_back(std::move(row));
+        auto &record=records[i];auto &deps=dependencies[i];LibrarySplitAnimationRow row;
+        row.source=i;row.script=record.script;row.name=record.name;row.reason=deps.error;
+        for(int index:deps.sprites)if(!sprites.count(index)&&row.reason.empty())row.reason="Uses artwork outside this split";
+        if(deps.sprites.empty()&&deps.records.empty()&&row.reason.empty())row.reason=record.script?"No sequence calls":"No artwork references";
+        for(int dependency:deps.records)followers[dependency].push_back(i);
+        if(!row.reason.empty())blocked.push_back(i);p.rows.push_back(std::move(row));
     }
+    // A damaged sequence may depend on a script, which may depend on another
+    // sequence. Propagate exclusions through cycles without adding unchosen art.
+    for(size_t cursor=0;cursor<blocked.size();++cursor)for(int follower:followers[blocked[cursor]])if(p.rows[follower].reason.empty()){
+        p.rows[follower].reason="Calls or damage bindings require an animation outside this split: "+records[blocked[cursor]].name;blocked.push_back(follower);
+    }
+    for(int i=0;i<(int)p.rows.size();++i){auto &row=p.rows[i];row.included=row.reason.empty();if(row.included)options.requested.insert(i);}
     if(!options.requested.empty()){
         AnimationCopyPlan animations;
         if(!plan_animation_copy(source,*result,options,animations,error)||result->apply_animation_copy(source,animations,error)<0)return false;
@@ -51,12 +44,13 @@ bool build(const Artwork &source,const LibraryCopyPlan &copy,LibrarySplitAnimati
     p.sequences=result->data.seqcnt;p.scripts=result->data.scrcnt;
     bytes=(const unsigned char *)result->data.scrseqmem_p;
     if(result->data.scrseqbytes)p.result_blob.assign(bytes,bytes+result->data.scrseqbytes);
+    if(result->data.damtblbytes){bytes=(const unsigned char *)result->data.damtbl_p;p.result_damage.assign(bytes,bytes+result->data.damtblbytes);}
     out=std::move(p);return true;
 }
 bool same(const LibrarySplitAnimationPlan &a,const LibrarySplitAnimationPlan &b){
     if(a.source!=b.source||a.target!=b.target||a.source_generation!=b.source_generation||
        a.target_generation!=b.target_generation||a.sprites!=b.sprites||a.source_blob!=b.source_blob||
-       a.result_blob!=b.result_blob||a.sequences!=b.sequences||a.scripts!=b.scripts||a.rows.size()!=b.rows.size())return false;
+       a.result_blob!=b.result_blob||a.source_damage!=b.source_damage||a.result_damage!=b.result_damage||a.sequences!=b.sequences||a.scripts!=b.scripts||a.rows.size()!=b.rows.size())return false;
     for(size_t i=0;i<a.rows.size();++i){auto &x=a.rows[i];auto &y=b.rows[i];
         if(x.source!=y.source||x.script!=y.script||x.included!=y.included||x.name!=y.name||x.reason!=y.reason)return false;
     }return true;

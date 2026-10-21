@@ -197,7 +197,7 @@ private:
     int validate_library_copy(const Artwork &source,const LibraryCopyPlan &plan,std::string &error) const;
     int validate_batch_delete(const BatchDeletePlan &plan,std::string &error) const;
     void append_staged_library(Artwork &staged,int added,bool select_first);
-    bool install_animation_with_artwork(const Artwork &source,const LibraryCopyPlan &artwork,const std::vector<unsigned char> &blob,unsigned sequences,unsigned scripts,std::string &error);
+    bool install_animation_with_artwork(const Artwork &source,const LibraryCopyPlan &artwork,const std::vector<unsigned char> &blob,unsigned sequences,unsigned scripts,const std::vector<unsigned char> &damage,std::string &error);
     struct State {
         struct Sprite {
             IMG fields{};
@@ -207,8 +207,8 @@ private:
         struct Palette { PAL fields{}; std::vector<unsigned char> colors; };
         std::vector<Sprite> sprites;
         std::vector<Palette> palettes;
-        std::vector<unsigned char> sequences;
-        unsigned seqcnt=0,scrcnt=0;
+        std::vector<unsigned char> sequences,damage;
+        unsigned seqcnt=0,scrcnt=0,damcnt=0;
         uint64_t revision = 0;
         uint64_t selection = 0;
         std::string label;

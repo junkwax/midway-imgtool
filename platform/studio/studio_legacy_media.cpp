@@ -45,7 +45,7 @@ bool lbm(const Bytes &b,IndexedMedia &m,std::string &error){
     if(b.size()<12||memcmp(b.data(),"FORM",4)){error="Choose an IFF PBM or ILBM image.";return false;}
     size_t end=8+(size_t)be32(b.data()+4);bool planar=!memcmp(b.data()+8,"ILBM",4),packed=!memcmp(b.data()+8,"PBM ",4);
     if(end!=b.size()||end<12||(!planar&&!packed)){error="The IFF FORM is incomplete or unsupported (PBM / ILBM only).";return false;}
-    Bytes header,cmap,body;bool have_body=false,grab=false;int ax=0,ay=0;
+    Bytes header,cmap,body,destination;bool have_body=false,grab=false;unsigned mode=0;int ax=0,ay=0;
     for(size_t p=12;p<end;){if(end-p<8){error="Truncated IFF chunk header.";return false;}size_t n=be32(b.data()+p+4),start=p+8;
         if(n>end-start||(n&1)>end-start-n){error="Truncated IFF chunk or padding.";return false;}
         auto copy=[&](Bytes &out){out.assign(b.begin()+start,b.begin()+start+n);};
@@ -53,14 +53,32 @@ bool lbm(const Bytes &b,IndexedMedia &m,std::string &error){
         else if(!memcmp(b.data()+p,"CMAP",4)){if(!cmap.empty()||have_body||!n||n%3||n>768){error="Invalid or duplicate palette chunk.";return false;}copy(cmap);}
         else if(!memcmp(b.data()+p,"BODY",4)){if(have_body||header.empty()||cmap.empty()){error="The image needs one BODY after its bitmap header and palette.";return false;}copy(body);have_body=true;}
         else if(!memcmp(b.data()+p,"GRAB",4)){if(n!=4||grab){error="Invalid hotspot chunk.";return false;}ax=(short)be16(b.data()+start);ay=(short)be16(b.data()+start+2);grab=true;}
-        else if(!memcmp(b.data()+p,"DEST",4)){error="IFF destination-plane merging is not supported.";return false;}
-        else if(!memcmp(b.data()+p,"CAMG",4)){if(n!=4||(be32(b.data()+start)&0x880)){error="HAM / Extra Halfbrite display modes are not supported.";return false;}}
+        else if(!memcmp(b.data()+p,"DEST",4)){if(n!=8||have_body){error="DEST must contain eight bytes and precede BODY.";return false;}copy(destination);}
+        else if(!memcmp(b.data()+p,"CAMG",4)){if(n!=4||have_body){error="CAMG must contain four bytes and precede BODY.";return false;}mode=be32(b.data()+start);}
         p=start+n+(n&1);
     }
     if(header.empty()||!have_body||cmap.empty()){error="The IFF image is missing a required chunk.";return false;}
     m.w=be16(header.data());m.h=be16(header.data()+2);int planes=header[8],masking=header[9],compression=header[10];
-    if(!dimensions(m.w,m.h)||planes<1||planes>8||(packed&&planes!=8)||masking>2||(packed&&masking==1)||compression>1){error="Unsupported bitmap dimensions, depth, mask or compression.";return false;}
+    bool constant=planar&&!destination.empty()&&planes==0;
+    if(!dimensions(m.w,m.h)||(planes<1&&!constant)||planes>8||(packed&&planes!=8)||masking>2||(packed&&masking==1)||compression>1){error="Unsupported bitmap dimensions, depth, mask or compression.";return false;}
+    int depth=planes;std::array<unsigned char,256> dest_indices{};
+    if(!destination.empty()){
+        depth=destination[0];if(!planar||depth<1||depth>8){error="DEST import needs ILBM and a destination depth from 1 to 8.";return false;}
+        unsigned bits=(1u<<depth)-1,pick=be16(destination.data()+2)&bits,on=be16(destination.data()+4)&bits,mask=be16(destination.data()+6)&bits;
+        int count=0;for(int bit=0;bit<depth;++bit)count+=(pick>>bit)&1;
+        if(count!=planes){error="DEST planePick must select exactly the number of source bitplanes.";return false;}
+        if(mask!=bits){error="This DEST leaves background bitplanes unchanged. Import needs a complete destination; merge it with its background first.";return false;}
+        // EA ILBM: successive source planes fill set planePick bits; other
+        // destination planes use planeOnOff. Bits above depth are ignored.
+        for(int index=0;index<(1<<planes);++index){unsigned value=on&~pick;int source=0;for(int bit=0;bit<depth;++bit)if(pick&(1u<<bit))value|=((index>>source++)&1u)<<bit;dest_indices[index]=(unsigned char)value;}
+    }
+    if(mode&0x800){error="HAM display modes are not supported by indexed import.";return false;}
+    bool halfbrite=(mode&0x80)!=0;
+    if(halfbrite&&(!planar||depth!=6||cmap.size()<32*3)){error="Extra Halfbrite import needs six destination planes and at least 32 base palette entries.";return false;}
     for(size_t p=0;p<cmap.size();p+=3)m.words.push_back((unsigned short)(((cmap[p]>>3)<<10)|((cmap[p+1]>>3)<<5)|(cmap[p+2]>>3)));
+    // EHB plane 6 selects half intensity (Amiga Hardware Manual, node0098).
+    // Mask each RGB555 channel after shifting so bits cannot spill between channels.
+    if(halfbrite){m.words.resize(64);for(size_t i=0;i<32;++i){auto color=m.words[i];m.words[i+32]=(unsigned short)(((color>>1)&0x3c00)|((color>>1)&0x01e0)|((color>>1)&0x000f));}}
     m.anchor_x=grab?ax:m.w/2;m.anchor_y=grab?ay:m.h-1;m.pixels.resize((size_t)m.w*m.h);Bytes coverage;if(masking)coverage.resize(m.pixels.size(),255);
     size_t pos=0;Bytes scan;size_t stride=packed?((m.w+1)&~size_t(1)):((m.w+15)/16)*2;
     for(int y=0;y<m.h;++y)for(int plane=0;plane<(packed?1:planes+(masking==1));++plane){
@@ -71,8 +89,12 @@ bool lbm(const Bytes &b,IndexedMedia &m,std::string &error){
     // ByteRun1 no-op bytes may legally finish a BODY; never accept other residue.
     if(compression==1)while(pos<body.size()&&body[pos]==128)++pos;
     if(pos!=body.size()){error="Unexpected bytes after the bitmap rows.";return false;}
+    // transparentColor is a SOURCE bit pattern, before DEST scattering.
     if(masking==2){unsigned transparent=be16(header.data()+12);for(size_t i=0;i<m.pixels.size();++i)coverage[i]=m.pixels[i]==transparent?0:255;}
-    m.note=planar?"ILBM bitplanes decoded without quantizing palette order.":"PBM indexed pixels retain their source palette order.";
+    if(!destination.empty())for(auto &index:m.pixels)index=dest_indices[index];
+    m.note=halfbrite?"Extra Halfbrite ILBM: 32 base colors plus 32 derived half-bright colors; six-bit indices retained.":planar?"ILBM bitplanes decoded without quantizing palette order.":"PBM indexed pixels retain their source palette order.";
+    if(!destination.empty()){if(halfbrite)m.note="Extra Halfbrite ILBM: 32 base colors plus 32 derived half-bright colors.";m.note+=" DEST remapped "+std::to_string(planes)+" source planes into "+std::to_string(depth)+" destination planes; palette order retained.";}
+    if(halfbrite&&cmap.size()>32*3)m.note+=" Stored upper palette entries ignored in favor of derived colors.";
     if(!masking)m.note+=" Index zero is treated as IMG transparency.";
     if(!transparency(m,coverage,error))return false;
     return valid(m);

@@ -6,6 +6,8 @@
 
 namespace studio {
 struct SubframeSwapPlan;
+struct WaterlinePlan;
+struct DummyBodyPlan;
 struct SceneAsset {
     std::string path, absolute_path, digest;
     uint64_t runtime_doc=0;
@@ -82,6 +84,7 @@ class SceneProject {
 public:
     explicit SceneProject(SceneState initial,bool unsaved=true);
     static std::unique_ptr<SceneProject> read(const std::string &path,std::string &error);
+    // Publish resolved references only when every dependency is valid.
     bool bind(const SceneBinder &provider,std::vector<SceneIssue> &issues);
     void establish_loaded();
     bool save(const std::string &path,const SceneSource &source,std::string &error);
@@ -101,9 +104,12 @@ public:
     bool imported_wax() const {return imported;}
     bool uses_doc(uint64_t uid) const;
     int apply_subframe_swap(const SubframeSwapPlan &,const SceneSource &,std::string &error);
+    int apply_waterline(const WaterlinePlan &,const SceneSource &,std::string &error);
+    int apply_dummy_body(const DummyBodyPlan &,const SceneSource &,std::string &error);
     uint64_t allocate_id(){return next_entity_id++;}
     SceneState state;
 private:
+    int install_scene_review(SceneState &&candidate,uint64_t next_id,int result,const char *label,std::string &error);
     struct Snapshot {SceneState state;uint64_t revision=0;std::string label;};
     static bool same(const SceneState &a,const SceneState &b);
     std::unique_ptr<Snapshot> pending;

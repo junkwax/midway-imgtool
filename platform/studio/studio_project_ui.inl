@@ -121,6 +121,7 @@ void project_dialogs(){
     if(pending_project&&!scene_issues.empty())ImGui::OpenPopup("Locate project artwork");
     if(ImGui::BeginPopupModal("Locate project artwork",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+550);ImGui::TextUnformatted("The project is waiting for its sources. Locate missing libraries or correct sprite references in their original IMG. Your open artwork stays in place.");ImGui::PopTextWrapPos();
+        for(auto &issue:scene_issues)if(issue.asset<0)ImGui::TextWrapped("%s",issue.message.c_str());
         if(pending_project)for(int a=0;a<(int)pending_project->state.assets.size();++a){bool failed=false;for(auto &i:scene_issues)if(i.asset==a)failed=true;if(!failed)continue;
             ImGui::PushID(a);ImGui::Separator();ImGui::TextWrapped("%s",pending_project->state.assets[a].path.c_str());
             for(auto &i:scene_issues)if(i.asset==a)ImGui::TextWrapped("%s",i.message.c_str());
@@ -132,7 +133,7 @@ void project_dialogs(){
             ImGui::PopID();
         }
         if(ImGui::Button("Retry loading",ImVec2(130,0))){ImGui::CloseCurrentPopup();stage_scene();}
-        ImGui::SameLine();if(ImGui::Button("Cancel",ImVec2(100,0))){drop_pending_scene();ImGui::CloseCurrentPopup();}ImGui::EndPopup();
+        ImGui::SameLine();if(ImGui::Button("Cancel",ImVec2(100,0))){drop_pending_scene();ImGui::CloseCurrentPopup();}scene_sources_cancel_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndPopup();
     }
     if(scene_guard_uid&&!scene_path_dialog&&!path_dialog)ImGui::OpenPopup("Save project changes?");
     if(ImGui::BeginPopupModal("Save project changes?",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
@@ -251,8 +252,10 @@ void project_inspector(Tab &t){
     ImGui::SetNextItemWidth(100);if(ImGui::InputInt("Depth",&frame.z))frame.z=std::clamp(frame.z,-4096,4096);ImGui::Checkbox("Flip frame X",&frame.flip_x);ImGui::SameLine();ImGui::Checkbox("Flip Y",&frame.flip_y);
     project_motion_controls(t,lane,frame);
     if(ImGui::Button("Swap with subframes..."))show_subframe_swap(t);u.subframe_swap_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::Button("Cut at waterline..."))show_waterline(t);u.waterline_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     bool frame_used=scene_uses_frame(s,frame.id);ImGui::BeginDisabled(lane.frames.size()==1||frame_used);if(ImGui::Button("Remove frame"))u.command=SceneCommand::DeleteFrame;ImGui::EndDisabled();if(frame_used&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("An effect follows this frame. Detach the effect before removing its source.");
     ImGui::Spacing();ImGui::SeparatorText("Add artwork");
+    if(ImGui::Button("Build dummy body..."))show_dummy_body(t);u.dummy_body_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     auto source=find(u.source_doc);if(!source){source=&t;u.source_doc=t.uid;u.source_sprite=t.selected_id;}
     ImGui::SetNextItemWidth(-1);if(ImGui::BeginCombo("##source-library",source->name().c_str())){for(auto &candidate:tabs){ImGui::PushID((int)candidate->uid);if(ImGui::Selectable(candidate->name().c_str(),candidate.get()==source)){u.source_doc=candidate->uid;u.source_sprite=candidate->selected_id;}ImGui::PopID();}ImGui::EndCombo();}
     source=find(u.source_doc);int index=source->art->sprite_index(u.source_sprite);if(index<0){index=source->selected;u.source_sprite=source->art->sprite_id(index);}

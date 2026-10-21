@@ -1,12 +1,6 @@
 #pragma once
-#include "studio_project.h"
+#include "studio_subframes.h"
 namespace studio {
-struct SubframeSpriteSnapshot {
-    const Artwork *owner=nullptr;uint64_t id=0;int index=-1;
-    std::array<unsigned char,sizeof(IMG)> fields{};
-    std::array<unsigned char,sizeof(PAL)> palette{};
-    std::vector<unsigned char> pixels,colors,alternate,layer;
-};
 struct SubframeSwapPlan {
     const SceneProject *owner=nullptr;
     uint64_t lane=0,frame=0;
