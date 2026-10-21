@@ -71,8 +71,8 @@ int main(){
     write(root/"spawn.WAX",wax);auto imported=SceneProject::read((root/"spawn.WAX").u8string(),error);CHECK(imported!=nullptr);
     if(imported){CHECK(imported->bind([&](int,const SceneAsset &){return SceneBinding{10,art.get()};},issues));auto &is=imported->state;CHECK(scene_lane_start(is,0)==4&&is.lanes[0].frames[0].visible_from==0&&is.lanes[0].frames[1].visible_from==2);
         is.lanes[1].frames[0].ticks=7;CHECK(scene_lane_start(is,0)==7);CHECK(imported->save((root/"converted.ISTUDIO").u8string(),provider,error));}
-    corrupt=wax;field(corrupt,"slot.1.spawn_tick","5");write(root/"moved.WAX",corrupt);CHECK(!SceneProject::read((root/"moved.WAX").u8string(),error));CHECK(error.find("moved by hand")!=std::string::npos);
-    corrupt=wax;field(corrupt,"slot.1.visible_from","4,7");write(root/"custom.WAX",corrupt);CHECK(!SceneProject::read((root/"custom.WAX").u8string(),error));CHECK(error.find("custom schedule")!=std::string::npos);
+    corrupt=wax;field(corrupt,"slot.1.spawn_tick","5");write(root/"moved.WAX",corrupt);auto moved=SceneProject::read((root/"moved.WAX").u8string(),error);CHECK(moved&&!moved->state.lanes[0].trigger_lane&&moved->state.lanes[0].frames[0].visible_from==4&&moved->import_notes().size()==1);
+    corrupt=wax;field(corrupt,"slot.1.visible_from","4,7");write(root/"custom.WAX",corrupt);auto custom=SceneProject::read((root/"custom.WAX").u8string(),error);CHECK(custom&&!custom->state.lanes[0].trigger_lane&&custom->state.lanes[0].frames[1].visible_from==7&&custom->import_notes().size()==1);
     corrupt=wax;field(corrupt,"slot.1.spawn_slot","1");write(root/"cycle.WAX",corrupt);CHECK(!SceneProject::read((root/"cycle.WAX").u8string(),error));CHECK(error.find("cycle")!=std::string::npos);
     CHECK(!art->dirty());bool safe=fs::equivalent(root.parent_path(),fs::temp_directory_path());CHECK(safe);if(safe)fs::remove_all(root);
     std::cout<<"Studio trigger checks: "<<failures<<" failure(s)\n";return failures?1:0;

@@ -274,12 +274,15 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_waterline.cpp
     platform/studio/studio_dummy_body.cpp
     platform/studio/studio_project.cpp
+    platform/studio/studio_actor_split.cpp
+    platform/studio/studio_actor_rows.cpp
     platform/studio/studio_stage.cpp
     platform/studio/studio_anchor_link.cpp
     platform/studio/studio_points.cpp
     platform/studio/studio_tbl_compare.cpp
     platform/studio/studio_strikes.cpp platform/mk2_hitbox.cpp
     platform/studio/studio_asm.cpp platform/studio/studio_asm_assets.cpp platform/studio/studio_asm_artwork_library.cpp platform/strike_bind.cpp
+    platform/studio/studio_asm_scene.cpp
     platform/studio/studio_reactions.cpp platform/reaction_class.cpp
     platform/studio/studio_fatality.cpp platform/studio/studio_fatality_workspace.cpp platform/mk2_fatality.cpp
     platform/studio/studio_bindings.cpp
@@ -304,7 +307,7 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_palette_inheritance.cpp
     platform/studio/studio_palette_reduction.cpp
     platform/studio/studio_palette_ramps.cpp platform/studio/studio_file_io.cpp
-    platform/studio/studio_import.cpp platform/studio/studio_legacy_media.cpp platform/studio/studio_sheet.cpp
+    platform/studio/studio_import.cpp platform/studio/studio_legacy_media.cpp platform/studio/studio_sheet.cpp platform/studio/studio_png_batch.cpp
     platform/studio/studio_digitize.cpp platform/digitize_matte.cpp
     platform/studio/studio_digitize_job.cpp
     platform/studio/studio_video.cpp platform/video_decode.cpp
@@ -332,7 +335,7 @@ target_link_libraries(imgtool-studio PRIVATE imgtool_studio_document SDL2::SDL2m
 target_compile_definitions(imgtool-studio PRIVATE IMGTOOL_VERSION="${IMGTOOL_VERSION}")
 if(WIN32)
     set_target_properties(imgtool-studio PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_link_libraries(imgtool-studio PRIVATE comdlg32 dbghelp)
+    target_link_libraries(imgtool-studio PRIVATE comdlg32 dbghelp ole32 shell32)
     add_custom_command(TARGET imgtool-studio POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:SDL2::SDL2>" "$<TARGET_FILE_DIR:imgtool-studio>"
@@ -400,6 +403,22 @@ add_executable(studio_document_test test/studio_document_test.cpp)
 target_link_libraries(studio_document_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_document_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_document COMMAND studio_document_test)
+add_executable(studio_png_batch_test test/studio_png_batch_test.cpp)
+target_link_libraries(studio_png_batch_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_png_batch_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_png_batch COMMAND studio_png_batch_test)
+add_executable(studio_wax_timing_test test/studio_wax_timing_test.cpp)
+target_link_libraries(studio_wax_timing_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_wax_timing_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_wax_timing COMMAND studio_wax_timing_test)
+add_executable(studio_actor_split_test test/studio_actor_split_test.cpp)
+target_link_libraries(studio_actor_split_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_actor_split_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_actor_split COMMAND studio_actor_split_test)
+add_executable(studio_actor_rows_test test/studio_actor_rows_test.cpp)
+target_link_libraries(studio_actor_rows_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_actor_rows_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_actor_rows COMMAND studio_actor_rows_test)
 add_executable(studio_sheet_test test/studio_sheet_test.cpp)
 target_link_libraries(studio_sheet_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_sheet_test PRIVATE SDL_MAIN_HANDLED)
@@ -516,6 +535,10 @@ add_executable(studio_wax_embedded_test test/studio_wax_embedded_test.cpp)
 target_link_libraries(studio_wax_embedded_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_wax_embedded_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_wax_embedded COMMAND studio_wax_embedded_test)
+add_executable(studio_asm_scene_test test/studio_asm_scene_test.cpp)
+target_link_libraries(studio_asm_scene_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_asm_scene_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_asm_scene COMMAND studio_asm_scene_test)
 add_executable(studio_animation_damage_test test/studio_animation_damage_test.cpp)
 target_link_libraries(studio_animation_damage_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_animation_damage_test PRIVATE SDL_MAIN_HANDLED)

@@ -10,6 +10,25 @@ void clamp_scene_ui(Tab &t){
 }
 void scene_seek(Tab &t,int frame){finish();auto &u=t.scene;auto &s=t.project->state;auto &l=s.lanes[u.lane];u.playing=false;u.frame=std::clamp(frame,0,(int)l.frames.size()-1);u.tick=scene_frame_seek_tick(s,u.lane,u.frame);}
 void scene_step(Tab &t,int delta){auto &u=t.scene;int n=(int)t.project->state.lanes[u.lane].frames.size();scene_seek(t,(u.frame+delta+n)%n);}
+bool can_split_actor(const Tab &t,int frame=-1)const{
+    if(!t.project||!t.alignment.enabled||t.embedded.enabled||t.scene.lane<0||t.scene.lane>=(int)t.project->state.lanes.size())return false;
+    auto &s=t.project->state;int f=frame<0?t.scene.frame:frame;return s.lanes.size()<32&&f>0&&f<(int)s.lanes[t.scene.lane].frames.size();
+}
+void split_actor_tooltip(){if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Moves the selected frame and later frames to an independent actor. Both frame lists start at the same actor start tick; Show/Hide windows keep their actor-relative values. Effects following moved frames follow the new actor. Choose a frame after the first frame. Undo restores the original actor.");}
+bool can_edit_actor(const Tab *t)const{return t&&t->project&&t->alignment.enabled&&!t->embedded.enabled&&t->scene.lane>=0&&t->scene.lane<(int)t->project->state.lanes.size();}
+void actor_action_items(Tab *t){
+    bool ready=can_edit_actor(t);int index=ready?t->scene.lane:0;size_t count=ready?t->project->state.lanes.size():0;
+    if(ImGui::MenuItem("Duplicate actor",nullptr,false,ready&&count<32))t->scene.command=SceneCommand::DuplicateActor;
+    if(ready)t->scene.duplicate_actor_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Copies every frame and piece into an independent actor at the current resolved start tick. Existing effects keep following the original. Drag the copy to reposition it. One project Undo restores the scene.");
+    if(ImGui::MenuItem("Bring actor forward",nullptr,false,ready&&index+1<(int)count))t->scene.command=SceneCommand::ActorForward;
+    if(ready)t->scene.actor_forward_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Moves this actor one step forward when frame depths are equal. Position, timing, opacity and depth values stay the same.");
+    if(ImGui::MenuItem("Send actor backward",nullptr,false,ready&&index>0))t->scene.command=SceneCommand::ActorBackward;
+    if(ready)t->scene.actor_backward_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Moves this actor one step backward when frame depths are equal. Position, timing, opacity and depth values stay the same.");
+    if(ImGui::MenuItem("Split actor at selected frame",nullptr,false,t&&can_split_actor(*t)))t->scene.command=SceneCommand::SplitActor;split_actor_tooltip();
+}
 void toggle_scene_playback(Tab &t){finish();auto &u=t.scene;if(!u.playing&&u.tick>=scene_last_tick(t.project->state))u.tick=0;u.playing=!u.playing;}
 int scene_asset(SceneState &s,Tab &source){
     for(int i=0;i<(int)s.assets.size();++i)if(s.assets[i].runtime_doc==source.uid)return i;
@@ -26,6 +45,7 @@ void attach_scene(){
     for(int i=0;i<(int)tabs.size();++i)if(tabs[i].get()==owner)active=i;
     select_uid=owner->uid;paste_mode=false;
     status=owner->project->imported_wax()?"Imported WAX rows. Save as .ISTUDIO to keep this composition.":"Opened "+scene_name(*owner);
+    if(!owner->project->import_notes().empty())status+=" Review WAX import notes ("+std::to_string(owner->project->import_notes().size())+").";
     scene_issues.clear();scene_relocations.clear();pending_scene_owner=0;scene_error.clear();
 }
 void install_scene(){
@@ -110,6 +130,16 @@ void complete_scene_guard(){
     scene_guard_uid=0;scene_guard_reason=0;scene_error.clear();if(reason==3)attach_scene();
 }
 void project_dialogs(){
+    if(quitting||close_uid||scene_guard_uid||pending_project)scene_import_notes_uid=0;
+    if(scene_import_notes_uid){auto owner=find(scene_import_notes_uid);if(owner&&owner->project&&!owner->project->import_notes().empty())ImGui::OpenPopup("WAX import notes");else scene_import_notes_uid=0;}
+    if(ImGui::IsPopupOpen("WAX import notes")){auto display=ImGui::GetIO().DisplaySize;ImGui::SetNextWindowSize(ImVec2(std::min(650.f,display.x-40),std::min(410.f,display.y-40)),ImGuiCond_Always);ImGui::SetNextWindowPos(display*.5f,ImGuiCond_Always,ImVec2(.5f,.5f));}
+    if(ImGui::BeginPopupModal("WAX import notes",nullptr,panel_flags|ImGuiWindowFlags_NoResize)){
+        if(!scene_import_notes_uid)ImGui::CloseCurrentPopup();
+        ImGui::TextUnformatted("Authored effect timing was kept");ImGui::TextWrapped("Classic stops frame-following when an effect's Show/Hide timing is edited. These rows now use their saved timing independently.");
+        ImGui::BeginChild("wax-import-messages",ImVec2(0,ImGui::GetContentRegionAvail().y-ImGui::GetFrameHeightWithSpacing()-12),ImGuiChildFlags_Border);
+        if(auto owner=find(scene_import_notes_uid))if(owner->project)for(auto &note:owner->project->import_notes()){ImGui::TextWrapped("%s",note.c_str());ImGui::Spacing();}
+        ImGui::EndChild();if(ImGui::Button("Done",ImVec2(100,0))||ImGui::IsKeyPressed(ImGuiKey_Escape)){scene_import_notes_uid=0;ImGui::CloseCurrentPopup();}scene_import_notes_done_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndPopup();
+    }
     if(quitting&&!scene_guard_uid&&!scene_path_dialog){
         if(pending_project)drop_pending_scene();
         for(auto &t:tabs)if(t->project){if(t->project->dirty()){scene_guard_uid=t->uid;scene_guard_reason=4;scene_error.clear();break;}t->project.reset();t->scene={};}
@@ -163,6 +193,7 @@ void project_dialogs(){
 void project_controls(Tab &t){
     auto &s=t.project->state;auto &u=t.scene;clamp_scene_ui(t);
     ImGui::Text("%s%s",scene_name(t).c_str(),t.project->dirty()?" *":"");
+    if(t.project->imported_wax()&&!t.project->import_notes().empty()){ImGui::SameLine();auto label="WAX import notes ("+std::to_string(t.project->import_notes().size())+")";if(ImGui::SmallButton(label.c_str())){finish();u.playing=false;scene_import_notes_uid=t.uid;}scene_import_notes_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;}
     ImGui::SetNextItemWidth(190);if(ImGui::BeginCombo("Lane",s.lanes[u.lane].name.c_str())){for(int i=0;i<(int)s.lanes.size();++i){ImGui::PushID(i);if(ImGui::Selectable(s.lanes[i].name.c_str(),u.lane==i)){finish();u.lane=i;u.frame=0;u.playing=false;}ImGui::PopID();}ImGui::EndCombo();}
     ImGui::SameLine();if(ImGui::Button("Fit")){u.zoom=0;u.pan=ImVec2();}
     ImGui::TextDisabled("Drag actors to place them. Scene edits save separately from IMG.");
@@ -220,12 +251,15 @@ void project_timeline(Tab &t,float height){
     if(u.playing){int frame=scene_frame_at(s,u.lane,(int)u.tick);if(frame>=0)u.frame=frame;}
     auto &current=lane.frames[u.frame];ImGui::SetNextItemWidth(80);if(ImGui::InputInt("Ticks/frame",&current.ticks)){current.ticks=std::clamp(current.ticks,1,255);u.playing=false;}
     ImGui::SameLine();if(ImGui::Button("Copy frame"))u.command=SceneCommand::DuplicateFrame;
+    ImGui::BeginDisabled(!can_split_actor(t));if(ImGui::Button("Split actor here"))u.command=SceneCommand::SplitActor;u.split_actor_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();split_actor_tooltip();
     ImGui::SameLine();ImGui::BeginDisabled(u.frame==0);if(ImGui::Button("Move <"))u.command=SceneCommand::MoveLeft;ImGui::EndDisabled();
     ImGui::SameLine();ImGui::BeginDisabled(u.frame+1==(int)lane.frames.size());if(ImGui::Button("Move >"))u.command=SceneCommand::MoveRight;ImGui::EndDisabled();
     ImGui::BeginChild("scene-frame-strip",ImVec2(0,0),ImGuiChildFlags_None,ImGuiWindowFlags_HorizontalScrollbar);
     int lane_start=scene_lane_start(s,u.lane),cursor_tick=0;
     for(int f=0;f<(int)lane.frames.size();++f){int seek=lane_start+(lane.frames[f].scheduled()?lane.frames[f].visible_from:cursor_tick);cursor_tick+=lane.frames[f].ticks;if(f)ImGui::SameLine(0,6);ImGui::PushID(f);ImVec2 a=ImGui::GetCursorScreenPos();
         if(ImGui::Selectable("##frame",u.frame==f,0,ImVec2(85,85)))scene_seek(t,f);
+        if(f<4)u.frame_points[f]=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+        if(ImGui::BeginPopupContextItem("frame-actions")){ImGui::BeginDisabled(!can_split_actor(t,f));if(ImGui::MenuItem("Split actor at this frame")){u.frame=f;u.command=SceneCommand::SplitActor;}u.split_actor_context_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();split_actor_tooltip();ImGui::EndPopup();}
         auto &frame=lane.frames[f];int left=INT_MAX,top=INT_MAX,right=INT_MIN,bottom=INT_MIN;std::vector<ScenePose> poses;
         for(auto &ref:frame.pieces){ScenePose pose{ref,0,0,0,255,u.lane,f,lane.flip_x!=frame.flip_x,frame.flip_y,false,lane.magnification};int index;if(auto source=scene_sprite(s,ref,index)){auto p=scene_placement(*source->art->sprite(index),pose,s);left=std::min(left,p.x);top=std::min(top,p.y);right=std::max(right,p.x+p.w);bottom=std::max(bottom,p.y+p.h);}poses.push_back(pose);}
         auto dl=ImGui::GetWindowDrawList();dl->PushClipRect(a,a+ImVec2(85,85),true);
@@ -238,7 +272,9 @@ void project_inspector(Tab &t){
     auto &s=t.project->state;auto &u=t.scene;clamp_scene_ui(t);auto &lane=s.lanes[u.lane];auto &frame=lane.frames[u.frame];
     if(u.motion_smoke&&ImGui::GetWindowHeight()<650)ImGui::SetScrollY(300);
     if(u.subframe_smoke&&ImGui::GetWindowHeight()<650)ImGui::SetScrollY(220);
-    ImGui::TextUnformatted("SCENE ACTOR");ImGui::Separator();char name[129];snprintf(name,sizeof name,"%s",lane.name.c_str());ImGui::SetNextItemWidth(-1);if(ImGui::InputText("##lane-name",name,sizeof name))lane.name=name;
+    ImGui::TextUnformatted("SCENE ACTOR");ImGui::SameLine();if(ImGui::SmallButton("Actions"))ImGui::OpenPopup("scene-actor-actions");u.actor_actions_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::BeginPopup("scene-actor-actions")){actor_action_items(&t);ImGui::EndPopup();}
+    ImGui::Separator();char name[129];snprintf(name,sizeof name,"%s",lane.name.c_str());ImGui::SetNextItemWidth(-1);if(ImGui::InputText("##lane-name",name,sizeof name))lane.name=name;
     int xy[]={lane.x,lane.y};ImGui::SetNextItemWidth(-1);if(ImGui::InputInt2("##lane-position",xy)){lane.x=std::clamp(xy[0],-4096,4096);lane.y=std::clamp(xy[1],-4096,4096);}ImGui::TextDisabled("Actor offset X / Y");
     ImGui::Checkbox("Visible",&lane.visible);ImGui::SameLine();ImGui::Checkbox("Facing left",&lane.flip_x);
     ImGui::Checkbox("Loop actor",&lane.loop);ImGui::SameLine();ImGui::Checkbox("Hold end",&lane.hold_end);
@@ -276,7 +312,10 @@ void project_inspector(Tab &t){
 }
 void apply_scene_command(Tab &t){
     auto &u=t.scene;auto command=u.command;u.command=SceneCommand::None;if(command==SceneCommand::None||!t.project)return;
-    t.project->commit();t.project->begin("Edit scene frames");u.playing=false;auto &s=t.project->state;
+    t.project->commit();u.playing=false;
+    if(command==SceneCommand::DuplicateActor||command==SceneCommand::ActorForward||command==SceneCommand::ActorBackward){if(!can_edit_actor(&t)){error="Choose an available scene actor.";return;}auto id=t.project->state.lanes[u.lane].id;int changed=command==SceneCommand::DuplicateActor?t.project->duplicate_actor(id,error):t.project->move_actor(id,command==SceneCommand::ActorForward?1:-1,error);if(changed>=0){u.lane=changed;clamp_scene_ui(t);status=command==SceneCommand::DuplicateActor?"Duplicated actor. Drag the copy to reposition it.":"Actor draw order updated.";}return;}
+    if(command==SceneCommand::SplitActor){if(!can_split_actor(t)){error="Choose a frame after the first frame and leave room for another actor (maximum 32).";return;}auto &actor=t.project->state.lanes[u.lane];int added=t.project->split_actor_at(actor.id,actor.frames[u.frame].id,error);if(added>=0){u.lane=added;u.frame=0;u.tick=scene_frame_seek_tick(t.project->state,added,0);status="Split actor. Frame lists now play independently; IMG artwork is unchanged.";}return;}
+    t.project->begin("Edit scene frames");auto &s=t.project->state;
     auto &lane=s.lanes[u.lane];auto source=find(u.source_doc);int index=source?source->art->sprite_index(u.source_sprite):-1;
     auto make_frame=[&](){SceneFrame f;f.id=t.project->allocate_id();f.name=source->art->sprite(index)->n_s;f.pieces.push_back(scene_sprite_reference(*source->art,scene_asset(s,*source),index));return f;};
     bool known_source=false;if(source)for(auto &a:s.assets)if(a.runtime_doc==source->uid)known_source=true;

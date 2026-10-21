@@ -131,7 +131,7 @@ SceneState decode_native(const Values &v){
         }s.lanes.push_back(std::move(l));
     }return s;
 }
-SceneState decode_wax(const Values &v){
+SceneState decode_wax(const Values &v,std::vector<std::string> &notes){
     if(integer(v,"version",0)!=1)throw std::runtime_error("Unsupported classic WAX version.");
     if(boolean(v,"asm.player.enabled",false)||boolean(v,"asm.opp.enabled",false))throw std::runtime_error("This WAX uses ASM lanes that this importer cannot reconstruct. Open it in classic imgtool.");
     bool has_embedded=boolean(v,"state.embedded_active",false);
@@ -149,7 +149,8 @@ SceneState decode_wax(const Values &v){
     if(has_dummy&&(dummy_prefix.size()>15||dummy_prefix.find(char(0))!=std::string::npos))throw std::runtime_error("Invalid saved dummy-body prefix.");
     auto add_asset=[&](int index,const std::string &path){std::string name=path.empty()?raw(v,field("doc",index,"path")):path;if(name.empty())throw std::runtime_error("A WAX lane is missing its IMG path.");
         for(int i=0;i<(int)s.assets.size();++i)if(s.assets[i].path==name)return i;s.assets.push_back({name,name,{ },0});if(s.assets.size()>64)throw std::runtime_error("Too many IMG dependencies.");return (int)s.assets.size()-1;};
-    std::vector<int> row_order,saved_slots,spawn_source,spawn_entry;
+    struct Spawn {int source=-1,entry=-1,witness=-1,rate=4;bool complete=false;};
+    std::vector<int> row_order,saved_slots;std::vector<Spawn> spawns;
     uint64_t next_id=1;
     for(int slot=0;slot<slots;++slot){
         bool dummy=has_dummy&&slot==dummy_slot,embedded=has_embedded&&slot==embedded_slot;
@@ -186,6 +187,7 @@ SceneState decode_wax(const Values &v){
             frame.x=(lane.flip_x!=frame.flip_x)?local_x:-local_x;frame.y=frame.flip_y?local_y:-local_y;
             int speed_x=at(vx,f,0),speed_y=at(vy,f,0);if(speed_x<-128||speed_x>128||speed_y<-128||speed_y>128)throw std::runtime_error("Invalid WAX motion speed.");
             frame.visible_from=at(from,f,0);frame.visible_until=at(until,f,0);frame.vx=(lane.flip_x!=frame.flip_x)?-speed_x:speed_x;frame.vy=frame.flip_y?-speed_y:speed_y;frame.cap_x=at(capx,f,0);frame.cap_y=at(capy,f,0);
+            if(frame.visible_from<0||frame.visible_from>99999||frame.visible_until<0||frame.visible_until>99999)throw std::runtime_error("Invalid WAX visibility window.");
             int enabled=at(dual,f,0);if(enabled!=0&&enabled!=1)throw std::runtime_error("Invalid WAX second-copy flag.");frame.dual=enabled!=0;
             int second_x=at(dualx,f,0),second_y=at(dualy,f,0);if(second_x<-4096||second_x>4096||second_y<-4096||second_y>4096)throw std::runtime_error("WAX second-copy offsets exceed the Studio limit.");
             frame.dual_x=(lane.flip_x!=frame.flip_x)?second_x:-second_x;frame.dual_y=frame.flip_y?second_y:-second_y;frame.dual_z=at(dualz,f,0);
@@ -195,22 +197,25 @@ SceneState decode_wax(const Values &v){
             frame.pieces.push_back({source<0?asset:add_asset(source,{}),dummy?index-1:index,dummy?"wax-dummy:"+dummy_prefix:std::string(),{},0});lane.frames.push_back(std::move(frame));}
         if(dummy){if(integer(v,p+"spawn_slot",-1)!=-1)throw std::runtime_error("This WAX spawns its dummy body from another row. Rebuild the body in Studio.");special_loops|=lane.visible&&!lane.hold_end&&!lane.stop_tick;}
         if(embedded)special_loops|=lane.visible&&!lane.hold_end&&!lane.stop_tick&&!boolean(v,p+"chain_pingpong",false);
-        int spawned=integer(v,p+"spawn_slot",-1,-1,slots-1);
-        if(spawned>=0){
-            if(lane.stop_tick)throw std::runtime_error("This WAX combines a spawn binding with a freeze tick. Detach that row in classic before importing it.");
-            int base=lane.frames.front().visible_from,witness=integer(v,p+"spawn_tick",-1,-1,99999);
-            int rate=integer(v,p+"hold",hold,1,120);
-            if(witness>=0&&witness!=base)throw std::runtime_error("This WAX spawn schedule was moved by hand. Detach it in classic before importing it.");
-            for(size_t f=0;f<lane.frames.size();++f){auto &frame=lane.frames[f];if(frame.visible_from!=base+(int)f*rate||frame.visible_until!=base+((int)f+1)*rate)throw std::runtime_error("This WAX spawn row has a custom schedule. Detach it in classic before importing it.");}
-            for(auto &frame:lane.frames){frame.visible_from-=base;frame.visible_until-=base;}
-        }
-        saved_slots.push_back(slot);spawn_source.push_back(spawned);spawn_entry.push_back(integer(v,p+"spawn_entry",-1,-1,4095));
+        Spawn spawn;spawn.source=integer(v,p+"spawn_slot",-1,-1,slots-1);spawn.entry=integer(v,p+"spawn_entry",-1,-1,4095);
+        if(spawn.source>=0){spawn.witness=integer(v,p+"spawn_tick",-1,-1,99999);spawn.rate=integer(v,p+"hold",hold,0,120);if(!spawn.rate)spawn.rate=hold;spawn.complete=from.size()>=lane.frames.size()&&until.size()>=lane.frames.size();}
+        saved_slots.push_back(slot);spawns.push_back(spawn);
         row_order.push_back(integer(v,p+"order",slot,-1,99999));s.lanes.push_back(std::move(lane));
     }
     if(s.lanes.empty())throw std::runtime_error("This WAX has no explicit sprite rows to import.");
-    for(size_t i=0;i<s.lanes.size();++i)if(spawn_source[i]>=0){auto found=std::find(saved_slots.begin(),saved_slots.end(),spawn_source[i]);if(found==saved_slots.end())throw std::runtime_error("A WAX spawn binding refers to a missing source row.");
-        auto &source=s.lanes[found-saved_slots.begin()];if(spawn_entry[i]<0||spawn_entry[i]>=(int)source.frames.size())throw std::runtime_error("A WAX spawn binding refers to a missing source frame.");
-        s.lanes[i].trigger_lane=source.id;s.lanes[i].trigger_frame=source.frames[spawn_entry[i]].id;
+    for(size_t i=0;i<s.lanes.size();++i)if(spawns[i].source>=0){auto &spawn=spawns[i];auto found=std::find(saved_slots.begin(),saved_slots.end(),spawn.source);if(found==saved_slots.end())throw std::runtime_error("A WAX spawn binding refers to a missing source row.");
+        auto &source=s.lanes[found-saved_slots.begin()];if(spawn.entry<0||spawn.entry>=(int)source.frames.size())throw std::runtime_error("A WAX spawn binding refers to a missing source frame.");
+        if(source.id==s.lanes[i].id)throw std::runtime_error("Effect timing cannot contain a cycle.");
+        if(!spawn.complete)throw std::runtime_error("A WAX spawn row is missing complete Show/Hide windows. Open it in classic and save its complete schedule.");
+        auto &lane=s.lanes[i];int base=lane.frames.front().visible_from;bool moved=spawn.witness>=0&&spawn.witness!=base,uniform=true;
+        for(size_t f=0;f<lane.frames.size();++f){auto &frame=lane.frames[f];uniform&=frame.visible_from==base+(int)f*spawn.rate&&frame.visible_until==base+((int)f+1)*spawn.rate;}
+        // WorldMarkedResyncSpawnedRows drops authored schedules rather than
+        // fighting their Show/Hide edits. Keep their absolute clock and all
+        // motion/freeze fields; only intact uniform runs become followers.
+        if(moved||!uniform){notes.push_back("WAX row "+number(saved_slots[i]+1)+": stopped following row "+number(spawn.source+1)+(moved?" because its first Show tick was moved.":" because its Show/Hide timing was edited.")+" Saved timing, motion and freeze settings were kept.");continue;}
+        if(lane.stop_tick)throw std::runtime_error("This WAX combines a spawn binding with a freeze tick. Detach that row in classic before importing it.");
+        for(auto &frame:lane.frames){frame.visible_from-=base;frame.visible_until-=base;}
+        lane.trigger_lane=source.id;lane.trigger_frame=source.frames[spawn.entry].id;
     }
     std::vector<int> order;for(int i=0;i<(int)s.lanes.size();++i)order.push_back(i);
     int next=0;for(int rank:row_order)next=std::max(next,rank+1);for(int &rank:row_order)if(rank<0)rank=next++;
@@ -406,8 +411,9 @@ std::unique_ptr<SceneProject> SceneProject::read(const std::string &path,std::st
     error.clear();std::string text;if(!read_text(path,text)){error="Could not read the project (limit: 8 MiB).";return {};}
     try{auto values=parse_values(text);bool legacy=raw(values,"format")=="imgtool_world_project";
         if(!legacy&&raw(values,"format")!="imgtool_studio_project")throw std::runtime_error("Not an imgtool Studio or classic WAX project.");
-        SceneState scene=legacy?decode_wax(values):decode_native(values);if(!validate_scene(scene,error))return {};compact_assets(scene);
+        std::vector<std::string> notes;SceneState scene=legacy?decode_wax(values,notes):decode_native(values);if(!validate_scene(scene,error))return {};compact_assets(scene);
         auto p=std::make_unique<SceneProject>(std::move(scene),legacy);p->imported=legacy;p->original_path=fs::absolute(fs::u8path(path)).lexically_normal().u8string();
+        p->import_messages=std::move(notes);
         if(!legacy){p->file_path=p->original_path;p->disk_baseline=text;}return p;
     }catch(const std::exception &e){error=e.what();return {};}
 }
@@ -459,7 +465,7 @@ bool SceneProject::save(const std::string &path,const SceneSource &source,std::s
         for(auto &lane:written.lanes)for(auto &frame:lane.frames)for(auto &ref:frame.pieces)if(ref.asset==a){int index=art->sprite_index(ref.runtime_id);if(index<0){error="A referenced sprite was deleted. Replace that project frame before saving.";return false;}ref=scene_sprite_reference(*art,a,index);}
     }
     auto serialized=written;compact_assets(serialized);std::string bytes=encode(serialized,false);if(bytes.size()>8*1024*1024){error="The project exceeds the 8 MiB file limit.";return false;}
-    if(!atomic_write(dest,bytes,error))return false;state=std::move(written);file_path=dest.u8string();disk_baseline=std::move(bytes);saved_revision=revision;imported=false;return true;
+    if(!atomic_write(dest,bytes,error))return false;state=std::move(written);file_path=dest.u8string();disk_baseline=std::move(bytes);saved_revision=revision;imported=false;import_messages.clear();return true;
 }
 bool SceneProject::export_png(const std::string &path,int tick,const SceneSource &source,std::string &error,const StageBackdrop *stage,const StageView *view) const{
     error.clear();if(!validate_scene(state,error))return false;std::error_code ec;auto dest=fs::absolute(fs::u8path(path),ec);

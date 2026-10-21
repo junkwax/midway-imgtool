@@ -1,0 +1,40 @@
+#include "studio_asm_scene.h"
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <cstdlib>
+#include <new>
+static int failures=0;static long fail_after=-1;
+void *operator new(size_t n){if(fail_after==0){fail_after=-1;throw std::bad_alloc();}if(fail_after>0)--fail_after;if(auto p=malloc(n?n:1))return p;throw std::bad_alloc();}
+void operator delete(void *p)noexcept{free(p);}void operator delete(void *p,size_t)noexcept{free(p);}
+#define CHECK(x) do{if(!(x)){std::cerr<<"FAIL "<<__LINE__<<": " #x " / "<<error<<"\n";++failures;}}while(0)
+static std::string bytes(const std::filesystem::path &p){std::ifstream f(p,std::ios::binary);return {std::istreambuf_iterator<char>(f),{}};}
+int main(){using namespace studio;namespace fs=std::filesystem;std::string error;auto root=fs::temp_directory_path()/("studio-asm-scene-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));fs::create_directories(root);
+    auto a=Artwork::demo(),b=Artwork::demo();CHECK(b->rename_sprite(0,"REMOTE1",error)&&b->rename_sprite(1,"REMOTE2",error));a->sprite(0)->anix=(unsigned short)-3;b->sprite(0)->aniy=(unsigned short)-5;
+    auto ap=root/"a.IMG",bp=root/"b.IMG";CHECK(a->save(ap.u8string(),error)&&b->save(bp.u8string(),error));auto ab=bytes(ap),bb=bytes(bp);auto ag=a->generation(),bg=b->generation();
+    std::string text="demo_anitab\n\t.long a_demo\na_demo\n\t.long GROUP,ani_adjustxy\n\t.word 5,-3\n\t.long ani_flip,SENTINEL2,ani_flip_v,GROUP,0\nGROUP\n\t.long SENTINEL1,REMOTE1,0\n";auto source=AsmSource::parse(text,error);CHECK(source&&!source->animations.empty());if(!source)return 1;auto &animation=source->animations[0];
+    std::vector<AsmLibrary> libraries={{101,a.get()},{202,b.get()}};auto sources=[&](uint64_t uid){return uid==101?a.get():uid==202?b.get():nullptr;};AsmSceneOptions options;options.hold=7;options.origin_x=170;options.origin_y=210;std::shared_ptr<const AsmSceneSnapshot> snapshot;
+    // Check pixel placements against the established ASM renderer, with both
+    // facing states and both mirror conventions, including multipart pieces.
+    for(auto convention:{MirrorConvention_Ani2,MirrorConvention_Ganiof})for(bool facing:{false,true}){options.convention=convention;options.facing=facing;CHECK(capture_asm_scene(animation,libraries,101,{},options,snapshot,error));if(!snapshot)continue;CHECK(snapshot->scene().assets.size()==2&&snapshot->sprite_count()==3&&snapshot->scene().lanes[0].frames.size()==3);
+        for(int f=0;f<3;++f){auto poses=evaluate_scene(snapshot->scene(),f*7);CHECK(poses.size()==animation.frames[f].pieces.size());for(auto &pose:poses){auto art=sources(snapshot->scene().assets[pose.sprite.asset].runtime_doc);auto im=art->sprite(art->sprite_index(pose.sprite.runtime_id));auto expected=place_asm_piece(*im,animation.frames[f],170,210,facing,convention),actual=scene_pose_placement(*im,pose,convention);CHECK(actual.x==expected.x&&actual.y==expected.y&&actual.w==expected.w&&actual.h==expected.h&&pose.flip_x==(facing!=animation.frames[f].flip)&&pose.flip_y==animation.frames[f].flip_y);}}
+        auto project=create_asm_scene(*snapshot,animation,libraries,101,{},error);CHECK(project&&project->dirty()&&!project->can_undo()&&project->state.lanes[0].frames[0].id&&project->save((root/"scene.ISTUDIO").u8string(),sources,error)&&project->export_png((root/"scene.png").u8string(),14,sources,error));if(!project)continue;auto file=bytes(root/"scene.ISTUDIO");auto reopened=SceneProject::read((root/"scene.ISTUDIO").u8string(),error);std::vector<SceneIssue> issues;CHECK(reopened&&reopened->bind([&](int,const SceneAsset &asset){return asset.path.find("a.IMG")!=std::string::npos?SceneBinding{101,a.get()}:SceneBinding{202,b.get()};},issues));if(reopened){CHECK(reopened->save((root/"scene.ISTUDIO").u8string(),sources,error)&&bytes(root/"scene.ISTUDIO")==file);reopened->begin("Place actor");reopened->state.lanes[0].x=8;reopened->commit();reopened->undo();CHECK(reopened->state.lanes[0].x==0);reopened->redo();CHECK(reopened->state.lanes[0].x==8);}
+    }
+    auto good=snapshot;auto bad=animation;bad.partial=true;CHECK(!capture_asm_scene(bad,libraries,101,{},options,snapshot,error)&&snapshot==good);bad=animation;bad.frames[0].no_sleep=true;CHECK(!capture_asm_scene(bad,libraries,101,{},options,snapshot,error)&&snapshot==good);bad=animation;bad.frames[0].pieces={};CHECK(!capture_asm_scene(bad,libraries,101,{},options,snapshot,error));bad=animation;bad.frames[0].pieces=std::vector<std::string>(33,"SENTINEL1");CHECK(!capture_asm_scene(bad,libraries,101,{},options,snapshot,error));bad=animation;bad.frames.resize(4097);CHECK(!capture_asm_scene(bad,libraries,101,{},options,snapshot,error));
+    for(int kind=0;kind<4;++kind){auto invalid=options;if(kind==0)invalid.hold=0;if(kind==1)invalid.hold=121;if(kind==2)invalid.origin_x=4097;if(kind==3)invalid.origin_y=-4097;CHECK(!capture_asm_scene(animation,libraries,101,{},invalid,snapshot,error)&&snapshot==good);}
+    CHECK(!capture_asm_scene(animation,{{101,a.get()}},101,{},options,snapshot,error)&&snapshot==good);CHECK(!capture_asm_scene(animation,{{101,a.get()},{101,b.get()}},101,{},options,snapshot,error));
+    // Duplicate artwork requires a preference or explicit choice. A later
+    // choice change must be caught even when it uses an already-captured sprite.
+    CHECK(b->rename_sprite(2,"SENTINEL1",error));CHECK(!capture_asm_scene(animation,libraries,0,{},options,snapshot,error));AsmArtworkChoices choices;choices["SENTINEL1"]={101,a->sprite_id(0)};CHECK(capture_asm_scene(animation,libraries,0,choices,options,snapshot,error)&&create_asm_scene(*snapshot,animation,libraries,0,choices,error));choices["SENTINEL1"]={202,b->sprite_id(2)};CHECK(!create_asm_scene(*snapshot,animation,libraries,0,choices,error));b->undo();
+    // Source changes, direct metadata/pixel/palette edits and lost libraries
+    // cannot silently alter an already-reviewed scene.
+    CHECK(capture_asm_scene(animation,libraries,101,{},options,snapshot,error));bad=animation;bad.frames[0].dx++;CHECK(!create_asm_scene(*snapshot,bad,libraries,101,{},error));CHECK(!create_asm_scene(*snapshot,animation,{{101,a.get()}},101,{},error));
+    a->sprite(0)->anix++;CHECK(!create_asm_scene(*snapshot,animation,libraries,101,{},error));a->sprite(0)->anix--;auto pixel=(unsigned char *)a->sprite(0)->data_p;pixel[0]^=1;CHECK(!create_asm_scene(*snapshot,animation,libraries,101,{},error));pixel[0]^=1;auto colors=(unsigned char *)a->palette(0)->data_p;colors[2]^=1;CHECK(!create_asm_scene(*snapshot,animation,libraries,101,{},error));colors[2]^=1;
+    a->anchor(0,1,2);a->commit();CHECK(!create_asm_scene(*snapshot,animation,libraries,101,{},error));a->undo();CHECK(capture_asm_scene(animation,libraries,101,{},options,snapshot,error));
+    int rejected=0,succeeded=0;auto generation=a->generation();for(int n=0;n<600;++n){auto previous=snapshot;bool ok=false;fail_after=n;try{ok=capture_asm_scene(animation,libraries,101,{},options,snapshot,error);}catch(const std::bad_alloc &){}fail_after=-1;if(ok)++succeeded;else{++rejected;CHECK(snapshot==previous);}CHECK(a->generation()==generation&&!a->dirty()&&bytes(ap)==ab&&bytes(bp)==bb);}CHECK(rejected>10&&succeeded>0);
+    rejected=succeeded=0;for(int n=0;n<600;++n){std::unique_ptr<SceneProject> created;fail_after=n;try{created=create_asm_scene(*snapshot,animation,libraries,101,{},error);}catch(const std::bad_alloc &){}fail_after=-1;if(created)++succeeded;else ++rejected;CHECK(a->generation()==generation&&!a->dirty());}CHECK(rejected>10&&succeeded>0);
+    // The persisted project no longer requires its source ASM snapshot.
+    auto project=create_asm_scene(*snapshot,animation,libraries,101,{},error);CHECK(project&&project->save((root/"independent.ISTUDIO").u8string(),sources,error));source.reset();snapshot.reset();good.reset();CHECK(project&&project->state.lanes[0].frames.size()==3);
+    CHECK(!a->dirty()&&!b->dirty()&&bytes(ap)==ab&&bytes(bp)==bb&&g_doc==nullptr);CHECK(a->generation()>ag&&b->generation()>bg);fs::remove_all(root);std::cout<<"ASM scene: "<<failures<<" failures\n";return failures?1:0;
+}

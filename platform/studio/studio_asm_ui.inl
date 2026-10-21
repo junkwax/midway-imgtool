@@ -9,7 +9,7 @@ void install_asm(std::unique_ptr<AsmSource> source){
     int selected=u.reaction_mode&&!visible.empty()?catalogue[visible.front()].animation:0;
     // Prepare directory/filter storage before replacing the current source.
     u.reactions.catalogue=std::move(catalogue);u.reactions.visible=std::move(visible);
-    u.assets=AsmAssetsUi{};u.reactions.anchors={};u.reactions.error.clear();u.source=std::move(source);u.error.clear();
+    u.scene_review=AsmUi::SceneReview{};u.assets=AsmAssetsUi{};u.reactions.anchors={};u.reactions.error.clear();u.source=std::move(source);u.error.clear();
     if(u.source){snprintf(u.path,sizeof u.path,"%s",u.source->path.c_str());asm_select(selected);}
 }
 bool load_asm(const std::string &path){try{auto source=AsmSource::open(path,asm_ui.error);if(!source)return false;install_asm(std::move(source));return true;}catch(const std::bad_alloc &){asm_ui.error="Not enough memory to load animation source. The previous source was kept.";return false;}}
@@ -81,9 +81,11 @@ void asm_dialog(){auto &u=asm_ui;if(!u.open)return;ImGui::OpenPopup("ASM animati
     if(missing){ImGui::TextColored(ImVec4(1,.65f,.4f,1),"%d unresolved pieces (%d ambiguous)",missing,ambiguous);if(!u.reaction_mode)for(auto &p:u.pieces)if(!p.sprite)ImGui::TextDisabled("%s%s",p.symbol.c_str(),p.ambiguous?" - review artwork to choose a match":p.stale?" - chosen sprite unavailable; review artwork":" - open its IMG library");}
     if(u.reaction_mode){asm_canvas(std::max(110.f,height*(height<550?.25f:.37f)));reaction_anchor_table();}else asm_canvas();ImGui::EndChild();if(ImGui::Button("Done",ImVec2(110,0))){u.open=false;u.player.playing=false;ImGui::CloseCurrentPopup();}u.close_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     if(fatality.return_preview&&fatality.source){ImGui::SameLine();if(ImGui::Button("Back to fatality source")){show_fatality();ImGui::CloseCurrentPopup();}fatality.back_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;}
-    if(!u.assets.open&&!ImGui::GetIO().WantTextInput){if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow))u.player.step(-1,a?(int)a->frames.size():0);if(ImGui::IsKeyPressed(ImGuiKey_RightArrow))u.player.step(1,a?(int)a->frames.size():0);if(ImGui::IsKeyPressed(ImGuiKey_Space)&&a&&!a->frames.empty())u.player.playing=!u.player.playing;}
+    if(!u.assets.open&&!u.scene_review.open&&!ImGui::GetIO().WantTextInput){if(ImGui::IsKeyPressed(ImGuiKey_LeftArrow))u.player.step(-1,a?(int)a->frames.size():0);if(ImGui::IsKeyPressed(ImGuiKey_RightArrow))u.player.step(1,a?(int)a->frames.size():0);if(ImGui::IsKeyPressed(ImGuiKey_Space)&&a&&!a->frames.empty())u.player.playing=!u.player.playing;}
     ImGui::SameLine();if(ImGui::Button("Review artwork...")){u.assets.open=true;u.player.playing=false;}u.assets.show_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    ImGui::SameLine();ImGui::BeginDisabled(!a||a->frames.empty()||tabs.empty());if(ImGui::Button("Create scene..."))open_asm_scene();u.scene_review.show_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();
     if(u.assets.open)asm_assets_dialog();
+    if(u.scene_review.open)asm_scene_dialog();
     if(!u.open)ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }

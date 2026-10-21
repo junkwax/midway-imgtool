@@ -1,5 +1,65 @@
 # Imgtool redesign assessment
 
+**Duplicate and order scene actors (2026-10-21):** The actor inspector now has an
+Actions button, shared with the Project menu, for duplication, forward/backward
+draw order and the existing split command. Duplication keeps all multipart and
+cross-file pieces, frame/actor settings and the current resolved start, with
+fresh identities and independent timing. Existing followers retain the original
+actor/frame IDs. Forward/backward swaps neighboring rows without changing
+depth, motion, timing links, selected frame or timeline tick. Explicit depth
+still takes priority over equal-depth row ordering. One project Undo restores
+each change; Redo retains IDs. Limits and pending edits are checked before
+publication, and allocation failures preserve state/history/Redo/identity.
+Native project versions 1–6 and all IMG bytes/versions/records remain unchanged.
+Model coverage includes actual PNG pixel occlusion and 4500 allocation-failure
+positions across the three commands. Wide/compact UI checks exercise the Actions
+menu, independent copy dragging, Undo/Redo, ordering boundaries, save/reopen,
+PNG equivalence and dirty-close Cancel while preserving source artwork state.
+Release classic/CLI/Studio builds pass. CTest is 126/127 with only the known
+optional external MK2 roster mismatch; standalone strike-phase fixtures pass.
+Seven related ASAN model suites and wide/compact Release plus compact ASAN actor
+UI checks pass. Existing compact actor-split, project, trigger, magnification,
+WAX timing and hotkeys/Help UI checks also pass. Screens are under
+build-studio-artwork/actor-rows-final and build-studio-memory/actor-rows-final-small.
+
+**Split scene actor (2026-10-21):** The command audit found classic's
+WorldMarkedSplitLaneAtFrame missing from Studio authoring. The timeline, frame
+context menu and Project menu now split at the selected frame in one project
+Undo. Multipart/cross-file references, frame identities/settings and actor
+placement/facing/scale/opacity are retained. The new tail uses the source's
+current resolved start independently; explicit Show/Hide windows stay relative
+to that start. Effects following moved frames retarget their actor ID while
+keeping the intended frame occurrence. The source's own timing link stays intact.
+Allocation/history preparation precedes publication, and failures preserve Redo
+and the next actor identity. The compact timeline reserves space for all controls
+and full frame thumbnails. Native project versions 1–6 and IMG formats stay fixed.
+
+**WAX authored effect timing (2026-10-21):** The importer now mirrors classic's
+WorldMarkedResyncSpawnedRows detachment rule for moved first-Show ticks and
+nonuniform Show/Hide schedules. It keeps absolute windows and motion/freeze/
+second-copy/scale state instead of refusing the project. Intact uniform runs
+still become stable frame followers; chains can follow frames in a detached row.
+The saved row hold, including an unpinned hold and zero's global fallback,
+determines uniformity. Missing/incomplete/malformed references, cycles and intact
+linked/frozen runs remain guarded. Import notes identifies affected rows without
+creating project history. Native versions 1–6 and IMG formats are unchanged.
+This supersedes earlier assessment paragraphs listing all custom WAX schedules
+as unsupported; generated omitted composites and script/ASM WAX rows remain work.
+
+**Bulk PNG export (2026-10-21):** Studio now has File > Export sprites as PNGs.
+Marked sprites are the default scope, with Shown by search / All / Selected
+alternatives, per-export exclusions, a native Windows folder picker, exact
+filename/size/replacement review and a transparency preview. Every PNG keeps the
+sprite's full canvas, palette colors and visible overlay; no image conversion,
+trimming, quantization or metadata changes occur. Safe filenames and case-insensitive
+suffixes resolve invalid/duplicate names. Existing outputs require explicit
+replacement approval. Source snapshots and destination bytes are revalidated;
+all outputs/backups stage before publication, with guarded rollback on ordinary
+replacement failures. Source IMG aliases and non-regular output paths are blocked.
+Model coverage includes PNG decoding/color/alpha, overlays, Unicode folders,
+stale/raw-mutated reviews, source aliases, real replacement-failure rollback and
+unchanged IMG files at versions 0x60a/0x61c/0x61d/0x631/0x634. Classic is unchanged.
+
 2026-10-11 · source baseline `eab8366` · branch `feature/bddtool-style`
 
 **Recommendation: retain the format knowledge and tested editing algorithms; build a separate editor application with new document ownership, command handling, and UI.** Keep `imgtool.exe` as the existing editor. Add `imgtool-studio.exe` as a separate target when implementation begins. Retain `imgtool-cli.exe` for automation. A full format/algorithm rewrite would discard valuable compatibility work. A theme or panel rearrangement would preserve the state and workflow problems described below.
@@ -3563,3 +3623,48 @@ Help/shutdown crash; the historical launch fault's cause remains unproven.
 Help, README, checkpoint and port list updated. No commits/pushes/releases,
 classic UI/IMG-codec or external game-source/assets edits. IMG version/layout
 remain fixed. Four known migration areas remain; there is no audited percentage.
+
+
+### Reviewed ASM inspector → editable Studio scene — 2026-10-21
+
+Tools > ASM animations now offers Create scene... for a complete expanded frame
+table. The review scrubs the proposed composition and exposes preview hold,
+object origin, facing and loop. Multipart pieces across open IMG libraries keep
+their existing anchors; per-frame offsets and horizontal/vertical flips follow
+the established inspector placement. Preferred libraries and Review artwork
+choices resolve duplicate names. Missing/ambiguous/stale symbols, partial source
+expansions, no-sleep frames, invalid geometry and frame/piece/source limits block
+creation. Unique source capture uses the existing 128 MiB bounded helper.
+
+The immutable review captures source content, mappings, generations, raw sprite
+metadata, pixels and palettes. Create revalidates inputs before publishing a new
+unsaved SceneProject. Source artwork/history/files and IMG versions/layouts remain
+unchanged. Existing unsaved scenes use Save/Discard/Cancel; Cancel preserves the
+old project. Creation adds no synthetic Undo; subsequent edits use ordinary
+project history. Native projects retain complete references and stable IDs and
+reopen without the ASM, with the referenced IMGs still required.
+
+This implements an explicit rebuild path, not automatic ASM-driven WAX recovery:
+classic WAX saves source path/label but omits resolved multipart artwork choices.
+The chosen hold is visibly a preview override; caller/game speed is not inferred.
+Runtime calls, sound, strike overlays and game interactions do not become scene
+behavior. Source inspection remains read-only and partial/no-sleep sources remain
+available there rather than being converted into misleading timed frames.
+
+Release Studio/classic/CLI builds pass. CTest 122/123; only the existing external
+MK2 roster-count assertion fails; standalone strike-phase fixtures pass. Five
+related ASAN suites pass (new scene, parser, artwork resolver, project and
+magnification). New model checks compare placement to place_asm_piece in both
+facings and mirror conventions, cross-library groups, native save/reopen/PNG,
+history, source/choice/raw metadata changes, missing/ambiguous/partial/no-sleep/
+limit guards, source independence/preservation and 600 allocation-failure positions
+each for review and creation. The 116-frame --smoke-asm-scene passes wide/compact
+Release and compact ASAN: actual review/Cancel, stale refusal, typed numeric hold
+and Build review, unsaved-project guard/Cancel, creation/save/reopen/export,
+no-sleep refusal and unchanged source files/formats. Screens inspected. Compact
+ASM/artwork-resolution/project/hotkeys Help regressions pass. Test-mode routing
+keeps the older --smoke-asm harness from driving the new mode simultaneously.
+Help, README, checkpoint and port list updated. No commits/pushes/releases,
+classic UI/IMG-codec or external game-source/assets edits. Four known migration
+areas remain; there is no audited completion percentage. Historical launch-memory
+fault remains unproven.

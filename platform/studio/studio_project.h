@@ -102,10 +102,18 @@ public:
     const std::string &path() const {return file_path;}
     const std::string &opened_from() const {return original_path;}
     bool imported_wax() const {return imported;}
+    const std::vector<std::string> &import_notes() const {return import_messages;}
     bool uses_doc(uint64_t uid) const;
     int apply_subframe_swap(const SubframeSwapPlan &,const SceneSource &,std::string &error);
     int apply_waterline(const WaterlinePlan &,const SceneSource &,std::string &error);
     int apply_dummy_body(const DummyBodyPlan &,const SceneSource &,std::string &error);
+    // Move this frame and the remaining tail to an independent adjacent actor.
+    // Existing frame IDs/references survive; tail followers change actor ID.
+    int split_actor_at(uint64_t lane,uint64_t frame,std::string &error);
+    // Independent copy at the current resolved start; all identities are new.
+    int duplicate_actor(uint64_t lane,std::string &error);
+    // +/-1 moves one step in the back-to-front draw order. Boundary is a no-op.
+    int move_actor(uint64_t lane,int direction,std::string &error);
     uint64_t allocate_id(){return next_entity_id++;}
     SceneState state;
 private:
@@ -117,6 +125,7 @@ private:
     uint64_t revision=0,saved_revision=0,next_revision=1;
     std::string file_path,original_path,disk_baseline;
     bool imported=false;
+    std::vector<std::string> import_messages;
     uint64_t next_entity_id=1;
 };
 }

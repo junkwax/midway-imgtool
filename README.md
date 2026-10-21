@@ -597,7 +597,29 @@ uncompressed indexed image with palette alpha; IMG animation anchors have no TGA
 representation. Export leaves IMG metadata, format, dirty state and history intact.
 Rebuild after settings, artwork or destination changes; replacement is atomic and
 cannot target an open IMG. These selected-sprite commands write one sprite; the
-separate sheet exporter below handles marks.
+bulk PNG and sheet exporters below handle marks.
+
+**File > Export sprites as PNGs...** writes one transparent PNG per marked sprite.
+Mark rows in the sprite library, open the command, and choose an existing output
+folder with **Browse...** or enter its path and **Build review**. The scope can
+also be Shown by search, All sprites or Selected sprite. With no marks, it defaults
+to the selected sprite. Uncheck review rows to exclude them without changing marks.
+
+The review shows each sprite's filename, original dimensions and New/Replace
+status, with a transparency preview. Filenames use sprite names; unsafe characters
+become underscores, reserved names get a prefix, and duplicates receive `__2`,
+`__3`, etc. Confirm **Replace reviewed PNGs** before overwriting existing files.
+Source or destination changes require a new review. Visible overlays are included;
+PNG does not carry IMG anchors, point tables or animation records.
+
+Exports retain full sprite dimensions and each sprite's palette colors, with
+transparent index zero and opaque nonzero indices (including black). IMG bytes,
+format, marks, selection, dirty state and history stay unchanged. Reviews support
+up to 2000 sprites and 128 MiB of combined source/output/backup snapshots. Every
+output and backup is prepared before publication; ordinary replacement failures
+attempt to restore earlier outputs. Separate files cannot be globally atomic
+against interruption or concurrent external changes. Open source files and link
+aliases are protected; blocked outputs can be excluded from the review.
 
 **File > Export TGA sprite sheet...** reviews Marked, Shown by search, All or
 Selected sprites. Exclude rows without changing marks; inspect rectangle positions,
@@ -1474,6 +1496,37 @@ visibility remain the effect's own settings. **Detach** keeps its current start
 as an independent actor. Both actions undo, and Studio protects source frames
 and actors from deletion while another effect uses them.
 
+The actor inspector's **Actions** button and the **Project** menu provide
+**Duplicate actor**, **Bring actor forward** and **Send actor backward**.
+Duplication copies every frame, multipart piece, cross-file reference and actor
+setting into an adjacent actor with fresh identities. The copy starts
+independently at the original actor's current resolved start tick; existing
+effects keep following the original. Drag the copy to reposition it.
+
+Forward/backward moves one step in draw order: at equal depth, the actor farther
+forward draws on top. Explicit frame depth takes priority. Timing links,
+placement, the selected frame and current timeline tick are preserved. Each
+action uses one project Undo step, and Redo retains identities. Duplication
+respects the 32-actor, 8192-frame and 65536-reference limits and requires a
+resolved start no later than tick 100000. Save as `.ISTUDIO` to retain these
+changes; IMG bytes, original format, marks and artwork history stay unchanged.
+
+**Split actor here** in the scene timeline ports classic's row-splitting command.
+Select a frame after the first frame, then click the button, right-click its
+thumbnail and choose **Split actor at this frame**, or use **Project > Split
+actor at selected frame**. The selected frame and all later frames move to a new
+adjacent actor; the earlier frames remain in the original actor.
+
+Both sequential frame lists begin at the original actor's current start tick.
+Show/Hide windows keep their actor-relative values. Multipart pieces, cross-file
+references, holds, facing, motion/caps, freeze, second copies, scale, opacity and
+placement are retained. The new actor has independent timing; if the original
+follows another actor, its current resolved start becomes the new actor's fixed
+start. Effects following moved frames follow the new actor using the same frame
+identities. One project Undo restores both rows and their effect links; Redo
+retains identities. The 32-actor limit applies. Save as `.ISTUDIO` to keep the
+split. IMG pixels, stored sequences/scripts, version and layout stay unchanged.
+
 Save referenced artwork with **Save referenced IMGs**, then **Save project** to
 write an `.ISTUDIO` file. Scene saving checks that its sources are saved and match
 their disk files; it never silently saves IMG edits. Projects remember sprite
@@ -1483,6 +1536,24 @@ have their own close/quit prompt, and libraries used by a project's history stay
 open until that project is closed. **Project > Export current scene PNG** exports
 the current tick on the chosen background, including enabled reference scenery,
 without editor guides or ghosts.
+
+**Create scene from ASM** in **Tools > ASM animations** turns a complete
+inspected frame table into an editable Studio composition. Open its IMG libraries,
+resolve missing or duplicate symbols with **Review artwork**, then **Create
+scene...**. Review all multipart pieces at their existing anchors, scrub the scene,
+and set the preview hold, object origin, facing and loop. **Build review** after
+changing settings; **Create scene** checks source data and artwork again. Existing
+unsaved projects use the usual Save/Discard/Cancel flow.
+
+The new scene references the original artwork and starts unsaved, without a
+creation Undo entry. Later scene edits use ordinary project Undo. Save as
+`.ISTUDIO`; reopening needs the referenced IMGs, not the ASM. Source artwork,
+embedded records, histories, ASM files and IMG versions/layouts remain unchanged.
+Timing is the chosen preview hold, not a claim about game-caller speed. Partial
+expansions, no-sleep frames and unresolved/ambiguous/stale artwork block creation.
+Runtime calls, sound and strike overlays are not converted into scene behavior.
+Direct ASM-driven WAX recovery still needs the omitted artwork-resolution choices;
+use the inspector/review workflow to rebuild those scenes explicitly.
 
 **WAX dummy-body recovery** resolves a saved body source and DECAP prefix to
 whole-body or leg/torso references. Legacy 10-row and newer saved slot boundaries
@@ -1518,8 +1589,15 @@ anipoint offsets to screen offsets and preserves frame holds, facing, cross-file
 references, depth order, solid background, visibility windows, capped motion,
 freeze ticks, second copies and per-row magnification (clamped to classic's
 1x–4x range). Uniform spawned-effect rows import as frame
-timing bindings. Spawn rows moved by hand or with custom schedules/freeze rules
-need to be detached in classic before importing. Substitution rules,
+timing bindings. Rows whose first Show tick was moved, or whose Show/Hide windows
+were edited into a custom schedule, import with their saved absolute timing and
+stop following the original frame, matching classic. Their motion, freeze ticks,
+second copies and other settings are retained. **WAX import notes** beside the
+scene name explains each detached link; reviewing notes does not add Undo history.
+Save as `.ISTUDIO` to retain the complete composition and its independent timing.
+
+Incomplete schedules, missing source rows/frames, cycles, and intact following
+runs combined with a freeze tick still require resolution in classic. Substitution rules,
 ASM-driven rows and embedded-script call previews are reported as unsupported. This imports the stored rows and origin; it does not
 reconstruct runtime game placement or settings absent from the WAX file. Imports
 save to `.ISTUDIO`; the original WAX is kept as the classic project. Studio reads
