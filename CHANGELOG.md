@@ -8,6 +8,46 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
+## [Unreleased]
+
+### Generate a fighter's freeze, electric and blood palettes in one go
+
+Right-click a fighter's palette in the palette list and choose **Generate
+Character Palettes**: All, Freeze / Electric, or Blood for Costumes. The
+dialog builds, from that palette:
+
+| Saved gradient | Palette |
+|---|---|
+| FREEZE | `JCFREZ_P` |
+| FIVEFRZ | `JCNUFRZ_P` |
+| ELEC | `JCELPUP_P` |
+| BGRDEL_P | `JCELRED_P` |
+| REDELI | `JCREDEL_P` |
+| PURPELI | `JCPURPL_P` |
+
+Each is the source refitted by brightness onto the ramp saved under that name
+in the **Indexed Color Gradient**, the same rule as applying it by hand, so
+slot order and sprite pixels still line up. Any row can use a different saved
+gradient.
+
+The blood rows add a `BLUD` palette for each of the fighter's costume palettes
+(`JCMAIN_P` -> `JCBLUD_P`, `JCALT3_P` -> `JCBLUD3_P`), laid out like MK2's
+`*BLD*_P` records: the costume is condensed into the low slots to make room
+for the gore colors (blood plus bone for torso rips, 12 by default) at the
+end. Slots no sprite draws are dropped first; only if that is not enough are
+the closest colors merged, and the dialog reports how many pixels would change
+color. Every costume shares one condensed layout, so one torso-rip sprite works
+with every `BLUD` palette. The gore colors come from the last colors of an
+existing palette (another fighter's blood palette by default), a saved
+gradient, or a built-in red ramp. **Move marked sprites onto the blood
+palettes** remaps marked gore art into the condensed layout and moves it onto
+the `BLUD` palette of the costume it was drawn with.
+
+The fighter prefix, names and ticked rows can be edited, and clicking a row
+previews it on a sprite. Existing palettes with the same name are overwritten
+in place, so sprites already using them keep doing so. The source palettes are
+left alone. One Undo step reverts it all.
+
 ## [v3.37.0] — Grab moves from video; dialogs can't paint the sprite behind them
 
 ### Import Video: grab a move straight from footage

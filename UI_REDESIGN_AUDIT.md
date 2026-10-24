@@ -1,5 +1,145 @@
 # Imgtool redesign assessment
 
+**Frame-list selection (2026-10-23):** User reported Select was not checking the
+frames on the left. The existing Select tool selected canvas pixels; checkbox
+clicks passed the old batch input check. Artwork now has an explicit Select
+frames / Done selecting control above the library. In that mode, clicking names
+or thumbnails toggles the same batch marks and previews the frame. Ctrl-click
+toggles individual marks in either mode; Shift-click marks the shown range from
+the last marking click. Shift-checkbox checks/unchecks the range. Filtered-out
+marks remain unchanged; mode, stable-ID anchor and marks are per library.
+Checked rows highlight while selecting. The checkbox gutter now uses actual
+frame height plus spacing, keeping its target separate from the row target.
+
+The toolbar is labeled Select pixels (R) with a tooltip pointing to frame
+selection. Plain browsing and canvas pixel selection remain independent. Marks
+feed the existing Marked sprites scopes; no IMG flags/bytes/format or project
+codec changes, no artwork dirty/history changes. README and searchable Help
+explain both selection controls.
+
+--smoke-library-marks (124 frames; failure exit102) checks actual button/row/
+checkbox input, toggle-off, ordinary browsing, Ctrl choices, Shift check/uncheck,
+filtered ranges, PNG review's marked scope, Cancel, library isolation, pixel
+tool independence and unchanged disk bytes/generation/Undo/Redo. Release wide,
+Release compact and compact ASAN pass. Compact Release regressions for batch,
+tools, pixel selection, hotkeys/Help, bulk PNG and actor-frame transfer pass.
+Final screens: build-studio-artwork/marks-final/library-marks and
+build-studio-memory/marks-first-small.
+
+**Copy / move actor frames (2026-10-23):** Actions / Project / thumbnail context
+menus now open a review for any frames in one actor, destination actor and
+insertion boundary. This ports the core of classic WorldMarkedCopySelectionToSlot
+and WorldMarkedMoveEntryBetweenSlots without editing the classic code. Picks
+retain source-list order and complete per-frame settings: holds, Show/Hide,
+independent timing, offsets/depth, motion/caps, flips, dual copies and explicit
+cross-library multipart references. Destination actor placement/facing/scale/
+opacity/clock/freeze/loops are adopted. Copies get fresh IDs; moves keep IDs and
+retarget followers. Same-actor moves adjust the original insertion boundary.
+
+SceneProject::transfer_frames stages candidate data and the full history entry
+before publishing, using the existing bounded review transaction. Cycles,
+stale/pending/invalid reviews, repeated/missing picks, ID/capacity exhaustion
+and allocation failure leave state/history/Redo/IDs untouched. No-op moves retain
+Redo; each actual transfer uses one Undo step. Native project versions 1-6 stay
+fixed; IMG bytes/version/layout, histories and marks are untouched.
+
+Parity boundaries: the dialog takes picks from one actor. Classic's arbitrary
+multi-row selection clipboard and direct timeline drag/drop are still separate
+work. Classic can leave an empty row; Studio's unchanged codec requires a frame
+per actor, so moves must leave one source frame. The action refuses the whole
+invalid transfer rather than silently skipping frames or changing the format.
+
+Validation: full classic/CLI/Studio x64 Release build succeeds; **130/131** CTest
+suites pass. The sole failure remains the optional external MK2 WOLF roster
+count in studio_strike_phases; its self-contained fixtures pass. New transfer
+model tests pass Release and ASAN, including all frame fields, noncontiguous
+order, self-copy/reorder, fresh/moved IDs, follower timing/cycles, no-op Redo,
+stale/pending/limit/identity guards, native byte-stable reopen/PNG equality and
+2800 allocation-failure positions. Five related ASAN models also pass.
+
+--smoke-frame-transfer (186 frames; failure exit101) passes Release wide/compact
+and compact ASAN. It exercises actual menus, picks and destination/insertion
+controls, Copy/Move, cycle and stale rejection, follower retargeting, Undo/Redo,
+native reopen/PNG equality, Cancel, dirty-close Cancel, disabled empty-source
+Apply and exact source IMG files/generations/marks. Related actor-split, actor-row,
+scene-append, project, trigger and hotkeys/Help compact Release checks pass.
+Final images: build-studio-artwork/transfer-final and
+build-studio-memory/transfer-final-small. Help/README are updated.
+
+**Append project actors (2026-10-22):** Project > Append project actors ports the
+classic AppendWorldProjectFile workflow for complete supported .ISTUDIO/.WAX
+compositions. A review lists actors/counts, reused/new sources and scene settings.
+Current playfield/origin/clock/mirror/background settings and existing dirty
+actors remain intact; incoming coordinates/ticks stay authored. Bound sources
+reuse open tabs; new ones are staged until Apply and discarded on Cancel.
+Fresh IDs remap the entire incoming effect graph. Limits and missing/stale
+sources refuse publication without partial row skipping. One Undo removes the
+append; Redo retains IDs and keeps introduced source tabs available. Native
+versions 1–6, all IMG bytes/versions/layouts, histories and marks stay unchanged.
+
+Full Release classic/CLI/Studio builds succeed. CTest passes 129/130 with only
+the known optional external MK2 roster mismatch; standalone strike fixtures pass.
+Six related ASAN models pass. The new suite covers complete cross-file/multipart
+metadata and linked effects, source reuse, native/WAX integration, byte-stable
+native save/reopen and PNG equality, self/repeat append, prior dirty history,
+limits/pending/stale references and 1600 injected allocation positions.
+Wide/compact Release and compact ASAN UI checks cover review/Cancel, staged tabs,
+changed disk sources, Undo/Redo dependencies, save/reopen/PNG, missing-source
+Cancel and dirty-close guards. Project/trigger/WAX timing/actor/Help regressions
+pass. The embedded-WAX input fixture now clicks an opaque interior so SDL screen
+rounding cannot move its click outside the flipped silhouette at compact zoom;
+its drag/Undo/Redo assertions remain intact and wide/compact/ASAN checks pass.
+Final screens: build-studio-artwork/append-final and
+build-studio-memory/append-final-small. No classic UI/IMG codec changes or releases.
+
+**Blood palette lanes (2026-10-21):** Palette > Make room for blood and the
+Palette manager button reserve 10 tail slots by default (adjustable). Character
+colors pack or undergo pixel-weighted reduction below the lane while palette
+count/depth stay fixed. The user selected an editable red ramp as the default;
+blank slots and Keep existing blood tail are alternatives. Keep preserves full
+tail words and pixels using them. All shared primary users remap together;
+active alternate references and visible/hidden overlays block unsafe remapping.
+Index zero and silhouettes stay exact. Before/after sprites, a dedicated blood
+strip, affected-pixel/color counts and required approximation approval make the
+change reviewable. Apply is one Undo step and highlights the blood swatches.
+There are no permanent slot locks, automatic blood painting or engine changes.
+Original IMG versions/layouts, palette count/depth, sprite metadata, baselines,
+padding, marks and unrelated palettes stay intact.
+
+Release classic/CLI/Studio build succeeds. CTest passes 128/129, only the existing
+optional external MK2 roster mismatch; standalone strike-phase fixtures pass.
+Five related ASAN model suites pass. New model checks exact/weighted/preserved/
+blank lanes, shared users, RGB555/opacity, forged/stale/pending reviews, alternate
+and hidden-overlay guards, 16/64/256 slots, 1000 allocation-failure positions and
+five original IMG versions with byte-exact Undo roundtrips. Actual controls,
+count/fill edits, approval reset, Cancel/Undo/Redo and save/reopen checks pass at
+wide/compact Release and compact ASAN. Existing downscale wide/compact and compact
+order/inheritance/ramp/Help regressions pass. Final screens are under
+build-studio-artwork/blood-layout-final and build-studio-memory/blood-layout-final-small.
+
+**Reverse scene actor frames (2026-10-21):** Classic's WorldMarkedReverseSlot is
+now in the actor inspector's Actions menu and Project menu. Frames reverse as
+whole records, retaining multipart/cross-file pieces, metadata and IDs. Scheduled
+windows mirror about max(total holds, latest Hide); timed or moving frames rebase
+to their old exclusive Hide tick (or span), then negate velocity. Second copies
+share the same capped travel. Actor freeze/loop/caps and incoming timing links
+stay exact; outbound effects follow the same frame at its new authored tick.
+This ports the classic editing operation rather than promising an exact reversed
+movie for capped/frozen/looping motion. One Undo restores the original; native
+placement/timing overflows are refused without mutation. Explicit independent
+timing remains explicit. Selected frame identity is preserved; the current tick
+is clamped if the scene becomes shorter, and playback pauses. Native versions 1–6 and every IMG format/byte remain unchanged.
+
+Full Release classic/CLI/Studio builds pass; 127/128 CTest suites pass with only
+the existing optional external MK2 roster mismatch. Standalone strike-phase
+fixtures and eight related ASAN suites pass. New model coverage includes golden
+timed/moving/independent cases, multipart refs, variable holds, linked effects,
+native byte stability, PNG equality, overflow/no-op/pending guards and 1500
+allocation-failure positions. Actual menu/Undo/Redo/save/reopen/dirty-close checks
+pass at wide/compact Release and compact ASAN. Existing actor-row/split/project/
+trigger/WAX timing/Help UI regressions pass. Screens are under
+build-studio-artwork/actor-reverse-final and build-studio-memory/actor-reverse-first-small.
+
 **Duplicate and order scene actors (2026-10-21):** The actor inspector now has an
 Actions button, shared with the Project menu, for duplication, forward/backward
 draw order and the existing split command. Duplication keeps all multipart and

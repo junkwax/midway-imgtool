@@ -37,6 +37,7 @@
 #include "ui_video_import.h"
 #include "ui_ramp_transfer.h"
 #include "ui_alt_costume.h"
+#include "ui_palette_effects.h"
 #include "ui_autochop.h"
 #include "ui_stamp_erase.h"
 #include "dma_pack.h"
@@ -3504,6 +3505,7 @@ void DrawMainLayout(void)
     DrawPaletteSingleColorDialog();
 
     DrawIndexedGradientDialog();
+    DrawCharacterPaletteGenerator();
 
     DrawRampTransferDialog();
     DrawAltCostumeDialog();

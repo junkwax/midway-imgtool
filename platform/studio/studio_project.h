@@ -114,6 +114,16 @@ public:
     int duplicate_actor(uint64_t lane,std::string &error);
     // +/-1 moves one step in the back-to-front draw order. Boundary is a no-op.
     int move_actor(uint64_t lane,int direction,std::string &error);
+    // Classic row reversal: reverse frames and mirror timed windows/motion.
+    int reverse_actor(uint64_t lane,std::string &error);
+    // Append bound actors with fresh identities and remapped internal links.
+    // Current world/clock/mirror settings stay fixed. Returns the first new row.
+    int append_actors(const SceneState &incoming,const SceneSource &,std::string &error);
+    // Picks follow source order. insertion is a boundary in the original
+    // destination list; moves keep IDs and retarget their timing followers.
+    int transfer_frames(uint64_t source,const std::vector<uint64_t> &frames,
+                        uint64_t destination,int insertion,bool move,std::string &error,
+                        const SceneState *reviewed_state=nullptr);
     uint64_t allocate_id(){return next_entity_id++;}
     SceneState state;
 private:

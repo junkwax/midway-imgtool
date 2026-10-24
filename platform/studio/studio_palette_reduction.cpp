@@ -236,19 +236,21 @@ bool same_sources(const PaletteCompactionPlan &a,const PaletteCompactionPlan &b)
 bool plan_palette_reduction(const Artwork &art,const PaletteReductionOptions &o,PaletteReductionPlan &out,std::string &error){
     error.clear();auto pal=art.palette(o.palette);
     if(!pal||!pal->data_p||!pal->numc||pal->numc>256||pal->bitspix>8||o.depth<4||o.depth>8||o.ppp<0||o.ppp>8){error="Choose a valid palette, target depth from 4 to 8, and packing PPP from 0 to 8.";return false;}
+    if(o.reserve_tail<0||(o.reserve_tail&&(o.reserve_tail>pal->numc-2||o.blood_fill<BloodLaneFill::RedRamp||o.blood_fill>BloodLaneFill::KeepExisting))){error="Reserve at least one blood color and leave index zero plus one opaque character color.";return false;}
     try{
         size_t snapshot_bytes=0;
         for(int i=0;i<art.count();++i){auto im=art.sprite(i);bool primary=im->palnum==o.palette,alternate=false,active=false;if(im->opaltbl_p){auto refs=(const unsigned char *)im->opaltbl_p;active=refs[0]<128;for(int a=0;a<16&&refs[a]<128;++a)alternate|=refs[a]==o.palette+NUMDEFPAL;}
-            if(alternate||(primary&&active)){error="Active alternate palettes share these indices. Remove those references before downscaling.";return false;}if(!primary)continue;
-            if(im->layer_p){error="Flatten or remove overlays using this palette before downscaling.";return false;}
+            if(alternate||(primary&&active)){error="Active alternate palettes share these indices. Remove those references before condensing colors.";return false;}if(!primary)continue;
+            if(im->layer_p){error="Flatten or remove overlays using this palette before condensing colors.";return false;}
             if(!im->data_p||!im->w||!im->h||im->w>8192||im->h>8192||(size_t)im->w*im->h>4u*1024u*1024u){error="A sprite using this palette has invalid dimensions or pixels.";return false;}
             snapshot_bytes+=(size_t)((im->w+3)&~3)*im->h;if(snapshot_bytes>256u*1024u*1024u){error="Downscale review exceeds the 256 MiB pixel budget. Split the library before reviewing.";return false;}
         }
         PaletteReductionPlan p;p.options=o;
         if(!plan_palette_compaction(art,{o.palette,o.ppp,true,false,PaletteColorOrder::Keep,false},p.preview,error))return false;
-        auto &v=p.preview;const bool unused=v.primary_sprites.empty();int limit=1<<o.depth;
+        auto &v=p.preview;const bool unused=v.primary_sprites.empty();int limit=o.reserve_tail?(int)v.original.size()-o.reserve_tail:1<<o.depth;
+        const bool keep=o.reserve_tail&&o.blood_fill==BloodLaneFill::KeepExisting;
         std::vector<PaletteReduceColor> colors;
-        for(size_t c=1;c<v.original.size();++c)if(unused||v.primary[c]){unsigned short w=v.original[c];unsigned char raw[]={(unsigned char)w,(unsigned char)(w>>8)},r,g,b;pal_word_to_rgb8(raw,&r,&g,&b);colors.push_back({(int)c,r,g,b,unused?1.0:(double)v.primary[c]});}
+        for(size_t c=1;c<v.original.size();++c)if((!keep||(int)c<limit)&&(unused||v.primary[c])){unsigned short w=v.original[c];unsigned char raw[]={(unsigned char)w,(unsigned char)(w>>8)},r,g,b;pal_word_to_rgb8(raw,&r,&g,&b);colors.push_back({(int)c,r,g,b,unused?1.0:(double)v.primary[c]});}
         p.active_colors=(int)colors.size();v.mapping.fill(0);v.words.clear();v.words.push_back(v.original[0]);
         if((int)v.original.size()<=limit){v.words=v.original;for(size_t c=1;c<v.words.size();++c)v.mapping[c]=(unsigned char)c;}
         else if(p.active_colors<=limit-1){for(const auto &c:colors){v.mapping[c.old_idx]=(unsigned char)v.words.size();v.words.push_back(v.original[c.old_idx]);}}
@@ -262,21 +264,33 @@ bool plan_palette_reduction(const Artwork &art,const PaletteReductionOptions &o,
             // centroids: the preview and applied nearest colors then agree.
             for(size_t c=1;c<v.original.size();++c){int best=1,distance=PaletteColorDistance5(v.original[c],v.words[1]);for(size_t d=2;d<v.words.size();++d){int delta=PaletteColorDistance5(v.original[c],v.words[d]);if(delta<distance){best=(int)d;distance=delta;}}v.mapping[c]=(unsigned char)best;}
         }
+        if(o.reserve_tail){
+            v.words.resize(v.original.size(),0);
+            for(int c=limit;c<(int)v.words.size();++c){
+                if(keep){v.words[c]=v.original[c];v.mapping[c]=(unsigned char)c;}
+                else if(o.blood_fill==BloodLaneFill::RedRamp){
+                    // Editable RGB555 dark red -> bright red/pink highlights.
+                    int n=c-limit,den=std::max(1,o.reserve_tail-1);
+                    int r=4+(27*n+den/2)/den,g=(8*n*n+den*den/2)/(den*den),b=(5*n*n+den*den/2)/(den*den);
+                    v.words[c]=(unsigned short)((r<<10)|(g<<5)|b);
+                }
+            }
+        }
         v.index_changes=0;for(size_t c=1;c<v.original.size();++c){if(v.mapping[c]!=c)v.index_changes+=v.primary[c];if(!unused&&!v.primary[c])continue;int mapped=v.mapping[c];if(mapped){int d=PaletteColorDistance5(v.original[c],v.words[mapped]);if(d){++p.approximate_colors;p.color_changes+=v.primary[c];p.max_distance=std::max(p.max_distance,d);}}}
-        v.depth=o.depth;v.removed=(int)v.original.size()-(int)v.words.size();v.ppp_changed=o.ppp&&(((int)v.original.size()>(1<<o.ppp))!=((int)v.words.size()>(1<<o.ppp)));
-        p.changed=v.original!=v.words||pal->bitspix!=o.depth||v.index_changes;out=std::move(p);return true;
+        v.depth=o.reserve_tail?pal->bitspix:o.depth;v.removed=(int)v.original.size()-(int)v.words.size();v.ppp_changed=o.ppp&&(((int)v.original.size()>(1<<o.ppp))!=((int)v.words.size()>(1<<o.ppp)));
+        p.changed=v.original!=v.words||pal->bitspix!=v.depth||v.index_changes;out=std::move(p);return true;
     }catch(const std::bad_alloc &){error="Not enough memory to review palette downscaling. The library is unchanged.";return false;}
 }
 bool Artwork::reduce_palette_colors(const PaletteReductionPlan &reviewed,bool allow_approximation,std::string &error){
-    error.clear();auto &v=reviewed.preview;if(pending||v.owner!=this||v.generation!=generation()){error="The library changed or an edit is pending. Cancel and reopen the downscale review.";return false;}
+    error.clear();auto &v=reviewed.preview;if(pending||v.owner!=this||v.generation!=generation()){error="The library changed or an edit is pending. Cancel and reopen the palette reduction review.";return false;}
     PaletteReductionPlan p;if(!plan_palette_reduction(*this,reviewed.options,p,error))return false;
-    if(!same_sources(v,p.preview)){error="Palette colors, metadata or sprite data changed. Cancel and reopen the downscale review.";return false;}
-    if(p.approximate_colors&&!allow_approximation){error="Review the before/after result and allow approximate colors before downscaling.";return false;}if(!p.changed)return true;
+    if(!same_sources(v,p.preview)){error="Palette colors, metadata or sprite data changed. Cancel and reopen the palette reduction review.";return false;}
+    if(p.approximate_colors&&!allow_approximation){error="Review the before/after result and allow approximate colors before condensing colors.";return false;}if(!p.changed)return true;
     try{
         auto &result=p.preview;auto pal=palette(p.options.palette);
         std::unique_ptr<unsigned char,decltype(&free)> colors((unsigned char *)malloc(result.words.size()*2),free);if(!colors)throw std::bad_alloc();for(size_t i=0;i<result.words.size();++i){colors.get()[i*2]=(unsigned char)result.words[i];colors.get()[i*2+1]=(unsigned char)(result.words[i]>>8);}
-        State before=capture();before.label="Downscale palette colors";past.reserve(past.size()+1);
-        free(pal->data_p);pal->data_p=colors.release();pal->numc=(unsigned short)result.words.size();pal->bitspix=(unsigned char)p.options.depth;
+        State before=capture();before.label=p.options.reserve_tail?"Reserve blood lane":"Downscale palette colors";past.reserve(past.size()+1);
+        free(pal->data_p);pal->data_p=colors.release();pal->numc=(unsigned short)result.words.size();pal->bitspix=(unsigned char)result.depth;
         for(int index:result.primary_sprites){auto im=sprite(index);int stride=(im->w+3)&~3;for(int y=0;y<im->h;++y)for(int x=0;x<im->w;++x){auto pixel=(unsigned char *)im->data_p+y*stride+x;*pixel=result.mapping[*pixel];}}
         past.push_back(std::move(before));future.clear();revision=next_revision++;++serial;trim_history();return true;
     }catch(const std::bad_alloc &){error="Not enough memory to downscale colors. Palette, pixels and history are unchanged.";return false;}

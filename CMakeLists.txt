@@ -122,6 +122,8 @@ set(IMGTOOL_SOURCES
     platform/ui_ramp_transfer.cpp
     platform/ui_alt_costume.cpp
     platform/ui_palette_preview.cpp
+    platform/ui_palette_effects.cpp
+    platform/palette_effects.cpp
     platform/world_render.cpp
     platform/bdd_bg.cpp
     platform/anipoint.cpp
@@ -276,6 +278,8 @@ add_library(imgtool_studio_document STATIC
     platform/studio/studio_project.cpp
     platform/studio/studio_actor_split.cpp
     platform/studio/studio_actor_rows.cpp
+    platform/studio/studio_scene_append.cpp
+    platform/studio/studio_frame_transfer.cpp
     platform/studio/studio_stage.cpp
     platform/studio/studio_anchor_link.cpp
     platform/studio/studio_points.cpp
@@ -391,6 +395,10 @@ add_executable(studio_palette_reduction_test test/studio_palette_reduction_test.
 target_link_libraries(studio_palette_reduction_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_palette_reduction_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_palette_reduction COMMAND studio_palette_reduction_test)
+add_executable(studio_palette_blood_test test/studio_palette_blood_test.cpp)
+target_link_libraries(studio_palette_blood_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_palette_blood_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_palette_blood COMMAND studio_palette_blood_test)
 add_executable(studio_palette_swatches_test test/studio_palette_swatches_test.cpp)
 target_link_libraries(studio_palette_swatches_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_palette_swatches_test PRIVATE SDL_MAIN_HANDLED)
@@ -419,6 +427,18 @@ add_executable(studio_actor_rows_test test/studio_actor_rows_test.cpp)
 target_link_libraries(studio_actor_rows_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_actor_rows_test PRIVATE SDL_MAIN_HANDLED)
 add_test(NAME studio_actor_rows COMMAND studio_actor_rows_test)
+add_executable(studio_actor_reverse_test test/studio_actor_reverse_test.cpp)
+target_link_libraries(studio_actor_reverse_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_actor_reverse_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_actor_reverse COMMAND studio_actor_reverse_test)
+add_executable(studio_scene_append_test test/studio_scene_append_test.cpp)
+target_link_libraries(studio_scene_append_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_scene_append_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_scene_append COMMAND studio_scene_append_test)
+add_executable(studio_frame_transfer_test test/studio_frame_transfer_test.cpp)
+target_link_libraries(studio_frame_transfer_test PRIVATE imgtool_studio_document)
+target_compile_definitions(studio_frame_transfer_test PRIVATE SDL_MAIN_HANDLED)
+add_test(NAME studio_frame_transfer COMMAND studio_frame_transfer_test)
 add_executable(studio_sheet_test test/studio_sheet_test.cpp)
 target_link_libraries(studio_sheet_test PRIVATE imgtool_studio_document)
 target_compile_definitions(studio_sheet_test PRIVATE SDL_MAIN_HANDLED)
@@ -816,7 +836,7 @@ foreach(pure_test palette_math color_ops sprite_resize_ops anipoint anipoint_lev
                   anipoint_mirror tbl_diff img_util body_split gif_trim dma_pack
                   stamp_erase bdd_bg document reaction_class strike_bind
                   digitize_matte palette_ramp material_mask sprite_gradient
-                  palette_transfer palette_layout video_decode)
+                  palette_transfer palette_layout video_decode palette_effects)
     add_executable(${pure_test}_test
         test/${pure_test}_test.cpp
         platform/${pure_test}.cpp

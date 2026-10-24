@@ -1,4 +1,5 @@
 #include "studio_project.h"
+#include "studio_subframes.h"
 #include <algorithm>
 #include <climits>
 namespace studio {
@@ -39,5 +40,46 @@ int SceneProject::move_actor(uint64_t lane_id,int direction,std::string &error){
         SceneState candidate=state;std::swap(candidate.lanes[index],candidate.lanes[target]);
         return install_scene_review(std::move(candidate),next_entity_id,target,direction>0?"Bring actor forward":"Send actor backward",error);
     }catch(const std::bad_alloc &){error="Not enough memory to move the actor. Project and history are unchanged.";return -1;}
+}
+int SceneProject::reverse_actor(uint64_t lane_id,std::string &error){
+    error.clear();if(pending){error="Finish the current project edit before reversing an actor.";return -1;}
+    try{
+        if(!lane_id||!validate_scene(state,error)){if(error.empty())error="Choose an available actor.";return -1;}
+        int index=-1;for(int i=0;i<(int)state.lanes.size();++i)if(state.lanes[i].id==lane_id)index=i;
+        if(index<0){error="The actor is unavailable.";return -1;}
+        SceneState candidate=state;auto &actor=candidate.lanes[index];
+        int span=0;for(auto &frame:actor.frames)span+=frame.ticks;
+        for(auto &frame:actor.frames)span=std::max(span,frame.visible_until);
+        int sequence_start=0;
+        for(auto &frame:actor.frames){
+            // Match WorldMarkedReverseSlot: use the old, exclusive Hide tick
+            // (or natural span), without applying actor freeze or loop. Motion
+            // alone also needs rebasing even without a visibility window.
+            if(frame.scheduled()||frame.vx||frame.vy){
+                int end=frame.visible_until?frame.visible_until:span;
+                int start=frame.scheduled()?frame.visible_from:sequence_start;
+                int elapsed=std::max(0,end-start);
+                bool flip_x=actor.flip_x!=frame.flip_x;
+                frame.x=subframe_motion_offset(frame.x,frame.vx,elapsed,frame.cap_x,flip_x);
+                frame.y=subframe_motion_offset(frame.y,frame.vy,elapsed,frame.cap_y,frame.flip_y);
+                if(frame.dual){frame.dual_x=subframe_motion_offset(frame.dual_x,frame.vx,elapsed,frame.cap_x,flip_x);frame.dual_y=subframe_motion_offset(frame.dual_y,frame.vy,elapsed,frame.cap_y,frame.flip_y);}
+                int from=frame.visible_from,until=frame.visible_until;
+                frame.visible_from=until?std::max(0,span-until):0;
+                frame.visible_until=from?std::max(0,span-from):0;
+                frame.vx=-frame.vx;frame.vy=-frame.vy;
+                // Keep the existing native project bounds. Do not silently
+                // truncate a rebased placement or extend the project codec.
+                if(std::abs((long long)frame.x)>4096||std::abs((long long)frame.y)>4096||
+                   (frame.dual&&(std::abs((long long)frame.dual_x)>4096||std::abs((long long)frame.dual_y)>4096))||
+                   frame.visible_from>99999||frame.visible_until>99999){error="Reversing this actor exceeds the project's placement or timing limits. Reduce motion or timing first; the scene is unchanged.";return -1;}
+            }
+            sequence_start+=frame.ticks;
+        }
+        std::reverse(actor.frames.begin(),actor.frames.end());
+        // IDs travel with their frames, so effects follow the same artwork at
+        // its new authored tick. Actor settings and incoming links stay exact.
+        if(!validate_scene(candidate,error))return -1;
+        return install_scene_review(std::move(candidate),next_entity_id,index,"Reverse actor frames",error);
+    }catch(const std::bad_alloc &){error="Not enough memory to reverse the actor. Project and history are unchanged.";return -1;}
 }
 }

@@ -163,6 +163,14 @@ colors. Cleanup only uses local colors outside the erased/matching region and
 inside the selection; it does not erase additional pixels. Turn it off for a plain
 matching erase. Clicking existing transparency does nothing.
 
+**Select frames** above the left sprite list enables clicking frame names or
+thumbnails to check/uncheck their batch marks. **Done selecting** keeps those
+marks and returns to ordinary browsing. Ctrl-click toggles an individual mark
+in either mode; Shift-click marks the range of shown frames from the last
+marking click. Shift-clicking a checkbox checks or unchecks that shown range.
+Filtered-out frames keep their marks. Each library keeps its own mode and marks.
+The toolbar's **Select pixels** (R) selects a canvas region independently.
+
 **Batch geometry:** library checkboxes mark sprites independently of the active
 sprite and pixel selection. **Marks** can mark every sprite shown by search or
 clear membership; the adjacent count shows active marks. Marks belong to each
@@ -1284,6 +1292,26 @@ and independent clipboards stay unchanged. Index zero stays transparent and
 opaque pixels remain opaque. Save retains the original IMG version/layout;
 review the LOAD2 packing report before building game data.
 
+**Blood lanes:** choose **Palette > Make room for blood...**, also available in
+Palette manager. Reserve **10 colors** by default, or enter another count. A
+64-color palette keeps index 0 transparent, condenses character colors into
+indices 1–53, and reserves 54–63 for blood. Palette count and declared bit depth
+stay fixed. Before/after previews show every shared primary sprite, color loss
+and remapped pixels; the blood lane has its own visible swatch strip.
+
+Choose **New editable red ramp** for dark-to-bright reds, **New blank slots** for
+unused opaque black entries, or **Keep existing blood tail** to preserve the tail
+colors and pixels already using them while condensing the character colors.
+Colors pack exactly when they fit; otherwise a pixel-weighted merge needs
+**Allow approximate colors**. Changing options resets approval. Apply uses one
+Undo step and selects the blood swatches for editing. Paint new detail using
+these indices; the tool does not automatically paint blood or configure game
+behavior. Active alternate references and overlays must be resolved first.
+
+Save retains the original IMG version and record layout. This is ordinary
+palette/pixel data, with no new format fields or permanent reserved-slot locks;
+later compaction or palette edits can reuse or move the lane.
+
 **Downscale palette:** choose **Downscale...** in Palette manager and review a
 4-8 bpp color limit (16-256 total colors). The review keeps the original colors
 and indices when they already fit, packs used colors exactly when possible,
@@ -1496,6 +1524,24 @@ visibility remain the effect's own settings. **Detach** keeps its current start
 as an independent actor. Both actions undo, and Studio protects source frames
 and actors from deletion while another effect uses them.
 
+**Project > Append project actors...** adds all actors from another `.ISTUDIO`
+project or supported classic `.WAX` to the current composition. Review the actor
+list, counts, reused libraries, new tabs and scene settings, then **Append
+actors**. Existing unsaved edits are retained. Missing sources can be located;
+new IMG tabs are staged until Apply and discarded on Cancel. Compatible open IMG
+libraries are reused, and reviewed clean sources are checked again before Apply.
+
+The current playfield, origin, background, clock and mirror convention stay fixed.
+Incoming coordinates and tick counts remain as authored, so different origins
+or clocks can affect placement and real-time speed. Multipart frames and all
+actor settings are retained. Fresh identities preserve timing links between
+incoming effects. Existing actors, marks and artwork stay intact. The complete
+append must fit the 32-actor, 64-source, 8192-frame and 65536-reference limits;
+unsupported WAX reconstruction remains guarded. One Undo removes the append;
+Redo retains identities and keeps newly opened source tabs available. Save the
+current `.ISTUDIO` project to retain it. The incoming file and every IMG's bytes
+and original format stay unchanged.
+
 The actor inspector's **Actions** button and the **Project** menu provide
 **Duplicate actor**, **Bring actor forward** and **Send actor backward**.
 Duplication copies every frame, multipart piece, cross-file reference and actor
@@ -1510,6 +1556,44 @@ action uses one project Undo step, and Redo retains identities. Duplication
 respects the 32-actor, 8192-frame and 65536-reference limits and requires a
 resolved start no later than tick 100000. Save as `.ISTUDIO` to retain these
 changes; IMG bytes, original format, marks and artwork history stay unchanged.
+
+**Copy / move frames...** in **Actions**, **Project**, or a frame thumbnail's
+right-click menu transfers selected frames within or between actors. Tick any
+frames from the source actor, choose the destination and insertion point, then
+**Copy selected frames**. Enable **Move frames** to transfer originals instead.
+Noncontiguous selections retain source-list order; insertion uses the original
+destination list. Self-copy and same-actor reordering are supported.
+
+Frames retain holds, Show/Hide windows, independent timing, offsets, depth,
+motion/caps, facing, second copies and cross-library multipart references. They
+adopt the destination actor's placement, facing, opacity, scale, clock, freeze
+and loop settings, which can change their appearance or timing. Copies receive
+new identities; existing effects follow the originals. Moves preserve identities
+and retarget effects following those frames. Timing cycles are refused.
+
+A move to another actor must leave one source frame because existing Studio
+project versions require nonempty actors. The complete transfer must fit 4096
+frames per actor, 8192 project frames and 65536 sprite references. One project
+Undo restores the frames and effect links; Redo keeps identities. Cancel, stale
+reviews and failed transfers change nothing. Save as `.ISTUDIO`; native project
+versions, IMG bytes and original format stay unchanged. This selects frames from
+one actor; classic's arbitrary multi-row selection clipboard remains unported.
+
+**Reverse actor frames**, also in **Actions** and **Project**, reverses frame
+order with each frame's holds, multipart pieces, cross-file references and
+identity. Linked effects follow the same frame at its new authored time. The
+selected frame follows its identity and playback pauses. The timeline keeps its
+current tick, clamped if the scene becomes shorter. As in classic's Reverse row command, Show/Hide windows mirror around the
+larger of the total frame holds and the latest Hide tick. Timed or moving frames
+start from their former motion endpoint and reverse velocity, including second
+copies. The endpoint is the exclusive Hide tick, or the total span if open-ended.
+Zero window values retain their default/open-ended meanings.
+
+Actor settings, freeze, loops and motion caps stay fixed; this command does not
+recreate a pause at a motion cap or invert freeze behavior. **Undo** restores the
+exact original. Placements beyond ±4096 or mirrored windows beyond 99999 ticks
+are refused with the scene unchanged. Save the result as `.ISTUDIO`; existing
+project versions and IMG format/bytes remain unchanged.
 
 **Split actor here** in the scene timeline ports classic's row-splitting command.
 Select a frame after the first frame, then click the button, right-click its

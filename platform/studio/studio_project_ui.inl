@@ -27,6 +27,11 @@ void actor_action_items(Tab *t){
     if(ImGui::MenuItem("Send actor backward",nullptr,false,ready&&index>0))t->scene.command=SceneCommand::ActorBackward;
     if(ready)t->scene.actor_backward_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Moves this actor one step backward when frame depths are equal. Position, timing, opacity and depth values stay the same.");
+    if(ImGui::MenuItem("Reverse actor frames",nullptr,false,ready))t->scene.command=SceneCommand::ReverseActor;
+    if(ready)t->scene.actor_reverse_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Reverses frame order, mirrors Show/Hide windows and reverses motion from its former endpoint. Holds and pieces travel with their frame; effects follow the same frame at its new tick. Actor freeze, loops and motion caps are retained. One project Undo restores the scene.");
+    if(ImGui::MenuItem("Copy / move frames...",nullptr,false,ready))show_frame_transfer(*t,t->scene.frame);
+    if(ready)t->scene.frame_transfer_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
     if(ImGui::MenuItem("Split actor at selected frame",nullptr,false,t&&can_split_actor(*t)))t->scene.command=SceneCommand::SplitActor;split_actor_tooltip();
 }
 void toggle_scene_playback(Tab &t){finish();auto &u=t.scene;if(!u.playing&&u.tick>=scene_last_tick(t.project->state))u.tick=0;u.playing=!u.playing;}
@@ -35,7 +40,7 @@ int scene_asset(SceneState &s,Tab &source){
     if(s.assets.size()>=64)return -1;
     s.assets.push_back({source.art->path(),source.art->path(),{},source.uid});return (int)s.assets.size()-1;
 }
-void drop_pending_scene(){pending_project.reset();pending_scene_new=false;staged_scene_tabs.clear();scene_issues.clear();scene_relocations.clear();pending_scene_owner=0;}
+void drop_pending_scene(){pending_project.reset();pending_scene_new=pending_scene_append=pending_append_ready=false;staged_scene_tabs.clear();scene_issues.clear();scene_relocations.clear();pending_scene_owner=0;}
 void attach_scene(){
     if(!pending_project)return;
     for(auto &t:staged_scene_tabs)tabs.push_back(std::move(t));staged_scene_tabs.clear();
@@ -70,6 +75,7 @@ void new_scene(Tab &t){
 }
 void stage_scene(){
     if(!pending_project)return;
+    if(pending_scene_append)pending_append_ready=false;
     staged_scene_tabs.clear();scene_issues.clear();std::vector<std::string> load_errors(pending_project->state.assets.size());
     auto binding=[&](int a,const SceneAsset &asset)->SceneBinding{
         std::string path=a<(int)scene_relocations.size()&&!scene_relocations[a].empty()?scene_relocations[a]:scene_asset_candidate(asset,pending_project->opened_from());
@@ -84,7 +90,7 @@ void stage_scene(){
     };
     bool ok=pending_project->bind(binding,scene_issues);
     for(auto &issue:scene_issues)if(issue.asset>=0&&!load_errors[issue.asset].empty())issue.message=load_errors[issue.asset];
-    if(ok){pending_scene_owner=pending_project->state.assets.front().runtime_doc;install_scene();}
+    if(ok){if(pending_scene_append){pending_append_ready=true;scene_error.clear();}else{pending_scene_owner=pending_project->state.assets.front().runtime_doc;install_scene();}}
 }
 void open_scene(const std::string &path){
     finish();auto candidate=SceneProject::read(path,error);if(!candidate)return;
@@ -94,7 +100,7 @@ void choose_scene(){
 #ifdef _WIN32
     auto path=native_file(window,false,{},false,true);if(!path.empty())open_scene(path);
 #else
-    scene_path_dialog=true;scene_path_save=scene_path_export=false;scene_path_uid=0;scene_path_input[0]=0;
+    scene_path_dialog=true;scene_path_save=scene_path_export=scene_path_append=false;scene_path_uid=0;scene_path_input[0]=0;
 #endif
 }
 bool save_scene(Tab &t,bool as){
@@ -103,7 +109,7 @@ bool save_scene(Tab &t,bool as){
 #ifdef _WIN32
         path=native_file(window,true,path.empty()?"scene.ISTUDIO":path,false,true);if(path.empty())return false;
 #else
-        scene_path_dialog=true;scene_path_save=true;scene_path_export=false;scene_path_uid=t.uid;snprintf(scene_path_input,sizeof scene_path_input,"%s",path.c_str());return false;
+        scene_path_dialog=true;scene_path_save=true;scene_path_export=scene_path_append=false;scene_path_uid=t.uid;snprintf(scene_path_input,sizeof scene_path_input,"%s",path.c_str());return false;
 #endif
     }
     bool ok=t.project->save(path,scene_source(),scene_error);if(ok)status="Saved "+scene_name(t);
@@ -114,7 +120,7 @@ void export_scene(Tab &t){
 #ifdef _WIN32
     auto path=native_file(window,true,"scene.png",true);if(!path.empty()){if(t.project->export_png(path,(int)t.scene.tick,scene_source(),error,t.stage.get(),&t.stage_view))status="Exported current scene PNG.";}
 #else
-    scene_path_dialog=true;scene_path_save=false;scene_path_export=true;scene_path_uid=t.uid;snprintf(scene_path_input,sizeof scene_path_input,"scene.png");
+    scene_path_dialog=true;scene_path_save=scene_path_append=false;scene_path_export=true;scene_path_uid=t.uid;snprintf(scene_path_input,sizeof scene_path_input,"scene.png");
 #endif
 }
 void save_scene_sources(Tab &t){
@@ -148,6 +154,10 @@ void project_dialogs(){
         if(owner&&!quitting){for(auto &t:tabs)if(t.get()!=owner&&t->project&&t->project->uses_doc(owner->uid)){error="This IMG is used by an open project or its undo history. Close that project before closing its source library.";close_uid=0;break;}}
         if(close_uid&&owner&&owner->project){if(owner->project->dirty()){scene_guard_uid=owner->uid;scene_guard_reason=2;scene_error.clear();}else{owner->project.reset();owner->scene={};}}
     }
+    if(close_uid&&pending_scene_append)drop_pending_scene();
+    if(frame_transfer.open&&(quitting||close_uid||pending_project||scene_guard_uid))frame_transfer=FrameTransferUi{};
+    frame_transfer_dialog();
+    scene_append_dialog();
     if(pending_project&&!scene_issues.empty())ImGui::OpenPopup("Locate project artwork");
     if(ImGui::BeginPopupModal("Locate project artwork",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+550);ImGui::TextUnformatted("The project is waiting for its sources. Locate missing libraries or correct sprite references in their original IMG. Your open artwork stays in place.");ImGui::PopTextWrapPos();
@@ -179,12 +189,12 @@ void project_dialogs(){
     if(ImGui::BeginPopupModal("Project path",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
         ImGui::SetNextItemWidth(500);ImGui::InputText("Path",scene_path_input,sizeof scene_path_input);
         if(!scene_error.empty())ImGui::TextWrapped("%s",scene_error.c_str());
-        if(ImGui::Button(scene_path_save?"Save project":scene_path_export?"Export PNG":"Open project")){
+        if(ImGui::Button(scene_path_save?"Save project":scene_path_export?"Export PNG":scene_path_append?"Review append":"Open project")){
             auto owner=find(scene_path_uid);bool ok=false;std::error_code ec;
             if((scene_path_save||scene_path_export)&&fs::exists(fs::u8path(scene_path_input),ec)&&(!owner||!owner->project||owner->project->path()!=scene_path_input))scene_error="Choose a new filename to avoid replacing another file.";
             else if(scene_path_save&&owner&&owner->project)ok=owner->project->save(scene_path_input,scene_source(),scene_error);
             else if(scene_path_export&&owner&&owner->project)ok=owner->project->export_png(scene_path_input,(int)owner->scene.tick,scene_source(),scene_error,owner->stage.get(),&owner->stage_view);
-            else if(!scene_path_save&&!scene_path_export){open_scene(scene_path_input);ok=true;}
+            else if(!scene_path_save&&!scene_path_export){if(scene_path_append&&owner)append_scene(*owner,scene_path_input);else open_scene(scene_path_input);ok=true;}
             if(ok){scene_path_dialog=false;ImGui::CloseCurrentPopup();if(scene_guard_uid&&scene_path_save)complete_scene_guard();}
         }
         ImGui::SameLine();if(ImGui::Button("Cancel")){scene_path_dialog=false;ImGui::CloseCurrentPopup();}ImGui::EndPopup();
@@ -259,7 +269,7 @@ void project_timeline(Tab &t,float height){
     for(int f=0;f<(int)lane.frames.size();++f){int seek=lane_start+(lane.frames[f].scheduled()?lane.frames[f].visible_from:cursor_tick);cursor_tick+=lane.frames[f].ticks;if(f)ImGui::SameLine(0,6);ImGui::PushID(f);ImVec2 a=ImGui::GetCursorScreenPos();
         if(ImGui::Selectable("##frame",u.frame==f,0,ImVec2(85,85)))scene_seek(t,f);
         if(f<4)u.frame_points[f]=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;
-        if(ImGui::BeginPopupContextItem("frame-actions")){ImGui::BeginDisabled(!can_split_actor(t,f));if(ImGui::MenuItem("Split actor at this frame")){u.frame=f;u.command=SceneCommand::SplitActor;}u.split_actor_context_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();split_actor_tooltip();ImGui::EndPopup();}
+        if(ImGui::BeginPopupContextItem("frame-actions")){if(ImGui::MenuItem("Copy / move frames..."))show_frame_transfer(t,f);u.frame_transfer_context_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::BeginDisabled(!can_split_actor(t,f));if(ImGui::MenuItem("Split actor at this frame")){u.frame=f;u.command=SceneCommand::SplitActor;}u.split_actor_context_point=(ImGui::GetItemRectMin()+ImGui::GetItemRectMax())*.5f;ImGui::EndDisabled();split_actor_tooltip();ImGui::EndPopup();}
         auto &frame=lane.frames[f];int left=INT_MAX,top=INT_MAX,right=INT_MIN,bottom=INT_MIN;std::vector<ScenePose> poses;
         for(auto &ref:frame.pieces){ScenePose pose{ref,0,0,0,255,u.lane,f,lane.flip_x!=frame.flip_x,frame.flip_y,false,lane.magnification};int index;if(auto source=scene_sprite(s,ref,index)){auto p=scene_placement(*source->art->sprite(index),pose,s);left=std::min(left,p.x);top=std::min(top,p.y);right=std::max(right,p.x+p.w);bottom=std::max(bottom,p.y+p.h);}poses.push_back(pose);}
         auto dl=ImGui::GetWindowDrawList();dl->PushClipRect(a,a+ImVec2(85,85),true);
@@ -313,6 +323,7 @@ void project_inspector(Tab &t){
 void apply_scene_command(Tab &t){
     auto &u=t.scene;auto command=u.command;u.command=SceneCommand::None;if(command==SceneCommand::None||!t.project)return;
     t.project->commit();u.playing=false;
+    if(command==SceneCommand::ReverseActor){if(!can_edit_actor(&t)){error="Choose an available scene actor.";return;}auto &actor=t.project->state.lanes[u.lane];uint64_t selected=actor.frames[u.frame].id;int changed=t.project->reverse_actor(actor.id,error);if(changed>=0){auto &frames=t.project->state.lanes[changed].frames;for(int i=0;i<(int)frames.size();++i)if(frames[i].id==selected)u.frame=i;clamp_scene_ui(t);status="Reversed actor frames and timed motion. Undo restores the original.";}return;}
     if(command==SceneCommand::DuplicateActor||command==SceneCommand::ActorForward||command==SceneCommand::ActorBackward){if(!can_edit_actor(&t)){error="Choose an available scene actor.";return;}auto id=t.project->state.lanes[u.lane].id;int changed=command==SceneCommand::DuplicateActor?t.project->duplicate_actor(id,error):t.project->move_actor(id,command==SceneCommand::ActorForward?1:-1,error);if(changed>=0){u.lane=changed;clamp_scene_ui(t);status=command==SceneCommand::DuplicateActor?"Duplicated actor. Drag the copy to reposition it.":"Actor draw order updated.";}return;}
     if(command==SceneCommand::SplitActor){if(!can_split_actor(t)){error="Choose a frame after the first frame and leave room for another actor (maximum 32).";return;}auto &actor=t.project->state.lanes[u.lane];int added=t.project->split_actor_at(actor.id,actor.frames[u.frame].id,error);if(added>=0){u.lane=added;u.frame=0;u.tick=scene_frame_seek_tick(t.project->state,added,0);status="Split actor. Frame lists now play independently; IMG artwork is unchanged.";}return;}
     t.project->begin("Edit scene frames");auto &s=t.project->state;

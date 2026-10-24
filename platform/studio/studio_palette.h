@@ -60,7 +60,13 @@ struct PaletteInheritancePlan {
 };
 bool plan_palette_inheritance(const Artwork &art,const PaletteInheritanceOptions &options,PaletteInheritancePlan &plan,std::string &error);
 std::vector<unsigned char> render_palette_inheritance(const Artwork &art,const PaletteInheritancePlan &plan,int sprite,bool inherited);
-struct PaletteReductionOptions {int palette=-1,depth=7,ppp=6;};
+enum class BloodLaneFill {RedRamp,Blank,KeepExisting};
+struct PaletteReductionOptions {
+    int palette=-1,depth=7,ppp=6;
+    // Nonzero reserves the last N slots within the existing count/depth.
+    int reserve_tail=0;
+    BloodLaneFill blood_fill=BloodLaneFill::RedRamp;
+};
 struct PaletteReductionPlan {
     PaletteReductionOptions options;
     // Owned usage snapshot and remapped before/after rendering use the same

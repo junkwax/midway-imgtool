@@ -13,6 +13,7 @@
 #include "shim_vid.h"     // for g_palette
 #include "img_util.h"
 #include "document.h"     // for g_doc
+#include "ui_palette_effects.h"
 
 #include <imgui.h>
 #include <vector>
@@ -5277,6 +5278,20 @@ void DrawRightPanelPaletteEditor(float panel_h)
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                         "Choose one base color and turn every opaque palette swatch\n"
                         "into a matching dark-to-light shade of that color.");
+                    if (ImGui::BeginMenu("Generate Character Palettes")) {
+                        if (ImGui::MenuItem("All (Freeze, Electric, Blood)..."))
+                            OpenCharacterPaletteGenerator(i, CHARACTER_PALETTES_ALL);
+                        if (ImGui::MenuItem("Freeze / Electric Palettes..."))
+                            OpenCharacterPaletteGenerator(i, CHARACTER_PALETTES_EFFECTS);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                            "FREZ, NUFRZ, ELPUP, ELRED, REDEL and PURPL from this palette,\n"
+                            "using the ramps saved in the Indexed Color Gradient.");
+                        if (ImGui::MenuItem("Blood Palettes for Costumes..."))
+                            OpenCharacterPaletteGenerator(i, CHARACTER_PALETTES_BLOOD);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                            "A BLUD palette for each of this fighter's costume palettes.");
+                        ImGui::EndMenu();
+                    }
                     if (ImGui::MenuItem("Inherit Colors from Marked")) InheritSelectedPaletteFromMarked();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
                         "Mark the source palette, select the target palette.\n"

@@ -1,6 +1,12 @@
 bool marked(const Tab &t,uint64_t id)const{return t.marks.find(id)!=t.marks.end();}
 int mark_count(const Tab &t)const{int count=0;for(int i=0;i<t.art->count();++i)count+=marked(t,t.art->sprite_id(i));return count;}
 void mark_sprite(Tab &t,uint64_t id,bool value){if(value)t.marks.insert(id);else t.marks.erase(id);}
+void mark_library_row(Tab &t,const std::vector<int> &visible,int index,bool value,bool range){
+    auto id=t.art->sprite_id(index);auto first=visible.end(),last=std::find(visible.begin(),visible.end(),index);
+    if(range&&t.mark_anchor)for(auto it=visible.begin();it!=visible.end();++it)if(t.art->sprite_id(*it)==t.mark_anchor){first=it;break;}
+    if(first!=visible.end()&&last!=visible.end()){if(first>last)std::swap(first,last);for(auto it=first;it<=last;++it)mark_sprite(t,t.art->sprite_id(*it),value);}
+    else{mark_sprite(t,id,value);t.mark_anchor=id;}
+}
 void clear_batch_textures(){if(batch.before_texture)SDL_DestroyTexture(batch.before_texture);if(batch.after_texture)SDL_DestroyTexture(batch.after_texture);batch.before_texture=batch.after_texture=nullptr;}
 void open_batch(Tab &t){finish();clear_batch_textures();batch=BatchUi{};batch.open=true;batch.doc=t.uid;batch.generation=t.art->generation();batch.scope=mark_count(t)?0:1;batch.options.w=t.art->sprite(t.selected)->w;batch.options.h=t.art->sprite(t.selected)->h;batch.dirty=true;t.alignment.player.playing=t.embedded.playing=t.scene.playing=false;}
 void rebuild_batch(Tab &t){
