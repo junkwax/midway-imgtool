@@ -176,6 +176,57 @@ static void isolation_checks(void)
 
 }
 
+/* ---- Adobe ACT ---- */
+static void act_checks(void)
+{
+    /* Round trip: a 3-color palette comes back as 3 colors, words intact. */
+    {
+        unsigned short words[3] = { 0, mkword(31, 0, 31), mkword(7, 2, 2) };
+        unsigned char pal[6], act[772], back[512];
+        fill_words(pal, words, 3);
+        CHECK(BuildActPalette(pal, 3, act) == 772);
+        CHECK(act[768] == 0 && act[769] == 3 && act[770] == 0 && act[771] == 0);
+        CHECK(act[3] == 255 && act[4] == 0 && act[5] == 255);
+        CHECK(act[6] == 57 && act[7] == 16 && act[8] == 16);   /* 5-bit expand */
+        CHECK(act[9] == 0);                                     /* padding */
+        CHECK(ParseActPalette(act, 772, back) == 3);
+        CHECK(std::memcmp(back, pal, 6) == 0);
+    }
+    /* Bare 768-byte file: all 256 slots, positions preserved (colors parked
+       at the end of the table stay at the end). */
+    {
+        unsigned char act[768] = {0}, back[512];
+        act[255 * 3 + 0] = 255; act[255 * 3 + 2] = 255;
+        CHECK(ParseActPalette(act, 768, back) == 256);
+        CHECK(palette_word_at(back, 255) == mkword(31, 0, 31));
+        CHECK(palette_word_at(back, 0) == 0);
+    }
+    /* Footer count 0 means 256; >256 or wrong size is rejected. */
+    {
+        unsigned char act[772] = {0}, back[512];
+        CHECK(ParseActPalette(act, 772, back) == 256);
+        act[768] = 0x01; act[769] = 0x01;   /* 257 */
+        CHECK(ParseActPalette(act, 772, back) == 0);
+        CHECK(ParseActPalette(act, 700, back) == 0);
+    }
+    /* Foreign expansions round to the nearest level (7 -> 1, 15 -> 2), and
+       every 5-bit value survives our own export -> import. */
+    {
+        unsigned char act[768] = {0}, back[512];
+        act[0] = 7; act[1] = 15; act[2] = 239;
+        CHECK(ParseActPalette(act, 768, back) == 256);
+        CHECK(palette_word_at(back, 0) == mkword(1, 2, 29));
+        unsigned char pal[64], out[772];
+        unsigned short words[32];
+        for (int c = 0; c < 32; c++) words[c] = mkword(c, 31 - c, c);
+        fill_words(pal, words, 32);
+        CHECK(BuildActPalette(pal, 32, out) == 772);
+        CHECK(ParseActPalette(out, 772, back) == 32);
+        CHECK(std::memcmp(back, pal, 64) == 0);
+    }
+    CHECK(BuildActPalette(nullptr, 3, nullptr) == 0);
+}
+
 int main(void)
 {
     /* palette_word_at reads little-endian packed words. */
@@ -396,6 +447,7 @@ int main(void)
     }
 
     isolation_checks();
+    act_checks();
 
     if (g_fails == 0) {
         std::printf("PASS: palette_math helpers behave as specified\n");

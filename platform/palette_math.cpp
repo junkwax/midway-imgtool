@@ -31,6 +31,44 @@ bool PaletteBppTooSmall(int bitspix, int numc)
     return PaletteColorCountForBpp(bitspix) < numc;
 }
 
+int ParseActPalette(const unsigned char *bytes, size_t size, unsigned char *out_words)
+{
+    if (!bytes || !out_words) return 0;
+    if (size != ACT_FILE_SIZE && size != ACT_FILE_SIZE_FOOTER) return 0;
+    int count = 256;
+    if (size == ACT_FILE_SIZE_FOOTER) {
+        count = (bytes[768] << 8) | bytes[769];
+        if (count == 0) count = 256;
+        if (count > 256) return 0;
+    }
+    /* Round to the nearest 5-bit level rather than truncating (v >> 3):
+       other tools expand 5->8 bits their own way (1 -> 7, 2 -> 15), and
+       truncation would drop those a level. Rounding is still exact for our
+       own (c << 3 | c >> 2) expansion, so imgtool exports round-trip. */
+    for (int i = 0; i < count; i++) {
+        unsigned short r5 = (unsigned short)((bytes[i * 3 + 0] * 31 + 127) / 255);
+        unsigned short g5 = (unsigned short)((bytes[i * 3 + 1] * 31 + 127) / 255);
+        unsigned short b5 = (unsigned short)((bytes[i * 3 + 2] * 31 + 127) / 255);
+        unsigned short w = (unsigned short)((r5 << 10) | (g5 << 5) | b5);
+        out_words[i * 2 + 0] = (unsigned char)(w & 0xFF);
+        out_words[i * 2 + 1] = (unsigned char)(w >> 8);
+    }
+    return count;
+}
+
+int BuildActPalette(const unsigned char *words, int numc, unsigned char *out)
+{
+    if (!words || !out || numc < 1 || numc > 256) return 0;
+    for (int i = 0; i < ACT_FILE_SIZE; i++) out[i] = 0;
+    for (int i = 0; i < numc; i++)
+        pal_word_to_rgb8(words + i * 2, &out[i * 3], &out[i * 3 + 1], &out[i * 3 + 2]);
+    out[768] = (unsigned char)(numc >> 8);
+    out[769] = (unsigned char)(numc & 0xFF);
+    out[770] = 0;   /* transparent index 0 */
+    out[771] = 0;
+    return ACT_FILE_SIZE_FOOTER;
+}
+
 unsigned short palette_word_at(const unsigned char *data, int idx)
 {
     return (unsigned short)(data[idx * 2] | (data[idx * 2 + 1] << 8));

@@ -4853,11 +4853,11 @@ void ExportPalette(const char *path, bool adobe_act)
     const unsigned char *src = (const unsigned char *)pal->data_p;
 
     if (adobe_act) {
-        for (int i = 0; i < 256; i++) {
-            unsigned char rgb[3] = {0, 0, 0};
-            if (i < n) pal_word_to_rgb8(src + i * 2, &rgb[0], &rgb[1], &rgb[2]);
-            fwrite(rgb, 1, 3, f);
-        }
+        /* 772-byte form: the count footer keeps a 64-color palette at 64
+           colors when it comes back in, instead of growing to 256. */
+        unsigned char act[ACT_FILE_SIZE_FOOTER];
+        int len = BuildActPalette(src, n > 0 ? n : 1, act);
+        fwrite(act, 1, (size_t)len, f);
     } else {
         fwrite(src, 2, (size_t)n, f);
     }
@@ -4915,30 +4915,31 @@ void ImportPalette(const char *path)
     int n_colors = is_act ? 256 : (int)(size / 2);
     if (n_colors > 256) n_colors = 256;
 
-    PAL *new_pal = AllocPal();
-    if (!new_pal) {
-        fclose(f);
-        return;
+    /* Decode before allocating, so a malformed ACT doesn't leave an empty
+       palette behind. */
+    unsigned char words[512] = {0};
+    if (is_act) {
+        unsigned char act[ACT_FILE_SIZE_FOOTER];
+        size_t got = (size <= ACT_FILE_SIZE_FOOTER) ? fread(act, 1, (size_t)size, f) : 0;
+        n_colors = ParseActPalette(act, got, words);
+        if (n_colors <= 0) {
+            fclose(f);
+            snprintf(g_restore_msg, sizeof(g_restore_msg),
+                     "Not a valid ACT palette (expected 768 or 772 bytes, got %ld).", size);
+            g_restore_msg_timer = 4.0f;
+            return;
+        }
+    } else {
+        n_colors = (int)fread(words, 2, (size_t)n_colors, f);
     }
+    fclose(f);
+
+    PAL *new_pal = AllocPal();
+    if (!new_pal) return;
     strncpy(new_pal->n_s, pal_name, 11);
     new_pal->numc = n_colors;
     new_pal->data_p = calloc(256, 2); /* Always allocate max */
-
-    if (is_act) {
-        unsigned char rgb[768];
-        size_t read_bytes = fread(rgb, 1, 768, f);
-        int read_colors = (int)read_bytes / 3;
-        if (read_colors < n_colors) n_colors = read_colors;
-        new_pal->numc = n_colors;
-
-        unsigned char *dst = (unsigned char *)new_pal->data_p;
-        for (int i = 0; i < n_colors; i++) {
-            rgb8_to_pal_word(rgb[i*3], rgb[i*3+1], rgb[i*3+2], dst + i * 2);
-        }
-    } else {
-        fread(new_pal->data_p, 2, n_colors, f);
-    }
-    fclose(f);
+    memcpy(new_pal->data_p, words, (size_t)n_colors * 2);
 
     /* Neither format carries a depth, and AllocPal zero-fills — leaving
        bitspix at 0, which reads as an invalid palette downstream. Derive it

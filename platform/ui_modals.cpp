@@ -1030,6 +1030,7 @@ static const char* GetDialogListExtensions(FileDialogMode mode)
     if (mode == FileDialogMode::LoadWorldProject ||
         mode == FileDialogMode::AppendWorldProject) return "WAX;WVP";
     if (mode == FileDialogMode::ImportVideo) return kVideoImportExtensions;
+    if (mode == FileDialogMode::ImportPalette) return "PAL;ACT";
     return GetDialogExtension(mode);
 }
 

@@ -23,6 +23,24 @@ int PaletteColorCountForBpp(int bpp);
    declared depth is too small for its own color count. */
 bool PaletteBppTooSmall(int bitspix, int numc);
 
+/* Adobe Color Table (.ACT): 256 RGB triplets (768 bytes), optionally followed
+   by a 4-byte big-endian footer {color count, transparent index}. A count of
+   0 means 256; transparent 0xFFFF means none. Colors keep their slots — a
+   file that parks its colors at the end of the table imports with the
+   leading black entries intact, so pixel indices still line up. */
+enum { ACT_FILE_SIZE = 768, ACT_FILE_SIZE_FOOTER = 772 };
+
+/* Decode `size` bytes of an ACT file into `out_words` (2 bytes per entry,
+   room for 256). Returns the color count (1..256), or 0 when the data is not
+   a valid ACT (wrong size, or a footer count above 256). */
+int ParseActPalette(const unsigned char *bytes, size_t size, unsigned char *out_words);
+
+/* Encode `numc` palette words as a 772-byte ACT with a count footer, so the
+   palette size survives a round trip. Unused slots are black; the footer
+   marks index 0 transparent (the Midway convention). Returns the bytes
+   written (772), or 0 if numc is outside 1..256. */
+int BuildActPalette(const unsigned char *words, int numc, unsigned char *out /* 772 */);
+
 /* Read the packed 15-bit color word at palette index `idx` from a raw
    2-bytes-per-entry palette buffer. No bounds checking. */
 unsigned short palette_word_at(const unsigned char *data, int idx);
