@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_animation_clipboard.h"
 #include "studio_library_split_animations.h"
 #include "studio_img_codec.h"

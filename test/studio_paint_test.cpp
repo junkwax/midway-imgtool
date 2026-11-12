@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_paint.h"
 #include "studio_sequences.h"
 #include <filesystem>

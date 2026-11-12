@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_animation_copy.h"
 #include "studio_img_codec.h"
 #include <chrono>

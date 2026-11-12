@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_legacy_media.h"
 #include "studio_palette.h"
 #include "studio_img_codec.h"

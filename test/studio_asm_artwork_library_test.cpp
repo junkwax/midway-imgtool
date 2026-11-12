@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_asm_artwork_library.h"
 #include "studio_img_codec.h"
 #include <filesystem>

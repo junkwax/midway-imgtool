@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_library_copy.h"
 #include "studio_batch_delete.h"
 #include "studio_sequences.h"

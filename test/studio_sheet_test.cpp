@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_sheet.h"
 #include "stb_image.h"
 #include <filesystem>

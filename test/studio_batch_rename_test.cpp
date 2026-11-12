@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_batch_rename.h"
 #include "studio_sequences.h"
 #include "studio_img_codec.h"

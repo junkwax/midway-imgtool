@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_filters.h"
 #include "studio_sequences.h"
 #include <filesystem>

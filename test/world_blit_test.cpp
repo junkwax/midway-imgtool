@@ -8,6 +8,7 @@
  * These are the pieces a wrong byte order or off-by-one would corrupt
  * silently — the exported file would simply look wrong rather than fail.
  *************************************************************/
+#include <algorithm>
 #include "world_render.h"
 #include "img_io.h"
 #include "stb_image.h"

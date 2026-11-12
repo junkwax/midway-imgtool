@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_variant.h"
 #include "studio_palette.h"
 #include "studio_sequences.h"

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "studio_paint.h"
 #include <filesystem>
 #include <fstream>
