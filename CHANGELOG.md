@@ -8,7 +8,27 @@ Release body. Keep new entries near the top of the file under a new
 `## [vX.Y.Z]` header — anchor exactly as `## [v2.3.0]` (square brackets
 included) so the extractor matches.
 
-## [Unreleased]
+## [v3.38.0] — Adobe ACT palettes; a fighter's freeze, electric and blood palettes in one go
+
+### Import and export Adobe ACT palettes
+
+**File → Import → Palette...** now lists `.act` files next to `.pal` (before,
+the browser hid them, so ACT files could only be opened by typing the name).
+Both ACT forms are read: the bare 768-byte table and Photoshop's 772-byte form
+whose footer gives the color count.
+
+- **Export** with **Adobe ACT (RGB)** ticked now writes the 772-byte form with
+  the count footer, so a 64-color palette comes back as 64 colors instead of
+  growing to 256. Index 0 is marked transparent.
+- **Import** keeps every color in its slot. A table whose colors sit at the end
+  (slots 173–255, say) imports with the leading black entries intact, so
+  sprite pixel indices still line up.
+- **Colors from other tools land on the right 15-bit shade.** Tools expand
+  5-bit color to 8 bits differently (some write 7 for level 1, where imgtool
+  writes 8). Import now rounds each channel to the nearest level instead of
+  cutting off the low bits, which dropped those colors one level darker.
+  Palettes exported by imgtool still come back exactly.
+- A file of the wrong size reports an error instead of adding an empty palette.
 
 ### Generate a fighter's freeze, electric and blood palettes in one go
 
@@ -47,6 +67,12 @@ The fighter prefix, names and ticked rows can be edited, and clicking a row
 previews it on a sprite. Existing palettes with the same name are overwritten
 in place, so sprites already using them keep doing so. The source palettes are
 left alone. One Undo step reverts it all.
+
+### Lasso follows the cursor between pixels
+
+Lasso vertices are placed at the cursor's exact position rather than snapped
+to whole pixels, and a pixel is selected when its center falls inside the
+outline. Dragging past the sprite's edge now takes the last row or column.
 
 ## [v3.37.0] — Grab moves from video; dialogs can't paint the sprite behind them
 
